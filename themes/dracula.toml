@@ -1,0 +1,38 @@
+[theme]
+name = "Dracula"
+
+[theme.colors]
+foreground = "#F8F8F2"
+background = "#282A36"
+cursor = "#F8F8F2"
+selection_fg = "#F8F8F2"
+selection_bg = "#44475A"
+bold = "#F8F8F2"
+
+[theme.colors.ansi]
+black          = "#21222C"
+red            = "#FF5555"
+green          = "#50FA7B"
+yellow         = "#F1FA8C"
+blue           = "#BD93F9"
+magenta        = "#FF79C6"
+cyan           = "#8BE9FD"
+white          = "#F8F8F2"
+bright_black   = "#6272A4"
+bright_red     = "#FF6E6E"
+bright_green   = "#69FF94"
+bright_yellow  = "#FFFFA5"
+bright_blue    = "#D6ACFF"
+bright_magenta = "#FF92DF"
+bright_cyan    = "#A4FFFF"
+bright_white   = "#FFFFFF"
+
+[theme.ui]
+tab_bar_bg = "#1E1F29"
+tab_active_bg = "#282A36"
+tab_active_fg = "#F8F8F2"
+tab_inactive_bg = "#21222C"
+tab_inactive_fg = "#6272A4"
+scrollbar_bg = "#282A36"
+scrollbar_thumb = "#44475A"
+scrollbar_thumb_hover = "#6272A4"

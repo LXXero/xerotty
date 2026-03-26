@@ -1,0 +1,27 @@
+[theme]
+name = "Solarized Light"
+
+[theme.colors]
+foreground = "#657B83"
+background = "#FDF6E3"
+cursor = "#657B83"
+selection_fg = "#586E75"
+selection_bg = "#EEE8D5"
+
+[theme.colors.ansi]
+black          = "#073642"
+red            = "#DC322F"
+green          = "#859900"
+yellow         = "#B58900"
+blue           = "#268BD2"
+magenta        = "#D33682"
+cyan           = "#2AA198"
+white          = "#EEE8D5"
+bright_black   = "#002B36"
+bright_red     = "#CB4B16"
+bright_green   = "#586E75"
+bright_yellow  = "#657B83"
+bright_blue    = "#839496"
+bright_magenta = "#6C71C4"
+bright_cyan    = "#93A1A1"
+bright_white   = "#FDF6E3"

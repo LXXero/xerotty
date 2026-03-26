@@ -1,0 +1,27 @@
+[theme]
+name = "Gruvbox Dark"
+
+[theme.colors]
+foreground = "#EBDBB2"
+background = "#282828"
+cursor = "#EBDBB2"
+selection_fg = "#EBDBB2"
+selection_bg = "#504945"
+
+[theme.colors.ansi]
+black          = "#282828"
+red            = "#CC241D"
+green          = "#98971A"
+yellow         = "#D79921"
+blue           = "#458588"
+magenta        = "#B16286"
+cyan           = "#689D6A"
+white          = "#A89984"
+bright_black   = "#928374"
+bright_red     = "#FB4934"
+bright_green   = "#B8BB26"
+bright_yellow  = "#FABD2F"
+bright_blue    = "#83A598"
+bright_magenta = "#D3869B"
+bright_cyan    = "#8EC07C"
+bright_white   = "#EBDBB2"
