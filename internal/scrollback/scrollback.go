@@ -107,22 +107,49 @@ func (s *State) Search(emu *vt.SafeEmulator) {
 		line := extractScreenLine(emu, row, cols)
 		findMatches(&s.Matches, line, query, row, cols)
 	}
+
+	// Start at the nearest match to the current viewport, not the oldest.
+	// Viewport top is at line -s.Offset (scrollback) or 0 (live).
+	if len(s.Matches) > 0 {
+		viewTop := -s.Offset
+		best := 0
+		bestDist := abs(s.Matches[0].Line - viewTop)
+		for i, m := range s.Matches {
+			d := abs(m.Line - viewTop)
+			if d < bestDist {
+				best = i
+				bestDist = d
+			}
+		}
+		s.MatchIdx = best
+	}
 }
 
-// NextMatch advances to the next match.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// NextMatch advances to the next match (clamped, no wrap).
 func (s *State) NextMatch() {
 	if len(s.Matches) == 0 {
 		return
 	}
-	s.MatchIdx = (s.MatchIdx + 1) % len(s.Matches)
+	if s.MatchIdx < len(s.Matches)-1 {
+		s.MatchIdx++
+	}
 }
 
-// PrevMatch goes to the previous match.
+// PrevMatch goes to the previous match (clamped, no wrap).
 func (s *State) PrevMatch() {
 	if len(s.Matches) == 0 {
 		return
 	}
-	s.MatchIdx = (s.MatchIdx - 1 + len(s.Matches)) % len(s.Matches)
+	if s.MatchIdx > 0 {
+		s.MatchIdx--
+	}
 }
 
 // CurrentMatch returns the current match or nil.
@@ -131,6 +158,27 @@ func (s *State) CurrentMatch() *Match {
 		return nil
 	}
 	return &s.Matches[s.MatchIdx]
+}
+
+// ScrollToCurrentMatch adjusts the scroll offset so the current match is visible.
+func (s *State) ScrollToCurrentMatch(visibleRows int) {
+	m := s.CurrentMatch()
+	if m == nil {
+		return
+	}
+
+	// screenRow = m.Line + s.Offset; we need screenRow in [0, visibleRows)
+	screenRow := m.Line + s.Offset
+	if screenRow < 0 {
+		// Match is above visible area — scroll up
+		s.Offset = -m.Line
+	} else if screenRow >= visibleRows {
+		// Match is below visible area — scroll down
+		s.Offset = -m.Line + visibleRows - 1
+	}
+	if s.Offset < 0 {
+		s.Offset = 0
+	}
 }
 
 func extractScreenLine(emu *vt.SafeEmulator, row, cols int) string {

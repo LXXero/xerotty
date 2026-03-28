@@ -356,9 +356,13 @@ func (a *App) frame() {
 					}
 				}
 
-				// Search highlights on same draw list
-				if s, ok := a.scroll[tab.ID]; ok && len(s.Matches) > 0 {
-					a.drawSearchHighlights(s, drawList)
+				// Search highlights — refresh matches each frame so PTY output
+				// doesn't cause stale coordinates
+				if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
+					s.Search(tab.Terminal.Emu)
+					if len(s.Matches) > 0 {
+						a.drawSearchHighlights(s, drawList)
+					}
 				}
 
 				// Scrollbar
@@ -430,9 +434,15 @@ func (a *App) processKeys() {
 					}
 				case '\r': // Enter
 					s.NextMatch()
+					if _, rows := a.gridSize(); rows > 0 {
+						s.ScrollToCurrentMatch(rows)
+					}
 					continue
 				case '\n': // Shift+Enter
 					s.PrevMatch()
+					if _, rows := a.gridSize(); rows > 0 {
+						s.ScrollToCurrentMatch(rows)
+					}
 					continue
 				}
 			}
@@ -665,6 +675,10 @@ func (a *App) updateFontMetrics() {
 
 	// Keep window size fixed, just recalculate grid and resize terminals
 	a.resizeTerminals()
+
+	// Show resize overlay so user sees the new grid dimensions
+	a.resizeTime = imgui.Time()
+	a.resizeOverlay = true
 }
 
 func (a *App) renderTabBar() {
@@ -747,11 +761,9 @@ func (a *App) renderSearchOverlay() {
 		return
 	}
 
-	overlayH := float32(30)
 	imgui.SetNextWindowPosV(imgui.Vec2{X: float32(a.width) - 320, Y: a.tabBarH}, imgui.CondAlways, imgui.Vec2{})
-	imgui.SetNextWindowSizeV(imgui.Vec2{X: 310, Y: overlayH}, imgui.CondAlways)
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
-		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar
+		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
 	if imgui.BeginV("##search", nil, flags) {
 		imgui.SetNextItemWidth(180)
@@ -762,9 +774,11 @@ func (a *App) renderSearchOverlay() {
 			s.SearchFocusOnce = false
 		}
 
+		_, rows := a.gridSize()
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
 		if changed {
 			s.Search(tab.Terminal.Emu)
+			s.ScrollToCurrentMatch(rows)
 		}
 
 		imgui.SameLineV(0, 4)
@@ -777,10 +791,12 @@ func (a *App) renderSearchOverlay() {
 		imgui.SameLineV(0, 4)
 		if imgui.ButtonV("<", imgui.Vec2{X: 20, Y: 0}) {
 			s.PrevMatch()
+			s.ScrollToCurrentMatch(rows)
 		}
 		imgui.SameLineV(0, 2)
 		if imgui.ButtonV(">", imgui.Vec2{X: 20, Y: 0}) {
 			s.NextMatch()
+			s.ScrollToCurrentMatch(rows)
 		}
 		imgui.SameLineV(0, 2)
 		if imgui.ButtonV("X", imgui.Vec2{X: 20, Y: 0}) {
@@ -794,17 +810,21 @@ func (a *App) renderSearchOverlay() {
 func (a *App) drawSearchHighlights(s *scrollback.State, drawList *imgui.DrawList) {
 	cellW := a.cellW
 	cellH := a.cellH
+	_, rows := a.gridSize()
 	matchBg := uint32(0x4400FFFF)   // yellow, semi-transparent (ABGR)
 	currentBg := uint32(0x8800AAFF) // orange, more opaque (ABGR)
 
 	for i, m := range s.Matches {
-		// Only draw matches on the visible screen (line >= 0)
-		if m.Line < 0 {
+		// Convert absolute line index to screen row accounting for scroll offset.
+		// Match lines: negative = scrollback, 0+ = live screen.
+		// Scroll offset pushes everything down: scrollback lines become visible.
+		screenRow := m.Line + s.Offset
+		if screenRow < 0 || screenRow >= rows {
 			continue
 		}
 
 		x := a.renderer.OffsetX + float32(m.Col)*cellW
-		y := a.renderer.OffsetY + float32(m.Line)*cellH
+		y := a.renderer.OffsetY + float32(screenRow)*cellH
 		w := float32(m.Len) * cellW
 
 		bg := matchBg
