@@ -3,6 +3,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"runtime"
@@ -54,7 +55,9 @@ type App struct {
 	hoveredLink    *linkHit // URL under mouse cursor, nil if none
 	renamingTab    bool     // whether rename popup is open
 	renameBuffer   string   // text input for tab rename
-	sbDragging     bool     // true while dragging the scrollbar thumb
+	sbDragging       bool    // true while dragging the scrollbar thumb
+	searchFocusInput bool    // request keyboard focus to search input next frame
+	searchOverlayW   float32 // actual rendered width of search overlay (updated each frame)
 }
 
 // New creates a new App with the given config.
@@ -113,14 +116,7 @@ func (a *App) Run() error {
 	a.renderer.OffsetX = pad
 	a.renderer.OffsetY = a.tabBarH + pad
 
-	// Handle window resize
-	a.backend.SetSizeChangeCallback(func(w, h int) {
-		a.width = w
-		a.height = h
-		a.resizeTerminals()
-		a.resizeTime = imgui.Time()
-		a.resizeOverlay = true
-	})
+	// Window resize is handled per-frame via ImGui IO.DisplaySize in frame().
 
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
 	a.tabs = tabs.NewManager(&a.cfg)
@@ -186,6 +182,19 @@ func (a *App) frame() {
 			return
 		}
 		return
+	}
+
+	// Sync window dimensions from ImGui IO every frame — more reliable than
+	// SetSizeChangeCallback which some WMs/compositors don't always trigger.
+	if ds := imgui.CurrentIO().DisplaySize(); int(ds.X) > 0 && int(ds.Y) > 0 {
+		newW, newH := int(ds.X), int(ds.Y)
+		if newW != a.width || newH != a.height {
+			a.width = newW
+			a.height = newH
+			a.resizeTerminals()
+			a.resizeTime = imgui.Time()
+			a.resizeOverlay = true
+		}
 	}
 
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
@@ -575,6 +584,7 @@ func (a *App) dispatchAction(action string) {
 		if tab := a.tabs.Active(); tab != nil {
 			s := a.getScroll(tab.ID)
 			s.OpenSearch()
+			a.searchFocusInput = true
 		}
 	case "font_size_up":
 		a.cfg.Font.Size += 1
@@ -666,6 +676,10 @@ func (a *App) updateFontMetrics() {
 		a.baseFontSize = 14
 	}
 
+	// Capture current grid dimensions BEFORE scaling so we can resize
+	// the window to keep the same number of cols/rows.
+	cols, rows := a.gridSize()
+
 	// Scale cell metrics proportionally (no atlas rebuild needed —
 	// the renderer uses AddTextFontPtr with explicit font size)
 	scale := fontSize / a.baseFontSize
@@ -674,7 +688,16 @@ func (a *App) updateFontMetrics() {
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 	a.renderer.FontSize = fontSize
 
-	// Keep window size fixed, just recalculate grid and resize terminals
+	// Resize window to maintain the same grid at the new cell size.
+	// Set a.width/a.height immediately so this frame renders correctly;
+	// the per-frame DisplaySize sync (line ~188) will correct them on the
+	// next frame if the WM didn't honour the request.
+	pad := float32(a.cfg.Appearance.Padding) * 2
+	newW := int(math.Ceil(float64(float32(cols)*a.cellW + pad)))
+	newH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH)))
+	a.backend.SetWindowSize(newW, newH)
+	a.width = newW
+	a.height = newH
 	a.resizeTerminals()
 
 	// Show resize overlay so user sees the new grid dimensions
@@ -767,14 +790,18 @@ func (a *App) renderSearchOverlay() {
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
 	if imgui.BeginV("##search", nil, flags) {
+		// Track actual rendered width for the selection hit-test.
+		a.searchOverlayW = imgui.WindowWidth()
+
 		imgui.SetNextItemWidth(180)
 
-		// Re-focus the input on the NEXT frame after it loses focus.
-		// Doing it immediately steals clicks from buttons. The one-frame
-		// delay lets button clicks register before focus returns.
-		if s.SearchFocusOnce {
+		// Focus the input when explicitly requested (on open, after < >
+		// clicks, or after focus is lost to the terminal).  Never call
+		// SetKeyboardFocusHere while a mouse button is held or just
+		// released — that steals ActiveId from buttons mid-click.
+		if a.searchFocusInput && !imgui.IsMouseDown(0) && !imgui.IsMouseReleased(imgui.MouseButtonLeft) {
 			imgui.SetKeyboardFocusHere()
-			s.SearchFocusOnce = false
+			a.searchFocusInput = false
 		}
 
 		_, rows := a.gridSize()
@@ -796,21 +823,24 @@ func (a *App) renderSearchOverlay() {
 		if imgui.ButtonV("<", imgui.Vec2{X: 20, Y: 0}) {
 			s.PrevMatch()
 			s.ScrollToCurrentMatch(rows)
+			a.searchFocusInput = true
 		}
 		imgui.SameLineV(0, 2)
 		if imgui.ButtonV(">", imgui.Vec2{X: 20, Y: 0}) {
 			s.NextMatch()
 			s.ScrollToCurrentMatch(rows)
+			a.searchFocusInput = true
 		}
 		imgui.SameLineV(0, 2)
 		if imgui.ButtonV("X", imgui.Vec2{X: 20, Y: 0}) {
 			s.CloseSearch()
 		}
 
-		// If the input lost focus (user clicked a button or terminal),
-		// request re-focus for next frame
-		if !inputFocused && s.Searching {
-			s.SearchFocusOnce = true
+		// If input lost focus (e.g. user clicked terminal) schedule a
+		// re-focus so typed characters aren't silently dropped.  The
+		// mouse-idle guard above ensures this doesn't fire mid-click.
+		if !inputFocused {
+			a.searchFocusInput = true
 		}
 	}
 	imgui.End()
@@ -914,9 +944,9 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 	}
 
 	barW := float32(a.cfg.Scrollbar.Width)
-	termH := float32(rows) * a.cellH
 	barX := float32(a.width) - barW
 	barY := a.tabBarH
+	termH := float32(a.height) - barY // full height below tab bar
 
 	// Check if mouse is hovering the thumb
 	mpos := imgui.MousePos()
@@ -1084,12 +1114,18 @@ func (a *App) handleMouseSelection() {
 	}
 
 	// Left click starts selection — but only in the terminal area.
-	// Skip if ImGui wants the mouse (search overlay, context menu, etc.),
-	// if the click is on the scrollbar, or if we're dragging the scrollbar.
+	// IsAnyItemHovered() is reset by ImGui's NewFrame() and is always 0 here
+	// (before any items are rendered this frame), so we use explicit rect
+	// checks instead: skip the scrollbar column and the search overlay region.
 	if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 		barW := float32(a.cfg.Scrollbar.Width)
 		onScrollbar := mousePos.X >= float32(a.width)-barW
-		if mousePos.Y >= a.tabBarH && !imgui.IsAnyItemHovered() && !onScrollbar && !a.sbDragging {
+		// Search overlay sits in the top-right corner; use its actual
+		// rendered width (updated each frame) rather than the 320px reserve.
+		onSearch := tab != nil && a.getScroll(tab.ID).Searching &&
+			mousePos.X >= float32(a.width)-a.searchOverlayW &&
+			mousePos.Y <= a.tabBarH+40 // overlay is ~1 row tall
+		if mousePos.Y >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging {
 			a.sel.clear()
 			a.sel.startCol = col
 			a.sel.startRow = row
