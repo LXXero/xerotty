@@ -768,11 +768,11 @@ func (a *App) renderSearchOverlay() {
 	if imgui.BeginV("##search", nil, flags) {
 		imgui.SetNextItemWidth(180)
 
-		// Focus the input once when search first opens
-		if s.SearchFocusOnce {
-			imgui.SetKeyboardFocusHere()
-			s.SearchFocusOnce = false
-		}
+		// Keep keyboard focus on the search input every frame.
+		// Without this, clicking the terminal area steals focus and
+		// keystrokes stop reaching the search box. ImGui buttons
+		// respond to mouse clicks regardless of keyboard focus.
+		imgui.SetKeyboardFocusHere()
 
 		_, rows := a.gridSize()
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
