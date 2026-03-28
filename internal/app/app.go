@@ -768,11 +768,12 @@ func (a *App) renderSearchOverlay() {
 	if imgui.BeginV("##search", nil, flags) {
 		imgui.SetNextItemWidth(180)
 
-		// Keep keyboard focus on the search input every frame.
-		// Without this, clicking the terminal area steals focus and
-		// keystrokes stop reaching the search box. ImGui buttons
-		// respond to mouse clicks regardless of keyboard focus.
-		imgui.SetKeyboardFocusHere()
+		// Keep keyboard focus on the search input — but only when no
+		// other widget (button) is being clicked. Without this guard,
+		// SetKeyboardFocusHere steals the click from <, >, X buttons.
+		if !imgui.IsAnyItemActive() {
+			imgui.SetKeyboardFocusHere()
+		}
 
 		_, rows := a.gridSize()
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
