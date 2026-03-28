@@ -768,11 +768,12 @@ func (a *App) renderSearchOverlay() {
 	if imgui.BeginV("##search", nil, flags) {
 		imgui.SetNextItemWidth(180)
 
-		// Keep keyboard focus on the search input — but only when no
-		// other widget (button) is being clicked. Without this guard,
-		// SetKeyboardFocusHere steals the click from <, >, X buttons.
-		if !imgui.IsAnyItemActive() {
+		// Re-focus the input on the NEXT frame after it loses focus.
+		// Doing it immediately steals clicks from buttons. The one-frame
+		// delay lets button clicks register before focus returns.
+		if s.SearchFocusOnce {
 			imgui.SetKeyboardFocusHere()
+			s.SearchFocusOnce = false
 		}
 
 		_, rows := a.gridSize()
@@ -781,6 +782,7 @@ func (a *App) renderSearchOverlay() {
 			s.Search(tab.Terminal.Emu)
 			s.ScrollToCurrentMatch(rows)
 		}
+		inputFocused := imgui.IsItemFocused()
 
 		imgui.SameLineV(0, 4)
 		if len(s.Matches) > 0 {
@@ -802,6 +804,12 @@ func (a *App) renderSearchOverlay() {
 		imgui.SameLineV(0, 2)
 		if imgui.ButtonV("X", imgui.Vec2{X: 20, Y: 0}) {
 			s.CloseSearch()
+		}
+
+		// If the input lost focus (user clicked a button or terminal),
+		// request re-focus for next frame
+		if !inputFocused && s.Searching {
+			s.SearchFocusOnce = true
 		}
 	}
 	imgui.End()
