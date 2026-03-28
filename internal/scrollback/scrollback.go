@@ -9,11 +9,12 @@ import (
 
 // State tracks the scroll position and search state for a terminal.
 type State struct {
-	Offset    int  // lines scrolled back from bottom (0 = live)
-	Searching bool
-	Query     string
-	Matches   []Match
-	MatchIdx  int
+	Offset         int  // lines scrolled back from bottom (0 = live)
+	Searching      bool
+	SearchFocusOnce bool // focus the search input on the next frame only
+	Query          string
+	Matches        []Match
+	MatchIdx       int
 }
 
 // Match represents a search match in the terminal/scrollback.
@@ -67,6 +68,7 @@ func (s *State) Reset() {
 // OpenSearch enters search mode.
 func (s *State) OpenSearch() {
 	s.Searching = true
+	s.SearchFocusOnce = true
 	s.Query = ""
 	s.Matches = nil
 	s.MatchIdx = 0

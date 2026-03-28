@@ -18,6 +18,8 @@ type Config struct {
 	Keys       KeyConfig  `toml:"keys"`
 	Menu       MenuConfig `toml:"menu"`
 	Scrollback ScrollbackConfig `toml:"scrollback"`
+	Scrollbar  ScrollbarConfig  `toml:"scrollbar"`
+	Links      LinksConfig      `toml:"links"`
 	Env        map[string]string `toml:"env"`
 	Tabs       TabConfig  `toml:"tabs"`
 }
@@ -66,9 +68,24 @@ type MenuItem struct {
 
 // ScrollbackConfig controls scrollback buffer behavior.
 type ScrollbackConfig struct {
-	Lines   int    `toml:"lines"`
-	Mode    string `toml:"mode"`    // "memory" | "disk" | "unlimited"
-	DiskDir string `toml:"disk_dir"`
+	Lines      int    `toml:"lines"`
+	Mode       string `toml:"mode"`        // "memory" | "disk" | "unlimited"
+	DiskDir    string `toml:"disk_dir"`
+	ScrollSpeed int   `toml:"scroll_speed"` // lines per mouse wheel tick
+}
+
+// ScrollbarConfig controls the scrollbar.
+type ScrollbarConfig struct {
+	Visible        string `toml:"visible"`          // "always" | "never" | "auto"
+	Width          int    `toml:"width"`
+	MinThumbHeight int    `toml:"min_thumb_height"`
+}
+
+// LinksConfig controls URL detection and interaction.
+type LinksConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	CtrlClick  bool   `toml:"ctrl_click"`
+	Opener     string `toml:"opener"`
 }
 
 // TabConfig controls tab behavior.
@@ -103,8 +120,19 @@ func Default() Config {
 		},
 		Menu: defaultMenu(),
 		Scrollback: ScrollbackConfig{
-			Lines: 10000,
-			Mode:  "memory",
+			Lines:       10000,
+			Mode:        "memory",
+			ScrollSpeed: 3,
+		},
+		Scrollbar: ScrollbarConfig{
+			Visible:        "always",
+			Width:          12,
+			MinThumbHeight: 20,
+		},
+		Links: LinksConfig{
+			Enabled:   true,
+			CtrlClick: true,
+			Opener:    "xdg-open",
 		},
 		Tabs: TabConfig{
 			OnChildExit: "close",
@@ -171,9 +199,13 @@ func defaultKeybinds() map[string]string {
 		"Shift+PageDown":   "scroll_page_down",
 		"Ctrl+Shift+F":     "search",
 		"F11":              "fullscreen",
+		"Ctrl+Plus":        "font_size_up",
+		"Ctrl+Minus":       "font_size_down",
+		"Ctrl+0":           "font_size_reset",
 		"Ctrl+Shift+Plus":  "font_size_up",
 		"Ctrl+Shift+Minus": "font_size_down",
 		"Ctrl+Shift+0":     "font_size_reset",
+		"Ctrl+Shift+R":     "rename_tab",
 	}
 }
 
@@ -186,9 +218,13 @@ func defaultMenu() MenuConfig {
 			{Label: "Copy", Action: "copy", Shortcut: "Ctrl+Shift+C", Enabled: "has_selection"},
 			{Label: "Paste", Action: "paste", Shortcut: "Ctrl+Shift+V"},
 			{Action: "separator"},
+			{Label: "Open Link", Action: "open_link", Enabled: "has_link"},
+			{Label: "Copy Link", Action: "copy_link", Enabled: "has_link"},
+			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Ctrl+Shift+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
 			{Action: "separator"},
+			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
 			{Label: "Close Tab", Action: "close_tab", Shortcut: "Ctrl+Shift+W"},
 		},
 	}

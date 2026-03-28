@@ -127,5 +127,16 @@ func themeFromFile(tf ThemeFile) renderer.Theme {
 		}
 	}
 
+	u := tf.Theme.UI
+	if u.ScrollbarBg != "" {
+		theme.ScrollbarBg = renderer.HexToABGR(u.ScrollbarBg)
+	}
+	if u.ScrollbarThumb != "" {
+		theme.ScrollbarThumb = renderer.HexToABGR(u.ScrollbarThumb)
+	}
+	if u.ScrollbarThumbHov != "" {
+		theme.ScrollbarHover = renderer.HexToABGR(u.ScrollbarThumbHov)
+	}
+
 	return theme
 }

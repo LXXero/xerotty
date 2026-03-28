@@ -13,15 +13,16 @@ import (
 
 // Terminal wraps a SafeEmulator + PTY + reader goroutines for one tab.
 type Terminal struct {
-	Emu    *vt.SafeEmulator
-	ptmx   *os.File
-	cmd    *exec.Cmd
-	DataCh chan struct{} // signals new data for rendering (buffered, cap 1)
-	cols   int
-	rows   int
-	closed bool
-	mu     sync.Mutex
-	done   chan struct{}
+	Emu     *vt.SafeEmulator
+	ptmx    *os.File
+	cmd     *exec.Cmd
+	DataCh  chan struct{} // signals new data for rendering (buffered, cap 1)
+	OnTitle func(string)  // called when OSC 0/2 sets window title
+	cols    int
+	rows    int
+	closed  bool
+	mu      sync.Mutex
+	done    chan struct{}
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -42,6 +43,14 @@ func New(cfg *config.Config, cols, rows int) (*Terminal, error) {
 		rows:   rows,
 		done:   make(chan struct{}),
 	}
+
+	emu.Emulator.SetCallbacks(vt.Callbacks{
+		Title: func(title string) {
+			if t.OnTitle != nil {
+				t.OnTitle(title)
+			}
+		},
+	})
 
 	// PTY Reader goroutine: PTY → SafeEmulator
 	go t.readPTY()

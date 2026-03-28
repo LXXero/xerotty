@@ -43,6 +43,9 @@ func (m *Manager) NewTab(cols, rows int) (*Tab, error) {
 		Title:    "shell",
 		Terminal: term,
 	}
+	term.OnTitle = func(title string) {
+		tab.Title = title
+	}
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
 	m.ActiveIdx = len(m.Tabs) - 1
@@ -79,17 +82,17 @@ func (m *Manager) Active() *Tab {
 	return m.Tabs[m.ActiveIdx]
 }
 
-// Next switches to the next tab.
+// Next switches to the next tab (clamped, no wrap).
 func (m *Manager) Next() {
-	if len(m.Tabs) > 0 {
-		m.ActiveIdx = (m.ActiveIdx + 1) % len(m.Tabs)
+	if m.ActiveIdx < len(m.Tabs)-1 {
+		m.ActiveIdx++
 	}
 }
 
-// Prev switches to the previous tab.
+// Prev switches to the previous tab (clamped, no wrap).
 func (m *Manager) Prev() {
-	if len(m.Tabs) > 0 {
-		m.ActiveIdx = (m.ActiveIdx - 1 + len(m.Tabs)) % len(m.Tabs)
+	if m.ActiveIdx > 0 {
+		m.ActiveIdx--
 	}
 }
 

@@ -21,8 +21,10 @@ type Context struct {
 }
 
 // Render draws the context menu using ImGui. Returns the action to dispatch, or "".
+// The popup must be opened externally via OpenPopupStr("##contextmenu") on right-click,
+// because the terminal window uses NoInputs and ImGui won't detect clicks on it.
 func Render(items []config.MenuItem, ctx *Context) string {
-	if !imgui.BeginPopupContextWindowV("", imgui.PopupFlagsMouseButtonRight) {
+	if !imgui.BeginPopupV("##contextmenu", 0) {
 		return ""
 	}
 	defer imgui.EndPopup()
@@ -33,10 +35,7 @@ func Render(items []config.MenuItem, ctx *Context) string {
 
 func renderItems(items []config.MenuItem, ctx *Context) string {
 	for _, item := range items {
-		// Check enabled condition
-		if !checkEnabled(item.Enabled, ctx) {
-			continue
-		}
+		enabled := checkEnabled(item.Enabled, ctx)
 
 		if item.Action == "separator" {
 			imgui.Separator()
@@ -55,8 +54,8 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 			continue
 		}
 
-		// Regular item
-		if imgui.MenuItemBoolV(item.Label, item.Shortcut, false, true) {
+		// Regular item — show grayed out when disabled instead of hiding
+		if imgui.MenuItemBoolV(item.Label, item.Shortcut, false, enabled) {
 			return item.Action
 		}
 	}

@@ -1,125 +1,308 @@
-// Package input handles SDL key → VT escape sequence translation and modifier tracking.
+// Package input handles ImGui key → VT escape sequence translation.
 package input
+
+import "github.com/AllenDang/cimgui-go/imgui"
 
 // KeyEvent represents a translated key event ready to send to the PTY.
 type KeyEvent struct {
-	Bytes []byte // VT sequence or UTF-8 bytes to write to PTY
+	Bytes  []byte // VT sequence or UTF-8 bytes to write to PTY
 	Action string // keybind action name, empty if not a keybind
 }
 
-// Translate converts an SDL key event into bytes for the PTY or a keybind action.
-// key is the SDL keycode, mods is the modifier bitmask, text is the SDL text input string.
-func Translate(key, mods int, text string, keybinds map[string]string, appMode bool) KeyEvent {
-	ctrl := mods&ModCtrl != 0
-	shift := mods&ModShift != 0
-	alt := mods&ModAlt != 0
+// PollKeys checks ImGui's key state and returns all pending key events.
+// This replaces the broken SDL key callback approach.
+func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
+	ctrl := imgui.IsKeyDown(imgui.ModCtrl)
+	shift := imgui.IsKeyDown(imgui.ModShift)
+	alt := imgui.IsKeyDown(imgui.ModAlt)
 
-	// Build keybind string and check
-	bindStr := modString(ctrl, shift, alt, key)
-	if bindStr != "" {
-		if action, ok := keybinds[bindStr]; ok {
-			return KeyEvent{Action: action}
+	var events []KeyEvent
+
+	// Check keybinds first (Ctrl+Shift+F for search, etc.)
+	for bind, action := range keybinds {
+		if matchKeybind(bind, ctrl, shift, alt) {
+			events = append(events, KeyEvent{Action: action})
+			return events
 		}
 	}
 
 	// Ctrl+letter → ASCII control codes (1-26)
-	if ctrl && !alt && !shift && key >= KeyA && key <= KeyZ {
-		return KeyEvent{Bytes: []byte{byte(key - KeyA + 1)}}
-	}
-
-	// Alt+key → ESC prefix
-	if alt && !ctrl {
-		if text != "" {
-			return KeyEvent{Bytes: append([]byte{0x1b}, []byte(text)...)}
+	if ctrl && !alt && !shift {
+		for k := imgui.KeyA; k <= imgui.KeyZ; k++ {
+			if imgui.IsKeyPressedBool(k) {
+				code := byte(k-imgui.KeyA) + 1
+				events = append(events, KeyEvent{Bytes: []byte{code}})
+			}
+		}
+		if len(events) > 0 {
+			return events
 		}
 	}
 
 	// Special keys
-	switch key {
-	case KeyReturn:
-		if shift {
-			return KeyEvent{Bytes: []byte("\n")}
-		}
-		return KeyEvent{Bytes: []byte("\r")}
-	case KeyBackspace:
-		return KeyEvent{Bytes: []byte{0x7f}}
-	case KeyTab:
-		if shift {
-			return KeyEvent{Bytes: []byte("\x1b[Z")}
-		}
-		return KeyEvent{Bytes: []byte("\t")}
-	case KeyEscape:
-		return KeyEvent{Bytes: []byte{0x1b}}
-	case KeyDelete:
-		return KeyEvent{Bytes: []byte("\x1b[3~")}
-	case KeyInsert:
-		return KeyEvent{Bytes: []byte("\x1b[2~")}
+	type specialKey struct {
+		key imgui.Key
+		fn  func(ctrl, shift, alt, appMode bool) KeyEvent
+	}
 
-	// Arrow keys
-	case KeyUp:
-		return arrowKey('A', ctrl, shift, appMode)
-	case KeyDown:
-		return arrowKey('B', ctrl, shift, appMode)
-	case KeyRight:
-		return arrowKey('C', ctrl, shift, appMode)
-	case KeyLeft:
-		return arrowKey('D', ctrl, shift, appMode)
-
-	// Navigation
-	case KeyHome:
-		if appMode {
-			return KeyEvent{Bytes: []byte("\x1bOH")}
-		}
-		return KeyEvent{Bytes: []byte("\x1b[H")}
-	case KeyEnd:
-		if appMode {
-			return KeyEvent{Bytes: []byte("\x1bOF")}
-		}
-		return KeyEvent{Bytes: []byte("\x1b[F")}
-	case KeyPageUp:
-		if shift {
-			return KeyEvent{Action: "scroll_page_up"}
-		}
-		return KeyEvent{Bytes: []byte("\x1b[5~")}
-	case KeyPageDown:
-		if shift {
-			return KeyEvent{Action: "scroll_page_down"}
-		}
-		return KeyEvent{Bytes: []byte("\x1b[6~")}
+	specials := []specialKey{
+		{imgui.KeyEnter, func(_, shift, _, _ bool) KeyEvent {
+			if shift {
+				return KeyEvent{Bytes: []byte("\n")}
+			}
+			return KeyEvent{Bytes: []byte("\r")}
+		}},
+		{imgui.KeyBackspace, func(_, _, _, _ bool) KeyEvent {
+			return KeyEvent{Bytes: []byte{0x7f}}
+		}},
+		{imgui.KeyTab, func(_, shift, _, _ bool) KeyEvent {
+			if shift {
+				return KeyEvent{Bytes: []byte("\x1b[Z")}
+			}
+			return KeyEvent{Bytes: []byte("\t")}
+		}},
+		{imgui.KeyEscape, func(_, _, _, _ bool) KeyEvent {
+			return KeyEvent{Bytes: []byte{0x1b}}
+		}},
+		{imgui.KeyDelete, func(_, _, _, _ bool) KeyEvent {
+			return KeyEvent{Bytes: []byte("\x1b[3~")}
+		}},
+		{imgui.KeyInsert, func(_, _, _, _ bool) KeyEvent {
+			return KeyEvent{Bytes: []byte("\x1b[2~")}
+		}},
+		{imgui.KeyUpArrow, func(ctrl, shift, _, app bool) KeyEvent {
+			return arrowKey('A', ctrl, shift, app)
+		}},
+		{imgui.KeyDownArrow, func(ctrl, shift, _, app bool) KeyEvent {
+			return arrowKey('B', ctrl, shift, app)
+		}},
+		{imgui.KeyRightArrow, func(ctrl, shift, _, app bool) KeyEvent {
+			return arrowKey('C', ctrl, shift, app)
+		}},
+		{imgui.KeyLeftArrow, func(ctrl, shift, _, app bool) KeyEvent {
+			return arrowKey('D', ctrl, shift, app)
+		}},
+		{imgui.KeyHome, func(_, _, _, app bool) KeyEvent {
+			if app {
+				return KeyEvent{Bytes: []byte("\x1bOH")}
+			}
+			return KeyEvent{Bytes: []byte("\x1b[H")}
+		}},
+		{imgui.KeyEnd, func(_, _, _, app bool) KeyEvent {
+			if app {
+				return KeyEvent{Bytes: []byte("\x1bOF")}
+			}
+			return KeyEvent{Bytes: []byte("\x1b[F")}
+		}},
+		{imgui.KeyPageUp, func(_, shift, _, _ bool) KeyEvent {
+			if shift {
+				return KeyEvent{Action: "scroll_page_up"}
+			}
+			return KeyEvent{Bytes: []byte("\x1b[5~")}
+		}},
+		{imgui.KeyPageDown, func(_, shift, _, _ bool) KeyEvent {
+			if shift {
+				return KeyEvent{Action: "scroll_page_down"}
+			}
+			return KeyEvent{Bytes: []byte("\x1b[6~")}
+		}},
+	}
 
 	// Function keys
-	case KeyF1:
-		return KeyEvent{Bytes: []byte("\x1bOP")}
-	case KeyF2:
-		return KeyEvent{Bytes: []byte("\x1bOQ")}
-	case KeyF3:
-		return KeyEvent{Bytes: []byte("\x1bOR")}
-	case KeyF4:
-		return KeyEvent{Bytes: []byte("\x1bOS")}
-	case KeyF5:
-		return KeyEvent{Bytes: []byte("\x1b[15~")}
-	case KeyF6:
-		return KeyEvent{Bytes: []byte("\x1b[17~")}
-	case KeyF7:
-		return KeyEvent{Bytes: []byte("\x1b[18~")}
-	case KeyF8:
-		return KeyEvent{Bytes: []byte("\x1b[19~")}
-	case KeyF9:
-		return KeyEvent{Bytes: []byte("\x1b[20~")}
-	case KeyF10:
-		return KeyEvent{Bytes: []byte("\x1b[21~")}
-	case KeyF11:
-		return KeyEvent{Bytes: []byte("\x1b[23~")}
-	case KeyF12:
-		return KeyEvent{Bytes: []byte("\x1b[24~")}
+	fkeys := []struct {
+		key imgui.Key
+		seq string
+	}{
+		{imgui.KeyF1, "\x1bOP"}, {imgui.KeyF2, "\x1bOQ"},
+		{imgui.KeyF3, "\x1bOR"}, {imgui.KeyF4, "\x1bOS"},
+		{imgui.KeyF5, "\x1b[15~"}, {imgui.KeyF6, "\x1b[17~"},
+		{imgui.KeyF7, "\x1b[18~"}, {imgui.KeyF8, "\x1b[19~"},
+		{imgui.KeyF9, "\x1b[20~"}, {imgui.KeyF10, "\x1b[21~"},
+		{imgui.KeyF11, "\x1b[23~"}, {imgui.KeyF12, "\x1b[24~"},
 	}
 
-	// Regular text input
-	if text != "" && !ctrl {
-		return KeyEvent{Bytes: []byte(text)}
+	for _, sk := range specials {
+		if imgui.IsKeyPressedBool(sk.key) {
+			ev := sk.fn(ctrl, shift, alt, appMode)
+			events = append(events, ev)
+		}
 	}
 
-	return KeyEvent{}
+	for _, fk := range fkeys {
+		if imgui.IsKeyPressedBool(fk.key) {
+			events = append(events, KeyEvent{Bytes: []byte(fk.seq)})
+		}
+	}
+
+	return events
+}
+
+func matchKeybind(bind string, ctrl, shift, alt bool) bool {
+	wantCtrl := false
+	wantShift := false
+	wantAlt := false
+	keyPart := bind
+
+	for {
+		if len(keyPart) > 5 && keyPart[:5] == "Ctrl+" {
+			wantCtrl = true
+			keyPart = keyPart[5:]
+		} else if len(keyPart) > 6 && keyPart[:6] == "Shift+" {
+			wantShift = true
+			keyPart = keyPart[6:]
+		} else if len(keyPart) > 4 && keyPart[:4] == "Alt+" {
+			wantAlt = true
+			keyPart = keyPart[4:]
+		} else {
+			break
+		}
+	}
+
+	if ctrl != wantCtrl || shift != wantShift || alt != wantAlt {
+		return false
+	}
+
+	imKey := nameToImGuiKey(keyPart)
+	if imKey == imgui.KeyNone {
+		return false
+	}
+	return imgui.IsKeyPressedBool(imKey)
+}
+
+func nameToImGuiKey(name string) imgui.Key {
+	switch name {
+	case "A":
+		return imgui.KeyA
+	case "B":
+		return imgui.KeyB
+	case "C":
+		return imgui.KeyC
+	case "D":
+		return imgui.KeyD
+	case "E":
+		return imgui.KeyE
+	case "F":
+		return imgui.KeyF
+	case "G":
+		return imgui.KeyG
+	case "H":
+		return imgui.KeyH
+	case "I":
+		return imgui.KeyI
+	case "J":
+		return imgui.KeyJ
+	case "K":
+		return imgui.KeyK
+	case "L":
+		return imgui.KeyL
+	case "M":
+		return imgui.KeyM
+	case "N":
+		return imgui.KeyN
+	case "O":
+		return imgui.KeyO
+	case "P":
+		return imgui.KeyP
+	case "Q":
+		return imgui.KeyQ
+	case "R":
+		return imgui.KeyR
+	case "S":
+		return imgui.KeyS
+	case "T":
+		return imgui.KeyT
+	case "U":
+		return imgui.KeyU
+	case "V":
+		return imgui.KeyV
+	case "W":
+		return imgui.KeyW
+	case "X":
+		return imgui.KeyX
+	case "Y":
+		return imgui.KeyY
+	case "Z":
+		return imgui.KeyZ
+	case "0":
+		return imgui.Key0
+	case "1":
+		return imgui.Key1
+	case "2":
+		return imgui.Key2
+	case "3":
+		return imgui.Key3
+	case "4":
+		return imgui.Key4
+	case "5":
+		return imgui.Key5
+	case "6":
+		return imgui.Key6
+	case "7":
+		return imgui.Key7
+	case "8":
+		return imgui.Key8
+	case "9":
+		return imgui.Key9
+	case "Enter":
+		return imgui.KeyEnter
+	case "Tab":
+		return imgui.KeyTab
+	case "Backspace":
+		return imgui.KeyBackspace
+	case "Escape":
+		return imgui.KeyEscape
+	case "Space":
+		return imgui.KeySpace
+	case "Delete":
+		return imgui.KeyDelete
+	case "Insert":
+		return imgui.KeyInsert
+	case "Home":
+		return imgui.KeyHome
+	case "End":
+		return imgui.KeyEnd
+	case "PageUp":
+		return imgui.KeyPageUp
+	case "PageDown":
+		return imgui.KeyPageDown
+	case "Up":
+		return imgui.KeyUpArrow
+	case "Down":
+		return imgui.KeyDownArrow
+	case "Left":
+		return imgui.KeyLeftArrow
+	case "Right":
+		return imgui.KeyRightArrow
+	case "F1":
+		return imgui.KeyF1
+	case "F2":
+		return imgui.KeyF2
+	case "F3":
+		return imgui.KeyF3
+	case "F4":
+		return imgui.KeyF4
+	case "F5":
+		return imgui.KeyF5
+	case "F6":
+		return imgui.KeyF6
+	case "F7":
+		return imgui.KeyF7
+	case "F8":
+		return imgui.KeyF8
+	case "F9":
+		return imgui.KeyF9
+	case "F10":
+		return imgui.KeyF10
+	case "F11":
+		return imgui.KeyF11
+	case "F12":
+		return imgui.KeyF12
+	case "Minus":
+		return imgui.KeyMinus
+	case "Plus":
+		return imgui.KeyEqual
+	}
+	return imgui.KeyNone
 }
 
 func arrowKey(dir byte, ctrl, shift, appMode bool) KeyEvent {
@@ -134,140 +317,3 @@ func arrowKey(dir byte, ctrl, shift, appMode bool) KeyEvent {
 	}
 	return KeyEvent{Bytes: []byte{0x1b, '[', dir}}
 }
-
-func modString(ctrl, shift, alt bool, key int) string {
-	s := ""
-	if ctrl {
-		s += "Ctrl+"
-	}
-	if shift {
-		s += "Shift+"
-	}
-	if alt {
-		s += "Alt+"
-	}
-
-	name := keyName(key)
-	if name == "" {
-		return ""
-	}
-	return s + name
-}
-
-func keyName(key int) string {
-	switch {
-	case key >= KeyA && key <= KeyZ:
-		return string(rune('A' + (key - KeyA)))
-	case key >= Key0 && key <= Key9:
-		return string(rune('0' + (key - Key0)))
-	}
-
-	switch key {
-	case KeyReturn:
-		return "Enter"
-	case KeyTab:
-		return "Tab"
-	case KeyBackspace:
-		return "Backspace"
-	case KeyEscape:
-		return "Escape"
-	case KeySpace:
-		return "Space"
-	case KeyDelete:
-		return "Delete"
-	case KeyInsert:
-		return "Insert"
-	case KeyHome:
-		return "Home"
-	case KeyEnd:
-		return "End"
-	case KeyPageUp:
-		return "PageUp"
-	case KeyPageDown:
-		return "PageDown"
-	case KeyUp:
-		return "Up"
-	case KeyDown:
-		return "Down"
-	case KeyLeft:
-		return "Left"
-	case KeyRight:
-		return "Right"
-	case KeyF1:
-		return "F1"
-	case KeyF2:
-		return "F2"
-	case KeyF3:
-		return "F3"
-	case KeyF4:
-		return "F4"
-	case KeyF5:
-		return "F5"
-	case KeyF6:
-		return "F6"
-	case KeyF7:
-		return "F7"
-	case KeyF8:
-		return "F8"
-	case KeyF9:
-		return "F9"
-	case KeyF10:
-		return "F10"
-	case KeyF11:
-		return "F11"
-	case KeyF12:
-		return "F12"
-	case KeyMinus:
-		return "Minus"
-	case KeyEquals:
-		return "Plus" // Shift+= is + on most layouts
-	}
-	return ""
-}
-
-// SDL2 key constants (SDLK_* values).
-const (
-	ModShift = 0x0001
-	ModCtrl  = 0x0040
-	ModAlt   = 0x0100
-
-	KeyReturn    = 13
-	KeyEscape    = 27
-	KeyBackspace = 8
-	KeyTab       = 9
-	KeySpace     = 32
-	KeyDelete    = 127
-
-	KeyA = 'a'
-	KeyZ = 'z'
-	Key0 = '0'
-	Key9 = '9'
-
-	KeyMinus  = '-'
-	KeyEquals = '='
-
-	// SDL scancodes for special keys (these are SDLK_ values)
-	KeyInsert   = 1073741897
-	KeyHome     = 1073741898
-	KeyEnd      = 1073741901
-	KeyPageUp   = 1073741899
-	KeyPageDown = 1073741902
-
-	KeyRight = 1073741903
-	KeyLeft  = 1073741904
-	KeyDown  = 1073741905
-	KeyUp    = 1073741906
-
-	KeyF1  = 1073741882
-	KeyF2  = 1073741883
-	KeyF3  = 1073741884
-	KeyF4  = 1073741885
-	KeyF5  = 1073741886
-	KeyF6  = 1073741887
-	KeyF7  = 1073741888
-	KeyF8  = 1073741889
-	KeyF9  = 1073741890
-	KeyF10 = 1073741891
-	KeyF11 = 1073741892
-	KeyF12 = 1073741893
-)

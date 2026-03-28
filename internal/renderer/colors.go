@@ -5,16 +5,21 @@ import (
 	"image/color"
 	"strconv"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Theme holds resolved colors for rendering.
 type Theme struct {
-	Foreground uint32
-	Background uint32
-	Cursor     uint32
-	SelectionFg uint32
-	SelectionBg uint32
-	ANSI       [16]uint32
+	Foreground      uint32
+	Background      uint32
+	Cursor          uint32
+	SelectionFg     uint32
+	SelectionBg     uint32
+	ScrollbarBg     uint32
+	ScrollbarThumb  uint32
+	ScrollbarHover  uint32
+	ANSI            [16]uint32
 }
 
 // DefaultTheme returns the Dracula theme.
@@ -22,9 +27,12 @@ func DefaultTheme() Theme {
 	return Theme{
 		Foreground:  0xFFF2F8F8, // #F8F8F2 in ABGR
 		Background:  0xFF36282A, // #282A36 in ABGR (note: ABGR = 0xAABBGGRR)
-		Cursor:      0xFFF2F8F8,
-		SelectionFg: 0xFFF2F8F8,
-		SelectionBg: 0xFF5A4744,
+		Cursor:         0xFFF2F8F8,
+		SelectionFg:    0xFFF2F8F8,
+		SelectionBg:    0xFF5A4744,
+		ScrollbarBg:    hexToABGR("#282A36"),
+		ScrollbarThumb: hexToABGR("#44475A"),
+		ScrollbarHover: hexToABGR("#6272A4"),
 		ANSI: [16]uint32{
 			hexToABGR("#21222C"), // black
 			hexToABGR("#FF5555"), // red
@@ -56,7 +64,8 @@ func ColorToABGR(c color.Color) uint32 {
 }
 
 // ResolveColor resolves a terminal color to ABGR uint32 using the theme.
-func (t *Theme) ResolveColor(c color.Color, isFg bool) uint32 {
+// If bold is true and the color is in the basic ANSI range (0-7), promote to bright (8-15).
+func (t *Theme) ResolveColor(c color.Color, isFg bool, bold bool) uint32 {
 	if c == nil {
 		if isFg {
 			return t.Foreground
@@ -64,10 +73,25 @@ func (t *Theme) ResolveColor(c color.Color, isFg bool) uint32 {
 		return t.Background
 	}
 
-	// Check for indexed ANSI colors
-	if ic, ok := c.(color.RGBA); ok {
-		// Check if it's an exact ANSI match — not reliable, just use raw color
-		_ = ic
+	// Map ANSI indexed colors (0-15) to our theme palette
+	switch v := c.(type) {
+	case ansi.BasicColor:
+		idx := int(v)
+		if bold && isFg && idx < 8 {
+			idx += 8 // promote to bright variant
+		}
+		if idx >= 0 && idx < 16 {
+			return t.ANSI[idx]
+		}
+	case ansi.IndexedColor:
+		idx := int(v)
+		if bold && isFg && idx < 8 {
+			idx += 8
+		}
+		if idx >= 0 && idx < 16 {
+			return t.ANSI[idx]
+		}
+		// 16-255: extended palette — fall through to raw color
 	}
 
 	return ColorToABGR(c)
