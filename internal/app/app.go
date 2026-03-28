@@ -54,6 +54,7 @@ type App struct {
 	hoveredLink    *linkHit // URL under mouse cursor, nil if none
 	renamingTab    bool     // whether rename popup is open
 	renameBuffer   string   // text input for tab rename
+	sbDragging     bool     // true while dragging the scrollbar thumb
 }
 
 // New creates a new App with the given config.
@@ -934,8 +935,11 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 	}, drawList)
 
 	// Handle scrollbar click-drag
-	if imgui.IsMouseDown(0) && hovered {
-		if mpos.Y < thumbY {
+	if imgui.IsMouseClickedBool(0) && hovered {
+		if mpos.Y >= thumbY && mpos.Y <= thumbY+thumbH {
+			// Click ON the thumb — start drag
+			a.sbDragging = true
+		} else if mpos.Y < thumbY {
 			// Click above thumb: page up
 			if s, ok := a.scroll[tab.ID]; ok {
 				s.PageUp(rows, sbLen)
@@ -948,8 +952,14 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 		}
 	}
 
-	// Drag thumb: map mouse Y to scroll offset
-	if imgui.IsMouseDragging(0) && mpos.X >= barX && mpos.X <= barX+barW {
+	// End scrollbar drag on mouse release
+	if !imgui.IsMouseDown(0) {
+		a.sbDragging = false
+	}
+
+	// Drag thumb: map mouse Y to scroll offset.
+	// Once dragging starts, track Y regardless of X (user may drift sideways).
+	if a.sbDragging {
 		trackSpace := termH - thumbH
 		if trackSpace > 0 {
 			frac := 1.0 - (mpos.Y-barY-thumbH/2)/trackSpace
@@ -1073,10 +1083,13 @@ func (a *App) handleMouseSelection() {
 		row = rows - 1
 	}
 
-	// Left click starts selection
+	// Left click starts selection — but only in the terminal area.
+	// Skip if ImGui wants the mouse (search overlay, context menu, etc.),
+	// if the click is on the scrollbar, or if we're dragging the scrollbar.
 	if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-		// Only start selection in terminal area (below tab bar)
-		if mousePos.Y >= a.tabBarH {
+		barW := float32(a.cfg.Scrollbar.Width)
+		onScrollbar := mousePos.X >= float32(a.width)-barW
+		if mousePos.Y >= a.tabBarH && !imgui.IsAnyItemHovered() && !onScrollbar && !a.sbDragging {
 			a.sel.clear()
 			a.sel.startCol = col
 			a.sel.startRow = row
