@@ -2,6 +2,7 @@ package app
 
 import (
 	"strings"
+	"unicode"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/vt"
@@ -102,6 +103,44 @@ func (s *selection) extractText(emu *vt.SafeEmulator, scrollOffset int) string {
 		}
 	}
 	return b.String()
+}
+
+// selectWord selects the word under (col, row) using word-character rules.
+// Sets active=true, dragging=false on success.
+func (s *selection) selectWord(emu *vt.SafeEmulator, col, row, scrollOffset int) {
+	cols := emu.Width()
+	cell := cellAtViewport(emu, col, row, scrollOffset)
+	if cell == nil || !isSelWordChar(cell.Content) {
+		return
+	}
+	startCol := col
+	for startCol > 0 {
+		c := cellAtViewport(emu, startCol-1, row, scrollOffset)
+		if c == nil || !isSelWordChar(c.Content) {
+			break
+		}
+		startCol--
+	}
+	endCol := col
+	for endCol < cols-1 {
+		c := cellAtViewport(emu, endCol+1, row, scrollOffset)
+		if c == nil || !isSelWordChar(c.Content) {
+			break
+		}
+		endCol++
+	}
+	s.startCol, s.endCol = startCol, endCol
+	s.startRow, s.endRow = row, row
+	s.active = true
+	s.dragging = false
+}
+
+func isSelWordChar(content string) bool {
+	if content == "" {
+		return false
+	}
+	r := []rune(content)[0]
+	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 // cellAtViewport returns the cell at viewport (col, row) accounting for scroll.

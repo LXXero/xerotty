@@ -367,9 +367,15 @@ func (a *App) frame() {
 				}
 
 				// Search highlights — refresh matches each frame so PTY output
-				// doesn't cause stale coordinates
+				// doesn't cause stale coordinates. Preserve MatchIdx so
+				// navigation (< >) isn't clobbered by the per-frame re-search.
 				if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
-					s.Search(tab.Terminal.Emu)
+					_, visRows := a.gridSize()
+					savedIdx := s.MatchIdx
+					s.Search(tab.Terminal.Emu, visRows)
+					if savedIdx < len(s.Matches) {
+						s.MatchIdx = savedIdx
+					}
 					if len(s.Matches) > 0 {
 						a.drawSearchHighlights(s, drawList)
 					}
@@ -442,14 +448,14 @@ func (a *App) processKeys() {
 						searching = false
 						continue
 					}
-				case '\r': // Enter
-					s.NextMatch()
+				case '\r': // Enter — go up toward older content
+					s.PrevMatch()
 					if _, rows := a.gridSize(); rows > 0 {
 						s.ScrollToCurrentMatch(rows)
 					}
 					continue
-				case '\n': // Shift+Enter
-					s.PrevMatch()
+				case '\n': // Shift+Enter — go down toward newer content
+					s.NextMatch()
 					if _, rows := a.gridSize(); rows > 0 {
 						s.ScrollToCurrentMatch(rows)
 					}
@@ -795,23 +801,27 @@ func (a *App) renderSearchOverlay() {
 
 		imgui.SetNextItemWidth(180)
 
-		// Focus the input when explicitly requested (on open, after < >
-		// clicks, or after focus is lost to the terminal).  Never call
-		// SetKeyboardFocusHere while a mouse button is held or just
-		// released — that steals ActiveId from buttons mid-click.
+		// Re-focus the input when requested (on open, after < > clicks, or
+		// when it loses focus to the terminal).  Guard with mouse-idle so
+		// SetKeyboardFocusHere never fires while a button click is in
+		// progress — it would steal ActiveId and swallow the click.
 		if a.searchFocusInput && !imgui.IsMouseDown(0) && !imgui.IsMouseReleased(imgui.MouseButtonLeft) {
 			imgui.SetKeyboardFocusHere()
 			a.searchFocusInput = false
 		}
 
 		_, rows := a.gridSize()
+		prevQuery := s.Query
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
-		if changed {
-			s.Search(tab.Terminal.Emu)
+		if changed && s.Query != prevQuery {
+			s.Search(tab.Terminal.Emu, rows)
 			s.ScrollToCurrentMatch(rows)
 		}
-		inputFocused := imgui.IsItemFocused()
-
+		// Schedule re-focus if input lost focus (e.g. clicked terminal).
+		// The mouse-idle guard above ensures this won't fire mid-click.
+		if !imgui.IsItemFocused() {
+			a.searchFocusInput = true
+		}
 		imgui.SameLineV(0, 4)
 		if len(s.Matches) > 0 {
 			imgui.Text(fmt.Sprintf("%d/%d", s.MatchIdx+1, len(s.Matches)))
@@ -820,27 +830,39 @@ func (a *App) renderSearchOverlay() {
 		}
 
 		imgui.SameLineV(0, 4)
-		if imgui.ButtonV("<", imgui.Vec2{X: 20, Y: 0}) {
+
+		// Buttons: use ButtonV + debug trace to diagnose click issues.
+		prevClicked := imgui.ButtonV("<", imgui.Vec2{X: 20, Y: 0})
+		imgui.SameLineV(0, 2)
+		nextClicked := imgui.ButtonV(">", imgui.Vec2{X: 20, Y: 0})
+		imgui.SameLineV(0, 2)
+		closeClicked := imgui.ButtonV("X", imgui.Vec2{X: 20, Y: 0})
+
+		if prevClicked {
 			s.PrevMatch()
 			s.ScrollToCurrentMatch(rows)
 			a.searchFocusInput = true
 		}
-		imgui.SameLineV(0, 2)
-		if imgui.ButtonV(">", imgui.Vec2{X: 20, Y: 0}) {
+		if nextClicked {
 			s.NextMatch()
 			s.ScrollToCurrentMatch(rows)
 			a.searchFocusInput = true
 		}
-		imgui.SameLineV(0, 2)
-		if imgui.ButtonV("X", imgui.Vec2{X: 20, Y: 0}) {
+		if closeClicked {
 			s.CloseSearch()
 		}
 
-		// If input lost focus (e.g. user clicked terminal) schedule a
-		// re-focus so typed characters aren't silently dropped.  The
-		// mouse-idle guard above ensures this doesn't fire mid-click.
-		if !inputFocused {
-			a.searchFocusInput = true
+		// Row 2: search options
+		optChanged := imgui.Checkbox("CASE", &s.CaseSensitive)
+		imgui.SameLineV(0, 8)
+		optChanged = imgui.Checkbox("RE", &s.UseRegex) || optChanged
+		imgui.SameLineV(0, 8)
+		optChanged = imgui.Checkbox("EXACT", &s.WholeWord) || optChanged
+		imgui.SameLineV(0, 8)
+		optChanged = imgui.Checkbox("WRAP", &s.WrapAround) || optChanged
+		if optChanged && s.Query != "" {
+			s.Search(tab.Terminal.Emu, rows)
+			s.ScrollToCurrentMatch(rows)
 		}
 	}
 	imgui.End()
@@ -1117,15 +1139,27 @@ func (a *App) handleMouseSelection() {
 	// IsAnyItemHovered() is reset by ImGui's NewFrame() and is always 0 here
 	// (before any items are rendered this frame), so we use explicit rect
 	// checks instead: skip the scrollbar column and the search overlay region.
-	if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-		barW := float32(a.cfg.Scrollbar.Width)
-		onScrollbar := mousePos.X >= float32(a.width)-barW
-		// Search overlay sits in the top-right corner; use its actual
-		// rendered width (updated each frame) rather than the 320px reserve.
-		onSearch := tab != nil && a.getScroll(tab.ID).Searching &&
-			mousePos.X >= float32(a.width)-a.searchOverlayW &&
-			mousePos.Y <= a.tabBarH+40 // overlay is ~1 row tall
-		if mousePos.Y >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging {
+	barW := float32(a.cfg.Scrollbar.Width)
+	onScrollbar := mousePos.X >= float32(a.width)-barW
+	onSearch := tab != nil && a.getScroll(tab.ID).Searching &&
+		mousePos.X >= float32(a.width)-a.searchOverlayW &&
+		mousePos.Y <= a.tabBarH+65
+	inTerminal := mousePos.Y >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging
+
+	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {
+		scrollOff := 0
+		if s, ok := a.scroll[tab.ID]; ok {
+			scrollOff = s.Offset
+		}
+		a.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+		if a.sel.active {
+			text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
+			if text != "" {
+				input.PrimaryWrite(text)
+			}
+		}
+	} else if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+		if inTerminal {
 			a.sel.clear()
 			a.sel.startCol = col
 			a.sel.startRow = row
