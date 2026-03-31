@@ -61,6 +61,7 @@ type App struct {
 	lastDblClickTime float64 // imgui.Time() of last double-click (for triple-click detection)
 	lastDblClickRow  int     // row of last double-click
 	lastDblClickCol  int     // col of last double-click
+	prefDialog       configDialog // preferences dialog state
 }
 
 // New creates a new App with the given config.
@@ -425,6 +426,9 @@ func (a *App) frame() {
 	// Tab rename dialog
 	a.renderRenameDialog()
 
+	// Preferences dialog
+	a.renderPreferences()
+
 	// Resize overlay
 	a.renderResizeOverlay()
 }
@@ -439,7 +443,7 @@ func (a *App) isSearching() bool {
 }
 
 func (a *App) popupActive() bool {
-	return a.renamingTab || a.pendingPaste != ""
+	return a.renamingTab || a.pendingPaste != "" || a.prefDialog.open
 }
 
 func (a *App) processKeys() {
@@ -672,6 +676,8 @@ func (a *App) dispatchAction(action string) {
 			a.renamingTab = true
 			imgui.OpenPopupStr("Rename Tab")
 		}
+	case "preferences":
+		a.openPreferences()
 	default:
 		// Check for parameterized actions
 		if strings.HasPrefix(action, "goto_tab:") {

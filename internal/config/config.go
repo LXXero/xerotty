@@ -20,29 +20,41 @@ type Config struct {
 	Scrollback ScrollbackConfig `toml:"scrollback"`
 	Scrollbar  ScrollbarConfig  `toml:"scrollbar"`
 	Links      LinksConfig      `toml:"links"`
+	Clipboard  ClipboardConfig  `toml:"clipboard"`
 	Env        map[string]string `toml:"env"`
 	Tabs       TabConfig  `toml:"tabs"`
+	Window     WindowConfig `toml:"window"`
 }
 
 // Appearance controls visual settings.
 type Appearance struct {
-	Theme         string  `toml:"theme"`
-	Opacity       float32 `toml:"opacity"`
-	Padding       int     `toml:"padding"`
-	CursorStyle   string  `toml:"cursor_style"`
-	CursorBlink   bool    `toml:"cursor_blink"`
-	BlinkRate     int     `toml:"blink_rate_ms"`
-	BoldIsBright  bool    `toml:"bold_is_bright"`
-	TabColors     string  `toml:"tab_colors"`
-	ScrollbarBg   string  `toml:"scrollbar_bg"`
+	Theme                string  `toml:"theme"`
+	Opacity              float32 `toml:"opacity"`
+	Padding              int     `toml:"padding"`
+	CursorStyle          string  `toml:"cursor_style"`
+	CursorBlink          bool    `toml:"cursor_blink"`
+	BlinkRate            int     `toml:"blink_rate_ms"`
+	BoldIsBright         bool    `toml:"bold_is_bright"`
+	TabColors            string  `toml:"tab_colors"`
+	ScrollbarColors      string  `toml:"scrollbar_colors"`
+	ResizeOverlay        bool    `toml:"resize_overlay"`
+	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
+	// Custom color overrides (hex strings, used when tab_colors/scrollbar_colors = "custom")
+	TabBarBg       string `toml:"tab_bar_bg"`
+	TabActiveBg    string `toml:"tab_active_bg"`
+	TabActiveFg    string `toml:"tab_active_fg"`
+	TabInactiveBg  string `toml:"tab_inactive_bg"`
+	TabInactiveFg  string `toml:"tab_inactive_fg"`
+	ScrollbarBg    string `toml:"scrollbar_bg"`
 	ScrollbarThumb string `toml:"scrollbar_thumb"`
 }
 
 // FontConfig controls font loading.
 type FontConfig struct {
-	Family string  `toml:"family"`
-	Size   float32 `toml:"size"`
-	Path   string  `toml:"path"`
+	Family      string  `toml:"family"`
+	Size        float32 `toml:"size"`
+	Path        string  `toml:"path"`
+	LineSpacing float32 `toml:"line_spacing"`
 }
 
 // KeyConfig controls special key behavior.
@@ -68,10 +80,12 @@ type MenuItem struct {
 
 // ScrollbackConfig controls scrollback buffer behavior.
 type ScrollbackConfig struct {
-	Lines      int    `toml:"lines"`
-	Mode       string `toml:"mode"`        // "memory" | "disk" | "unlimited"
-	DiskDir    string `toml:"disk_dir"`
-	ScrollSpeed int   `toml:"scroll_speed"` // lines per mouse wheel tick
+	Lines             int    `toml:"lines"`
+	Mode              string `toml:"mode"`               // "memory" | "disk" | "unlimited"
+	DiskDir           string `toml:"disk_dir"`
+	ScrollSpeed       int    `toml:"scroll_speed"`        // lines per mouse wheel tick
+	ScrollOnKeystroke bool   `toml:"scroll_on_keystroke"` // snap to bottom on keypress
+	ScrollOnOutput    bool   `toml:"scroll_on_output"`    // snap to bottom on new output
 }
 
 // ScrollbarConfig controls the scrollbar.
@@ -83,14 +97,41 @@ type ScrollbarConfig struct {
 
 // LinksConfig controls URL detection and interaction.
 type LinksConfig struct {
-	Enabled    bool   `toml:"enabled"`
-	CtrlClick  bool   `toml:"ctrl_click"`
-	Opener     string `toml:"opener"`
+	Enabled     bool   `toml:"enabled"`
+	CtrlClick   bool   `toml:"ctrl_click"`
+	DoubleClick bool   `toml:"double_click"`
+	Opener      string `toml:"opener"`
+}
+
+// ClipboardConfig controls clipboard behavior.
+type ClipboardConfig struct {
+	CopyOnSelect           bool              `toml:"copy_on_select"`
+	PasteOnMiddleClick     bool              `toml:"paste_on_middle_click"`
+	TrimTrailingWhitespace bool              `toml:"trim_trailing_whitespace"`
+	UnsafePaste            UnsafePasteConfig `toml:"unsafe_paste"`
+}
+
+// UnsafePasteConfig controls the paste safety dialog.
+type UnsafePasteConfig struct {
+	Enabled          bool     `toml:"enabled"`
+	MultilineWarning bool     `toml:"multiline_warning"`
+	NewlineGuard     bool     `toml:"newline_guard"`
+	Patterns         []string `toml:"patterns"`
 }
 
 // TabConfig controls tab behavior.
 type TabConfig struct {
-	OnChildExit string `toml:"on_child_exit"` // "close" | "hold" | "hold_on_error"
+	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
+	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
+	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
+}
+
+// WindowConfig controls initial window state.
+type WindowConfig struct {
+	Columns    int    `toml:"columns"`
+	Rows       int    `toml:"rows"`
+	Title      string `toml:"title"`
+	Fullscreen bool   `toml:"fullscreen"`
 }
 
 // Default returns a Config with sensible defaults.
@@ -99,14 +140,17 @@ func Default() Config {
 		Shell: "",
 		Term:  "xterm-256color",
 		Appearance: Appearance{
-			Theme:       "dracula",
-			Opacity:     1.0,
-			Padding:     2,
-			CursorStyle: "block",
-			CursorBlink: true,
-			BlinkRate:   530,
-			BoldIsBright: true,
-			TabColors:   "theme",
+			Theme:                 "dracula",
+			Opacity:               1.0,
+			Padding:               2,
+			CursorStyle:           "block",
+			CursorBlink:           true,
+			BlinkRate:             530,
+			BoldIsBright:          true,
+			TabColors:             "theme",
+			ScrollbarColors:       "theme",
+			ResizeOverlay:         true,
+			ResizeOverlayDuration: 1.0,
 		},
 		Font: FontConfig{
 			Family: "monospace",
@@ -120,9 +164,11 @@ func Default() Config {
 		},
 		Menu: defaultMenu(),
 		Scrollback: ScrollbackConfig{
-			Lines:       10000,
-			Mode:        "memory",
-			ScrollSpeed: 3,
+			Lines:             10000,
+			Mode:              "memory",
+			ScrollSpeed:       3,
+			ScrollOnKeystroke: true,
+			ScrollOnOutput:    false,
 		},
 		Scrollbar: ScrollbarConfig{
 			Visible:        "always",
@@ -134,22 +180,48 @@ func Default() Config {
 			CtrlClick: true,
 			Opener:    "xdg-open",
 		},
+		Clipboard: ClipboardConfig{
+			CopyOnSelect:           true,
+			PasteOnMiddleClick:     true,
+			TrimTrailingWhitespace: true,
+			UnsafePaste: UnsafePasteConfig{
+				Enabled:          true,
+				MultilineWarning: true,
+				NewlineGuard:     true,
+				Patterns:         []string{`sudo\s`, `rm\s+(-rf?|--recursive)`},
+			},
+		},
 		Tabs: TabConfig{
-			OnChildExit: "close",
+			OnChildExit:         "close",
+			InheritCWD:          false,
+			CloseButtonPosition: "right",
+		},
+		Window: WindowConfig{
+			Columns: 80,
+			Rows:    24,
+			Title:   "xerotty",
 		},
 	}
+}
+
+// Path returns the config file path.
+func Path() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(configDir, "xerotty", "config.toml")
 }
 
 // Load reads config from the standard path, merging with defaults.
 func Load() (Config, error) {
 	cfg := Default()
 
-	configDir, err := os.UserConfigDir()
-	if err != nil {
+	path := Path()
+	if path == "" {
 		return cfg, nil
 	}
 
-	path := filepath.Join(configDir, "xerotty", "config.toml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -163,6 +235,28 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Save writes the config to the standard path as TOML.
+func Save(cfg Config) error {
+	path := Path()
+	if path == "" {
+		return os.ErrNotExist
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	encoder := toml.NewEncoder(f)
+	return encoder.Encode(cfg)
 }
 
 // DetectShell returns the shell to use: config override > $SHELL > /bin/sh.
@@ -208,6 +302,7 @@ func defaultKeybinds() map[string]string {
 		"Ctrl+Shift+R":     "rename_tab",
 		"Shift+Home":       "scroll_top",
 		"Shift+End":        "scroll_bottom",
+		"Ctrl+Comma":       "preferences",
 	}
 }
 
@@ -227,6 +322,7 @@ func defaultMenu() MenuConfig {
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
+			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
 			{Label: "Close Tab", Action: "close_tab", Shortcut: "Ctrl+Shift+W"},
 		},
 	}
