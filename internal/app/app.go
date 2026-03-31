@@ -590,11 +590,7 @@ func (a *App) dispatchAction(action string) {
 		}
 	case "fullscreen":
 		a.fullscreen = !a.fullscreen
-		if a.fullscreen {
-			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00001001), 1) // SDL_WINDOW_FULLSCREEN_DESKTOP
-		} else {
-			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00001001), 0)
-		}
+		sdlSetFullscreen(a.fullscreen)
 	case "scroll_page_up":
 		if tab := a.tabs.Active(); tab != nil {
 			s := a.getScroll(tab.ID)
