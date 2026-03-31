@@ -206,6 +206,8 @@ func defaultKeybinds() map[string]string {
 		"Ctrl+Shift+Minus": "font_size_down",
 		"Ctrl+Shift+0":     "font_size_reset",
 		"Ctrl+Shift+R":     "rename_tab",
+		"Shift+Home":       "scroll_top",
+		"Shift+End":        "scroll_bottom",
 	}
 }
 

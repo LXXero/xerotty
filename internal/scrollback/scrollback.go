@@ -11,7 +11,8 @@ import (
 
 // State tracks the scroll position and search state for a terminal.
 type State struct {
-	Offset   int // lines scrolled back from bottom (0 = live)
+	Offset    int // lines scrolled back from bottom (0 = live)
+	PrevSBLen int // scrollback length at last frame — used to freeze viewport on new output
 	Searching bool
 	Query     string
 	Matches   []Match

@@ -135,6 +135,48 @@ func (s *selection) selectWord(emu *vt.SafeEmulator, col, row, scrollOffset int)
 	s.dragging = false
 }
 
+// selectSpace selects contiguous whitespace under (col, row).
+// xfce4-terminal behavior: double-click on blank = select the blank run.
+func (s *selection) selectSpace(emu *vt.SafeEmulator, col, row, scrollOffset int) {
+	cols := emu.Width()
+	cell := cellAtViewport(emu, col, row, scrollOffset)
+	if cell != nil && isSelWordChar(cell.Content) {
+		return // not blank — selectWord should handle this
+	}
+	startCol := col
+	for startCol > 0 {
+		c := cellAtViewport(emu, startCol-1, row, scrollOffset)
+		if c != nil && isSelWordChar(c.Content) {
+			break
+		}
+		startCol--
+	}
+	endCol := col
+	for endCol < cols-1 {
+		c := cellAtViewport(emu, endCol+1, row, scrollOffset)
+		if c != nil && isSelWordChar(c.Content) {
+			break
+		}
+		endCol++
+	}
+	s.startCol, s.endCol = startCol, endCol
+	s.startRow, s.endRow = row, row
+	s.active = true
+	s.dragging = false
+}
+
+// selectLine selects the entire line at the given row.
+// xfce4-terminal behavior: triple-click = select line.
+func (s *selection) selectLine(emu *vt.SafeEmulator, row, scrollOffset int) {
+	cols := emu.Width()
+	s.startCol = 0
+	s.endCol = cols - 1
+	s.startRow = row
+	s.endRow = row
+	s.active = true
+	s.dragging = false
+}
+
 func isSelWordChar(content string) bool {
 	if content == "" {
 		return false

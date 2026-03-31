@@ -58,6 +58,9 @@ type App struct {
 	sbDragging       bool    // true while dragging the scrollbar thumb
 	searchFocusInput bool    // request keyboard focus to search input next frame
 	searchOverlayW   float32 // actual rendered width of search overlay (updated each frame)
+	lastDblClickTime float64 // imgui.Time() of last double-click (for triple-click detection)
+	lastDblClickRow  int     // row of last double-click
+	lastDblClickCol  int     // col of last double-click
 }
 
 // New creates a new App with the given config.
@@ -259,25 +262,43 @@ func (a *App) frame() {
 	// Drain data notifications
 	a.tabs.DrainData()
 
-	// Scroll-to-bottom on new output (only if not manually scrolled back)
+	// Scroll handling on new output:
+	// - If at live position: stay at bottom (auto-scroll)
+	// - If scrolled back: freeze viewport by adjusting offset for new scrollback lines
 	for _, tab := range a.tabs.Tabs {
 		if tab.Dirty {
 			tab.Dirty = false
 			s := a.getScroll(tab.ID)
-			if !s.IsScrolled() {
-				s.Reset()
+			sbLen := tab.Terminal.Emu.ScrollbackLen()
+			if s.IsScrolled() && s.PrevSBLen > 0 {
+				delta := sbLen - s.PrevSBLen
+				if delta > 0 {
+					s.Offset += delta
+				}
 			}
+			s.PrevSBLen = sbLen
 		}
 	}
 
-	// Check for closed tabs
+	// Check for closed tabs and handle on_child_exit policy
 	a.tabs.CheckClosed()
-	// Auto-close dead tabs if configured
-	if a.cfg.Tabs.OnChildExit == "close" {
-		for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
-			if a.tabs.Tabs[i].Closed {
+	for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
+		tab := a.tabs.Tabs[i]
+		if !tab.Closed {
+			continue
+		}
+		switch a.cfg.Tabs.OnChildExit {
+		case "close":
+			a.tabs.CloseTab(i)
+		case "hold":
+			// Keep tab open — user can close manually
+		case "hold_on_error":
+			if tab.Terminal.ExitCode == 0 {
 				a.tabs.CloseTab(i)
 			}
+			// Non-zero exit: keep tab open so user can see output
+		default:
+			a.tabs.CloseTab(i)
 		}
 	}
 
@@ -570,9 +591,9 @@ func (a *App) dispatchAction(action string) {
 	case "fullscreen":
 		a.fullscreen = !a.fullscreen
 		if a.fullscreen {
-			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00000001), 1) // SDL_WINDOW_FULLSCREEN
+			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00001001), 1) // SDL_WINDOW_FULLSCREEN_DESKTOP
 		} else {
-			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00000001), 0)
+			a.backend.SetWindowFlags(sdlbackend.SDLWindowFlags(0x00001001), 0)
 		}
 	case "scroll_page_up":
 		if tab := a.tabs.Active(); tab != nil {
@@ -585,6 +606,16 @@ func (a *App) dispatchAction(action string) {
 			s := a.getScroll(tab.ID)
 			_, rows := a.gridSize()
 			s.PageDown(rows)
+		}
+	case "scroll_top":
+		if tab := a.tabs.Active(); tab != nil {
+			s := a.getScroll(tab.ID)
+			s.Offset = tab.Terminal.Emu.ScrollbackLen()
+		}
+	case "scroll_bottom":
+		if tab := a.tabs.Active(); tab != nil {
+			s := a.getScroll(tab.ID)
+			s.Reset()
 		}
 	case "search":
 		if tab := a.tabs.Active(); tab != nil {
@@ -656,6 +687,12 @@ func (a *App) dispatchAction(action string) {
 			name := strings.TrimPrefix(action, "set_theme:")
 			if t, err := themes.Load(name); err == nil {
 				a.renderer.Theme = t
+				a.theme = t
+				// Update SDL background color to match new theme
+				bgR := float32((t.Background >> 0) & 0xFF) / 255.0
+				bgG := float32((t.Background >> 8) & 0xFF) / 255.0
+				bgB := float32((t.Background >> 16) & 0xFF) / 255.0
+				a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 			}
 		} else if strings.HasPrefix(action, "exec:") {
 			ctx := a.menuContext()
@@ -1151,15 +1188,37 @@ func (a *App) handleMouseSelection() {
 		if s, ok := a.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		a.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+		cell := cellAtViewport(tab.Terminal.Emu, col, row, scrollOff)
+		if cell != nil && isSelWordChar(cell.Content) {
+			a.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+		} else {
+			a.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
+		}
 		if a.sel.active {
 			text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
 			if text != "" {
 				input.PrimaryWrite(text)
 			}
 		}
+		a.lastDblClickTime = imgui.Time()
+		a.lastDblClickRow = row
+		a.lastDblClickCol = col
 	} else if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-		if inTerminal {
+		// Triple-click detection: click shortly after a double-click on the same row
+		if inTerminal && imgui.Time()-a.lastDblClickTime < 0.4 && row == a.lastDblClickRow {
+			scrollOff := 0
+			if s, ok := a.scroll[tab.ID]; ok {
+				scrollOff = s.Offset
+			}
+			a.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
+			if a.sel.active {
+				text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
+				if text != "" {
+					input.PrimaryWrite(text)
+				}
+			}
+			a.lastDblClickTime = 0 // consumed
+		} else if inTerminal {
 			a.sel.clear()
 			a.sel.startCol = col
 			a.sel.startRow = row

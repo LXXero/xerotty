@@ -13,16 +13,17 @@ import (
 
 // Terminal wraps a SafeEmulator + PTY + reader goroutines for one tab.
 type Terminal struct {
-	Emu     *vt.SafeEmulator
-	ptmx    *os.File
-	cmd     *exec.Cmd
-	DataCh  chan struct{} // signals new data for rendering (buffered, cap 1)
-	OnTitle func(string)  // called when OSC 0/2 sets window title
-	cols    int
-	rows    int
-	closed  bool
-	mu      sync.Mutex
-	done    chan struct{}
+	Emu      *vt.SafeEmulator
+	ptmx     *os.File
+	cmd      *exec.Cmd
+	DataCh   chan struct{} // signals new data for rendering (buffered, cap 1)
+	OnTitle  func(string)  // called when OSC 0/2 sets window title
+	cols     int
+	rows     int
+	closed   bool
+	ExitCode int  // exit code of child process (-1 = still running or unknown)
+	mu       sync.Mutex
+	done     chan struct{}
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -35,13 +36,14 @@ func New(cfg *config.Config, cols, rows int) (*Terminal, error) {
 	emu := vt.NewSafeEmulator(cols, rows)
 
 	t := &Terminal{
-		Emu:    emu,
-		ptmx:   ptmx,
-		cmd:    cmd,
-		DataCh: make(chan struct{}, 1),
-		cols:   cols,
-		rows:   rows,
-		done:   make(chan struct{}),
+		Emu:      emu,
+		ptmx:     ptmx,
+		cmd:      cmd,
+		DataCh:   make(chan struct{}, 1),
+		cols:     cols,
+		rows:     rows,
+		ExitCode: -1,
+		done:     make(chan struct{}),
 	}
 
 	emu.Emulator.SetCallbacks(vt.Callbacks{
@@ -56,6 +58,8 @@ func New(cfg *config.Config, cols, rows int) (*Terminal, error) {
 	go t.readPTY()
 	// Emulator Reader goroutine: SafeEmulator → PTY (device responses)
 	go t.readEmu()
+	// Wait for child process exit
+	go t.waitChild()
 
 	return t, nil
 }
@@ -93,7 +97,7 @@ func (t *Terminal) Close() {
 		_ = t.cmd.Process.Kill()
 	}
 	_ = t.ptmx.Close()
-	_ = t.cmd.Wait()
+	// waitChild goroutine handles cmd.Wait()
 }
 
 // IsClosed returns true if the terminal has been closed.
@@ -101,6 +105,21 @@ func (t *Terminal) IsClosed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.closed
+}
+
+// waitChild waits for the child process to exit and records its exit code.
+func (t *Terminal) waitChild() {
+	err := t.cmd.Wait()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err == nil {
+		t.ExitCode = 0
+	} else if exitErr, ok := err.(*exec.ExitError); ok {
+		t.ExitCode = exitErr.ExitCode()
+	} else {
+		t.ExitCode = 1
+	}
+	t.closed = true
 }
 
 // readPTY reads from the PTY and writes to the SafeEmulator.
