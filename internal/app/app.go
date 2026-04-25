@@ -238,6 +238,7 @@ func (a *App) frame() {
 			a.width = desiredW
 			a.height = desiredH
 			a.skipDisplaySync = 2
+			sdlRaiseWindow()
 		}
 
 		if _, err := a.tabs.NewTab(cfgCols, cfgRows); err != nil {
@@ -425,8 +426,23 @@ func (a *App) frame() {
 	}
 	a.renderer.OffsetX = vpOffX + pad
 	a.renderer.OffsetY = vpOffY + a.tabBarH + pad
-	// Resize terminals if tab bar visibility changed (available space changed)
+	// When tab bar visibility changes (1↔2 tabs), grow/shrink the SDL window
+	// vertically by the tab bar's height so the terminal grid keeps the same
+	// rows. Without this, gridSize() loses ~tabBarH/cellH rows and the user
+	// sees the terminal shrink (e.g. 80x24 → 80x22) instead of the window
+	// expanding to accommodate the bar. Skip in fullscreen — the WM ignores
+	// SetWindowSize there and we can't grow past the display.
 	if a.tabBarH != oldTabBarH {
+		if !a.fullscreen {
+			delta := int(math.Ceil(float64(a.tabBarH - oldTabBarH)))
+			if delta != 0 {
+				newH := a.height + delta
+				a.backend.SetWindowSize(a.width, newH)
+				a.height = newH
+				a.skipDisplaySync = 2
+				sdlRaiseWindow()
+			}
+		}
 		a.resizeTerminals()
 	}
 
@@ -556,10 +572,12 @@ func (a *App) processKeys() {
 		return
 	}
 
-	// When ImGui has keyboard focus (e.g. user is typing in a prefs text field),
-	// let it own the keys. Clicking back on the terminal area releases focus and
-	// keys flow through to the PTY again.
-	if imgui.CurrentIO().WantCaptureKeyboard() && !searchInputFocused {
+	// Yield to ImGui only when a text-entry widget is actually wanting chars
+	// (prefs InputText, etc). WantCaptureKeyboard is too broad — it also flips
+	// true when a non-text window has plain focus, so e.g. clicking a tab or
+	// recovering focus after SetWindowSize would silently swallow PTY input
+	// even though nothing on screen needs the keys.
+	if imgui.CurrentIO().WantTextInput() && !searchInputFocused {
 		return
 	}
 
@@ -876,6 +894,8 @@ func (a *App) updateFontMetrics() {
 	a.height = newH
 	// Don't let the next 2 frames of stale DisplaySize undo this shrink.
 	a.skipDisplaySync = 2
+	// Some WMs drop input focus across the unmap/remap of SetWindowSize.
+	sdlRaiseWindow()
 	a.resizeTerminals()
 
 	// Show resize overlay so user sees the new grid dimensions
@@ -895,9 +915,20 @@ func (a *App) renderTabBar() {
 	}
 	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
 	imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(a.width), Y: a.tabBarH}, imgui.CondAlways)
+	// The tab bar is purely a click target — it should never take keyboard
+	// focus. With multiple tabs the bar is the only ImGui window that exists,
+	// so any focus event (initial appearance, click, post-resize re-evaluation)
+	// would otherwise land on it and set WantCaptureKeyboard, which makes
+	// processKeys drop terminal input until the user clicks back on the
+	// terminal area. Explicitly opt out of every focus path:
+	//   NoFocusOnAppearing  — first 1→2-tab transition doesn't grab focus
+	//   NoNav               — no keyboard/gamepad nav targets here
+	//   NoBringToFrontOnFocus — clicking a tab doesn't promote the bar to focus
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
-		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground
+		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground |
+		imgui.WindowFlagsNoFocusOnAppearing | imgui.WindowFlagsNoNav |
+		imgui.WindowFlagsNoBringToFrontOnFocus
 
 	if imgui.BeginV("##tabbar", nil, flags) {
 		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs

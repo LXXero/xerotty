@@ -20,6 +20,17 @@ void xerottyQuit(void) {
 	event.type = SDL_QUIT;
 	SDL_PushEvent(&event);
 }
+
+// SDL_SetWindowSize on X11 (and some other WMs) can leave the window
+// without keyboard focus after the unmap/remap cycle the WM uses to
+// honour size changes. Raise + request input focus to recover it.
+void xerottyRaiseWindow(void) {
+	SDL_Window *win = SDL_GL_GetCurrentWindow();
+	if (win) {
+		SDL_RaiseWindow(win);
+		SDL_SetWindowInputFocus(win);
+	}
+}
 */
 import "C"
 
@@ -33,4 +44,8 @@ func sdlSetFullscreen(enable bool) {
 
 func sdlQuit() {
 	C.xerottyQuit()
+}
+
+func sdlRaiseWindow() {
+	C.xerottyRaiseWindow()
 }
