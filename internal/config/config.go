@@ -35,11 +35,14 @@ type Appearance struct {
 	CursorBlink          bool    `toml:"cursor_blink"`
 	BlinkRate            int     `toml:"blink_rate_ms"`
 	BoldIsBright         bool    `toml:"bold_is_bright"`
+	TerminalColors       string  `toml:"terminal_colors"`
 	TabColors            string  `toml:"tab_colors"`
 	ScrollbarColors      string  `toml:"scrollbar_colors"`
 	ResizeOverlay        bool    `toml:"resize_overlay"`
 	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
-	// Custom color overrides (hex strings, used when tab_colors/scrollbar_colors = "custom")
+	// Custom color overrides (hex strings, used when *_colors = "custom")
+	Foreground     string `toml:"foreground"`
+	Background     string `toml:"background"`
 	TabBarBg       string `toml:"tab_bar_bg"`
 	TabActiveBg    string `toml:"tab_active_bg"`
 	TabActiveFg    string `toml:"tab_active_fg"`
@@ -147,6 +150,7 @@ func Default() Config {
 			CursorBlink:           true,
 			BlinkRate:             530,
 			BoldIsBright:          true,
+			TerminalColors:        "theme",
 			TabColors:             "theme",
 			ScrollbarColors:       "theme",
 			ResizeOverlay:         true,
@@ -286,6 +290,15 @@ func defaultKeybinds() map[string]string {
 		"Alt+7":            "goto_tab:7",
 		"Alt+8":            "goto_tab:8",
 		"Alt+9":            "goto_tab:9",
+		"Cmd+1":            "goto_tab:1",
+		"Cmd+2":            "goto_tab:2",
+		"Cmd+3":            "goto_tab:3",
+		"Cmd+4":            "goto_tab:4",
+		"Cmd+5":            "goto_tab:5",
+		"Cmd+6":            "goto_tab:6",
+		"Cmd+7":            "goto_tab:7",
+		"Cmd+8":            "goto_tab:8",
+		"Cmd+9":            "goto_tab:9",
 		"Ctrl+Shift+C":     "copy",
 		"Ctrl+Shift+V":     "paste",
 		"Shift+Insert":     "paste_selection",

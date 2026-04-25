@@ -15,12 +15,13 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	ctrl := imgui.IsKeyDown(imgui.ModCtrl)
 	shift := imgui.IsKeyDown(imgui.ModShift)
 	alt := imgui.IsKeyDown(imgui.ModAlt)
+	super := imgui.IsKeyDown(imgui.ModSuper)
 
 	var events []KeyEvent
 
 	// Check keybinds first (Ctrl+Shift+F for search, etc.)
 	for bind, action := range keybinds {
-		if matchKeybind(bind, ctrl, shift, alt) {
+		if matchKeybind(bind, ctrl, shift, alt, super) {
 			events = append(events, KeyEvent{Action: action})
 			return events
 		}
@@ -137,10 +138,11 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	return events
 }
 
-func matchKeybind(bind string, ctrl, shift, alt bool) bool {
+func matchKeybind(bind string, ctrl, shift, alt, super bool) bool {
 	wantCtrl := false
 	wantShift := false
 	wantAlt := false
+	wantSuper := false
 	keyPart := bind
 
 	for {
@@ -153,12 +155,18 @@ func matchKeybind(bind string, ctrl, shift, alt bool) bool {
 		} else if len(keyPart) > 4 && keyPart[:4] == "Alt+" {
 			wantAlt = true
 			keyPart = keyPart[4:]
+		} else if len(keyPart) > 4 && keyPart[:4] == "Cmd+" {
+			wantSuper = true
+			keyPart = keyPart[4:]
+		} else if len(keyPart) > 6 && keyPart[:6] == "Super+" {
+			wantSuper = true
+			keyPart = keyPart[6:]
 		} else {
 			break
 		}
 	}
 
-	if ctrl != wantCtrl || shift != wantShift || alt != wantAlt {
+	if ctrl != wantCtrl || shift != wantShift || alt != wantAlt || super != wantSuper {
 		return false
 	}
 

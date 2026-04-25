@@ -38,42 +38,64 @@ type App struct {
 	cellH    float32
 	tabBarH  float32
 
-	fullscreen       bool
-	tabBarHovered    bool    // true when mouse is over the tab bar
-	tabSwitchReq     int     // tab ID to force-select, -1 = none
-	ready            bool    // true after first frame measures fonts
-	baseFontSize     float32 // font size the atlas was built at
-	baseCellW        float32 // cell width at base font size
-	baseCellH        float32 // cell height at base font size
-	theme            renderer.Theme
-	sel              selection    // text selection state
-	pendingPaste     string       // text awaiting unsafe-paste confirmation
-	resizeTime       float64      // imgui.Time() when last resize occurred
-	resizeOverlay    bool         // whether to show overlay
-	lastCols         int          // cols at last resize check
-	lastRows         int          // rows at last resize check
-	hoveredLink      *linkHit     // URL under mouse cursor, nil if none
-	renamingTab      bool         // whether rename popup is open
-	renameBuffer     string       // text input for tab rename
-	sbDragging       bool         // true while dragging the scrollbar thumb
-	searchFocusInput bool         // request keyboard focus to search input next frame
-	searchOverlayW   float32      // actual rendered width of search overlay (updated each frame)
-	lastDblClickTime float64      // imgui.Time() of last double-click (for triple-click detection)
-	lastDblClickRow  int          // row of last double-click
-	lastDblClickCol  int          // col of last double-click
-	prefDialog       configDialog // preferences dialog state
+	fullscreen         bool
+	tabBarHovered      bool    // true when mouse is over the tab bar
+	tabSwitchReq       int     // tab ID to force-select, -1 = none
+	ready              bool    // true after first frame measures fonts
+	pendingRemeasure   bool    // re-run cell measurement next frame (e.g. after font swap)
+	baseFontSize       float32 // font size the atlas was built at
+	baseCellW          float32 // cell width at base font size
+	baseCellH          float32 // cell height at base font size
+	theme              renderer.Theme
+	sel                selection    // text selection state
+	pendingPaste       string       // text awaiting unsafe-paste confirmation
+	resizeTime         float64      // imgui.Time() when last resize occurred
+	resizeOverlay      bool         // whether to show overlay
+	lastCols           int          // cols at last resize check
+	lastRows           int          // rows at last resize check
+	hoveredLink        *linkHit     // URL under mouse cursor, nil if none
+	renamingTab        bool         // whether rename popup is open
+	renameBuffer       string       // text input for tab rename
+	sbDragging         bool         // true while dragging the scrollbar thumb
+	searchFocusInput   bool         // request keyboard focus to search input next frame
+	searchInputFocused bool         // true when search input currently owns keyboard focus
+	searchOverlayW     float32      // actual rendered width of search overlay (updated each frame)
+	lastDblClickTime   float64      // imgui.Time() of last double-click (for triple-click detection)
+	lastDblClickRow    int          // row of last double-click
+	lastDblClickCol    int          // col of last double-click
+	prefDialog         configDialog // preferences dialog state
+	pendingFontFace    bool         // rebuild font atlas at start of next frame
+	skipDisplaySync    int          // skip DisplaySize→a.width/a.height sync for N frames after a programmatic SetWindowSize, so the WM has time to honour shrink requests before we accept its old (pre-resize) DisplaySize
 }
 
 // New creates a new App with the given config.
 func New(cfg config.Config) *App {
 	return &App{
 		cfg:          cfg,
-		width:        800,
-		height:       600,
 		scroll:       make(map[int]*scrollback.State),
-		tabBarH:      0, // starts at 0, set to 25 when >1 tab
+		tabBarH:      0, // starts at 0; updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
 	}
+}
+
+// initialWindowSize returns the pixel dimensions for the SDL window based on
+// the configured columns/rows and an estimate of cell metrics. The estimate
+// is corrected on the first frame once the font atlas is measured.
+func (a *App) initialWindowSize() (int, int) {
+	px := renderer.PixelSize(&a.cfg)
+	estCellW := px * 0.6
+	estCellH := px * 1.2
+	cols, rows := a.cfg.Window.Columns, a.cfg.Window.Rows
+	if cols < 2 {
+		cols = 80
+	}
+	if rows < 2 {
+		rows = 24
+	}
+	pad := float32(a.cfg.Appearance.Padding) * 2
+	w := int(math.Ceil(float64(float32(cols)*estCellW + pad)))
+	h := int(math.Ceil(float64(float32(rows)*estCellH + pad)))
+	return w, h
 }
 
 // Run starts the application main loop.
@@ -83,10 +105,12 @@ func (a *App) Run() error {
 	if err != nil {
 		theme = renderer.DefaultTheme()
 	}
+	applyColorOverrides(&theme, &a.cfg)
 	a.theme = theme
 
 	a.backend, _ = backend.CreateBackend(sdlbackend.NewSDLBackend())
 
+	a.width, a.height = a.initialWindowSize()
 	a.backend.CreateWindow("xerotty", a.width, a.height)
 
 	// Cascade child windows: when spawned via new_window, parent passes
@@ -109,26 +133,30 @@ func (a *App) Run() error {
 	a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	a.backend.SetTargetFPS(120)
 
-	// Keep viewports enabled so selected UI panels can use native WM windows.
+	// Keep multi-viewport enabled so child ImGui windows (preferences, etc.)
+	// can be dragged out as native OS windows. The SDL backend already enables
+	// this during init — re-asserting the bit defends against future changes
+	// to that default. Coordinate-space conversions for mouse/scrollbar/draw
+	// lists below use vp.Pos() to translate between desktop-absolute and
+	// window-local pixels.
 	io := imgui.CurrentIO()
 	io.SetConfigFlags(io.ConfigFlags() | imgui.ConfigFlagsViewportsEnable)
 
 	// Load font into atlas (must be after CreateWindow, before first frame)
 	font := renderer.LoadFont(&a.cfg)
 
-	// Approximate metrics until first frame measures real ones
-	fontSize := a.cfg.Font.Size
-	if fontSize <= 0 {
-		fontSize = 14
-	}
-	a.baseFontSize = fontSize
-	a.cellW = fontSize * 0.6
-	a.cellH = fontSize
+	// Approximate metrics until first frame measures real ones.
+	// baseFontSize is in pixels — that's what ImGui's atlas stores and what
+	// gets passed to AddTextFontPtr each frame.
+	pxSize := renderer.PixelSize(&a.cfg)
+	a.baseFontSize = pxSize
+	a.cellW = pxSize * 0.6
+	a.cellH = pxSize
 
 	// Create renderer (metrics will be updated on first frame)
 	a.renderer = renderer.New(theme, renderer.CellMetrics{
 		Width: a.cellW, Height: a.cellH,
-	}, font, fontSize)
+	}, font, pxSize)
 	pad := float32(a.cfg.Appearance.Padding)
 	a.renderer.OffsetX = pad
 	a.renderer.OffsetY = a.tabBarH + pad
@@ -182,12 +210,9 @@ func (a *App) frame() {
 		// Measure real cell dimensions now that the font atlas is built
 		metrics := renderer.MeasureCell()
 		if metrics.Width < 1 || metrics.Height < 1 {
-			// Fallback if measurement fails
-			fs := a.cfg.Font.Size
-			if fs <= 0 {
-				fs = 14
-			}
-			metrics = renderer.CellMetrics{Width: fs * 0.6, Height: fs * 1.2}
+			// Fallback if measurement fails — estimate from atlas pixel size
+			px := renderer.PixelSize(&a.cfg)
+			metrics = renderer.CellMetrics{Width: px * 0.6, Height: px * 1.2}
 		}
 		a.cellW = metrics.Width
 		a.cellH = metrics.Height
@@ -195,17 +220,67 @@ func (a *App) frame() {
 		a.baseCellH = metrics.Height
 		a.renderer.Metrics = metrics
 
-		cols, rows := a.gridSize()
-		if _, err := a.tabs.NewTab(cols, rows); err != nil {
+		// Re-fit the window to the configured columns/rows now that we have
+		// real cell metrics. The initial CreateWindow used estimated metrics,
+		// so the actual window may be a few pixels off in each direction.
+		cfgCols, cfgRows := a.cfg.Window.Columns, a.cfg.Window.Rows
+		if cfgCols < 2 {
+			cfgCols = 80
+		}
+		if cfgRows < 2 {
+			cfgRows = 24
+		}
+		pad := float32(a.cfg.Appearance.Padding) * 2
+		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad)))
+		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH)))
+		if desiredW != a.width || desiredH != a.height {
+			a.backend.SetWindowSize(desiredW, desiredH)
+			a.width = desiredW
+			a.height = desiredH
+			a.skipDisplaySync = 2
+		}
+
+		if _, err := a.tabs.NewTab(cfgCols, cfgRows); err != nil {
 			sdlQuit()
 			return
 		}
 		return
 	}
 
+	// Apply a deferred font-face swap at the start of a frame. Doing this
+	// inside applyPreferences (mid-frame) corrupts the atlas because ImGui has
+	// already issued draw commands referencing the old textures.
+	if a.pendingFontFace {
+		a.pendingFontFace = false
+		font, _ := renderer.ReloadFont(&a.cfg)
+		a.renderer.Font = font
+		a.baseFontSize = renderer.PixelSize(&a.cfg)
+		a.pendingRemeasure = true
+	}
+
+	// Re-measure cell metrics after a font face swap (atlas was rebuilt).
+	// Done once, then resize terminals to fit the new cell dimensions.
+	if a.pendingRemeasure {
+		a.pendingRemeasure = false
+		if metrics := renderer.MeasureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
+			a.cellW = metrics.Width
+			a.cellH = metrics.Height
+			a.baseCellW = metrics.Width
+			a.baseCellH = metrics.Height
+			a.renderer.Metrics = metrics
+			a.renderer.FontSize = a.baseFontSize
+			a.resizeTerminals()
+		}
+	}
+
 	// Sync window dimensions from ImGui IO every frame — more reliable than
 	// SetSizeChangeCallback which some WMs/compositors don't always trigger.
-	if ds := imgui.CurrentIO().DisplaySize(); int(ds.X) > 0 && int(ds.Y) > 0 {
+	// Skip for a few frames after we issue SetWindowSize: DisplaySize lags the
+	// WM by 1-2 frames, so a fresh shrink request would otherwise be clobbered
+	// by the stale (pre-resize) DisplaySize value.
+	if a.skipDisplaySync > 0 {
+		a.skipDisplaySync--
+	} else if ds := imgui.CurrentIO().DisplaySize(); int(ds.X) > 0 && int(ds.Y) > 0 {
 		newW, newH := int(ds.X), int(ds.Y)
 		if newW != a.width || newH != a.height {
 			a.width = newW
@@ -219,7 +294,11 @@ func (a *App) frame() {
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
 	wheel := imgui.CurrentIO().MouseWheel()
 	if wheel != 0 {
-		if a.tabBarH > 0 && imgui.MousePos().Y < a.tabBarH {
+		var vpOffY float32
+		if vp := imgui.MainViewport(); vp != nil {
+			vpOffY = vp.Pos().Y
+		}
+		if a.tabBarH > 0 && imgui.MousePos().Y-vpOffY < a.tabBarH {
 			// Mouse over tab bar — switch tabs
 			if wheel > 0 {
 				a.tabs.Prev()
@@ -327,10 +406,13 @@ func (a *App) frame() {
 	// Process queued key events
 	a.processKeys()
 
-	// Update tab bar height based on tab count
+	// Update tab bar height based on tab count and current font size.
+	// imgui.FrameHeight() = FontSize + style.FramePadding.Y*2, which is
+	// exactly the vertical space a tab item needs. Add a few px so the
+	// active-tab underline (drawn at the bottom edge) isn't clipped.
 	oldTabBarH := a.tabBarH
 	if a.tabs.Count() > 1 {
-		a.tabBarH = 25
+		a.tabBarH = imgui.FrameHeight() + 4
 	} else {
 		a.tabBarH = 0
 	}
@@ -458,17 +540,26 @@ func (a *App) isSearching() bool {
 }
 
 func (a *App) popupActive() bool {
-	return a.renamingTab || a.pendingPaste != "" || a.prefDialog.open
+	// Note: prefDialog is a non-modal window. It manages its own focus
+	// through ImGui's WantCaptureKeyboard, so it shouldn't gate terminal input.
+	return a.renamingTab || a.pendingPaste != ""
 }
 
 func (a *App) processKeys() {
 	tab := a.tabs.Active()
 	searching := a.isSearching()
+	searchInputFocused := searching && a.searchInputFocused
 	popupOpen := a.popupActive()
 
-	// When a popup/modal is active, don't process any keys for the terminal.
-	// ImGui handles input for its own widgets.
+	// Modal popups (rename, unsafe paste) eat all input.
 	if popupOpen {
+		return
+	}
+
+	// When ImGui has keyboard focus (e.g. user is typing in a prefs text field),
+	// let it own the keys. Clicking back on the terminal area releases focus and
+	// keys flow through to the PTY again.
+	if imgui.CurrentIO().WantCaptureKeyboard() && !searchInputFocused {
 		return
 	}
 
@@ -478,7 +569,7 @@ func (a *App) processKeys() {
 
 	for _, ev := range events {
 		// During search, handle Escape and Enter specially
-		if searching && tab != nil {
+		if searchInputFocused && tab != nil {
 			s := a.getScroll(tab.ID)
 			if ev.Action == "" && len(ev.Bytes) > 0 {
 				switch ev.Bytes[0] {
@@ -486,19 +577,23 @@ func (a *App) processKeys() {
 					if len(ev.Bytes) == 1 {
 						s.CloseSearch()
 						searching = false
+						searchInputFocused = false
+						a.searchInputFocused = false
 						continue
 					}
-				case '\r': // Enter — go up toward older content
-					s.PrevMatch()
-					if _, rows := a.gridSize(); rows > 0 {
-						s.ScrollToCurrentMatch(rows)
-					}
-					continue
-				case '\n': // Shift+Enter — go down toward newer content
+				case '\r': // Enter — same as > (next match)
 					s.NextMatch()
 					if _, rows := a.gridSize(); rows > 0 {
 						s.ScrollToCurrentMatch(rows)
 					}
+					a.searchFocusInput = true
+					continue
+				case '\n': // Shift+Enter — same as < (previous match)
+					s.PrevMatch()
+					if _, rows := a.gridSize(); rows > 0 {
+						s.ScrollToCurrentMatch(rows)
+					}
+					a.searchFocusInput = true
 					continue
 				}
 			}
@@ -511,7 +606,7 @@ func (a *App) processKeys() {
 		}
 
 		// Don't forward key bytes to terminal during search
-		if searching {
+		if searchInputFocused {
 			continue
 		}
 
@@ -526,7 +621,7 @@ func (a *App) processKeys() {
 
 	// Don't forward text input when: searching, a keybind just fired,
 	// ImGui wants keyboard, or Ctrl is held (avoids leaking chars from Ctrl+key combos)
-	if searching || actionDispatched || imgui.CurrentIO().WantTextInput() || imgui.IsKeyDown(imgui.ModCtrl) {
+	if searchInputFocused || actionDispatched || imgui.CurrentIO().WantTextInput() || imgui.IsKeyDown(imgui.ModCtrl) {
 		return
 	}
 
@@ -604,8 +699,14 @@ func (a *App) dispatchAction(action string) {
 		}
 	case "next_tab":
 		a.tabs.Next()
+		if t := a.tabs.Active(); t != nil {
+			a.tabSwitchReq = t.ID
+		}
 	case "prev_tab":
 		a.tabs.Prev()
+		if t := a.tabs.Active(); t != nil {
+			a.tabSwitchReq = t.ID
+		}
 	case "copy":
 		text := a.selectedText()
 		if text != "" {
@@ -713,10 +814,14 @@ func (a *App) dispatchAction(action string) {
 			nStr := strings.TrimPrefix(action, "goto_tab:")
 			if n, err := strconv.Atoi(nStr); err == nil {
 				a.tabs.GoTo(n)
+				if t := a.tabs.Active(); t != nil {
+					a.tabSwitchReq = t.ID
+				}
 			}
 		} else if strings.HasPrefix(action, "set_theme:") {
 			name := strings.TrimPrefix(action, "set_theme:")
 			if t, err := themes.Load(name); err == nil {
+				applyColorOverrides(&t, &a.cfg)
 				a.renderer.Theme = t
 				a.theme = t
 				// Update SDL background color to match new theme
@@ -742,12 +847,9 @@ func (a *App) getScroll(tabID int) *scrollback.State {
 }
 
 func (a *App) updateFontMetrics() {
-	fontSize := a.cfg.Font.Size
-	if fontSize <= 0 {
-		fontSize = 14
-	}
+	pxSize := renderer.PixelSize(&a.cfg)
 	if a.baseFontSize <= 0 {
-		a.baseFontSize = 14
+		a.baseFontSize = pxSize
 	}
 
 	// Capture current grid dimensions BEFORE scaling so we can resize
@@ -756,11 +858,11 @@ func (a *App) updateFontMetrics() {
 
 	// Scale cell metrics proportionally (no atlas rebuild needed —
 	// the renderer uses AddTextFontPtr with explicit font size)
-	scale := fontSize / a.baseFontSize
+	scale := pxSize / a.baseFontSize
 	a.cellW = a.baseCellW * scale
 	a.cellH = a.baseCellH * scale
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
-	a.renderer.FontSize = fontSize
+	a.renderer.FontSize = pxSize
 
 	// Resize window to maintain the same grid at the new cell size.
 	// Set a.width/a.height immediately so this frame renders correctly;
@@ -772,6 +874,8 @@ func (a *App) updateFontMetrics() {
 	a.backend.SetWindowSize(newW, newH)
 	a.width = newW
 	a.height = newH
+	// Don't let the next 2 frames of stale DisplaySize undo this shrink.
+	a.skipDisplaySync = 2
 	a.resizeTerminals()
 
 	// Show resize overlay so user sees the new grid dimensions
@@ -856,10 +960,12 @@ func (a *App) menuContext() *menu.Context {
 func (a *App) renderSearchOverlay() {
 	tab := a.tabs.Active()
 	if tab == nil {
+		a.searchInputFocused = false
 		return
 	}
 	s := a.getScroll(tab.ID)
 	if !s.Searching {
+		a.searchInputFocused = false
 		return
 	}
 
@@ -871,6 +977,7 @@ func (a *App) renderSearchOverlay() {
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
+	a.searchInputFocused = false
 	if imgui.BeginV("##search", nil, flags) {
 		// Track actual rendered width for the selection hit-test.
 		a.searchOverlayW = imgui.WindowWidth()
@@ -889,14 +996,10 @@ func (a *App) renderSearchOverlay() {
 		_, rows := a.gridSize()
 		prevQuery := s.Query
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
+		a.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
 			s.Search(tab.Terminal.Emu, rows)
 			s.ScrollToCurrentMatch(rows)
-		}
-		// Schedule re-focus if input lost focus (e.g. clicked terminal).
-		// The mouse-idle guard above ensures this won't fire mid-click.
-		if !imgui.IsItemFocused() {
-			a.searchFocusInput = true
 		}
 		imgui.SameLineV(0, 4)
 		if len(s.Matches) > 0 {
@@ -926,6 +1029,8 @@ func (a *App) renderSearchOverlay() {
 		}
 		if closeClicked {
 			s.CloseSearch()
+			a.searchFocusInput = false
+			a.searchInputFocused = false
 		}
 
 		// Row 2: search options
@@ -1049,9 +1154,13 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 	}
 
 	barW := float32(a.cfg.Scrollbar.Width)
-	barX := float32(a.width) - barW
-	barY := a.tabBarH
-	termH := float32(a.height) - barY // full height below tab bar
+	var vpOffX, vpOffY float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
+	}
+	barX := vpOffX + float32(a.width) - barW
+	barY := vpOffY + a.tabBarH
+	termH := float32(a.height) - a.tabBarH // full height below tab bar
 
 	// Check if mouse is hovering the thumb
 	mpos := imgui.MousePos()
@@ -1203,6 +1312,17 @@ func (a *App) handleMouseSelection() {
 	col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
 	row := int((mousePos.Y - a.renderer.OffsetY) / a.cellH)
 
+	// Window-local pixel coordinates. ImGui draw lists and MousePos() are in
+	// absolute desktop space when multi-viewport is enabled, but a.width /
+	// a.height / a.tabBarH / a.searchOverlayW are window-local — subtract
+	// the main viewport position to bring them into the same space.
+	var vpOffX, vpOffY float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
+	}
+	wmX := mousePos.X - vpOffX
+	wmY := mousePos.Y - vpOffY
+
 	// Clamp to grid bounds
 	cols, rows := a.gridSize()
 	if col < 0 {
@@ -1222,12 +1342,16 @@ func (a *App) handleMouseSelection() {
 	// IsAnyItemHovered() is reset by ImGui's NewFrame() and is always 0 here
 	// (before any items are rendered this frame), so we use explicit rect
 	// checks instead: skip the scrollbar column and the search overlay region.
+	// WantCaptureMouse is true when the cursor is over any ImGui window
+	// (prefs, popups, tab bar) — that catches the catch-all case so a click
+	// on the prefs window doesn't seed a phantom terminal selection.
 	barW := float32(a.cfg.Scrollbar.Width)
-	onScrollbar := mousePos.X >= float32(a.width)-barW
+	onScrollbar := wmX >= float32(a.width)-barW
 	onSearch := tab != nil && a.getScroll(tab.ID).Searching &&
-		mousePos.X >= float32(a.width)-a.searchOverlayW &&
-		mousePos.Y <= a.tabBarH+65
-	inTerminal := mousePos.Y >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging
+		wmX >= float32(a.width)-a.searchOverlayW &&
+		wmY <= a.tabBarH+65
+	imguiCaptured := imgui.CurrentIO().WantCaptureMouse()
+	inTerminal := wmY >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging && !imguiCaptured
 
 	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {
 		scrollOff := 0
@@ -1299,9 +1423,10 @@ func (a *App) handleMouseSelection() {
 		}
 	}
 
-	// Middle-click pastes from PRIMARY selection
+	// Middle-click pastes from PRIMARY selection (terminal area only, not on
+	// ImGui windows like prefs/search).
 	if imgui.IsMouseClickedBool(imgui.MouseButtonMiddle) {
-		if mousePos.Y >= a.tabBarH {
+		if wmY >= a.tabBarH && !imguiCaptured {
 			text, err := input.PrimaryRead()
 			if err == nil && text != "" {
 				a.pasteText(text)

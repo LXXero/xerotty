@@ -10,8 +10,22 @@ import (
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/themes"
 )
+
+// applyColorOverrides applies user hex overrides from cfg onto a loaded theme.
+// Only applies when the corresponding *_colors mode is "custom" and the hex is set.
+func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
+	if cfg.Appearance.TerminalColors == "custom" {
+		if cfg.Appearance.Foreground != "" {
+			t.Foreground = renderer.HexToABGR(cfg.Appearance.Foreground)
+		}
+		if cfg.Appearance.Background != "" {
+			t.Background = renderer.HexToABGR(cfg.Appearance.Background)
+		}
+	}
+}
 
 // Combo option lists.
 var (
@@ -24,6 +38,12 @@ var (
 	prefBSModes      = []string{"ascii_del", "ascii_bs"}
 	prefDelModes     = []string{"vt_sequence", "ascii_del"}
 	prefShiftEnters  = []string{"newline", "escape_sequence"}
+
+	// Standard terminal font sizes. TTF/OTF fonts scale to any size, but
+	// readable terminal sizes cluster in this range — exposing arbitrary
+	// fractional sizes was the "weird" feedback. "Custom..." escapes for
+	// users who want something specific.
+	prefFontSizes = []float32{8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72}
 )
 
 // Available actions for the menu editor.
@@ -73,10 +93,13 @@ type configDialog struct {
 	cursorBlink       bool
 	blinkRate         int32
 	boldIsBright      bool
+	terminalColorsIdx int32
 	tabColorsIdx      int32
 	sbColorsIdx       int32
 	resizeOverlay     bool
 	resizeOverlayDur  float32
+	foregroundHex     string
+	backgroundHex     string
 	tabBarBg          string
 	tabActiveBg       string
 	tabActiveFg       string
@@ -90,6 +113,14 @@ type configDialog struct {
 	fontSize    float32
 	fontPath    string
 	lineSpacing float32
+
+	// Font picker state (populated lazily on first open)
+	fontList       []renderer.FontEntry // discovered fonts for the picker
+	fontShowAll    bool                 // include non-monospace
+	fontUseCustom  bool                 // user supplies a custom path / family
+	fontResolved   string               // last resolved path (for status line)
+	fontPickerInit bool
+	fontSizeCustom bool // size combo set to "Custom..." → show numeric input
 
 	// Shell & Tabs
 	shell        string
@@ -220,10 +251,13 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.cursorBlink = cfg.Appearance.CursorBlink
 	d.blinkRate = int32(cfg.Appearance.BlinkRate)
 	d.boldIsBright = cfg.Appearance.BoldIsBright
+	d.terminalColorsIdx = prefIndexOf(prefColorModes, cfg.Appearance.TerminalColors)
 	d.tabColorsIdx = prefIndexOf(prefColorModes, cfg.Appearance.TabColors)
 	d.sbColorsIdx = prefIndexOf(prefColorModes, cfg.Appearance.ScrollbarColors)
 	d.resizeOverlay = cfg.Appearance.ResizeOverlay
 	d.resizeOverlayDur = cfg.Appearance.ResizeOverlayDuration
+	d.foregroundHex = cfg.Appearance.Foreground
+	d.backgroundHex = cfg.Appearance.Background
 	d.tabBarBg = cfg.Appearance.TabBarBg
 	d.tabActiveBg = cfg.Appearance.TabActiveBg
 	d.tabActiveFg = cfg.Appearance.TabActiveFg
@@ -236,6 +270,12 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.fontSize = cfg.Font.Size
 	d.fontPath = cfg.Font.Path
 	d.lineSpacing = cfg.Font.LineSpacing
+	// If the config had an explicit path that doesn't match a discovered family,
+	// flip the dialog into custom mode so the user sees what's actually loaded.
+	d.fontUseCustom = cfg.Font.Path != ""
+	d.fontResolved = renderer.ResolveFontPath(cfg)
+	d.fontPickerInit = false
+	d.fontSizeCustom = !isStandardFontSize(d.fontSize)
 
 	d.shell = cfg.Shell
 	d.term = cfg.Term
@@ -298,6 +338,9 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.CursorBlink = d.cursorBlink
 	cfg.Appearance.BlinkRate = int(d.blinkRate)
 	cfg.Appearance.BoldIsBright = d.boldIsBright
+	if int(d.terminalColorsIdx) < len(prefColorModes) {
+		cfg.Appearance.TerminalColors = prefColorModes[d.terminalColorsIdx]
+	}
 	if int(d.tabColorsIdx) < len(prefColorModes) {
 		cfg.Appearance.TabColors = prefColorModes[d.tabColorsIdx]
 	}
@@ -306,6 +349,8 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	}
 	cfg.Appearance.ResizeOverlay = d.resizeOverlay
 	cfg.Appearance.ResizeOverlayDuration = d.resizeOverlayDur
+	cfg.Appearance.Foreground = d.foregroundHex
+	cfg.Appearance.Background = d.backgroundHex
 	cfg.Appearance.TabBarBg = d.tabBarBg
 	cfg.Appearance.TabActiveBg = d.tabActiveBg
 	cfg.Appearance.TabActiveFg = d.tabActiveFg
@@ -395,10 +440,14 @@ func (a *App) openPreferences() {
 
 // applyPreferences writes dialog state to config, applies runtime changes, saves to disk.
 func (a *App) applyPreferences() {
+	prevFamily := a.cfg.Font.Family
+	prevPath := a.cfg.Font.Path
+
 	a.prefDialog.applyTo(&a.cfg)
 
 	// Apply theme change.
 	if t, err := themes.Load(a.cfg.Appearance.Theme); err == nil {
+		applyColorOverrides(&t, &a.cfg)
 		a.renderer.Theme = t
 		a.theme = t
 		bgR := float32((t.Background>>0)&0xFF) / 255.0
@@ -407,8 +456,17 @@ func (a *App) applyPreferences() {
 		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	}
 
-	// Apply font size change.
-	a.updateFontMetrics()
+	faceChanged := a.cfg.Font.Family != prevFamily || a.cfg.Font.Path != prevPath
+	if faceChanged {
+		// Defer the atlas rebuild to the start of the next frame. Clearing
+		// fonts mid-frame leaves draw commands holding stale texture handles,
+		// which manifests as the terminal going blank or input/selection
+		// breaking until a resize forces a redraw.
+		a.pendingFontFace = true
+	} else {
+		// Size-only change: cheap scaling path, no atlas rebuild.
+		a.updateFontMetrics()
+	}
 
 	// Persist to disk.
 	_ = config.Save(a.cfg)
@@ -440,7 +498,7 @@ func (a *App) renderPreferences() {
 	)
 	imgui.SetNextWindowSizeV(imgui.Vec2{X: 520, Y: 600}, imgui.CondAppearing)
 
-	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, 0) {
+	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, imgui.WindowFlagsNoDocking) {
 		// Reserve space for bottom separator + button row.
 		// Negative Y in BeginChildStrV means "fill, but leave -Y at the bottom".
 		bottomReserve := imgui.FrameHeightWithSpacing() + 12
@@ -544,6 +602,19 @@ func (a *App) renderPrefAppearance() {
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##theme", &d.themeIdx, d.themeNames, int32(len(d.themeNames)))
 
+	imgui.Text("Terminal Colors")
+	imgui.SetNextItemWidth(w)
+	imgui.ComboStrarr("##termcolors", &d.terminalColorsIdx, prefColorModes, int32(len(prefColorModes)))
+
+	if d.terminalColorsIdx == 1 {
+		imgui.Text("Foreground")
+		imgui.SetNextItemWidth(w)
+		imgui.InputTextWithHint("##fg", "#RRGGBB", &d.foregroundHex, 0, nil)
+		imgui.Text("Background")
+		imgui.SetNextItemWidth(w)
+		imgui.InputTextWithHint("##bg", "#RRGGBB", &d.backgroundHex, 0, nil)
+	}
+
 	imgui.Text("Opacity")
 	imgui.SetNextItemWidth(w)
 	imgui.SliderFloat("##opacity", &d.opacity, 0.1, 1.0)
@@ -618,23 +689,170 @@ func (a *App) renderPrefAppearance() {
 
 func (a *App) renderPrefFont() {
 	d := &a.prefDialog
-	w := float32(200)
+	w := float32(280)
 
-	imgui.Text("Font Family")
-	imgui.SetNextItemWidth(w)
-	imgui.InputTextWithHint("##fontfam", "monospace", &d.fontFamily, 0, nil)
+	// Lazy-load the font list — directory walks aren't free, do it once per open.
+	if !d.fontPickerInit {
+		d.refreshFontList()
+		d.fontPickerInit = true
+	}
 
-	imgui.Text("Font Size")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderFloat("##fontsize", &d.fontSize, 6, 72)
+	imgui.Text("Font")
 
-	imgui.Text("Font Path (optional)")
-	imgui.SetNextItemWidth(300)
-	imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf", &d.fontPath, 0, nil)
+	if !d.fontUseCustom {
+		// Build display labels for the combo. Each entry shows family name only;
+		// the path is in fontList[i].Path.
+		labels := make([]string, len(d.fontList))
+		for i, e := range d.fontList {
+			labels[i] = e.Family
+		}
+
+		// Find the currently-selected index by family name (case-insensitive).
+		selIdx := int32(-1)
+		for i, lbl := range labels {
+			if strings.EqualFold(lbl, d.fontFamily) {
+				selIdx = int32(i)
+				break
+			}
+		}
+
+		imgui.SetNextItemWidth(w)
+		if len(labels) == 0 {
+			imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
+		} else {
+			if imgui.ComboStrarr("##fontpick", &selIdx, labels, int32(len(labels))) {
+				if selIdx >= 0 && int(selIdx) < len(d.fontList) {
+					d.fontFamily = d.fontList[selIdx].Family
+					d.fontPath = d.fontList[selIdx].Path
+					d.fontResolved = d.fontPath
+				}
+			}
+		}
+
+		imgui.SameLineV(0, 8)
+		if imgui.Checkbox("Show all", &d.fontShowAll) {
+			d.refreshFontList()
+		}
+		imgui.SameLineV(0, 8)
+		if imgui.Button("Custom...") {
+			d.fontUseCustom = true
+		}
+	} else {
+		imgui.Text("Family")
+		imgui.SetNextItemWidth(w)
+		if imgui.InputTextWithHint("##fontfam", "monospace", &d.fontFamily, 0, nil) {
+			d.refreshResolved()
+		}
+
+		imgui.Text("Path (overrides family if set)")
+		imgui.SetNextItemWidth(w)
+		if imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf", &d.fontPath, 0, nil) {
+			d.refreshResolved()
+		}
+
+		if imgui.Button("Pick from list") {
+			d.fontUseCustom = false
+		}
+	}
+
+	// Status line — what will actually load.
+	if d.fontResolved != "" {
+		imgui.TextDisabled("→ " + d.fontResolved)
+	} else {
+		imgui.TextColored(imgui.Vec4{X: 1, Y: 0.5, Z: 0.5, W: 1}, "→ not found (will use ImGui default)")
+	}
+
+	imgui.Separator()
+
+	imgui.Text("Size")
+	a.renderPrefFontSize(w)
 
 	imgui.Text("Line Spacing")
 	imgui.SetNextItemWidth(w)
 	imgui.SliderFloat("##linespace", &d.lineSpacing, 0, 10)
+}
+
+// renderPrefFontSize draws a combo of standard sizes with a "Custom..." escape
+// hatch. TTF fonts scale continuously, but for terminals only a small handful
+// of sizes are typically useful — surfacing them as discrete picks is friendlier
+// than a freeform 6-72 slider.
+func (a *App) renderPrefFontSize(w float32) {
+	d := &a.prefDialog
+
+	if !d.fontSizeCustom {
+		labels := make([]string, len(prefFontSizes)+1)
+		for i, s := range prefFontSizes {
+			labels[i] = fmt.Sprintf("%g pt", s)
+		}
+		labels[len(prefFontSizes)] = "Custom..."
+
+		// Find current size in the preset list. If absent (e.g. a user typed
+		// 13.5 in the config file), surface a synthetic entry so the combo
+		// reflects reality.
+		selIdx := int32(-1)
+		for i, s := range prefFontSizes {
+			if s == d.fontSize {
+				selIdx = int32(i)
+				break
+			}
+		}
+		if selIdx < 0 {
+			d.fontSizeCustom = true
+		} else {
+			imgui.SetNextItemWidth(w)
+			if imgui.ComboStrarr("##fontsize", &selIdx, labels, int32(len(labels))) {
+				if int(selIdx) == len(prefFontSizes) {
+					d.fontSizeCustom = true
+				} else {
+					d.fontSize = prefFontSizes[selIdx]
+				}
+			}
+			return
+		}
+	}
+
+	// Custom-size input: integer points are the common case but allow
+	// fractional values for HiDPI users who want a half-pixel size.
+	imgui.SetNextItemWidth(w)
+	imgui.InputFloat("##fontsizecustom", &d.fontSize)
+	if d.fontSize < 6 {
+		d.fontSize = 6
+	}
+	if d.fontSize > 96 {
+		d.fontSize = 96
+	}
+	imgui.SameLineV(0, 8)
+	if imgui.Button("Presets") {
+		d.fontSizeCustom = false
+	}
+}
+
+// isStandardFontSize reports whether s exactly matches one of the preset sizes.
+func isStandardFontSize(s float32) bool {
+	for _, ps := range prefFontSizes {
+		if ps == s {
+			return true
+		}
+	}
+	return false
+}
+
+// refreshFontList rescans system font dirs and updates the combo source.
+func (d *configDialog) refreshFontList() {
+	if d.fontShowAll {
+		d.fontList = renderer.DiscoverAllFonts()
+	} else {
+		d.fontList = renderer.DiscoverMonospaceFonts()
+	}
+}
+
+// refreshResolved recomputes the status-line preview after a custom edit.
+func (d *configDialog) refreshResolved() {
+	tmp := config.Config{Font: config.FontConfig{
+		Family: d.fontFamily,
+		Path:   d.fontPath,
+	}}
+	d.fontResolved = renderer.ResolveFontPath(&tmp)
 }
 
 func (a *App) renderPrefShellTabs() {
