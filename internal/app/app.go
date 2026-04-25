@@ -89,6 +89,19 @@ func (a *App) Run() error {
 
 	a.backend.CreateWindow("xerotty", a.width, a.height)
 
+	// Cascade child windows: when spawned via new_window, parent passes
+	// XEROTTY_WIN_X/Y so each new xerotty appears offset from its predecessor
+	// instead of stacking exactly on top.
+	if xs, ys := os.Getenv("XEROTTY_WIN_X"), os.Getenv("XEROTTY_WIN_Y"); xs != "" && ys != "" {
+		if x, errX := strconv.Atoi(xs); errX == nil {
+			if y, errY := strconv.Atoi(ys); errY == nil {
+				if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
+					sb.SetWindowPos(x, y)
+				}
+			}
+		}
+	}
+
 	// Set background color from theme (ABGR → RGBA for SDL)
 	bgR := float32((theme.Background>>0)&0xFF) / 255.0
 	bgG := float32((theme.Background>>8)&0xFF) / 255.0
@@ -566,13 +579,27 @@ func (a *App) dispatchAction(action string) {
 	switch action {
 	case "new_tab":
 		cols, rows := a.gridSize()
-		a.tabs.NewTab(cols, rows)
+		if tab, err := a.tabs.NewTab(cols, rows); err == nil && tab != nil {
+			// AutoSelectNewTabs only catches new tabs once the bar has prior
+			// frame state. On the 1→2 transition (tab bar first appears) it
+			// can't, so request an explicit switch to the new tab.
+			a.tabSwitchReq = tab.ID
+		}
 	case "close_tab":
 		a.tabs.CloseActive()
 	case "new_window":
 		exe, err := os.Executable()
 		if err == nil {
 			cmd := exec.Command(exe)
+			// Cascade: place child ~30px below and right of parent so it
+			// doesn't stack exactly on top.
+			if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
+				px, py := sb.GetWindowPos()
+				cmd.Env = append(os.Environ(),
+					fmt.Sprintf("XEROTTY_WIN_X=%d", int(px)+30),
+					fmt.Sprintf("XEROTTY_WIN_Y=%d", int(py)+30),
+				)
+			}
 			cmd.Start()
 		}
 	case "next_tab":
@@ -974,8 +1001,15 @@ func (a *App) renderResizeOverlay() {
 	boxW := textSize.X + padX*2
 	boxH := textSize.Y + padY*2
 
-	cx := float32(a.width) / 2
-	cy := float32(a.height) / 2
+	// Center on MainViewport in absolute desktop space — under multi-viewport
+	// the global foreground drawlist isn't tied to the SDL window.
+	var vpX, vpY float32
+	vp := imgui.MainViewport()
+	if vp != nil {
+		vpX, vpY = vp.Pos().X, vp.Pos().Y
+	}
+	cx := vpX + float32(a.width)/2
+	cy := vpY + float32(a.height)/2
 
 	// Fade out alpha
 	alpha := float32(1.0)
@@ -986,7 +1020,7 @@ func (a *App) renderResizeOverlay() {
 	bgColor := uint32(uint8(alpha*180)) << 24 // semi-transparent black
 	fgColor := uint32(0x00FFFFFF) | (uint32(uint8(alpha*255)) << 24)
 
-	dl := imgui.ForegroundDrawListViewportPtr()
+	dl := imgui.ForegroundDrawListViewportPtrV(vp)
 	dl.AddRectFilledV(
 		imgui.Vec2{X: cx - boxW/2, Y: cy - boxH/2},
 		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
