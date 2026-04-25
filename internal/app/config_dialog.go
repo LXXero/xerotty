@@ -66,23 +66,23 @@ type configDialog struct {
 	themeNames []string
 
 	// Appearance
-	themeIdx         int32
-	opacity          float32
-	padding          int32
-	cursorIdx        int32
-	cursorBlink      bool
-	blinkRate        int32
-	boldIsBright     bool
-	tabColorsIdx     int32
-	sbColorsIdx      int32
-	resizeOverlay    bool
-	resizeOverlayDur float32
-	tabBarBg         string
-	tabActiveBg      string
-	tabActiveFg      string
-	tabInactiveBg    string
-	tabInactiveFg    string
-	scrollbarBgHex   string
+	themeIdx          int32
+	opacity           float32
+	padding           int32
+	cursorIdx         int32
+	cursorBlink       bool
+	blinkRate         int32
+	boldIsBright      bool
+	tabColorsIdx      int32
+	sbColorsIdx       int32
+	resizeOverlay     bool
+	resizeOverlayDur  float32
+	tabBarBg          string
+	tabActiveBg       string
+	tabActiveFg       string
+	tabInactiveBg     string
+	tabInactiveFg     string
+	scrollbarBgHex    string
 	scrollbarThumbHex string
 
 	// Font
@@ -401,9 +401,9 @@ func (a *App) applyPreferences() {
 	if t, err := themes.Load(a.cfg.Appearance.Theme); err == nil {
 		a.renderer.Theme = t
 		a.theme = t
-		bgR := float32((t.Background >> 0) & 0xFF) / 255.0
-		bgG := float32((t.Background >> 8) & 0xFF) / 255.0
-		bgB := float32((t.Background >> 16) & 0xFF) / 255.0
+		bgR := float32((t.Background>>0)&0xFF) / 255.0
+		bgG := float32((t.Background>>8)&0xFF) / 255.0
+		bgB := float32((t.Background>>16)&0xFF) / 255.0
 		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	}
 
@@ -421,15 +421,30 @@ func (a *App) renderPreferences() {
 	}
 
 	center := imgui.Vec2{X: float32(a.width) / 2, Y: float32(a.height) / 2}
-	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
+	if main := imgui.MainViewport(); main != nil {
+		pos := main.Pos()
+		size := main.Size()
+		center = imgui.Vec2{X: pos.X + size.X*0.5, Y: pos.Y + size.Y*0.5}
+	}
+
+	if (imgui.CurrentIO().ConfigFlags() & imgui.ConfigFlagsViewportsEnable) != 0 {
+		windowClass := imgui.NewWindowClass()
+		windowClass.SetViewportFlagsOverrideSet(imgui.ViewportFlagsNoAutoMerge)
+		imgui.SetNextWindowClass(windowClass)
+		windowClass.Destroy()
+	}
+
+	imgui.SetNextWindowPosV(
+		center,
+		imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5},
+	)
 	imgui.SetNextWindowSizeV(imgui.Vec2{X: 520, Y: 600}, imgui.CondAppearing)
 
 	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, 0) {
-		// Reserve space for bottom buttons.
-		tabH := imgui.ContentRegionAvail().Y - 40
-		if tabH < 100 {
-			tabH = 100
-		}
+		// Reserve space for bottom separator + button row.
+		// Negative Y in BeginChildStrV means "fill, but leave -Y at the bottom".
+		bottomReserve := imgui.FrameHeightWithSpacing() + 12
+		tabH := -bottomReserve
 
 		if imgui.BeginTabBar("##preftabs") {
 			if imgui.BeginTabItem("Appearance") {
@@ -439,43 +454,40 @@ func (a *App) renderPreferences() {
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("Font") {
-				if imgui.BeginChildStrV("##fontsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+			if imgui.BeginTabItem("General") {
+				if imgui.BeginChildStrV("##gensc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("Font")
+					imgui.Separator()
 					a.renderPrefFont()
-				}
-				imgui.EndChild()
-				imgui.EndTabItem()
-			}
-			if imgui.BeginTabItem("Shell & Tabs") {
-				if imgui.BeginChildStrV("##shellsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("")
+					imgui.Text("Shell & Tabs")
+					imgui.Separator()
 					a.renderPrefShellTabs()
 				}
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("Scrollback") {
-				if imgui.BeginChildStrV("##sbksc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+			if imgui.BeginTabItem("Scrolling") {
+				if imgui.BeginChildStrV("##scrollsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("Scrollback")
+					imgui.Separator()
 					a.renderPrefScrollback()
-				}
-				imgui.EndChild()
-				imgui.EndTabItem()
-			}
-			if imgui.BeginTabItem("Scrollbar") {
-				if imgui.BeginChildStrV("##sbrsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("")
+					imgui.Text("Scrollbar")
+					imgui.Separator()
 					a.renderPrefScrollbar()
 				}
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("Clipboard") {
+			if imgui.BeginTabItem("Clipboard & Links") {
 				if imgui.BeginChildStrV("##clipsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("Clipboard")
+					imgui.Separator()
 					a.renderPrefClipboard()
-				}
-				imgui.EndChild()
-				imgui.EndTabItem()
-			}
-			if imgui.BeginTabItem("Links") {
-				if imgui.BeginChildStrV("##linksc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("")
+					imgui.Text("Links")
+					imgui.Separator()
 					a.renderPrefLinks()
 				}
 				imgui.EndChild()

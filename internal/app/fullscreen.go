@@ -14,6 +14,12 @@ void xerottySetFullscreen(int enable) {
 		}
 	}
 }
+
+void xerottyQuit(void) {
+	SDL_Event event;
+	event.type = SDL_QUIT;
+	SDL_PushEvent(&event);
+}
 */
 import "C"
 
@@ -23,4 +29,8 @@ func sdlSetFullscreen(enable bool) {
 	} else {
 		C.xerottySetFullscreen(0)
 	}
+}
+
+func sdlQuit() {
+	C.xerottyQuit()
 }

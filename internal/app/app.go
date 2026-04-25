@@ -3,12 +3,6 @@ package app
 
 import (
 	"fmt"
-	"math"
-	"os"
-	"os/exec"
-	"runtime"
-	"strconv"
-	"strings"
 	"github.com/AllenDang/cimgui-go/backend"
 	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
 	"github.com/AllenDang/cimgui-go/imgui"
@@ -19,6 +13,12 @@ import (
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
 	"github.com/LXXero/xerotty/internal/themes"
+	"math"
+	"os"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
 )
 
 func init() {
@@ -38,40 +38,40 @@ type App struct {
 	cellH    float32
 	tabBarH  float32
 
-	fullscreen      bool
-	tabBarHovered   bool    // true when mouse is over the tab bar
-	tabSwitchReq    int     // tab ID to force-select, -1 = none
-	ready           bool    // true after first frame measures fonts
-	baseFontSize float32 // font size the atlas was built at
-	baseCellW    float32 // cell width at base font size
-	baseCellH    float32 // cell height at base font size
-	theme        renderer.Theme
-	sel          selection // text selection state
-	pendingPaste   string  // text awaiting unsafe-paste confirmation
-	resizeTime     float64 // imgui.Time() when last resize occurred
-	resizeOverlay  bool    // whether to show overlay
-	lastCols       int     // cols at last resize check
-	lastRows       int     // rows at last resize check
-	hoveredLink    *linkHit // URL under mouse cursor, nil if none
-	renamingTab    bool     // whether rename popup is open
-	renameBuffer   string   // text input for tab rename
-	sbDragging       bool    // true while dragging the scrollbar thumb
-	searchFocusInput bool    // request keyboard focus to search input next frame
-	searchOverlayW   float32 // actual rendered width of search overlay (updated each frame)
-	lastDblClickTime float64 // imgui.Time() of last double-click (for triple-click detection)
-	lastDblClickRow  int     // row of last double-click
-	lastDblClickCol  int     // col of last double-click
+	fullscreen       bool
+	tabBarHovered    bool    // true when mouse is over the tab bar
+	tabSwitchReq     int     // tab ID to force-select, -1 = none
+	ready            bool    // true after first frame measures fonts
+	baseFontSize     float32 // font size the atlas was built at
+	baseCellW        float32 // cell width at base font size
+	baseCellH        float32 // cell height at base font size
+	theme            renderer.Theme
+	sel              selection    // text selection state
+	pendingPaste     string       // text awaiting unsafe-paste confirmation
+	resizeTime       float64      // imgui.Time() when last resize occurred
+	resizeOverlay    bool         // whether to show overlay
+	lastCols         int          // cols at last resize check
+	lastRows         int          // rows at last resize check
+	hoveredLink      *linkHit     // URL under mouse cursor, nil if none
+	renamingTab      bool         // whether rename popup is open
+	renameBuffer     string       // text input for tab rename
+	sbDragging       bool         // true while dragging the scrollbar thumb
+	searchFocusInput bool         // request keyboard focus to search input next frame
+	searchOverlayW   float32      // actual rendered width of search overlay (updated each frame)
+	lastDblClickTime float64      // imgui.Time() of last double-click (for triple-click detection)
+	lastDblClickRow  int          // row of last double-click
+	lastDblClickCol  int          // col of last double-click
 	prefDialog       configDialog // preferences dialog state
 }
 
 // New creates a new App with the given config.
 func New(cfg config.Config) *App {
 	return &App{
-		cfg:    cfg,
-		width:  800,
-		height: 600,
-		scroll:      make(map[int]*scrollback.State),
-		tabBarH:     0, // starts at 0, set to 25 when >1 tab
+		cfg:          cfg,
+		width:        800,
+		height:       600,
+		scroll:       make(map[int]*scrollback.State),
+		tabBarH:      0, // starts at 0, set to 25 when >1 tab
 		tabSwitchReq: -1,
 	}
 }
@@ -90,15 +90,15 @@ func (a *App) Run() error {
 	a.backend.CreateWindow("xerotty", a.width, a.height)
 
 	// Set background color from theme (ABGR → RGBA for SDL)
-	bgR := float32((theme.Background >> 0) & 0xFF) / 255.0
-	bgG := float32((theme.Background >> 8) & 0xFF) / 255.0
-	bgB := float32((theme.Background >> 16) & 0xFF) / 255.0
+	bgR := float32((theme.Background>>0)&0xFF) / 255.0
+	bgG := float32((theme.Background>>8)&0xFF) / 255.0
+	bgB := float32((theme.Background>>16)&0xFF) / 255.0
 	a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	a.backend.SetTargetFPS(120)
 
-	// Disable viewports — keeps everything in one window
+	// Keep viewports enabled so selected UI panels can use native WM windows.
 	io := imgui.CurrentIO()
-	io.SetConfigFlags(io.ConfigFlags() &^ imgui.ConfigFlagsViewportsEnable)
+	io.SetConfigFlags(io.ConfigFlags() | imgui.ConfigFlagsViewportsEnable)
 
 	// Load font into atlas (must be after CreateWindow, before first frame)
 	font := renderer.LoadFont(&a.cfg)
@@ -119,6 +119,8 @@ func (a *App) Run() error {
 	pad := float32(a.cfg.Appearance.Padding)
 	a.renderer.OffsetX = pad
 	a.renderer.OffsetY = a.tabBarH + pad
+	// vpOffsetX/Y are added each frame so coords match MainViewport position
+	// when ConfigFlagsViewportsEnable is on (draws are in desktop space).
 
 	// Window resize is handled per-frame via ImGui IO.DisplaySize in frame().
 
@@ -182,7 +184,7 @@ func (a *App) frame() {
 
 		cols, rows := a.gridSize()
 		if _, err := a.tabs.NewTab(cols, rows); err != nil {
-			a.backend.SetShouldClose(true)
+			sdlQuit()
 			return
 		}
 		return
@@ -303,9 +305,9 @@ func (a *App) frame() {
 		}
 	}
 
-	// Exit if no tabs remain
+	// Exit if no tabs remain — push SDL_QUIT since SetShouldClose is unimplemented.
 	if a.tabs.Count() == 0 {
-		a.backend.SetShouldClose(true)
+		sdlQuit()
 		return
 	}
 
@@ -320,7 +322,14 @@ func (a *App) frame() {
 		a.tabBarH = 0
 	}
 	pad := float32(a.cfg.Appearance.Padding)
-	a.renderer.OffsetY = a.tabBarH + pad
+	// Add MainViewport offset so terminal lands inside the SDL window when
+	// multi-viewport is enabled (ImGui draw lists are in absolute desktop coords).
+	var vpOffX, vpOffY float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
+	}
+	a.renderer.OffsetX = vpOffX + pad
+	a.renderer.OffsetY = vpOffY + a.tabBarH + pad
 	// Resize terminals if tab bar visibility changed (available space changed)
 	if a.tabBarH != oldTabBarH {
 		a.resizeTerminals()
@@ -329,86 +338,79 @@ func (a *App) frame() {
 	// Render tab bar
 	a.renderTabBar()
 
-	// Render active terminal in a fullscreen ImGui window
+	// Render active terminal directly onto the main viewport's background
+	// draw list. Using a wrapping ImGui window breaks under multi-viewport
+	// (the window can be promoted to its own viewport, leaving the SDL
+	// surface blank). BackgroundDrawListV pinned to MainViewport guarantees
+	// draws hit the primary SDL window.
 	if tab := a.tabs.Active(); tab != nil {
-		// Use a fullscreen borderless ImGui window for the terminal area
-		imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{})
-		imgui.SetNextWindowPosV(imgui.Vec2{X: 0, Y: a.tabBarH}, imgui.CondAlways, imgui.Vec2{})
-		imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(a.width), Y: float32(a.height) - a.tabBarH}, imgui.CondAlways)
-		wflags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
-			imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
-			imgui.WindowFlagsNoBackground | imgui.WindowFlagsNoInputs
-		if imgui.BeginV("##terminal", nil, wflags) {
-			drawList := imgui.WindowDrawList()
-			if drawList != nil {
-				scrollOff := 0
-				if s, ok := a.scroll[tab.ID]; ok {
-					scrollOff = s.Offset
-				}
-				a.renderer.Draw(tab.Terminal.Emu, drawList, scrollOff)
-
-				// Draw selection highlight
-				if a.sel.active {
-					r1, c1, r2, c2 := a.sel.normalize()
-					cols, rows := a.gridSize()
-					a.renderer.DrawSelection(renderer.SelectionBounds{
-						Active:   true,
-						StartRow: r1, StartCol: c1,
-						EndRow: r2, EndCol: c2,
-					}, cols, rows, drawList)
-				}
-
-				// Draw link underline on hover
-				if a.hoveredLink != nil {
-					lh := a.hoveredLink
-					y := a.renderer.OffsetY + float32(lh.Row)*a.cellH + a.cellH - 1
-					x1 := a.renderer.OffsetX + float32(lh.StartCol)*a.cellW
-					x2 := a.renderer.OffsetX + float32(lh.EndCol+1)*a.cellW
-					drawList.AddLine(
-						imgui.Vec2{X: x1, Y: y},
-						imgui.Vec2{X: x2, Y: y},
-						a.renderer.Theme.Foreground,
-					)
-				}
-
-				// Only show cursor when at live position (not scrolled back)
-				if scrollOff == 0 {
-					showCursor := true
-					if a.cfg.Appearance.CursorBlink {
-						rate := float64(a.cfg.Appearance.BlinkRate) / 1000.0
-						if rate <= 0 {
-							rate = 0.53
-						}
-						showCursor = int(imgui.Time()/rate)%2 == 0
-					}
-					if showCursor {
-						pos := tab.Terminal.Emu.CursorPosition()
-						a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
-							a.cfg.Appearance.CursorStyle, drawList)
-					}
-				}
-
-				// Search highlights — refresh matches each frame so PTY output
-				// doesn't cause stale coordinates. Preserve MatchIdx so
-				// navigation (< >) isn't clobbered by the per-frame re-search.
-				if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
-					_, visRows := a.gridSize()
-					savedIdx := s.MatchIdx
-					s.Search(tab.Terminal.Emu, visRows)
-					if savedIdx < len(s.Matches) {
-						s.MatchIdx = savedIdx
-					}
-					if len(s.Matches) > 0 {
-						a.drawSearchHighlights(s, drawList)
-					}
-				}
-
-				// Scrollbar
-				a.drawScrollbar(tab, scrollOff, drawList)
+		drawList := imgui.BackgroundDrawListV(imgui.MainViewport())
+		if drawList != nil {
+			scrollOff := 0
+			if s, ok := a.scroll[tab.ID]; ok {
+				scrollOff = s.Offset
 			}
+			a.renderer.Draw(tab.Terminal.Emu, drawList, scrollOff)
+
+			// Draw selection highlight
+			if a.sel.active {
+				r1, c1, r2, c2 := a.sel.normalize()
+				cols, rows := a.gridSize()
+				a.renderer.DrawSelection(renderer.SelectionBounds{
+					Active:   true,
+					StartRow: r1, StartCol: c1,
+					EndRow: r2, EndCol: c2,
+				}, cols, rows, drawList)
+			}
+
+			// Draw link underline on hover
+			if a.hoveredLink != nil {
+				lh := a.hoveredLink
+				y := a.renderer.OffsetY + float32(lh.Row)*a.cellH + a.cellH - 1
+				x1 := a.renderer.OffsetX + float32(lh.StartCol)*a.cellW
+				x2 := a.renderer.OffsetX + float32(lh.EndCol+1)*a.cellW
+				drawList.AddLine(
+					imgui.Vec2{X: x1, Y: y},
+					imgui.Vec2{X: x2, Y: y},
+					a.renderer.Theme.Foreground,
+				)
+			}
+
+			// Only show cursor when at live position (not scrolled back)
+			if scrollOff == 0 {
+				showCursor := true
+				if a.cfg.Appearance.CursorBlink {
+					rate := float64(a.cfg.Appearance.BlinkRate) / 1000.0
+					if rate <= 0 {
+						rate = 0.53
+					}
+					showCursor = int(imgui.Time()/rate)%2 == 0
+				}
+				if showCursor {
+					pos := tab.Terminal.Emu.CursorPosition()
+					a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
+						a.cfg.Appearance.CursorStyle, drawList)
+				}
+			}
+
+			// Search highlights — refresh matches each frame so PTY output
+			// doesn't cause stale coordinates. Preserve MatchIdx so
+			// navigation (< >) isn't clobbered by the per-frame re-search.
+			if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
+				_, visRows := a.gridSize()
+				savedIdx := s.MatchIdx
+				s.Search(tab.Terminal.Emu, visRows)
+				if savedIdx < len(s.Matches) {
+					s.MatchIdx = savedIdx
+				}
+				if len(s.Matches) > 0 {
+					a.drawSearchHighlights(s, drawList)
+				}
+			}
+
+			// Scrollbar
+			a.drawScrollbar(tab, scrollOff, drawList)
 		}
-		imgui.End()
-		imgui.PopStyleVar()
 	}
 
 	// Search overlay
@@ -691,9 +693,9 @@ func (a *App) dispatchAction(action string) {
 				a.renderer.Theme = t
 				a.theme = t
 				// Update SDL background color to match new theme
-				bgR := float32((t.Background >> 0) & 0xFF) / 255.0
-				bgG := float32((t.Background >> 8) & 0xFF) / 255.0
-				bgB := float32((t.Background >> 16) & 0xFF) / 255.0
+				bgR := float32((t.Background>>0)&0xFF) / 255.0
+				bgG := float32((t.Background>>8)&0xFF) / 255.0
+				bgB := float32((t.Background>>16)&0xFF) / 255.0
 				a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 			}
 		} else if strings.HasPrefix(action, "exec:") {
@@ -756,7 +758,11 @@ func (a *App) renderTabBar() {
 		return // Don't show tab bar with single tab
 	}
 
-	imgui.SetNextWindowPosV(imgui.Vec2{X: 0, Y: 0}, imgui.CondAlways, imgui.Vec2{})
+	var vpX, vpY float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vpX, vpY = vp.Pos().X, vp.Pos().Y
+	}
+	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
 	imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(a.width), Y: a.tabBarH}, imgui.CondAlways)
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
@@ -830,7 +836,11 @@ func (a *App) renderSearchOverlay() {
 		return
 	}
 
-	imgui.SetNextWindowPosV(imgui.Vec2{X: float32(a.width) - 320, Y: a.tabBarH}, imgui.CondAlways, imgui.Vec2{})
+	var vpX, vpY float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vpX, vpY = vp.Pos().X, vp.Pos().Y
+	}
+	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(a.width) - 320, Y: vpY + a.tabBarH}, imgui.CondAlways, imgui.Vec2{})
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
@@ -947,7 +957,7 @@ func (a *App) renderResizeOverlay() {
 	}
 
 	elapsed := imgui.Time() - a.resizeTime
-	duration := 1.5 // total display time in seconds
+	duration := 1.5  // total display time in seconds
 	fadeStart := 1.0 // start fading at this point
 
 	if elapsed > duration {
