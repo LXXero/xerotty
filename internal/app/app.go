@@ -64,6 +64,7 @@ type App struct {
 	lastDblClickRow    int          // row of last double-click
 	lastDblClickCol    int          // col of last double-click
 	prefDialog         configDialog // preferences dialog state
+	pendingFontFace    bool         // rebuild font atlas at start of next frame
 	skipDisplaySync    int          // skip DisplaySize→a.width/a.height sync for N frames after a programmatic SetWindowSize, so the WM has time to honour shrink requests before we accept its old (pre-resize) DisplaySize
 }
 
@@ -81,10 +82,7 @@ func New(cfg config.Config) *App {
 // the configured columns/rows and an estimate of cell metrics. The estimate
 // is corrected on the first frame once the font atlas is measured.
 func (a *App) initialWindowSize() (int, int) {
-	px := a.cfg.Font.Size
-	if px <= 0 {
-		px = 14
-	}
+	px := renderer.PixelSize(&a.cfg)
 	estCellW := px * 0.6
 	estCellH := px * 1.2
 	cols, rows := a.cfg.Window.Columns, a.cfg.Window.Rows
@@ -147,18 +145,18 @@ func (a *App) Run() error {
 	// Load font into atlas (must be after CreateWindow, before first frame)
 	font := renderer.LoadFont(&a.cfg)
 
-	fontSize := a.cfg.Font.Size
-	if fontSize <= 0 {
-		fontSize = 14
-	}
-	a.baseFontSize = fontSize
-	a.cellW = fontSize * 0.6
-	a.cellH = fontSize
+	// Approximate metrics until first frame measures real ones.
+	// baseFontSize is in pixels — that's what ImGui's atlas stores and what
+	// gets passed to AddTextFontPtr each frame.
+	pxSize := renderer.PixelSize(&a.cfg)
+	a.baseFontSize = pxSize
+	a.cellW = pxSize * 0.6
+	a.cellH = pxSize
 
 	// Create renderer (metrics will be updated on first frame)
 	a.renderer = renderer.New(theme, renderer.CellMetrics{
 		Width: a.cellW, Height: a.cellH,
-	}, font, fontSize)
+	}, font, pxSize)
 	pad := float32(a.cfg.Appearance.Padding)
 	a.renderer.OffsetX = pad
 	a.renderer.OffsetY = a.tabBarH + pad
@@ -214,10 +212,7 @@ func (a *App) frame() {
 		metrics := renderer.MeasureCell()
 		if metrics.Width < 1 || metrics.Height < 1 {
 			// Fallback if measurement fails — estimate from atlas pixel size
-			px := a.cfg.Font.Size
-			if px <= 0 {
-				px = 14
-			}
+			px := renderer.PixelSize(&a.cfg)
 			metrics = renderer.CellMetrics{Width: px * 0.6, Height: px * 1.2}
 		}
 		a.cellW = metrics.Width
@@ -252,6 +247,17 @@ func (a *App) frame() {
 			return
 		}
 		return
+	}
+
+	// Apply a deferred font-face swap at the start of a frame. Doing this
+	// inside applyPreferences (mid-frame) corrupts the atlas because ImGui has
+	// already issued draw commands referencing the old textures.
+	if a.pendingFontFace {
+		a.pendingFontFace = false
+		font, _ := renderer.ReloadFont(&a.cfg)
+		a.renderer.Font = font
+		a.baseFontSize = renderer.PixelSize(&a.cfg)
+		a.pendingRemeasure = true
 	}
 
 	// Re-measure cell metrics after a font face swap (atlas was rebuilt).
@@ -860,10 +866,7 @@ func (a *App) getScroll(tabID int) *scrollback.State {
 }
 
 func (a *App) updateFontMetrics() {
-	pxSize := a.cfg.Font.Size
-	if pxSize <= 0 {
-		pxSize = 14
-	}
+	pxSize := renderer.PixelSize(&a.cfg)
 	if a.baseFontSize <= 0 {
 		a.baseFontSize = pxSize
 	}
