@@ -19,7 +19,6 @@ type ThemeFile struct {
 			Cursor      string `toml:"cursor"`
 			SelectionFg string `toml:"selection_fg"`
 			SelectionBg string `toml:"selection_bg"`
-			Bold        string `toml:"bold"`
 			ANSI        struct {
 				Black        string `toml:"black"`
 				Red          string `toml:"red"`
@@ -40,11 +39,6 @@ type ThemeFile struct {
 			} `toml:"ansi"`
 		} `toml:"colors"`
 		UI struct {
-			TabBarBg          string `toml:"tab_bar_bg"`
-			TabActiveBg       string `toml:"tab_active_bg"`
-			TabActiveFg       string `toml:"tab_active_fg"`
-			TabInactiveBg     string `toml:"tab_inactive_bg"`
-			TabInactiveFg     string `toml:"tab_inactive_fg"`
 			ScrollbarBg       string `toml:"scrollbar_bg"`
 			ScrollbarThumb    string `toml:"scrollbar_thumb"`
 			ScrollbarThumbHov string `toml:"scrollbar_thumb_hover"`

@@ -30,7 +30,7 @@ func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
 // Combo option lists.
 var (
 	prefCursorStyles = []string{"block", "underline", "bar"}
-	prefSBModes      = []string{"memory", "disk", "unlimited"}
+	prefSBModes      = []string{"memory", "unlimited"}
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
@@ -100,19 +100,13 @@ type configDialog struct {
 	resizeOverlayDur  float32
 	foregroundHex     string
 	backgroundHex     string
-	tabBarBg          string
-	tabActiveBg       string
-	tabActiveFg       string
-	tabInactiveBg     string
-	tabInactiveFg     string
 	scrollbarBgHex    string
 	scrollbarThumbHex string
 
 	// Font
-	fontFamily  string
-	fontSize    float32
-	fontPath    string
-	lineSpacing float32
+	fontFamily string
+	fontSize   float32
+	fontPath   string
 
 	// Font picker state (populated lazily on first open)
 	fontList       []renderer.FontEntry // discovered fonts for the picker
@@ -126,14 +120,12 @@ type configDialog struct {
 	shell        string
 	term         string
 	childExitIdx int32
-	inheritCWD   bool
 	closeBtnIdx  int32
 
 	// Scrollback
 	sbLines   int32
 	sbModeIdx int32
 	scrollSpd int32
-	diskDir   string
 	scrollKey bool
 	scrollOut bool
 
@@ -143,8 +135,6 @@ type configDialog struct {
 	sbMinThumb int32
 
 	// Clipboard
-	copyOnSel      bool
-	pasteMiddle    bool
 	trimWS         bool
 	unsafeEnabled  bool
 	multilineWarn  bool
@@ -154,7 +144,6 @@ type configDialog struct {
 	// Links
 	linksOn   bool
 	ctrlClick bool
-	dblClick  bool
 	opener    string
 
 	// Keys
@@ -258,18 +247,12 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.resizeOverlayDur = cfg.Appearance.ResizeOverlayDuration
 	d.foregroundHex = cfg.Appearance.Foreground
 	d.backgroundHex = cfg.Appearance.Background
-	d.tabBarBg = cfg.Appearance.TabBarBg
-	d.tabActiveBg = cfg.Appearance.TabActiveBg
-	d.tabActiveFg = cfg.Appearance.TabActiveFg
-	d.tabInactiveBg = cfg.Appearance.TabInactiveBg
-	d.tabInactiveFg = cfg.Appearance.TabInactiveFg
 	d.scrollbarBgHex = cfg.Appearance.ScrollbarBg
 	d.scrollbarThumbHex = cfg.Appearance.ScrollbarThumb
 
 	d.fontFamily = cfg.Font.Family
 	d.fontSize = cfg.Font.Size
 	d.fontPath = cfg.Font.Path
-	d.lineSpacing = cfg.Font.LineSpacing
 	// If the config had an explicit path that doesn't match a discovered family,
 	// flip the dialog into custom mode so the user sees what's actually loaded.
 	d.fontUseCustom = cfg.Font.Path != ""
@@ -280,13 +263,11 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.shell = cfg.Shell
 	d.term = cfg.Term
 	d.childExitIdx = prefIndexOf(prefChildExits, cfg.Tabs.OnChildExit)
-	d.inheritCWD = cfg.Tabs.InheritCWD
 	d.closeBtnIdx = prefIndexOf(prefCloseBtnPos, cfg.Tabs.CloseButtonPosition)
 
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
 	d.scrollSpd = int32(cfg.Scrollback.ScrollSpeed)
-	d.diskDir = cfg.Scrollback.DiskDir
 	d.scrollKey = cfg.Scrollback.ScrollOnKeystroke
 	d.scrollOut = cfg.Scrollback.ScrollOnOutput
 
@@ -294,8 +275,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.sbWidth = int32(cfg.Scrollbar.Width)
 	d.sbMinThumb = int32(cfg.Scrollbar.MinThumbHeight)
 
-	d.copyOnSel = cfg.Clipboard.CopyOnSelect
-	d.pasteMiddle = cfg.Clipboard.PasteOnMiddleClick
 	d.trimWS = cfg.Clipboard.TrimTrailingWhitespace
 	d.unsafeEnabled = cfg.Clipboard.UnsafePaste.Enabled
 	d.multilineWarn = cfg.Clipboard.UnsafePaste.MultilineWarning
@@ -304,7 +283,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 
 	d.linksOn = cfg.Links.Enabled
 	d.ctrlClick = cfg.Links.CtrlClick
-	d.dblClick = cfg.Links.DoubleClick
 	d.opener = cfg.Links.Opener
 
 	d.bsIdx = prefIndexOf(prefBSModes, cfg.Keys.Backspace)
@@ -351,25 +329,18 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.ResizeOverlayDuration = d.resizeOverlayDur
 	cfg.Appearance.Foreground = d.foregroundHex
 	cfg.Appearance.Background = d.backgroundHex
-	cfg.Appearance.TabBarBg = d.tabBarBg
-	cfg.Appearance.TabActiveBg = d.tabActiveBg
-	cfg.Appearance.TabActiveFg = d.tabActiveFg
-	cfg.Appearance.TabInactiveBg = d.tabInactiveBg
-	cfg.Appearance.TabInactiveFg = d.tabInactiveFg
 	cfg.Appearance.ScrollbarBg = d.scrollbarBgHex
 	cfg.Appearance.ScrollbarThumb = d.scrollbarThumbHex
 
 	cfg.Font.Family = d.fontFamily
 	cfg.Font.Size = d.fontSize
 	cfg.Font.Path = d.fontPath
-	cfg.Font.LineSpacing = d.lineSpacing
 
 	cfg.Shell = d.shell
 	cfg.Term = d.term
 	if int(d.childExitIdx) < len(prefChildExits) {
 		cfg.Tabs.OnChildExit = prefChildExits[d.childExitIdx]
 	}
-	cfg.Tabs.InheritCWD = d.inheritCWD
 	if int(d.closeBtnIdx) < len(prefCloseBtnPos) {
 		cfg.Tabs.CloseButtonPosition = prefCloseBtnPos[d.closeBtnIdx]
 	}
@@ -379,7 +350,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Scrollback.Mode = prefSBModes[d.sbModeIdx]
 	}
 	cfg.Scrollback.ScrollSpeed = int(d.scrollSpd)
-	cfg.Scrollback.DiskDir = d.diskDir
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 
@@ -389,8 +359,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Scrollbar.Width = int(d.sbWidth)
 	cfg.Scrollbar.MinThumbHeight = int(d.sbMinThumb)
 
-	cfg.Clipboard.CopyOnSelect = d.copyOnSel
-	cfg.Clipboard.PasteOnMiddleClick = d.pasteMiddle
 	cfg.Clipboard.TrimTrailingWhitespace = d.trimWS
 	cfg.Clipboard.UnsafePaste.Enabled = d.unsafeEnabled
 	cfg.Clipboard.UnsafePaste.MultilineWarning = d.multilineWarn
@@ -405,7 +373,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 
 	cfg.Links.Enabled = d.linksOn
 	cfg.Links.CtrlClick = d.ctrlClick
-	cfg.Links.DoubleClick = d.dblClick
 	cfg.Links.Opener = d.opener
 
 	if int(d.bsIdx) < len(prefBSModes) {
@@ -653,24 +620,6 @@ func (a *App) renderPrefAppearance() {
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##tabcolors", &d.tabColorsIdx, prefColorModes, int32(len(prefColorModes)))
 
-	if d.tabColorsIdx == 1 {
-		imgui.Text("Tab Bar BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabbarbg", "#RRGGBB", &d.tabBarBg, 0, nil)
-		imgui.Text("Active Tab BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabactbg", "#RRGGBB", &d.tabActiveBg, 0, nil)
-		imgui.Text("Active Tab FG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabactfg", "#RRGGBB", &d.tabActiveFg, 0, nil)
-		imgui.Text("Inactive Tab BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabinbg", "#RRGGBB", &d.tabInactiveBg, 0, nil)
-		imgui.Text("Inactive Tab FG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabinfg", "#RRGGBB", &d.tabInactiveFg, 0, nil)
-	}
-
 	imgui.Separator()
 
 	imgui.Text("Scrollbar Colors")
@@ -766,10 +715,6 @@ func (a *App) renderPrefFont() {
 
 	imgui.Text("Size")
 	a.renderPrefFontSize(w)
-
-	imgui.Text("Line Spacing")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderFloat("##linespace", &d.lineSpacing, 0, 10)
 }
 
 // renderPrefFontSize draws a combo of standard sizes with a "Custom..." escape
@@ -873,8 +818,6 @@ func (a *App) renderPrefShellTabs() {
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##childexit", &d.childExitIdx, prefChildExits, int32(len(prefChildExits)))
 
-	imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
-
 	imgui.Text("Close Button Position")
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##closebtn", &d.closeBtnIdx, prefCloseBtnPos, int32(len(prefCloseBtnPos)))
@@ -888,16 +831,10 @@ func (a *App) renderPrefScrollback() {
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##sbmode", &d.sbModeIdx, prefSBModes, int32(len(prefSBModes)))
 
-	if d.sbModeIdx != 2 { // not unlimited
+	if d.sbModeIdx != 1 { // not unlimited
 		imgui.Text("Lines")
 		imgui.SetNextItemWidth(w)
 		imgui.InputInt("##sblines", &d.sbLines)
-	}
-
-	if d.sbModeIdx == 1 { // disk
-		imgui.Text("Disk Directory")
-		imgui.SetNextItemWidth(300)
-		imgui.InputTextWithHint("##diskdir", "/tmp/xerotty", &d.diskDir, 0, nil)
 	}
 
 	imgui.Separator()
@@ -930,8 +867,6 @@ func (a *App) renderPrefScrollbar() {
 func (a *App) renderPrefClipboard() {
 	d := &a.prefDialog
 
-	imgui.Checkbox("Copy on Select", &d.copyOnSel)
-	imgui.Checkbox("Paste on Middle Click", &d.pasteMiddle)
 	imgui.Checkbox("Trim Trailing Whitespace", &d.trimWS)
 
 	imgui.Separator()
@@ -956,7 +891,6 @@ func (a *App) renderPrefLinks() {
 
 	if d.linksOn {
 		imgui.Checkbox("Ctrl+Click to Open", &d.ctrlClick)
-		imgui.Checkbox("Double-Click to Open", &d.dblClick)
 
 		imgui.Text("URL Opener Command")
 		imgui.SetNextItemWidth(w)

@@ -7,7 +7,6 @@ background = "#2E3436"
 cursor = "#EEEEEC"
 selection_fg = "#2E3436"
 selection_bg = "#D3D7CF"
-bold = "#FFFFFF"
 
 [theme.colors.ansi]
 black          = "#2E3436"
@@ -28,11 +27,6 @@ bright_cyan    = "#34E2E2"
 bright_white   = "#EEEEEC"
 
 [theme.ui]
-tab_bar_bg = "#1F2426"
-tab_active_bg = "#2E3436"
-tab_active_fg = "#EEEEEC"
-tab_inactive_bg = "#262B2D"
-tab_inactive_fg = "#888A85"
 scrollbar_bg = "#2E3436"
 scrollbar_thumb = "#555753"
 scrollbar_thumb_hover = "#888A85"
