@@ -65,6 +65,8 @@ type App struct {
 	lastDblClickCol    int          // col of last double-click
 	prefDialog         configDialog // preferences dialog state
 	pendingFontFace    bool         // rebuild font atlas at start of next frame
+	lastTabBarW        float32      // last width sent to SetNextWindowSizeV for tab bar
+	lastTabBarH        float32      // last height sent to SetNextWindowSizeV for tab bar
 	skipDisplaySync    int          // skip DisplaySize→a.width/a.height sync for N frames after a programmatic SetWindowSize, so the WM has time to honour shrink requests before we accept its old (pre-resize) DisplaySize
 }
 
@@ -917,7 +919,26 @@ func (a *App) renderTabBar() {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
 	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
-	imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(a.width), Y: a.tabBarH}, imgui.CondAlways)
+	// Asymmetric size update to keep auto-repeat fast in both directions:
+	//   - On GROW: defer the tab bar size update while the SDL window is in
+	//     mid-resize (skipDisplaySync > 0). Stacking SetNextWindowSizeV on
+	//     top of in-flight Wayland configure cycles starves keyboard
+	//     auto-repeat. Safe to defer because the tab bar's old (smaller)
+	//     size still fits inside the new (larger) viewport, so multi-viewport
+	//     doesn't promote it to its own platform window.
+	//   - On SHRINK: always update immediately. If we deferred, the tab bar's
+	//     old (larger) size would exceed the new (smaller) viewport, and
+	//     multi-viewport WOULD promote it to its own platform window —
+	//     triggering another configure cycle per shrink. Wayland handles
+	//     shrink configures fast, so the immediate path is cheap here.
+	curW, curH := float32(a.width), a.tabBarH
+	sizeChanged := curW != a.lastTabBarW || curH != a.lastTabBarH
+	isShrink := curW < a.lastTabBarW
+	if sizeChanged && (isShrink || a.skipDisplaySync == 0) {
+		imgui.SetNextWindowSizeV(imgui.Vec2{X: curW, Y: curH}, imgui.CondAlways)
+		a.lastTabBarW = curW
+		a.lastTabBarH = curH
+	}
 	// The tab bar is purely a click target — it should never take keyboard
 	// focus. With multiple tabs the bar is the only ImGui window that exists,
 	// so any focus event (initial appearance, click, post-resize re-evaluation)
