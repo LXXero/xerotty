@@ -413,7 +413,7 @@ func (a *App) frame() {
 	// active-tab underline (drawn at the bottom edge) isn't clipped.
 	oldTabBarH := a.tabBarH
 	if a.tabs.Count() > 1 {
-		a.tabBarH = imgui.FrameHeight() + 4
+		a.tabBarH = imgui.FrameHeight() + 2
 	} else {
 		a.tabBarH = 0
 	}
@@ -929,6 +929,11 @@ func (a *App) renderTabBar() {
 		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground |
 		imgui.WindowFlagsNoFocusOnAppearing | imgui.WindowFlagsNoNav |
 		imgui.WindowFlagsNoBringToFrontOnFocus
+
+	innerSpX := imgui.CurrentStyle().ItemInnerSpacing().X
+	imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{X: 0, Y: 0})
+	imgui.PushStyleVarVec2(imgui.StyleVarItemInnerSpacing, imgui.Vec2{X: innerSpX, Y: 0})
+	defer imgui.PopStyleVarV(2)
 
 	if imgui.BeginV("##tabbar", nil, flags) {
 		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
