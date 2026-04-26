@@ -51,6 +51,14 @@ type App struct {
 	pendingPaste       string       // text awaiting unsafe-paste confirmation
 	resizeTime         float64      // imgui.Time() when last resize occurred
 	resizeOverlay      bool         // whether to show overlay
+	resizing           bool         // true while manual resize drag is active
+	resizeEdge         int          // bitmask of edges (1=N, 2=S, 4=W, 8=E)
+	resizeStartW       int          // window width at start of drag
+	resizeStartH       int          // window height at start of drag
+	resizeStartX       int          // window X at start of drag
+	resizeStartY       int          // window Y at start of drag
+	resizeStartMouseX  float32      // mouse X at start of drag (desktop coords)
+	resizeStartMouseY  float32      // mouse Y at start of drag (desktop coords)
 	lastCols           int          // cols at last resize check
 	lastRows           int          // rows at last resize check
 	hoveredLink        *linkHit     // URL under mouse cursor, nil if none
@@ -114,6 +122,7 @@ func (a *App) Run() error {
 
 	a.width, a.height = a.initialWindowSize()
 	a.backend.CreateWindow("xerotty", a.width, a.height)
+	sdlSetResizable(false)
 
 	// Cascade child windows: when spawned via new_window, parent passes
 	// XEROTTY_WIN_X/Y so each new xerotty appears offset from its predecessor
@@ -143,6 +152,9 @@ func (a *App) Run() error {
 	// window-local pixels.
 	io := imgui.CurrentIO()
 	io.SetConfigFlags(io.ConfigFlags() | imgui.ConfigFlagsViewportsEnable)
+	// Disable ImGui's own cursor management so we can handle it 100% via SDL
+	// without fighting the backend (fixes "2 different resize arrows").
+	io.SetConfigFlags(io.ConfigFlags() | imgui.ConfigFlagsNoMouseCursorChange)
 
 	// Load font into atlas (must be after CreateWindow, before first frame)
 	font, fontBold := renderer.LoadFont(&a.cfg)
@@ -237,7 +249,9 @@ func (a *App) frame() {
 		pad := float32(a.cfg.Appearance.Padding) * 2
 		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad)))
 		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH)))
-		if desiredW != a.width || desiredH != a.height {
+		
+		// Only resize if we are truly off-target.
+		if math.Abs(float64(desiredW-a.width)) > 2 || math.Abs(float64(desiredH-a.height)) > 2 {
 			a.backend.SetWindowSize(desiredW, desiredH)
 			a.width = desiredW
 			a.height = desiredH
@@ -279,18 +293,37 @@ func (a *App) frame() {
 		}
 	}
 
+	a.handleManualResize()
+
 	// Sync window dimensions from ImGui IO every frame — more reliable than
 	// SetSizeChangeCallback which some WMs/compositors don't always trigger.
-	// Skip for a few frames after we issue SetWindowSize: DisplaySize lags the
-	// WM by 1-2 frames, so a fresh shrink request would otherwise be clobbered
-	// by the stale (pre-resize) DisplaySize value.
+	// We only accept external (WM-initiated) resizes if we aren't already
+	// in a manual resize drag. If we do accept one, we MUST snap it.
 	if a.skipDisplaySync > 0 {
 		a.skipDisplaySync--
-	} else if ds := imgui.CurrentIO().DisplaySize(); int(ds.X) > 0 && int(ds.Y) > 0 {
+	} else if ds := imgui.CurrentIO().DisplaySize(); !a.resizing && int(ds.X) > 0 && int(ds.Y) > 0 {
 		newW, newH := int(ds.X), int(ds.Y)
 		if newW != a.width || newH != a.height {
-			a.width = newW
-			a.height = newH
+			// External resize (e.g. tiling WM or Alt-drag): force-snap it
+			// so the terminal grid never has sub-cell remainders.
+			pad := float32(a.cfg.Appearance.Padding) * 2
+			cols := int((float32(newW) - pad) / a.cellW)
+			rows := int((float32(newH) - pad - a.tabBarH) / a.cellH)
+			if cols < 2 {
+				cols = 2
+			}
+			if rows < 2 {
+				rows = 2
+			}
+			snappedW := int(math.Ceil(float64(float32(cols)*a.cellW + pad)))
+			snappedH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH)))
+
+			a.width = snappedW
+			a.height = snappedH
+			if snappedW != newW || snappedH != newH {
+				a.backend.SetWindowSize(snappedW, snappedH)
+				a.skipDisplaySync = 2
+			}
 			a.resizeTerminals()
 			a.resizeTime = imgui.Time()
 			a.resizeOverlay = true
@@ -906,6 +939,131 @@ func (a *App) updateFontMetrics() {
 	// Show resize overlay so user sees the new grid dimensions
 	a.resizeTime = imgui.Time()
 	a.resizeOverlay = true
+}
+
+func (a *App) handleManualResize() {
+	if a.fullscreen {
+		return
+	}
+
+	io := imgui.CurrentIO()
+	mx, my := io.MousePos().X, io.MousePos().Y
+
+	var vx, vy, vw, vh float32
+	if vp := imgui.MainViewport(); vp != nil {
+		vx, vy = vp.Pos().X, vp.Pos().Y
+		vw, vh = vp.Size().X, vp.Size().Y
+	} else {
+		return
+	}
+
+	// Border width for detection
+	bw := float32(8.0)
+
+	// Check if mouse is over any edge
+	overN := my >= vy-bw && my <= vy+bw && mx >= vx-bw && mx <= vx+vw+bw
+	overS := my >= vy+vh-bw && my <= vy+vh+bw && mx >= vx-bw && mx <= vx+vw+bw
+	overW := mx >= vx-bw && mx <= vx+bw && my >= vy-bw && my <= vy+vh+bw
+	overE := mx >= vx+vw-bw && mx <= vx+vw+bw && my >= vy-bw && my <= vy+vh+bw
+
+	// Determine edge mask
+	edge := 0
+	if overN {
+		edge |= 1
+	}
+	if overS {
+		edge |= 2
+	}
+	if overW {
+		edge |= 4
+	}
+	if overE {
+		edge |= 8
+	}
+
+	// We deliberately don't set our own cursor here. labwc / the WM still
+	// shows its native resize cursor on edge zones (border-grab behavior is
+	// independent of SDL_SetWindowResizable on Wayland), so calling
+	// sdlSetCursor would produce a duplicate cursor offset from the WM's.
+	// Click detection still works — we just let the WM own the visual.
+	if !a.resizing {
+		if edge != 0 {
+			if io.MouseDown()[0] {
+				a.resizing = true
+				a.resizeEdge = edge
+				a.resizeStartW = a.width
+				a.resizeStartH = a.height
+				a.resizeStartX, a.resizeStartY = sdlGetWindowPos()
+				a.resizeStartMouseX = mx
+				a.resizeStartMouseY = my
+			}
+		}
+	}
+
+	if a.resizing {
+		if !io.MouseDown()[0] {
+			a.resizing = false
+			return
+		}
+
+		dx := mx - a.resizeStartMouseX
+		dy := my - a.resizeStartMouseY
+
+		newW, newH := a.resizeStartW, a.resizeStartH
+
+		// Calculate proposed dimensions
+		if (a.resizeEdge & 8) != 0 { // E
+			newW = a.resizeStartW + int(dx)
+		}
+		if (a.resizeEdge & 4) != 0 { // W
+			newW = a.resizeStartW - int(dx)
+		}
+		if (a.resizeEdge & 2) != 0 { // S
+			newH = a.resizeStartH + int(dy)
+		}
+		if (a.resizeEdge & 1) != 0 { // N
+			newH = a.resizeStartH - int(dy)
+		}
+
+		// Snap to character grid
+		pad := float32(a.cfg.Appearance.Padding) * 2
+		cols := int((float32(newW) - pad) / a.cellW)
+		rows := int((float32(newH) - pad - a.tabBarH) / a.cellH)
+		if cols < 2 {
+			cols = 2
+		}
+		if rows < 2 {
+			rows = 2
+		}
+
+		snappedW := int(math.Ceil(float64(float32(cols)*a.cellW + pad)))
+		snappedH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH)))
+
+		// Update window if snapped size changed
+		if snappedW != a.width || snappedH != a.height {
+			// For N/W drags, we also need to adjust window position so the opposite edge stays fixed
+			finalX, finalY := a.resizeStartX, a.resizeStartY
+			if (a.resizeEdge & 4) != 0 { // W
+				finalX = a.resizeStartX + (a.resizeStartW - snappedW)
+			}
+			if (a.resizeEdge & 1) != 0 { // N
+				finalY = a.resizeStartY + (a.resizeStartH - snappedH)
+			}
+
+			// Atomic update of position and size where possible.
+			// SetWindowPos must come first for N/W resizes.
+			if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
+				sb.SetWindowPos(finalX, finalY)
+			}
+			a.backend.SetWindowSize(snappedW, snappedH)
+			a.width = snappedW
+			a.height = snappedH
+			a.skipDisplaySync = 2
+			a.resizeTerminals()
+			a.resizeTime = imgui.Time()
+			a.resizeOverlay = true
+		}
+	}
 }
 
 func (a *App) renderTabBar() {

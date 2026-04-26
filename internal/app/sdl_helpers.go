@@ -31,6 +31,29 @@ void xerottyRaiseWindow(void) {
 		SDL_SetWindowInputFocus(win);
 	}
 }
+
+void xerottySetResizable(int resizable) {
+	SDL_Window *win = SDL_GL_GetCurrentWindow();
+	if (win) {
+		SDL_SetWindowResizable(win, resizable ? SDL_TRUE : SDL_FALSE);
+	}
+}
+
+void xerottySetCursor(int cursorID) {
+	static SDL_Cursor *cursors[SDL_NUM_SYSTEM_CURSORS];
+	if (cursorID < 0 || cursorID >= SDL_NUM_SYSTEM_CURSORS) return;
+	if (!cursors[cursorID]) {
+		cursors[cursorID] = SDL_CreateSystemCursor((SDL_SystemCursor)cursorID);
+	}
+	SDL_SetCursor(cursors[cursorID]);
+}
+
+void xerottyGetWindowPos(int *x, int *y) {
+	SDL_Window *win = SDL_GL_GetCurrentWindow();
+	if (win) {
+		SDL_GetWindowPosition(win, x, y);
+	}
+}
 */
 import "C"
 
@@ -48,4 +71,32 @@ func sdlQuit() {
 
 func sdlRaiseWindow() {
 	C.xerottyRaiseWindow()
+}
+
+func sdlSetResizable(resizable bool) {
+	if resizable {
+		C.xerottySetResizable(1)
+	} else {
+		C.xerottySetResizable(0)
+	}
+}
+
+const (
+	sdlCursorArrow    = int(C.SDL_SYSTEM_CURSOR_ARROW)
+	sdlCursorIBeam    = int(C.SDL_SYSTEM_CURSOR_IBEAM)
+	sdlCursorHand     = int(C.SDL_SYSTEM_CURSOR_HAND)
+	sdlCursorSizeNS   = int(C.SDL_SYSTEM_CURSOR_SIZENS)
+	sdlCursorSizeWE   = int(C.SDL_SYSTEM_CURSOR_SIZEWE)
+	sdlCursorSizeNESW = int(C.SDL_SYSTEM_CURSOR_SIZENESW)
+	sdlCursorSizeNWSE = int(C.SDL_SYSTEM_CURSOR_SIZENWSE)
+)
+
+func sdlSetCursor(cursorID int) {
+	C.xerottySetCursor(C.int(cursorID))
+}
+
+func sdlGetWindowPos() (int, int) {
+	var x, y C.int
+	C.xerottyGetWindowPos(&x, &y)
+	return int(x), int(y)
 }
