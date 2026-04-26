@@ -43,15 +43,21 @@ type Appearance struct {
 	// Custom color overrides (hex strings, used when *_colors = "custom")
 	Foreground     string `toml:"foreground"`
 	Background     string `toml:"background"`
+	TabBarBg       string `toml:"tab_bar_bg"`
+	TabActiveBg    string `toml:"tab_active_bg"`
+	TabActiveFg    string `toml:"tab_active_fg"`
+	TabInactiveBg  string `toml:"tab_inactive_bg"`
+	TabInactiveFg  string `toml:"tab_inactive_fg"`
 	ScrollbarBg    string `toml:"scrollbar_bg"`
 	ScrollbarThumb string `toml:"scrollbar_thumb"`
 }
 
 // FontConfig controls font loading.
 type FontConfig struct {
-	Family string  `toml:"family"`
-	Size   float32 `toml:"size"`
-	Path   string  `toml:"path"`
+	Family      string  `toml:"family"`
+	Size        float32 `toml:"size"`
+	Path        string  `toml:"path"`
+	LineSpacing float32 `toml:"line_spacing"`
 }
 
 // KeyConfig controls special key behavior.
@@ -78,7 +84,8 @@ type MenuItem struct {
 // ScrollbackConfig controls scrollback buffer behavior.
 type ScrollbackConfig struct {
 	Lines             int    `toml:"lines"`
-	Mode              string `toml:"mode"`               // "memory" | "unlimited"
+	Mode              string `toml:"mode"`               // "memory" | "disk" | "unlimited"
+	DiskDir           string `toml:"disk_dir"`
 	ScrollSpeed       int    `toml:"scroll_speed"`        // lines per mouse wheel tick
 	ScrollOnKeystroke bool   `toml:"scroll_on_keystroke"` // snap to bottom on keypress
 	ScrollOnOutput    bool   `toml:"scroll_on_output"`    // snap to bottom on new output
@@ -93,13 +100,16 @@ type ScrollbarConfig struct {
 
 // LinksConfig controls URL detection and interaction.
 type LinksConfig struct {
-	Enabled   bool   `toml:"enabled"`
-	CtrlClick bool   `toml:"ctrl_click"`
-	Opener    string `toml:"opener"`
+	Enabled     bool   `toml:"enabled"`
+	CtrlClick   bool   `toml:"ctrl_click"`
+	DoubleClick bool   `toml:"double_click"`
+	Opener      string `toml:"opener"`
 }
 
 // ClipboardConfig controls clipboard behavior.
 type ClipboardConfig struct {
+	CopyOnSelect           bool              `toml:"copy_on_select"`
+	PasteOnMiddleClick     bool              `toml:"paste_on_middle_click"`
 	TrimTrailingWhitespace bool              `toml:"trim_trailing_whitespace"`
 	UnsafePaste            UnsafePasteConfig `toml:"unsafe_paste"`
 }
@@ -115,6 +125,7 @@ type UnsafePasteConfig struct {
 // TabConfig controls tab behavior.
 type TabConfig struct {
 	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
+	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
 	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
 }
 
@@ -174,6 +185,8 @@ func Default() Config {
 			Opener:    "xdg-open",
 		},
 		Clipboard: ClipboardConfig{
+			CopyOnSelect:           true,
+			PasteOnMiddleClick:     true,
 			TrimTrailingWhitespace: true,
 			UnsafePaste: UnsafePasteConfig{
 				Enabled:          true,
@@ -184,6 +197,7 @@ func Default() Config {
 		},
 		Tabs: TabConfig{
 			OnChildExit:         "close",
+			InheritCWD:          false,
 			CloseButtonPosition: "right",
 		},
 		Window: WindowConfig{
