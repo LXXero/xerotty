@@ -12,10 +12,11 @@ type Renderer struct {
 	Theme        Theme
 	Metrics      CellMetrics
 	Font         *imgui.Font
-	FontSize     float32 // explicit font size for DrawList text (supports zoom scaling)
+	FontBold     *imgui.Font // optional; falls back to Font when nil
+	FontSize     float32     // explicit font size for DrawList text (supports zoom scaling)
 	OffsetX      float32
 	OffsetY      float32
-	BoldIsBright bool // when true, bold text uses the bright ANSI color
+	BoldIsBright bool // when true, bold text also uses the bright ANSI color
 }
 
 // New creates a new renderer with the given theme and metrics.
@@ -140,8 +141,12 @@ func (r *Renderer) Draw(emu *vt.SafeEmulator, drawList *imgui.DrawList, scrollOf
 			if attrs&uv.AttrConceal == 0 {
 				content := cell.Content
 				if content != "" && content != " " {
+					face := r.Font
+					if attrs&uv.AttrBold != 0 && r.FontBold != nil {
+						face = r.FontBold
+					}
 					drawList.AddTextFontPtr(
-						r.Font,
+						face,
 						r.FontSize,
 						imgui.Vec2{X: x, Y: y},
 						fg,

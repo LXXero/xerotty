@@ -13,6 +13,7 @@ import (
 type Theme struct {
 	Foreground      uint32
 	Background      uint32
+	Bold            uint32 // explicit bold-text color override; 0 = none
 	Cursor          uint32
 	SelectionFg     uint32
 	SelectionBg     uint32
@@ -71,6 +72,9 @@ func (t *Theme) ResolveColor(c color.Color, isFg bool, bold bool) uint32 {
 	if c == nil {
 		if isFg {
 			if bold {
+				if t.Bold != 0 {
+					return t.Bold
+				}
 				return t.ANSI[15]
 			}
 			return t.Foreground

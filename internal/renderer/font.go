@@ -57,18 +57,19 @@ func terminalGlyphRanges() *imgui.Wchar {
 	return termGlyphRanges.Data()
 }
 
-// LoadFont loads the configured font into the ImGui font atlas.
-// Call MeasureCell after the first frame to get accurate metrics.
-func LoadFont(cfg *config.Config) *imgui.Font {
-	font, _ := loadFontResolved(cfg)
-	return font
+// LoadFont loads the configured font (regular + bold variant if available)
+// into the ImGui font atlas. Call MeasureCell after the first frame to get
+// accurate metrics. Bold may be nil if no matching bold face was discovered.
+func LoadFont(cfg *config.Config) (regular, bold *imgui.Font) {
+	regular, bold, _ = loadFontResolved(cfg)
+	return
 }
 
 // ReloadFont clears the atlas and loads the configured font afresh.
-// Returns the new *imgui.Font and the path actually used (for status display).
+// Returns the new fonts and the regular path actually used (for status display).
 // Must be called between frames; the renderer will rebuild textures on demand
 // (ImGui 1.92+ with RendererHasTextures) before the next draw.
-func ReloadFont(cfg *config.Config) (*imgui.Font, string) {
+func ReloadFont(cfg *config.Config) (regular, bold *imgui.Font, path string) {
 	io := imgui.CurrentIO()
 	io.Fonts().Clear()
 	return loadFontResolved(cfg)
@@ -90,7 +91,7 @@ func ResolveFontPath(cfg *config.Config) string {
 	return findFont(family)
 }
 
-func loadFontResolved(cfg *config.Config) (*imgui.Font, string) {
+func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	io := imgui.CurrentIO()
 	pt := cfg.Font.Size
 	if pt <= 0 {
@@ -132,7 +133,61 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, string) {
 		font = io.Fonts().AddFontDefault()
 	}
 
-	return font, loadedPath
+	var bold *imgui.Font
+	if loadedPath != "" {
+		if boldPath := findBoldVariant(loadedPath); boldPath != "" {
+			fmt.Fprintf(os.Stderr, "xerotty: loading bold font %s\n", boldPath)
+			fc := imgui.NewFontConfig()
+			bold = io.Fonts().AddFontFromFileTTFV(boldPath, pxSize, fc, ranges)
+		}
+	}
+
+	return font, bold, loadedPath
+}
+
+// findBoldVariant looks for a Bold font file sitting next to regularPath,
+// trying common naming conventions (Foo-Regular → Foo-Bold, Foo → Foo-Bold,
+// FooRegular → FooBold). Returns "" if none found.
+func findBoldVariant(regularPath string) string {
+	dir := filepath.Dir(regularPath)
+	base := filepath.Base(regularPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+
+	var candidates []string
+
+	// Foo-Regular / Foo_Regular → Foo-Bold / Foo_Bold (preserve separator)
+	for _, sep := range []string{"-", "_"} {
+		suf := sep + "Regular"
+		if strings.HasSuffix(stem, suf) {
+			prefix := strings.TrimSuffix(stem, suf)
+			candidates = append(candidates,
+				prefix+sep+"Bold"+ext,
+				prefix+sep+"bold"+ext,
+			)
+		}
+	}
+
+	// Glued "FooRegular" → "FooBold"
+	if strings.HasSuffix(stem, "Regular") {
+		prefix := strings.TrimSuffix(stem, "Regular")
+		candidates = append(candidates, prefix+"Bold"+ext)
+	}
+
+	// Bare "Foo" → "Foo-Bold" / "FooBold"
+	candidates = append(candidates,
+		stem+"-Bold"+ext,
+		stem+"_Bold"+ext,
+		stem+"Bold"+ext,
+	)
+
+	for _, c := range candidates {
+		p := filepath.Join(dir, c)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // MeasureCell measures the actual cell dimensions of the loaded font.

@@ -143,7 +143,7 @@ func (a *App) Run() error {
 	io.SetConfigFlags(io.ConfigFlags() | imgui.ConfigFlagsViewportsEnable)
 
 	// Load font into atlas (must be after CreateWindow, before first frame)
-	font := renderer.LoadFont(&a.cfg)
+	font, fontBold := renderer.LoadFont(&a.cfg)
 
 	// Approximate metrics until first frame measures real ones.
 	// baseFontSize is in pixels — that's what ImGui's atlas stores and what
@@ -157,6 +157,7 @@ func (a *App) Run() error {
 	a.renderer = renderer.New(theme, renderer.CellMetrics{
 		Width: a.cellW, Height: a.cellH,
 	}, font, pxSize)
+	a.renderer.FontBold = fontBold
 	pad := float32(a.cfg.Appearance.Padding)
 	a.renderer.OffsetX = pad
 	a.renderer.OffsetY = a.tabBarH + pad
@@ -254,8 +255,9 @@ func (a *App) frame() {
 	// already issued draw commands referencing the old textures.
 	if a.pendingFontFace {
 		a.pendingFontFace = false
-		font, _ := renderer.ReloadFont(&a.cfg)
+		font, fontBold, _ := renderer.ReloadFont(&a.cfg)
 		a.renderer.Font = font
+		a.renderer.FontBold = fontBold
 		a.baseFontSize = renderer.PixelSize(&a.cfg)
 		a.pendingRemeasure = true
 	}

@@ -16,6 +16,7 @@ type ThemeFile struct {
 		Colors struct {
 			Foreground  string `toml:"foreground"`
 			Background  string `toml:"background"`
+			Bold        string `toml:"bold"`
 			Cursor      string `toml:"cursor"`
 			SelectionFg string `toml:"selection_fg"`
 			SelectionBg string `toml:"selection_bg"`
@@ -99,6 +100,9 @@ func themeFromFile(tf ThemeFile) renderer.Theme {
 	}
 	if c.Background != "" {
 		theme.Background = renderer.HexToABGR(c.Background)
+	}
+	if c.Bold != "" {
+		theme.Bold = renderer.HexToABGR(c.Bold)
 	}
 	if c.Cursor != "" {
 		theme.Cursor = renderer.HexToABGR(c.Cursor)
