@@ -9,12 +9,13 @@ import (
 
 // Renderer draws the terminal cell grid using ImGui's DrawList.
 type Renderer struct {
-	Theme    Theme
-	Metrics  CellMetrics
-	Font     *imgui.Font
-	FontSize float32 // explicit font size for DrawList text (supports zoom scaling)
-	OffsetX  float32
-	OffsetY  float32
+	Theme        Theme
+	Metrics      CellMetrics
+	Font         *imgui.Font
+	FontSize     float32 // explicit font size for DrawList text (supports zoom scaling)
+	OffsetX      float32
+	OffsetY      float32
+	BoldIsBright bool // when true, bold text uses the bright ANSI color
 }
 
 // New creates a new renderer with the given theme and metrics.
@@ -45,7 +46,7 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell) (fg, bg uint32) {
 	reverse := cell.Style.Attrs&uv.AttrReverse != 0
 	faint := cell.Style.Attrs&uv.AttrFaint != 0
 
-	fg = r.Theme.ResolveColor(cell.Style.Fg, true, bold)
+	fg = r.Theme.ResolveColor(cell.Style.Fg, true, bold && r.BoldIsBright)
 	bg = r.Theme.ResolveColor(cell.Style.Bg, false, false)
 
 	if reverse {

@@ -64,10 +64,15 @@ func ColorToABGR(c color.Color) uint32 {
 }
 
 // ResolveColor resolves a terminal color to ABGR uint32 using the theme.
-// If bold is true and the color is in the basic ANSI range (0-7), promote to bright (8-15).
+// If bold is true, the basic ANSI range (0-7) is promoted to bright (8-15),
+// and a nil (default) fg is promoted to bright white (15) — matching xterm's
+// "bold is bright" behavior used by xfce4-terminal/gnome-terminal.
 func (t *Theme) ResolveColor(c color.Color, isFg bool, bold bool) uint32 {
 	if c == nil {
 		if isFg {
+			if bold {
+				return t.ANSI[15]
+			}
 			return t.Foreground
 		}
 		return t.Background

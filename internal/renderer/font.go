@@ -8,19 +8,7 @@ import (
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
-	"github.com/LXXero/xerotty/internal/dpi"
 )
-
-// PixelSize converts a config Font.Size (in points, matching the convention
-// of xfce4-terminal/gnome-terminal/Pango) into the pixel size that ImGui's
-// font atlas needs. Falls back to 14pt when unset.
-func PixelSize(cfg *config.Config) float32 {
-	pt := cfg.Font.Size
-	if pt <= 0 {
-		pt = 14
-	}
-	return dpi.PointsToPixels(pt)
-}
 
 // CellMetrics holds the pixel dimensions of a single terminal cell.
 type CellMetrics struct {
@@ -60,56 +48,24 @@ func terminalGlyphRanges() *imgui.Wchar {
 // LoadFont loads the configured font into the ImGui font atlas.
 // Call MeasureCell after the first frame to get accurate metrics.
 func LoadFont(cfg *config.Config) *imgui.Font {
-	font, _ := loadFontResolved(cfg)
-	return font
-}
-
-// ReloadFont clears the atlas and loads the configured font afresh.
-// Returns the new *imgui.Font and the path actually used (for status display).
-// Must be called between frames; the renderer will rebuild textures on demand
-// (ImGui 1.92+ with RendererHasTextures) before the next draw.
-func ReloadFont(cfg *config.Config) (*imgui.Font, string) {
 	io := imgui.CurrentIO()
-	io.Fonts().Clear()
-	return loadFontResolved(cfg)
-}
-
-// ResolveFontPath returns the path that LoadFont would actually use, without
-// touching the atlas. Useful for showing a "→ resolved to ..." preview in the
-// preferences dialog.
-func ResolveFontPath(cfg *config.Config) string {
-	if cfg.Font.Path != "" {
-		if _, err := os.Stat(cfg.Font.Path); err == nil {
-			return cfg.Font.Path
-		}
+	fontSize := cfg.Font.Size
+	if fontSize <= 0 {
+		fontSize = 14
 	}
-	family := cfg.Font.Family
-	if family == "" {
-		family = "monospace"
-	}
-	return findFont(family)
-}
-
-func loadFontResolved(cfg *config.Config) (*imgui.Font, string) {
-	io := imgui.CurrentIO()
-	pt := cfg.Font.Size
-	if pt <= 0 {
-		pt = 14
-	}
-	pxSize := dpi.PointsToPixels(pt)
 
 	ranges := terminalGlyphRanges()
 	var font *imgui.Font
-	var loadedPath string
 
+	// Try explicit path first
 	if cfg.Font.Path != "" {
 		if _, err := os.Stat(cfg.Font.Path); err == nil {
 			fc := imgui.NewFontConfig()
-			font = io.Fonts().AddFontFromFileTTFV(cfg.Font.Path, pxSize, fc, ranges)
-			loadedPath = cfg.Font.Path
+			font = io.Fonts().AddFontFromFileTTFV(cfg.Font.Path, fontSize, fc, ranges)
 		}
 	}
 
+	// Try finding font by family name in common directories
 	if font == nil {
 		family := cfg.Font.Family
 		if family == "" {
@@ -117,22 +73,21 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, string) {
 		}
 		path := findFont(family)
 		if path != "" {
-			fmt.Fprintf(os.Stderr, "xerotty: loading font %s at %.1fpx (%.0fpt @ %.0fdpi)\n",
-				path, pxSize, pt, dpi.Display())
+			fmt.Fprintf(os.Stderr, "xerotty: loading font %s at %.0fpt\n", path, fontSize)
 			fc := imgui.NewFontConfig()
-			font = io.Fonts().AddFontFromFileTTFV(path, pxSize, fc, ranges)
-			loadedPath = path
+			font = io.Fonts().AddFontFromFileTTFV(path, fontSize, fc, ranges)
 		} else {
 			fmt.Fprintf(os.Stderr, "xerotty: font family %q not found\n", family)
 		}
 	}
 
+	// Fallback to ImGui default
 	if font == nil {
 		fmt.Fprintln(os.Stderr, "xerotty: no font found, using ImGui default")
 		font = io.Fonts().AddFontDefault()
 	}
 
-	return font, loadedPath
+	return font
 }
 
 // MeasureCell measures the actual cell dimensions of the loaded font.
