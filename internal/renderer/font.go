@@ -103,9 +103,25 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	var font *imgui.Font
 	var loadedPath string
 
+	// terminalFontConfig returns a FontConfig tuned for terminal rendering:
+	// - PixelSnapH/V: snap each glyph to integer pixel positions, preventing
+	//   anti-aliasing drift between rows that breaks half-block (▀ ▄) and
+	//   line-drawing (─ │) character continuity
+	// - OversampleH/V = 1: no sub-pixel rasterization (default 3 produces
+	//   crisper text at fractional positions but bakes sub-pixel AA into the
+	//   atlas, which then misaligns when stacked at integer cell offsets)
+	terminalFontConfig := func() *imgui.FontConfig {
+		fc := imgui.NewFontConfig()
+		fc.SetPixelSnapH(true)
+		fc.SetPixelSnapV(true)
+		fc.SetOversampleH(1)
+		fc.SetOversampleV(1)
+		return fc
+	}
+
 	if cfg.Font.Path != "" {
 		if _, err := os.Stat(cfg.Font.Path); err == nil {
-			fc := imgui.NewFontConfig()
+			fc := terminalFontConfig()
 			font = io.Fonts().AddFontFromFileTTFV(cfg.Font.Path, pxSize, fc, ranges)
 			loadedPath = cfg.Font.Path
 		}
@@ -120,7 +136,7 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 		if path != "" {
 			fmt.Fprintf(os.Stderr, "xerotty: loading font %s at %.1fpx (%.0fpt @ %.0fdpi)\n",
 				path, pxSize, pt, dpi.Display())
-			fc := imgui.NewFontConfig()
+			fc := terminalFontConfig()
 			font = io.Fonts().AddFontFromFileTTFV(path, pxSize, fc, ranges)
 			loadedPath = path
 		} else {
@@ -137,7 +153,7 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	if loadedPath != "" {
 		if boldPath := findBoldVariant(loadedPath); boldPath != "" {
 			fmt.Fprintf(os.Stderr, "xerotty: loading bold font %s\n", boldPath)
-			fc := imgui.NewFontConfig()
+			fc := terminalFontConfig()
 			bold = io.Fonts().AddFontFromFileTTFV(boldPath, pxSize, fc, ranges)
 		}
 	}
@@ -223,12 +239,15 @@ func findFont(family string) string {
 	dirs := []string{
 		"/usr/share/fonts",
 		"/usr/local/share/fonts",
+		"/System/Library/Fonts",
+		"/Library/Fonts",
 	}
 
 	home, err := os.UserHomeDir()
 	if err == nil {
 		dirs = append(dirs, filepath.Join(home, ".local", "share", "fonts"))
 		dirs = append(dirs, filepath.Join(home, ".fonts"))
+		dirs = append(dirs, filepath.Join(home, "Library", "Fonts"))
 	}
 
 	for _, fam := range families {

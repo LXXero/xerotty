@@ -95,8 +95,10 @@ func (a *App) initialWindowSize() (int, int) {
 		rows = 24
 	}
 	pad := float32(a.cfg.Appearance.Padding) * 2
-	w := int(math.Ceil(float64(float32(cols)*estCellW + pad)))
-	h := int(math.Ceil(float64(float32(rows)*estCellH + pad)))
+	// Add cellSafetyMargin so the eventual gridSize() after window creation
+	// computes back to the same cols/rows we requested.
+	w := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMargin)))
+	h := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMargin)))
 	return w, h
 }
 
@@ -185,10 +187,22 @@ func (a *App) Run() error {
 	return nil
 }
 
+// cellSafetyMargin reserves a few extra pixels of right/bottom gutter beyond
+// what the cell count strictly needs. CalcTextSize returns the font's advance
+// width, but font hinting / anti-aliasing can nudge glyph edge pixels slightly
+// past cellW. Without this margin, when the floor-fitted cell count produces
+// a tight gutter, the rightmost character's AA edge can render over the
+// window boundary and appear clipped before the count reduces.
+// Must be added BACK to the window size in any code that wants to fit a
+// specific cols×rows grid (e.g. font zoom resize), otherwise the next gridSize
+// call will floor away one cell.
+const cellSafetyMargin = 8
+
 func (a *App) gridSize() (cols, rows int) {
 	pad := float32(a.cfg.Appearance.Padding) * 2 // padding on both sides
-	availH := float32(a.height) - a.tabBarH - pad
-	cols = int((float32(a.width) - pad) / a.cellW)
+	availW := float32(a.width) - pad - cellSafetyMargin
+	availH := float32(a.height) - a.tabBarH - pad - cellSafetyMargin
+	cols = int(availW / a.cellW)
 	rows = int(availH / a.cellH)
 	if cols < 2 {
 		cols = 2
@@ -235,8 +249,9 @@ func (a *App) frame() {
 			cfgRows = 24
 		}
 		pad := float32(a.cfg.Appearance.Padding) * 2
-		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad)))
-		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH)))
+		// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
+		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMargin)))
+		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
 		if desiredW != a.width || desiredH != a.height {
 			a.backend.SetWindowSize(desiredW, desiredH)
 			a.width = desiredW
@@ -429,8 +444,14 @@ func (a *App) frame() {
 	if vp := imgui.MainViewport(); vp != nil {
 		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
 	}
-	a.renderer.OffsetX = vpOffX + pad
-	a.renderer.OffsetY = vpOffY + a.tabBarH + pad
+	// Snap render offsets to whole pixels so glyphs don't get sub-pixel-drifted
+	// between rows. Without this, half-block characters (▀ ▄) and continuous
+	// lines (─ │) can develop visible gaps between rows because their AA
+	// rendering shifts at fractional positions. A resize "fixes" this only
+	// because the new offsets happen to land cleanly — pixel-snapping makes
+	// every offset land cleanly.
+	a.renderer.OffsetX = float32(math.Floor(float64(vpOffX + pad)))
+	a.renderer.OffsetY = float32(math.Floor(float64(vpOffY + a.tabBarH + pad)))
 	// When tab bar visibility changes (1↔2 tabs), grow/shrink the SDL window
 	// vertically by the tab bar's height so the terminal grid keeps the same
 	// rows. Without this, gridSize() loses ~tabBarH/cellH rows and the user
@@ -892,8 +913,12 @@ func (a *App) updateFontMetrics() {
 	// the per-frame DisplaySize sync (line ~188) will correct them on the
 	// next frame if the WM didn't honour the request.
 	pad := float32(a.cfg.Appearance.Padding) * 2
-	newW := int(math.Ceil(float64(float32(cols)*a.cellW + pad)))
-	newH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH)))
+	// Add back the cellSafetyMargin so the post-resize gridSize() returns the
+	// SAME cols/rows we're trying to preserve. Without this, every zoom step
+	// loses one row+col because gridSize subtracts the margin from available
+	// space.
+	newW := int(math.Ceil(float64(float32(cols)*a.cellW + pad + cellSafetyMargin)))
+	newH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
 	a.backend.SetWindowSize(newW, newH)
 	a.width = newW
 	a.height = newH
