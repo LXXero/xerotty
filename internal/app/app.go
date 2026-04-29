@@ -7,10 +7,13 @@ import (
 	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/menu"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
+	"github.com/LXXero/xerotty/internal/sdlhack"
 	"github.com/LXXero/xerotty/internal/tabs"
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
@@ -114,6 +117,38 @@ func (a *App) Run() error {
 
 	a.backend, _ = backend.CreateBackend(sdlbackend.NewSDLBackend())
 
+	// Font reload runs here — BEFORE every frame's NewFrame. The
+	// alternative (doing it inside our frame() callback after NewFrame
+	// already snapshotted the current font) leaves a freed font in
+	// ImGui's per-frame state and asserts when Render dereferences it.
+	a.backend.SetBeforeRenderHook(func() {
+		if !a.pendingFontFace {
+			return
+		}
+		a.pendingFontFace = false
+		font, fontBold, _ := renderer.ReloadFont(&a.cfg)
+		a.renderer.Font = font
+		a.renderer.FontBold = fontBold
+		a.baseFontSize = renderer.PixelSize(&a.cfg)
+		if a.renderer.Glyphs != nil {
+			a.renderer.Glyphs.Close()
+			a.renderer.Glyphs = nil
+		}
+		if fontsys.Default != nil {
+			primaryPath := renderer.ResolveFontPath(&a.cfg)
+			if primaryPath != "" {
+				fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+				if fbScale <= 0 {
+					fbScale = 1
+				}
+				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+					a.renderer.Glyphs = c
+				}
+			}
+		}
+		a.pendingRemeasure = true
+	})
+
 	a.width, a.height = a.initialWindowSize()
 	a.backend.CreateWindow("xerotty", a.width, a.height)
 
@@ -157,7 +192,9 @@ func (a *App) Run() error {
 	a.cellW = pxSize * 0.6
 	a.cellH = pxSize
 
-	// Create renderer (metrics will be updated on first frame)
+	// Create renderer (metrics will be updated on first frame; the
+	// OS-backed glyph cache is also built on first frame, once
+	// DisplayFramebufferScale has been populated by ImGui's NewFrame).
 	a.renderer = renderer.New(theme, renderer.CellMetrics{
 		Width: a.cellW, Height: a.cellH,
 	}, font, pxSize)
@@ -213,6 +250,27 @@ func (a *App) gridSize() (cols, rows int) {
 	return
 }
 
+// measureCell returns the cell width/height for the current font. When
+// the OS-backed glyph cache is active, it uses the cache's primary-only
+// metrics — that's just the user's chosen monospace font, no influence
+// from any merged fallback. Falls back to ImGui's atlas-based
+// MeasureCell when no cache is available (Linux until fontsys is
+// implemented there).
+//
+// Cell height is ascent + descent (no leading) — terminals traditionally
+// pack rows tightly. Cell width is the primary font's M advance.
+func (a *App) measureCell() renderer.CellMetrics {
+	if a.renderer != nil && a.renderer.Glyphs != nil {
+		lm := a.renderer.Glyphs.LineMetrics()
+		w := a.renderer.Glyphs.PrimaryAdvance()
+		h := lm.Ascent + lm.Descent
+		if w > 0 && h > 0 {
+			return renderer.CellMetrics{Width: w, Height: h}
+		}
+	}
+	return renderer.MeasureCell()
+}
+
 func (a *App) resizeTerminals() {
 	cols, rows := a.gridSize()
 	for _, tab := range a.tabs.Tabs {
@@ -221,12 +279,47 @@ func (a *App) resizeTerminals() {
 }
 
 func (a *App) frame() {
+	// macOS: after the first click that shifts the Cocoa first-responder,
+	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
+	// presses nor releases reach the SDL event queue, so ImGui sees no
+	// up→down transitions and tab clicks vanish. Bypass the broken event
+	// path by polling the OS-level mouse-button state directly each frame
+	// and injecting synthetic events into ImGui whenever its view of the
+	// button diverges from reality. ImGui filters duplicate events, so on
+	// frames where SDL did manage to deliver the event this is a no-op.
+	if runtime.GOOS == "darwin" {
+		osDown := sdlhack.LeftButtonGlobalDown()
+		imguiDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
+		if osDown != imguiDown {
+			imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), osDown)
+		}
+	}
+
 	// First frame: measure font metrics and create terminal
 	if !a.ready {
 		a.ready = true
 
+		// Build the OS-backed glyph cache now that ImGui's NewFrame has
+		// populated DisplayFramebufferScale. Doing this earlier (in
+		// Run() before the loop starts) gives a stale fbScale of 1 on
+		// Retina, so glyphs would rasterize at half the physical
+		// pixel size and look chunky until the user changed font in
+		// prefs (which rebuilds the cache when fbScale is correct).
+		if a.renderer.Glyphs == nil && fontsys.Default != nil {
+			primaryPath := renderer.ResolveFontPath(&a.cfg)
+			if primaryPath != "" {
+				fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+				if fbScale <= 0 {
+					fbScale = 1
+				}
+				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+					a.renderer.Glyphs = c
+				}
+			}
+		}
+
 		// Measure real cell dimensions now that the font atlas is built
-		metrics := renderer.MeasureCell()
+		metrics := a.measureCell()
 		if metrics.Width < 1 || metrics.Height < 1 {
 			// Fallback if measurement fails — estimate from atlas pixel size
 			px := renderer.PixelSize(&a.cfg)
@@ -267,23 +360,19 @@ func (a *App) frame() {
 		return
 	}
 
-	// Apply a deferred font-face swap at the start of a frame. Doing this
-	// inside applyPreferences (mid-frame) corrupts the atlas because ImGui has
-	// already issued draw commands referencing the old textures.
-	if a.pendingFontFace {
-		a.pendingFontFace = false
-		font, fontBold, _ := renderer.ReloadFont(&a.cfg)
-		a.renderer.Font = font
-		a.renderer.FontBold = fontBold
-		a.baseFontSize = renderer.PixelSize(&a.cfg)
-		a.pendingRemeasure = true
-	}
+	// Font-face swap is handled in the backend's BeforeRender hook so
+	// it happens BEFORE NewFrame, never mid-frame. Doing it mid-frame
+	// (the way we used to) corrupts ImGui's per-frame state — at
+	// NewFrame time it captured the OLD font pointer, then our user
+	// code Clear()s the atlas and frees that font, then EndFrame /
+	// Render dereferences the dangling pointer and asserts. Hook is
+	// installed in Run() right after the backend is created.
 
 	// Re-measure cell metrics after a font face swap (atlas was rebuilt).
 	// Done once, then resize terminals to fit the new cell dimensions.
 	if a.pendingRemeasure {
 		a.pendingRemeasure = false
-		if metrics := renderer.MeasureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
+		if metrics := a.measureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
 			a.cellW = metrics.Width
 			a.cellH = metrics.Height
 			a.baseCellW = metrics.Width
@@ -664,8 +753,14 @@ func (a *App) processKeys() {
 	}
 
 	// Don't forward text input when: searching, a keybind just fired,
-	// ImGui wants keyboard, or Ctrl is held (avoids leaking chars from Ctrl+key combos)
-	if searchInputFocused || actionDispatched || imgui.CurrentIO().WantTextInput() || imgui.IsKeyDown(imgui.ModCtrl) {
+	// ImGui wants keyboard, or Ctrl is held (avoids leaking chars from
+	// Ctrl+key combos). On macOS the cimgui ModSuper flag carries the
+	// physical Ctrl key (ImGui's ConfigMacOSXBehaviors swaps the two), so
+	// check both flags to suppress leaks for both physical Ctrl combos
+	// and Cmd shortcuts.
+	ctrlHeld := imgui.IsKeyDown(imgui.ModCtrl) ||
+		(runtime.GOOS == "darwin" && imgui.IsKeyDown(imgui.ModSuper))
+	if searchInputFocused || actionDispatched || imgui.CurrentIO().WantTextInput() || ctrlHeld {
 		return
 	}
 

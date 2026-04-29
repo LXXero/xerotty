@@ -28,8 +28,12 @@ type CellMetrics struct {
 	Height float32
 }
 
-// terminalGlyphRanges builds glyph ranges for terminal rendering:
-// ASCII + Latin-1 Supplement + box drawing + block elements + misc symbols.
+// terminalGlyphRanges builds glyph ranges for terminal rendering. Beyond the
+// default Latin-1 set this covers everything a modern shell, prompt theme,
+// or TUI is likely to emit: extended Latin, arrows, math, box drawing, block
+// elements, dingbats, and the full Private Use Area where Nerd Fonts live.
+// ImGui only rasterizes glyphs the loaded font actually contains, so wide
+// ranges are nearly free for fonts without those glyphs.
 // The returned GlyphRange must not be freed until the font atlas is built.
 var termGlyphRanges imgui.GlyphRange
 
@@ -37,20 +41,27 @@ func terminalGlyphRanges() *imgui.Wchar {
 	if termGlyphRanges == 0 {
 		builder := imgui.NewFontGlyphRangesBuilder()
 		builder.AddRanges(imgui.CurrentIO().Fonts().GlyphRangesDefault())
-		// Box Drawing: U+2500–U+257F
-		// Block Elements: U+2580–U+259F
-		// Geometric Shapes: U+25A0–U+25FF (used in some TUIs)
-		// Misc Symbols: U+2600–U+26FF
-		// Powerline: U+E0A0–U+E0B3
-		for ch := imgui.Wchar(0x2500); ch <= 0x259F; ch++ {
-			builder.AddChar(ch)
+		addRange := func(lo, hi imgui.Wchar) {
+			for ch := lo; ch <= hi; ch++ {
+				builder.AddChar(ch)
+			}
 		}
-		for ch := imgui.Wchar(0x25A0); ch <= 0x25FF; ch++ {
-			builder.AddChar(ch)
-		}
-		for ch := imgui.Wchar(0xE0A0); ch <= 0xE0B3; ch++ {
-			builder.AddChar(ch)
-		}
+		// Latin Extended-A/B (European diacritics)
+		addRange(0x0100, 0x024F)
+		// General Punctuation (en/em dashes, fancy quotes, ellipsis, NBSP variants)
+		addRange(0x2000, 0x206F)
+		// Superscripts/Subscripts
+		addRange(0x2070, 0x209F)
+		// Letterlike Symbols (™ ℃ № ℅), Number Forms, Arrows, Math Operators,
+		// Misc Technical (⌘ ⌥ ⌃ ⏎ ⇧ keyboard symbols)
+		addRange(0x2100, 0x23FF)
+		// Box Drawing, Block Elements, Geometric Shapes, Misc Symbols, Dingbats
+		addRange(0x2500, 0x27BF)
+		// Misc Symbols and Arrows (↻ ⬆ ⭐ etc.)
+		addRange(0x2B00, 0x2BFF)
+		// Private Use Area — Nerd Fonts, Powerline (full extended set), Pomicons,
+		// Font Awesome, Devicons, Codicons, Octicons, Material Design, etc.
+		addRange(0xE000, 0xF8FF)
 		termGlyphRanges = imgui.NewGlyphRange()
 		builder.BuildRanges(termGlyphRanges)
 	}
@@ -66,9 +77,14 @@ func LoadFont(cfg *config.Config) (regular, bold *imgui.Font) {
 }
 
 // ReloadFont clears the atlas and loads the configured font afresh.
-// Returns the new fonts and the regular path actually used (for status display).
-// Must be called between frames; the renderer will rebuild textures on demand
-// (ImGui 1.92+ with RendererHasTextures) before the next draw.
+// Returns the new fonts and the regular path actually used (for status
+// display). Must be called from a BeforeRender hook (i.e. before the
+// frame's NewFrame), never mid-frame — ImGui's per-frame state
+// snapshots the current font during NewFrame and freeing that font
+// later in the same frame leaves a dangling pointer that crashes
+// during Render. The dynamic atlas (RendererHasTextures) rebuilds
+// itself lazily on the first font access in NewFrame, so no explicit
+// Build() call is needed (and would assert if attempted).
 func ReloadFont(cfg *config.Config) (regular, bold *imgui.Font, path string) {
 	io := imgui.CurrentIO()
 	io.Fonts().Clear()
@@ -149,6 +165,22 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 		font = io.Fonts().AddFontDefault()
 	}
 
+	// Terminal cells go through the OS-backed glyph cache which uses
+	// CoreText's per-codepoint cascade. Tab labels and other ImGui UI
+	// text still render through this static atlas though, so we merge
+	// in a small set of fallback fonts that cover common symbols
+	// (window-title sigils like ✳ U+2733, status indicators, etc.)
+	// the user's primary monospace might lack. Cell metrics are driven
+	// by the glyph cache's primary-only LineMetrics, so taller merge
+	// fonts don't inflate row height in the terminal grid.
+	if loadedPath != "" {
+		for _, mergePath := range findUIFallbacks() {
+			mc := terminalFontConfig()
+			mc.SetMergeMode(true)
+			io.Fonts().AddFontFromFileTTFV(mergePath, pxSize, mc, ranges)
+		}
+	}
+
 	var bold *imgui.Font
 	if loadedPath != "" {
 		if boldPath := findBoldVariant(loadedPath); boldPath != "" {
@@ -159,6 +191,29 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	}
 
 	return font, bold, loadedPath
+}
+
+// findUIFallbacks returns font paths to merge into ImGui's static atlas
+// so tab labels / dialog text can render symbols the user's primary
+// monospace lacks (e.g. Monaco doesn't have ✳ U+2733 which appears in
+// claude's window title). Picked for broad symbol coverage with metrics
+// close to a typical monospace font; cell rendering is unaffected
+// because terminal cells use the glyph cache, not this atlas.
+func findUIFallbacks() []string {
+	candidates := []string{
+		// macOS — Menlo carries most Misc Symbols, Dingbats, Arrows.
+		"/System/Library/Fonts/Menlo.ttc",
+		// Linux — DejaVu Sans is a similarly broad fallback.
+		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
+	}
+	var found []string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			found = append(found, p)
+		}
+	}
+	return found
 }
 
 // findBoldVariant looks for a Bold font file sitting next to regularPath,
@@ -219,8 +274,11 @@ func MeasureCell() CellMetrics {
 
 // findFont searches common font directories for a font matching the family name.
 func findFont(family string) string {
-	// Handle generic "monospace" alias
+	// Handle generic "monospace" alias. macOS ships Menlo/SF Mono — list them
+	// first so Mac users get a sensible default before the Linux fallbacks.
 	monospaceDefaults := []string{
+		"Menlo",
+		"SFNSMono",
 		"JetBrainsMono",
 		"DejaVuSansMono",
 		"LiberationMono",
@@ -240,6 +298,7 @@ func findFont(family string) string {
 		"/usr/share/fonts",
 		"/usr/local/share/fonts",
 		"/System/Library/Fonts",
+		"/System/Library/Fonts/Supplemental",
 		"/Library/Fonts",
 	}
 
@@ -251,13 +310,15 @@ func findFont(family string) string {
 	}
 
 	for _, fam := range families {
-		// Common naming patterns
+		// Common naming patterns (.ttc is macOS TrueType collections —
+		// Menlo, Courier, etc. ship as a single .ttc with all weights)
 		patterns := []string{
 			fam + "-Regular.ttf",
 			fam + "-Regular.otf",
 			fam + "Regular.ttf",
 			fam + ".ttf",
 			fam + ".otf",
+			fam + ".ttc",
 		}
 
 		for _, dir := range dirs {
