@@ -10,6 +10,7 @@ import (
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/fontsys"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/themes"
 )
@@ -112,12 +113,10 @@ type configDialog struct {
 	fontFamily  string
 	fontSize    float32
 	fontPath    string
-	lineSpacing float32
 
 	// Font picker state (populated lazily on first open)
 	fontList       []renderer.FontEntry // discovered fonts for the picker
 	fontShowAll    bool                 // include non-monospace
-	fontUseCustom  bool                 // user supplies a custom path / family
 	fontResolved   string               // last resolved path (for status line)
 	fontPickerInit bool
 	fontSizeCustom bool // size combo set to "Custom..." → show numeric input
@@ -269,10 +268,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.fontFamily = cfg.Font.Family
 	d.fontSize = cfg.Font.Size
 	d.fontPath = cfg.Font.Path
-	d.lineSpacing = cfg.Font.LineSpacing
-	// If the config had an explicit path that doesn't match a discovered family,
-	// flip the dialog into custom mode so the user sees what's actually loaded.
-	d.fontUseCustom = cfg.Font.Path != ""
 	d.fontResolved = renderer.ResolveFontPath(cfg)
 	d.fontPickerInit = false
 	d.fontSizeCustom = !isStandardFontSize(d.fontSize)
@@ -362,7 +357,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Font.Family = d.fontFamily
 	cfg.Font.Size = d.fontSize
 	cfg.Font.Path = d.fontPath
-	cfg.Font.LineSpacing = d.lineSpacing
 
 	cfg.Shell = d.shell
 	cfg.Term = d.term
@@ -700,60 +694,50 @@ func (a *App) renderPrefFont() {
 
 	imgui.Text("Font")
 
-	if !d.fontUseCustom {
-		// Build display labels for the combo. Each entry shows family name only;
-		// the path is in fontList[i].Path.
-		labels := make([]string, len(d.fontList))
-		for i, e := range d.fontList {
-			labels[i] = e.Family
-		}
+	// Build display labels for the combo. Each entry shows family name
+	// only; the path is in fontList[i].Path.
+	labels := make([]string, len(d.fontList))
+	for i, e := range d.fontList {
+		labels[i] = e.Family
+	}
 
-		// Find the currently-selected index by family name (case-insensitive).
-		selIdx := int32(-1)
-		for i, lbl := range labels {
-			if strings.EqualFold(lbl, d.fontFamily) {
-				selIdx = int32(i)
-				break
-			}
+	// Resolve current selection by matching either family or path —
+	// path takes precedence so a user-entered custom file still
+	// reflects the right family in the dropdown when its family
+	// matches a known one.
+	selIdx := int32(-1)
+	for i, e := range d.fontList {
+		if d.fontPath != "" && e.Path == d.fontPath {
+			selIdx = int32(i)
+			break
 		}
+		if d.fontPath == "" && strings.EqualFold(e.Family, d.fontFamily) {
+			selIdx = int32(i)
+			break
+		}
+	}
 
-		imgui.SetNextItemWidth(w)
-		if len(labels) == 0 {
-			imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
-		} else {
-			if imgui.ComboStrarr("##fontpick", &selIdx, labels, int32(len(labels))) {
-				if selIdx >= 0 && int(selIdx) < len(d.fontList) {
-					d.fontFamily = d.fontList[selIdx].Family
-					d.fontPath = d.fontList[selIdx].Path
-					d.fontResolved = d.fontPath
-				}
-			}
+	imgui.SetNextItemWidth(w)
+	if len(labels) == 0 {
+		imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
+	} else if imgui.ComboStrarr("##fontpick", &selIdx, labels, int32(len(labels))) {
+		if selIdx >= 0 && int(selIdx) < len(d.fontList) {
+			d.fontFamily = d.fontList[selIdx].Family
+			d.fontPath = d.fontList[selIdx].Path
+			d.fontResolved = d.fontPath
 		}
+	}
+	imgui.SameLineV(0, 8)
+	if imgui.Checkbox("Include non-monospace", &d.fontShowAll) {
+		d.refreshFontList()
+	}
 
-		imgui.SameLineV(0, 8)
-		if imgui.Checkbox("Show all", &d.fontShowAll) {
-			d.refreshFontList()
-		}
-		imgui.SameLineV(0, 8)
-		if imgui.Button("Custom...") {
-			d.fontUseCustom = true
-		}
-	} else {
-		imgui.Text("Family")
-		imgui.SetNextItemWidth(w)
-		if imgui.InputTextWithHint("##fontfam", "monospace", &d.fontFamily, 0, nil) {
-			d.refreshResolved()
-		}
-
-		imgui.Text("Path (overrides family if set)")
-		imgui.SetNextItemWidth(w)
-		if imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf", &d.fontPath, 0, nil) {
-			d.refreshResolved()
-		}
-
-		if imgui.Button("Pick from list") {
-			d.fontUseCustom = false
-		}
+	// Custom path — for fonts not in the system database (e.g. a .ttf
+	// in ~/Downloads). When set, this overrides the family dropdown.
+	imgui.TextDisabled("Or load a font file directly:")
+	imgui.SetNextItemWidth(w)
+	if imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf (optional)", &d.fontPath, 0, nil) {
+		d.refreshResolved()
 	}
 
 	// Status line — what will actually load.
@@ -767,10 +751,6 @@ func (a *App) renderPrefFont() {
 
 	imgui.Text("Size")
 	a.renderPrefFontSize(w)
-
-	imgui.Text("Line Spacing")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderFloat("##linespace", &d.lineSpacing, 0, 10)
 }
 
 // renderPrefFontSize draws a combo of standard sizes with a "Custom..." escape
@@ -839,12 +819,68 @@ func isStandardFontSize(s float32) bool {
 }
 
 // refreshFontList rescans system font dirs and updates the combo source.
+// When fontsys is available (CoreText on macOS, fontconfig on Linux once
+// implemented), we ask the OS — that gives a proper monospace flag from
+// the font's metadata instead of guessing from filename. Falls back to
+// the filename-heuristic discovery if no fontsys impl exists for the
+// platform.
 func (d *configDialog) refreshFontList() {
+	if fontsys.Default != nil {
+		if entries, ok := enumerateViaFontsys(d.fontShowAll); ok {
+			d.fontList = entries
+			return
+		}
+	}
 	if d.fontShowAll {
 		d.fontList = renderer.DiscoverAllFonts()
 	} else {
 		d.fontList = renderer.DiscoverMonospaceFonts()
 	}
+}
+
+// enumerateViaFontsys queries the OS font database via fontsys and
+// returns FontEntry list filtered to one entry per family, regular
+// weight only. Returns ok=false if enumeration failed (caller falls
+// back to filename heuristics).
+func enumerateViaFontsys(showAll bool) ([]renderer.FontEntry, bool) {
+	infos, err := fontsys.Default.Enumerate()
+	if err != nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	var out []renderer.FontEntry
+	for _, f := range infos {
+		if !showAll && !f.Monospace {
+			continue
+		}
+		if !isRegularStyle(f.Style) {
+			continue
+		}
+		if f.Family == "" {
+			continue
+		}
+		key := strings.ToLower(f.Family)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, renderer.FontEntry{Family: f.Family, Path: f.Path})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Family) < strings.ToLower(out[j].Family)
+	})
+	return out, true
+}
+
+// isRegularStyle filters out bold/italic/etc faces so the picker shows
+// one row per family. CoreText's style names include "Regular", "Bold",
+// "Italic", "Bold Italic", "Light", etc.
+func isRegularStyle(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "regular", "roman", "book", "normal", "plain":
+		return true
+	}
+	return false
 }
 
 // refreshResolved recomputes the status-line preview after a custom edit.
