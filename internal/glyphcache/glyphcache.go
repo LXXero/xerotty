@@ -162,8 +162,17 @@ func (c *Cache) Get(r rune, bold bool) *Entry {
 // fontFor returns a Font that can rasterize r, opening fallbacks as
 // needed. Result is cached in resolveCache so we don't re-query the OS
 // for every cell that contains the same codepoint.
+//
+// Normally the primary font wins if it has the glyph. Exception: for
+// codepoints in Unicode's emoji ranges (⚡ ❤ ⭐ etc.), we let the OS
+// cascade pick first because Nerd Fonts and similar glyph-rich monospace
+// fonts ship mono outline versions of these — but the user's intent
+// when they show up in terminal output is almost always the colorful
+// emoji presentation. Falls through to primary if the OS cascade doesn't
+// hand back a color font (e.g. no color emoji font installed).
 func (c *Cache) fontFor(r rune) fontsys.Font {
-	if c.primary != nil && c.primary.Has(r) {
+	emojiCandidate := isEmojiPresentationCandidate(r)
+	if !emojiCandidate && c.primary != nil && c.primary.Has(r) {
 		return c.primary
 	}
 	if path, ok := c.resolveCache[r]; ok {
@@ -176,9 +185,23 @@ func (c *Cache) fontFor(r rune) fontsys.Font {
 		return c.fallbacks[path]
 	}
 	path, _ := c.sys.FindForCodepoint(r, c.priPath)
-	if path == "" || path == c.priPath {
-		// OS has no fallback or returned the primary itself (which we
-		// already know lacks the glyph).
+	if path == "" {
+		// No fallback at all — fall back to primary if it has the glyph.
+		if emojiCandidate && c.primary != nil && c.primary.Has(r) {
+			c.resolveCache[r] = ""
+			return c.primary
+		}
+		c.resolveCache[r] = missingSentinel
+		return nil
+	}
+	if path == c.priPath {
+		// OS handed back the primary. For emoji candidates that means
+		// no color emoji font has the codepoint — primary's mono is
+		// the best we can do.
+		if emojiCandidate {
+			c.resolveCache[r] = ""
+			return c.primary
+		}
 		c.resolveCache[r] = missingSentinel
 		return nil
 	}
@@ -208,6 +231,44 @@ func (c *Cache) fontFor(r rune) fontsys.Font {
 // in RGB and the renderer must draw with col=white to preserve them.
 func (c *Cache) uploadGlyph(g *fontsys.Glyph) imgui.TextureRef {
 	return c.tex.CreateTexture(unsafePtr(g.Pixels), g.Width, g.Height)
+}
+
+// isEmojiPresentationCandidate reports whether r is in a Unicode block
+// where the user generally expects color emoji presentation when one is
+// available. Used by fontFor to bypass the user's primary font (which
+// may have a mono outline version of the codepoint via Nerd Font merges
+// or similar) and prefer the OS color emoji cascade for these.
+//
+// Covers the major emoji blocks rather than the precise Unicode
+// "Emoji_Presentation" property — overshoots by a few hundred non-emoji
+// codepoints in the same blocks (geometric shapes, dingbats), which is
+// fine because the OS cascade falls back to mono for those when no
+// color font has them.
+func isEmojiPresentationCandidate(r rune) bool {
+	switch {
+	case r >= 0x2600 && r <= 0x26FF: // Miscellaneous Symbols (⚡ ☂ ☀ ❤ ★ ☎ etc.)
+		return true
+	case r >= 0x2700 && r <= 0x27BF: // Dingbats (✂ ✈ ✉ ✏ etc.)
+		return true
+	case r >= 0x2B00 && r <= 0x2BFF: // Misc Symbols and Arrows (⬆ ⭐ ⚪ etc.)
+		return true
+	case r >= 0x1F300 && r <= 0x1F5FF: // Misc Symbols and Pictographs (🌍 🌟 🍕 etc.)
+		return true
+	case r >= 0x1F600 && r <= 0x1F64F: // Emoticons (😀 😂 etc.)
+		return true
+	case r >= 0x1F680 && r <= 0x1F6FF: // Transport and Map (🚀 🚗 etc.)
+		return true
+	case r >= 0x1F700 && r <= 0x1F77F: // Alchemical Symbols (mostly mono, harmless)
+		return false
+	case r >= 0x1F900 && r <= 0x1F9FF: // Supplemental Symbols and Pictographs (🤔 🦀 etc.)
+		return true
+	case r >= 0x1FA00 && r <= 0x1FAFF: // Symbols and Pictographs Extended-A (🩺 🪐 etc.)
+		return true
+	}
+	// Variation selectors that force emoji presentation should also count
+	// — but we treat them codepoint-by-codepoint above. The base emoji is
+	// what matters for cascade selection.
+	return false
 }
 
 // Close releases all GPU textures and OS font handles.

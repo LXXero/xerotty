@@ -97,3 +97,11 @@ type System interface {
 // Default returns the platform's default System implementation. The
 // platform-specific build files set this at init time.
 var Default System
+
+// IsVariableFont reports whether a font file is an OpenType variable
+// font (has fvar/gvar tables). ImGui's bundled stbtt parser asserts on
+// VFs and crashes the process, so callers should skip them when loading
+// into the static font atlas. Platform implementations set this to a
+// real check at init time; the stub returns false on unsupported
+// platforms (safe default — false means "we'll try to load it").
+var IsVariableFont = func(path string) bool { return false }

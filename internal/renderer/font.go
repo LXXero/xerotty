@@ -9,6 +9,7 @@ import (
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/dpi"
+	"github.com/LXXero/xerotty/internal/fontsys"
 )
 
 // PixelSize converts a config Font.Size (in points, matching the convention
@@ -135,8 +136,20 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 		return fc
 	}
 
+	// safeToLoad rejects fonts that would crash ImGui's bundled stbtt parser.
+	// Currently only filters variable fonts (fvar/gvar tables) — the parser
+	// asserts and the assert is caught by cimgui-go's Go-level handler that
+	// re-panics, which we cannot recover from.
+	safeToLoad := func(path string) bool {
+		if fontsys.IsVariableFont(path) {
+			fmt.Fprintf(os.Stderr, "xerotty: %s is a variable font; ImGui's stbtt can't parse it, skipping\n", path)
+			return false
+		}
+		return true
+	}
+
 	if cfg.Font.Path != "" {
-		if _, err := os.Stat(cfg.Font.Path); err == nil {
+		if _, err := os.Stat(cfg.Font.Path); err == nil && safeToLoad(cfg.Font.Path) {
 			fc := terminalFontConfig()
 			font = io.Fonts().AddFontFromFileTTFV(cfg.Font.Path, pxSize, fc, ranges)
 			loadedPath = cfg.Font.Path
@@ -149,13 +162,13 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 			family = "monospace"
 		}
 		path := findFont(family)
-		if path != "" {
+		if path != "" && safeToLoad(path) {
 			fmt.Fprintf(os.Stderr, "xerotty: loading font %s at %.1fpx (%.0fpt @ %.0fdpi)\n",
 				path, pxSize, pt, dpi.Display())
 			fc := terminalFontConfig()
 			font = io.Fonts().AddFontFromFileTTFV(path, pxSize, fc, ranges)
 			loadedPath = path
-		} else {
+		} else if path == "" {
 			fmt.Fprintf(os.Stderr, "xerotty: font family %q not found\n", family)
 		}
 	}

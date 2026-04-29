@@ -491,7 +491,7 @@ func (a *App) renderPreferences() {
 		center,
 		imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5},
 	)
-	imgui.SetNextWindowSizeV(imgui.Vec2{X: 520, Y: 600}, imgui.CondAppearing)
+	imgui.SetNextWindowSizeV(imgui.Vec2{X: 720, Y: 720}, imgui.CondAppearing)
 
 	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, imgui.WindowFlagsNoDocking) {
 		// Reserve space for bottom separator + button row.
