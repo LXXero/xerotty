@@ -1,7 +1,11 @@
 // Package input handles ImGui key → VT escape sequence translation.
 package input
 
-import "github.com/AllenDang/cimgui-go/imgui"
+import (
+	"runtime"
+
+	"github.com/AllenDang/cimgui-go/imgui"
+)
 
 // KeyEvent represents a translated key event ready to send to the PTY.
 type KeyEvent struct {
@@ -17,6 +21,18 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	alt := imgui.IsKeyDown(imgui.ModAlt)
 	super := imgui.IsKeyDown(imgui.ModSuper)
 
+	// On macOS, ImGui's ConfigMacOSXBehaviors swaps ImGuiMod_Ctrl <->
+	// ImGuiMod_Super internally so cross-platform shortcuts written as
+	// "Ctrl+X" fire on physical Cmd. That swap is what keybinds rely on,
+	// so leave it alone for matchKeybind. But terminal-bound Ctrl
+	// behaviour — ASCII control codes (Ctrl+C → 0x03) and Ctrl+arrow
+	// escape sequences — needs the physical Ctrl key, which arrives in
+	// the cimgui-named `super` flag on Mac.
+	ctrlPhysical := ctrl
+	if runtime.GOOS == "darwin" {
+		ctrlPhysical = super
+	}
+
 	var events []KeyEvent
 
 	// Check keybinds first (Ctrl+Shift+F for search, etc.)
@@ -28,7 +44,7 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	}
 
 	// Ctrl+letter → ASCII control codes (1-26)
-	if ctrl && !alt && !shift {
+	if ctrlPhysical && !alt && !shift {
 		for k := imgui.KeyA; k <= imgui.KeyZ; k++ {
 			if imgui.IsKeyPressedBool(k) {
 				code := byte(k-imgui.KeyA) + 1
@@ -124,7 +140,7 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 
 	for _, sk := range specials {
 		if imgui.IsKeyPressedBool(sk.key) {
-			ev := sk.fn(ctrl, shift, alt, appMode)
+			ev := sk.fn(ctrlPhysical, shift, alt, appMode)
 			events = append(events, ev)
 		}
 	}
