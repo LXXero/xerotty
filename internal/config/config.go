@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/BurntSushi/toml"
 )
@@ -57,7 +58,6 @@ type FontConfig struct {
 	Family      string  `toml:"family"`
 	Size        float32 `toml:"size"`
 	Path        string  `toml:"path"`
-	LineSpacing float32 `toml:"line_spacing"`
 }
 
 // KeyConfig controls special key behavior.
@@ -275,6 +275,13 @@ func (c *Config) DetectShell() string {
 }
 
 func defaultKeybinds() map[string]string {
+	if runtime.GOOS == "darwin" {
+		return defaultKeybindsDarwin()
+	}
+	return defaultKeybindsLinux()
+}
+
+func defaultKeybindsLinux() map[string]string {
 	return map[string]string{
 		"Ctrl+Shift+T":     "new_tab",
 		"Ctrl+Shift+W":     "close_tab",
@@ -319,7 +326,51 @@ func defaultKeybinds() map[string]string {
 	}
 }
 
+// defaultKeybindsDarwin returns iTerm2-style defaults: drop the extra Shift
+// modifier that Linux terminals need to disambiguate from Ctrl+letter control
+// codes. ImGui's ConfigMacOSXBehaviors maps the physical Cmd key onto cimgui's
+// ModCtrl flag, so "Ctrl+T" in this map fires on physical Cmd+T.
+func defaultKeybindsDarwin() map[string]string {
+	return map[string]string{
+		"Ctrl+T":          "new_tab",
+		"Ctrl+W":          "close_tab",
+		"Ctrl+N":          "new_window",
+		"Ctrl+Tab":        "next_tab",
+		"Ctrl+Shift+Tab":  "prev_tab",
+		"Ctrl+1":          "goto_tab:1",
+		"Ctrl+2":          "goto_tab:2",
+		"Ctrl+3":          "goto_tab:3",
+		"Ctrl+4":          "goto_tab:4",
+		"Ctrl+5":          "goto_tab:5",
+		"Ctrl+6":          "goto_tab:6",
+		"Ctrl+7":          "goto_tab:7",
+		"Ctrl+8":          "goto_tab:8",
+		"Ctrl+9":          "goto_tab:9",
+		"Ctrl+C":          "copy",
+		"Ctrl+V":          "paste",
+		"Shift+Insert":    "paste_selection",
+		"Shift+PageUp":    "scroll_page_up",
+		"Shift+PageDown":  "scroll_page_down",
+		"Ctrl+F":          "search",
+		"F11":             "fullscreen",
+		"Ctrl+Plus":       "font_size_up",
+		"Ctrl+Minus":      "font_size_down",
+		"Ctrl+0":          "font_size_reset",
+		"Ctrl+Shift+R":    "rename_tab",
+		"Shift+Home":      "scroll_top",
+		"Shift+End":       "scroll_bottom",
+		"Ctrl+Comma":      "preferences",
+	}
+}
+
 func defaultMenu() MenuConfig {
+	if runtime.GOOS == "darwin" {
+		return defaultMenuDarwin()
+	}
+	return defaultMenuLinux()
+}
+
+func defaultMenuLinux() MenuConfig {
 	return MenuConfig{
 		Items: []MenuItem{
 			{Label: "New Tab", Action: "new_tab", Shortcut: "Ctrl+Shift+T"},
@@ -337,6 +388,28 @@ func defaultMenu() MenuConfig {
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
 			{Label: "Close Tab", Action: "close_tab", Shortcut: "Ctrl+Shift+W"},
+		},
+	}
+}
+
+func defaultMenuDarwin() MenuConfig {
+	return MenuConfig{
+		Items: []MenuItem{
+			{Label: "New Tab", Action: "new_tab", Shortcut: "Cmd+T"},
+			{Label: "New Window", Action: "new_window", Shortcut: "Cmd+N"},
+			{Action: "separator"},
+			{Label: "Copy", Action: "copy", Shortcut: "Cmd+C", Enabled: "has_selection"},
+			{Label: "Paste", Action: "paste", Shortcut: "Cmd+V"},
+			{Action: "separator"},
+			{Label: "Open Link", Action: "open_link", Enabled: "has_link"},
+			{Label: "Copy Link", Action: "copy_link", Enabled: "has_link"},
+			{Action: "separator"},
+			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
+			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
+			{Action: "separator"},
+			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+Shift+R"},
+			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},
+			{Label: "Close Tab", Action: "close_tab", Shortcut: "Cmd+W"},
 		},
 	}
 }
