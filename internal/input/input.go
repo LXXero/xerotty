@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/sdlhack"
 )
 
 // KeyEvent represents a translated key event ready to send to the PTY.
@@ -62,13 +63,16 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 		fn  func(ctrl, shift, alt, appMode bool) KeyEvent
 	}
 
+	enterFn := func(_, shift, _, _ bool) KeyEvent {
+		if shift {
+			return KeyEvent{Bytes: []byte("\n")}
+		}
+		return KeyEvent{Bytes: []byte("\r")}
+	}
 	specials := []specialKey{
-		{imgui.KeyEnter, func(_, shift, _, _ bool) KeyEvent {
-			if shift {
-				return KeyEvent{Bytes: []byte("\n")}
-			}
-			return KeyEvent{Bytes: []byte("\r")}
-		}},
+		{imgui.KeyEnter, enterFn},
+		// Keypad Enter is a separate key in SDL/ImGui — same PTY semantics.
+		{imgui.KeyKeypadEnter, enterFn},
 		{imgui.KeyBackspace, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte{0x7f}}
 		}},
@@ -123,6 +127,57 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 			}
 			return KeyEvent{Bytes: []byte("\x1b[6~")}
 		}},
+	}
+
+	// Keypad navigation when NumLock is OFF. SDL/ImGui report keypad keys
+	// regardless of NumLock state (KeyKeypad8 always fires on physical
+	// press), so we have to gate on NumLock to avoid double-emitting:
+	// with NumLock ON, the OS produces a TEXTINPUT event for the digit
+	// which writes through the InputQueueCharacters path; if we ALSO
+	// emitted an arrow-key sequence here, the user would see both '8'
+	// and Up arrow. With NumLock OFF, no TEXTINPUT fires for keypad
+	// keys, so emitting the navigation sequence here is the only path.
+	//
+	// Skipped entries (KP 5, +, -, *, /, =, .): no standard navigation
+	// equivalent. KP Enter is handled in `specials` above (always fires
+	// regardless of NumLock state, same as Enter).
+	if !sdlhack.NumLockOn() {
+		specials = append(specials,
+			specialKey{imgui.KeyKeypad8, func(c, s, _, app bool) KeyEvent { return arrowKey('A', c, s, app) }},
+			specialKey{imgui.KeyKeypad2, func(c, s, _, app bool) KeyEvent { return arrowKey('B', c, s, app) }},
+			specialKey{imgui.KeyKeypad6, func(c, s, _, app bool) KeyEvent { return arrowKey('C', c, s, app) }},
+			specialKey{imgui.KeyKeypad4, func(c, s, _, app bool) KeyEvent { return arrowKey('D', c, s, app) }},
+			specialKey{imgui.KeyKeypad7, func(_, _, _, app bool) KeyEvent {
+				if app {
+					return KeyEvent{Bytes: []byte("\x1bOH")}
+				}
+				return KeyEvent{Bytes: []byte("\x1b[H")}
+			}},
+			specialKey{imgui.KeyKeypad1, func(_, _, _, app bool) KeyEvent {
+				if app {
+					return KeyEvent{Bytes: []byte("\x1bOF")}
+				}
+				return KeyEvent{Bytes: []byte("\x1b[F")}
+			}},
+			specialKey{imgui.KeyKeypad9, func(_, shift, _, _ bool) KeyEvent {
+				if shift {
+					return KeyEvent{Action: "scroll_page_up"}
+				}
+				return KeyEvent{Bytes: []byte("\x1b[5~")}
+			}},
+			specialKey{imgui.KeyKeypad3, func(_, shift, _, _ bool) KeyEvent {
+				if shift {
+					return KeyEvent{Action: "scroll_page_down"}
+				}
+				return KeyEvent{Bytes: []byte("\x1b[6~")}
+			}},
+			specialKey{imgui.KeyKeypad0, func(_, _, _, _ bool) KeyEvent {
+				return KeyEvent{Bytes: []byte("\x1b[2~")}
+			}},
+			specialKey{imgui.KeyKeypadDecimal, func(_, _, _, _ bool) KeyEvent {
+				return KeyEvent{Bytes: []byte("\x1b[3~")}
+			}},
+		)
 	}
 
 	// Function keys

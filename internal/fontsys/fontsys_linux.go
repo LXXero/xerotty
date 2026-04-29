@@ -109,10 +109,17 @@ static int xt_fc_get_int(FcPattern *pat, const char *prop) {
 }
 
 // FC_SPACING values: FC_PROPORTIONAL=0, FC_DUAL=90, FC_MONO=100, FC_CHARCELL=110.
-// Treat MONO and CHARCELL as monospace.
-static int xt_fc_is_monospace(FcPattern *pat) {
-    int spacing = xt_fc_get_int(pat, FC_SPACING);
-    return (spacing == FC_MONO || spacing == FC_CHARCELL) ? 1 : 0;
+// Treat MONO and CHARCELL as monospace. Returns 1 if FC_SPACING is set
+// to a monospace value, -1 if FC_SPACING is set to a non-monospace value,
+// 0 if FC_SPACING is missing entirely (caller should fall back to a
+// family-name heuristic — many fonts including Noto Sans Mono ship
+// without an explicit FC_SPACING entry).
+static int xt_fc_spacing_class(FcPattern *pat) {
+    int spacing = 0;
+    if (FcPatternGetInteger(pat, FC_SPACING, 0, &spacing) != FcResultMatch) {
+        return 0;
+    }
+    return (spacing == FC_MONO || spacing == FC_CHARCELL) ? 1 : -1;
 }
 
 // ---- Codepoint cascade ----
@@ -477,6 +484,25 @@ func supportedFontExt(path string) bool {
 	return false
 }
 
+// looksLikeMonospaceFamily is a fallback monospace classifier for fonts
+// that don't carry an explicit FC_SPACING field in their fontconfig
+// metadata. Hits the obvious naming conventions (Mono, Code, Console,
+// Typewriter, Fixed). Same heuristic gnome-terminal and similar
+// terminals use to populate their monospace pickers when fontconfig
+// metadata is sparse.
+func looksLikeMonospaceFamily(family string) bool {
+	low := strings.ToLower(family)
+	patterns := []string{
+		"mono", "code", "console", "typewriter", "fixed", "courier", "terminal",
+	}
+	for _, p := range patterns {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func init() {
 	Default = linuxSystem{}
 	IsVariableFont = func(path string) bool {
@@ -527,7 +553,18 @@ func (linuxSystem) Enumerate() ([]FontInfo, error) {
 			fi.Style = C.GoString(cs)
 			C.free(unsafe.Pointer(cs))
 		}
-		fi.Monospace = C.xt_fc_is_monospace(pat) != 0
+		switch C.xt_fc_spacing_class(pat) {
+		case 1:
+			fi.Monospace = true
+		case -1:
+			fi.Monospace = false
+		default:
+			// FC_SPACING absent — fall back to a family-name heuristic.
+			// Noto Sans Mono is the canonical example: fontconfig's alias
+			// system routes "monospace" requests to it but the font's own
+			// FC_SPACING field is empty in fc-list output.
+			fi.Monospace = looksLikeMonospaceFamily(fi.Family)
+		}
 		if fi.Path == "" {
 			continue
 		}
