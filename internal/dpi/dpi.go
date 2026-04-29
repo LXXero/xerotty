@@ -11,6 +11,7 @@ import "C"
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"sync"
 )
@@ -42,6 +43,17 @@ func resolve() float32 {
 		if d, err := strconv.ParseFloat(v, 32); err == nil && d > 0 {
 			return float32(d)
 		}
+	}
+	// On macOS, the typography convention is 1pt = 1 logical pixel
+	// (the system reference is 72 dpi), unlike Linux/web which use
+	// 96 dpi. iTerm/Terminal.app at 12pt render glyphs 12 logical
+	// pixels tall, and using 96 here would make our 12pt text 1.33×
+	// larger than the user expects from native Mac apps.
+	// SDL_GetDisplayDPI itself returns the Retina display's physical
+	// DPI (~220) which would scale up another 3×, so we ignore that
+	// and use the Mac point-as-pixel convention directly.
+	if runtime.GOOS == "darwin" {
+		return 72
 	}
 	if C.SDL_WasInit(C.SDL_INIT_VIDEO) != 0 {
 		var ddpi, hdpi, vdpi C.float
