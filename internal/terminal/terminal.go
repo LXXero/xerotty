@@ -125,6 +125,10 @@ func (t *Terminal) waitChild() {
 // readPTY reads from the PTY and writes to the SafeEmulator.
 func (t *Terminal) readPTY() {
 	buf := make([]byte, 32*1024)
+	// OSC pre-processor state. Carries over across Read calls in case an
+	// OSC sequence spans buffer boundaries.
+	var oscBuf []byte
+	inOSC := false
 	for {
 		select {
 		case <-t.done:
@@ -134,8 +138,12 @@ func (t *Terminal) readPTY() {
 
 		n, err := t.ptmx.Read(buf)
 		if n > 0 {
-			t.Emu.Write(buf[:n])
-			// Non-blocking notify
+			cleaned, newOSCBuf, newInOSC := t.preprocessOSC(buf[:n], oscBuf, inOSC)
+			oscBuf = newOSCBuf
+			inOSC = newInOSC
+			if len(cleaned) > 0 {
+				t.Emu.Write(cleaned)
+			}
 			select {
 			case t.DataCh <- struct{}{}:
 			default:
@@ -146,6 +154,84 @@ func (t *Terminal) readPTY() {
 				// PTY closed or error — mark terminal as done
 			}
 			return
+		}
+	}
+}
+
+// preprocessOSC intercepts OSC sequences before they reach the vt emulator,
+// because charm/x/ansi's parser misinterprets UTF-8 continuation byte 0x9c
+// as the C1 String Terminator. That breaks any OSC body containing
+// multi-byte UTF-8 (e.g. claude's window title "✳ Claude Code"): the title
+// is truncated to the first byte and the remaining bytes leak onto the
+// screen as plain text. We scan the byte stream, dispatch known OSC
+// sequences directly, and strip them from what gets sent to vt.
+//
+// State (oscBuf, inOSC) carries across Read calls in case a sequence spans
+// buffer boundaries. Returns the cleaned-of-OSC bytes plus the new state.
+func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []byte, bool) {
+	out := make([]byte, 0, len(in))
+	oscBuf := oscBufIn
+	inOSC := inOSCIn
+	for i := 0; i < len(in); i++ {
+		b := in[i]
+		if !inOSC {
+			// Recognize only the 7-bit OSC introducer (ESC ']'). The 8-bit
+			// form 0x9d is also a valid UTF-8 continuation byte (e.g. the
+			// box-drawing char U+255D ╝ is \xe2\x95\x9d), so matching it
+			// would incorrectly enter OSC mode mid-glyph and swallow the
+			// rest of the rendering. Modern apps emit 7-bit forms anyway.
+			if b == 0x1b && i+1 < len(in) && in[i+1] == ']' {
+				inOSC = true
+				oscBuf = oscBuf[:0]
+				i++ // skip the ']'
+				continue
+			}
+			out = append(out, b)
+			continue
+		}
+		// Inside OSC body. Terminators: BEL (0x07), or ESC '\\' (string
+		// terminator). We deliberately do NOT treat 0x9c as a terminator
+		// here — that's the byte that breaks vt — and pass it through as
+		// part of the body so the UTF-8 sequence stays intact.
+		if b == 0x07 {
+			t.dispatchOSC(oscBuf)
+			oscBuf = oscBuf[:0]
+			inOSC = false
+			continue
+		}
+		if b == 0x1b && i+1 < len(in) && in[i+1] == '\\' {
+			t.dispatchOSC(oscBuf)
+			oscBuf = oscBuf[:0]
+			inOSC = false
+			i++ // skip the '\\'
+			continue
+		}
+		oscBuf = append(oscBuf, b)
+	}
+	return out, oscBuf, inOSC
+}
+
+// dispatchOSC handles a complete OSC body (between OSC introducer and
+// terminator). Currently only OSC 0/1/2 (window title / icon name) are
+// handled — that's the case that breaks visibly. Other OSC commands are
+// silently dropped, which matches what an unsupported terminal would do.
+func (t *Terminal) dispatchOSC(body []byte) {
+	semi := -1
+	for i, b := range body {
+		if b == ';' {
+			semi = i
+			break
+		}
+	}
+	if semi <= 0 {
+		return
+	}
+	cmd := string(body[:semi])
+	data := body[semi+1:]
+	switch cmd {
+	case "0", "1", "2":
+		if t.OnTitle != nil {
+			t.OnTitle(string(data))
 		}
 	}
 }
