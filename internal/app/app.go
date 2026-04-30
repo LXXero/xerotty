@@ -54,6 +54,7 @@ type App struct {
 	pendingPaste       string       // text awaiting unsafe-paste confirmation
 	resizeTime         float64      // imgui.Time() when last resize occurred
 	resizeOverlay      bool         // whether to show overlay
+	resizeOverlayText  string       // when set, the overlay shows this text instead of cols×rows (used for zoom%)
 	lastCols           int          // cols at last resize check
 	lastRows           int          // rows at last resize check
 	hoveredLink        *linkHit     // URL under mouse cursor, nil if none
@@ -462,6 +463,7 @@ func (a *App) frame() {
 			a.resizeTerminals()
 			a.resizeTime = imgui.Time()
 			a.resizeOverlay = true
+			a.resizeOverlayText = "" // drag-resize: live cols×rows
 		}
 	}
 
@@ -1114,7 +1116,13 @@ func (a *App) updateFontMetrics() {
 	// drag-resizes stay on the cell grid.
 	setContentResizeIncrements(a.cellW, a.cellH)
 
-	// Show resize overlay so user sees the new grid dimensions
+	// Show overlay with the new zoom level. Percent is current pxSize
+	// over the configured base, rounded — so default reads 100%, zoom-in
+	// reads >100%, zoom-out reads <100%. skipDisplaySync prevents the
+	// drag-resize trigger in frame() from clobbering this with cols×rows
+	// for the next couple frames.
+	percent := int(math.Round(float64(pxSize / a.baseFontSize * 100)))
+	a.resizeOverlayText = fmt.Sprintf("%d%%", percent)
 	a.resizeTime = imgui.Time()
 	a.resizeOverlay = true
 }
@@ -1365,11 +1373,15 @@ func (a *App) renderResizeOverlay() {
 
 	if elapsed > duration {
 		a.resizeOverlay = false
+		a.resizeOverlayText = ""
 		return
 	}
 
-	cols, rows := a.gridSize()
-	text := fmt.Sprintf("%d × %d", cols, rows)
+	text := a.resizeOverlayText
+	if text == "" {
+		cols, rows := a.gridSize()
+		text = fmt.Sprintf("%d × %d", cols, rows)
+	}
 	textSize := imgui.CalcTextSize(text)
 
 	padX := float32(16)
