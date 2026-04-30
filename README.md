@@ -126,4 +126,4 @@ tools/               iterm2-import, glyph-dump diagnostic
 
 ## License
 
-TBD.
+[GPL-3.0](LICENSE). Free as in freedom.
