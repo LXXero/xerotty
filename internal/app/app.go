@@ -1425,18 +1425,27 @@ func (a *App) renderResizeOverlay() {
 		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
 		bgColor, 6, 0,
 	)
-	primaryY := cy - innerH/2
-	dl.AddTextVec2(
-		imgui.Vec2{X: cx - primarySize.X/2, Y: primaryY},
-		fgColor,
-		primary,
-	)
+	topY := cy - innerH/2
 	if secondary != "" {
-		secondaryY := primaryY + primarySize.Y + lineGap
+		// Zoom % rides above cols×rows; the dimensions remain the
+		// dominant bottom line so users glancing at the overlay during
+		// either drag-resize or zoom see the same anchor.
 		dl.AddTextVec2(
-			imgui.Vec2{X: cx - secondarySize.X/2, Y: secondaryY},
+			imgui.Vec2{X: cx - secondarySize.X/2, Y: topY},
 			fgColor,
 			secondary,
+		)
+		primaryY := topY + secondarySize.Y + lineGap
+		dl.AddTextVec2(
+			imgui.Vec2{X: cx - primarySize.X/2, Y: primaryY},
+			fgColor,
+			primary,
+		)
+	} else {
+		dl.AddTextVec2(
+			imgui.Vec2{X: cx - primarySize.X/2, Y: topY},
+			fgColor,
+			primary,
 		)
 	}
 }
