@@ -1378,16 +1378,27 @@ func (a *App) renderResizeOverlay() {
 	}
 
 	cols, rows := a.gridSize()
-	text := fmt.Sprintf("%d × %d", cols, rows)
-	if a.resizeOverlayText != "" {
-		text = a.resizeOverlayText + "   " + text
+	primary := fmt.Sprintf("%d × %d", cols, rows)
+	secondary := a.resizeOverlayText // empty unless triggered by zoom
+	primarySize := imgui.CalcTextSize(primary)
+	var secondarySize imgui.Vec2
+	if secondary != "" {
+		secondarySize = imgui.CalcTextSize(secondary)
 	}
-	textSize := imgui.CalcTextSize(text)
 
+	lineGap := float32(2)
+	innerW := primarySize.X
+	if secondarySize.X > innerW {
+		innerW = secondarySize.X
+	}
+	innerH := primarySize.Y
+	if secondary != "" {
+		innerH += lineGap + secondarySize.Y
+	}
 	padX := float32(16)
 	padY := float32(10)
-	boxW := textSize.X + padX*2
-	boxH := textSize.Y + padY*2
+	boxW := innerW + padX*2
+	boxH := innerH + padY*2
 
 	// Center on MainViewport in absolute desktop space — under multi-viewport
 	// the global foreground drawlist isn't tied to the SDL window.
@@ -1414,11 +1425,20 @@ func (a *App) renderResizeOverlay() {
 		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
 		bgColor, 6, 0,
 	)
+	primaryY := cy - innerH/2
 	dl.AddTextVec2(
-		imgui.Vec2{X: cx - textSize.X/2, Y: cy - textSize.Y/2},
+		imgui.Vec2{X: cx - primarySize.X/2, Y: primaryY},
 		fgColor,
-		text,
+		primary,
 	)
+	if secondary != "" {
+		secondaryY := primaryY + primarySize.Y + lineGap
+		dl.AddTextVec2(
+			imgui.Vec2{X: cx - secondarySize.X/2, Y: secondaryY},
+			fgColor,
+			secondary,
+		)
+	}
 }
 
 func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawList) {
