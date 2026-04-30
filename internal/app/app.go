@@ -353,6 +353,11 @@ func (a *App) frame() {
 			sdlRaiseWindow()
 		}
 
+		// Snap drag-resize to (cellW, cellH) so the window only resizes at
+		// cell boundaries. macOS only — see cellsnap_darwin.m. No-op
+		// elsewhere.
+		setContentResizeIncrements(a.cellW, a.cellH)
+
 		if _, err := a.tabs.NewTab(cfgCols, cfgRows); err != nil {
 			sdlQuit()
 			return
@@ -380,6 +385,7 @@ func (a *App) frame() {
 			a.renderer.Metrics = metrics
 			a.renderer.FontSize = a.baseFontSize
 			a.resizeTerminals()
+			setContentResizeIncrements(a.cellW, a.cellH)
 		}
 	}
 
@@ -1022,6 +1028,9 @@ func (a *App) updateFontMetrics() {
 	// Some WMs drop input focus across the unmap/remap of SetWindowSize.
 	sdlRaiseWindow()
 	a.resizeTerminals()
+	// Update the macOS resize-increment to the new cell size so subsequent
+	// drag-resizes stay on the cell grid.
+	setContentResizeIncrements(a.cellW, a.cellH)
 
 	// Show resize overlay so user sees the new grid dimensions
 	a.resizeTime = imgui.Time()
