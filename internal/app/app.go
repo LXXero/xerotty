@@ -1377,10 +1377,10 @@ func (a *App) renderResizeOverlay() {
 		return
 	}
 
-	text := a.resizeOverlayText
-	if text == "" {
-		cols, rows := a.gridSize()
-		text = fmt.Sprintf("%d × %d", cols, rows)
+	cols, rows := a.gridSize()
+	text := fmt.Sprintf("%d × %d", cols, rows)
+	if a.resizeOverlayText != "" {
+		text = a.resizeOverlayText + "   " + text
 	}
 	textSize := imgui.CalcTextSize(text)
 
