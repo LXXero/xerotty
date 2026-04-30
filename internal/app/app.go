@@ -121,33 +121,7 @@ func (a *App) Run() error {
 	// alternative (doing it inside our frame() callback after NewFrame
 	// already snapshotted the current font) leaves a freed font in
 	// ImGui's per-frame state and asserts when Render dereferences it.
-	a.backend.SetBeforeRenderHook(func() {
-		if !a.pendingFontFace {
-			return
-		}
-		a.pendingFontFace = false
-		font, fontBold, _ := renderer.ReloadFont(&a.cfg)
-		a.renderer.Font = font
-		a.renderer.FontBold = fontBold
-		a.baseFontSize = renderer.PixelSize(&a.cfg)
-		if a.renderer.Glyphs != nil {
-			a.renderer.Glyphs.Close()
-			a.renderer.Glyphs = nil
-		}
-		if fontsys.Default != nil {
-			primaryPath := renderer.ResolveFontPath(&a.cfg)
-			if primaryPath != "" {
-				fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
-				if fbScale <= 0 {
-					fbScale = 1
-				}
-				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
-					a.renderer.Glyphs = c
-				}
-			}
-		}
-		a.pendingRemeasure = true
-	})
+	a.backend.SetBeforeRenderHook(a.beforeRender)
 
 	a.width, a.height = a.initialWindowSize()
 	a.backend.CreateWindow("xerotty", a.width, a.height)
@@ -211,10 +185,27 @@ func (a *App) Run() error {
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
 	a.tabs = tabs.NewManager(&a.cfg)
 
-	// Main loop
-	a.backend.Run(func() {
+	// macOS-only: hook an SDL event watch so a real frame still renders
+	// while AppKit's live-resize tracking mode holds the run loop.
+	// Without this the OS just stretches the previous GL framebuffer
+	// (the "image stretch" effect) until the user releases the drag.
+	// No-op on other platforms.
+	//
+	// The wrapped frame body brackets each call with
+	// liveResizeMainFrame{Begin,End}: while the main loop is inside its
+	// frame body, the watch must not drive its own NewFrame (would
+	// double-NewFrame and assert). When the main loop is between
+	// frames — including blocked in SDL_PollEvent during AppKit
+	// tracking — the flag is clear and the watch is free to render.
+	wrappedFrame := func() {
+		liveResizeMainFrameBegin()
+		defer liveResizeMainFrameEnd()
 		a.frame()
-	})
+	}
+	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
+
+	// Main loop
+	a.backend.Run(wrappedFrame)
 
 	// Cleanup all tabs
 	for _, tab := range a.tabs.Tabs {
@@ -278,6 +269,39 @@ func (a *App) resizeTerminals() {
 	}
 }
 
+// beforeRender runs before every NewFrame — both via cimgui-go's
+// SetBeforeRenderHook in the main loop and via the macOS live-resize
+// watch in liveresize_darwin.go. Has to live BEFORE NewFrame because
+// font reloads invalidate ImGui's per-frame font pointer; doing the
+// reload mid-frame would assert in Render.
+func (a *App) beforeRender() {
+	if !a.pendingFontFace {
+		return
+	}
+	a.pendingFontFace = false
+	font, fontBold, _ := renderer.ReloadFont(&a.cfg)
+	a.renderer.Font = font
+	a.renderer.FontBold = fontBold
+	a.baseFontSize = renderer.PixelSize(&a.cfg)
+	if a.renderer.Glyphs != nil {
+		a.renderer.Glyphs.Close()
+		a.renderer.Glyphs = nil
+	}
+	if fontsys.Default != nil {
+		primaryPath := renderer.ResolveFontPath(&a.cfg)
+		if primaryPath != "" {
+			fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+			if fbScale <= 0 {
+				fbScale = 1
+			}
+			if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+				a.renderer.Glyphs = c
+			}
+		}
+	}
+	a.pendingRemeasure = true
+}
+
 func (a *App) frame() {
 	// macOS: after the first click that shifts the Cocoa first-responder,
 	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
@@ -285,13 +309,26 @@ func (a *App) frame() {
 	// up→down transitions and tab clicks vanish. Bypass the broken event
 	// path by polling the OS-level mouse-button state directly each frame
 	// and injecting synthetic events into ImGui whenever its view of the
-	// button diverges from reality. ImGui filters duplicate events, so on
-	// frames where SDL did manage to deliver the event this is a no-op.
+	// button diverges from reality.
+	//
+	// Asymmetric: only inject DOWN when the cursor is inside the main
+	// window's content rect AND we're not in a live-resize-driven frame.
+	// AppKit consumes clicks on window frames, resize handles, and
+	// popped-out viewport title bars without delivering them to SDL —
+	// without these guards the OS button-down poll would manufacture a
+	// fake terminal click out of the window-management gesture and
+	// start a phantom selection drag. Releases always inject so a real
+	// drag-then-release that ends outside content still clears state.
 	if runtime.GOOS == "darwin" {
 		osDown := sdlhack.LeftButtonGlobalDown()
 		imguiDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
-		if osDown != imguiDown {
-			imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), osDown)
+		switch {
+		case osDown && !imguiDown:
+			if sdlhack.MouseInMainContent() && !inLiveResizeWatch() {
+				imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), true)
+			}
+		case !osDown && imguiDown:
+			imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
 		}
 	}
 
