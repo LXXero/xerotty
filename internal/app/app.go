@@ -1591,6 +1591,11 @@ func (a *App) handleMouseSelection() {
 			a.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
 		}
 		if a.sel.active {
+			// iTerm2-style: hold-and-drag after a double-click extends
+			// the selection by word, with the original word as the
+			// anchor. Release without movement just keeps the word
+			// selection.
+			a.sel.dragging = true
 			text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
 			if text != "" {
 				input.PrimaryWrite(text)
@@ -1608,6 +1613,8 @@ func (a *App) handleMouseSelection() {
 			}
 			a.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
 			if a.sel.active {
+				// Drag after triple-click extends the selection by full rows.
+				a.sel.dragging = true
 				text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
 				if text != "" {
 					input.PrimaryWrite(text)
@@ -1616,22 +1623,18 @@ func (a *App) handleMouseSelection() {
 			a.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
 			a.sel.clear()
-			a.sel.startCol = col
-			a.sel.startRow = row
-			a.sel.endCol = col
-			a.sel.endRow = row
-			a.sel.dragging = true
+			a.sel.startCharDrag(row, col)
 		}
 	}
 
-	// Dragging extends selection
+	// Dragging extends selection. Mode (set when the drag started)
+	// decides whether the moving end snaps to char / word / line.
 	if a.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
-		a.sel.endCol = col
-		a.sel.endRow = row
-		// Mark active as soon as we've moved at least one cell
-		if a.sel.endCol != a.sel.startCol || a.sel.endRow != a.sel.startRow {
-			a.sel.active = true
+		scrollOff := 0
+		if s, ok := a.scroll[tab.ID]; ok {
+			scrollOff = s.Offset
 		}
+		a.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
 	}
 
 	// Release finalizes selection and copies to PRIMARY
