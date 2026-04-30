@@ -251,31 +251,34 @@ func (a *App) gridSize() (cols, rows int) {
 // Cell height is ascent + descent (no leading) — terminals traditionally
 // pack rows tightly. Cell width is the primary font's M advance.
 //
-// Both dimensions are ceil'd to whole logical pixels: fractional
-// advances (e.g. Monaco 12pt at ~7.2 px) make window math deterministic
-// only when integer, since AppKit's setContentResizeIncrements rounds
-// to integer points and gridSize()'s int(W/cellW) needs to match.
-// Ceil (vs round) is the safer choice for a terminal — the cell is
-// always at least as wide/tall as the font wants, so glyphs never clip
-// at edges, box-drawing rects tile with no gaps, and wide chars never
-// overlap into the next cell. The cost is at most one extra logical
-// pixel per cell, invisible at HiDPI.
+// Returns the FLOAT advance straight from the font. Callers ceil
+// `baseCellW * scale` (or `baseCellW * 1` at base zoom) when storing
+// into the layout `cellW`. Storing baseCellW pre-ceil is what makes
+// font-zoom scale linearly: at 1.0833× zoom of a 7.2 px advance you
+// want ceil(7.8)=8, not ceil(8 * 1.0833)=10. (The latter is what we
+// get if ceil happens at measure time and then again after scaling —
+// the ceiling compounds and cells drift wider than the font wants on
+// every zoom step.)
 func (a *App) measureCell() renderer.CellMetrics {
-	var m renderer.CellMetrics
 	if a.renderer != nil && a.renderer.Glyphs != nil {
 		lm := a.renderer.Glyphs.LineMetrics()
 		w := a.renderer.Glyphs.PrimaryAdvance()
 		h := lm.Ascent + lm.Descent
 		if w > 0 && h > 0 {
-			m = renderer.CellMetrics{Width: w, Height: h}
+			return renderer.CellMetrics{Width: w, Height: h}
 		}
 	}
-	if m.Width < 1 || m.Height < 1 {
-		m = renderer.MeasureCell()
-	}
-	m.Width = float32(math.Ceil(float64(m.Width)))
-	m.Height = float32(math.Ceil(float64(m.Height)))
-	return m
+	return renderer.MeasureCell()
+}
+
+// ceilCell ceils the cell metrics to whole logical pixels for the
+// layout `cellW`/`cellH`. AppKit's setContentResizeIncrements rounds
+// to integer points and gridSize()'s int(W/cellW) needs to match;
+// integer cellW makes both deterministic. Ceil (vs round) keeps the
+// cell at least as wide/tall as the font wants — glyphs never clip,
+// box-drawing rects tile with no gaps, wide chars never overlap.
+func ceilCell(w, h float32) (float32, float32) {
+	return float32(math.Ceil(float64(w))), float32(math.Ceil(float64(h)))
 }
 
 func (a *App) resizeTerminals() {
@@ -371,18 +374,21 @@ func (a *App) frame() {
 			}
 		}
 
-		// Measure real cell dimensions now that the font atlas is built
+		// Measure real cell dimensions now that the font atlas is built.
+		// metrics carries the float advance straight from the font;
+		// baseCellW/H stores it pre-ceil so font-zoom can scale it
+		// linearly, layout cellW/H is the ceil'd integer used for the
+		// grid + OS resize-snap.
 		metrics := a.measureCell()
 		if metrics.Width < 1 || metrics.Height < 1 {
 			// Fallback if measurement fails — estimate from atlas pixel size
 			px := renderer.PixelSize(&a.cfg)
 			metrics = renderer.CellMetrics{Width: px * 0.6, Height: px * 1.2}
 		}
-		a.cellW = metrics.Width
-		a.cellH = metrics.Height
 		a.baseCellW = metrics.Width
 		a.baseCellH = metrics.Height
-		a.renderer.Metrics = metrics
+		a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
+		a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 
 		// Re-fit the window to the configured columns/rows now that we have
 		// real cell metrics. The initial CreateWindow used estimated metrics,
@@ -431,11 +437,10 @@ func (a *App) frame() {
 	if a.pendingRemeasure {
 		a.pendingRemeasure = false
 		if metrics := a.measureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
-			a.cellW = metrics.Width
-			a.cellH = metrics.Height
 			a.baseCellW = metrics.Width
 			a.baseCellH = metrics.Height
-			a.renderer.Metrics = metrics
+			a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
+			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 			a.renderer.FontSize = a.baseFontSize
 			a.resizeTerminals()
 			setContentResizeIncrements(a.cellW, a.cellH)
@@ -1056,10 +1061,11 @@ func (a *App) updateFontMetrics() {
 
 	// Scale cell metrics proportionally (no atlas rebuild needed —
 	// the renderer uses AddTextFontPtr with explicit font size). Ceil
-	// to whole logical pixels — see measureCell for the rationale.
+	// AFTER scaling — baseCellW/H is the pre-ceil float advance so
+	// `ceil(baseCellW * scale)` is the same answer measureCell would
+	// give at this zoom (no compounding of ceiling errors per step).
 	scale := pxSize / a.baseFontSize
-	a.cellW = float32(math.Ceil(float64(a.baseCellW * scale)))
-	a.cellH = float32(math.Ceil(float64(a.baseCellH * scale)))
+	a.cellW, a.cellH = ceilCell(a.baseCellW*scale, a.baseCellH*scale)
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 	a.renderer.FontSize = pxSize
 
