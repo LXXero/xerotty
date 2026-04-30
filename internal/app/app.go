@@ -250,16 +250,31 @@ func (a *App) gridSize() (cols, rows int) {
 //
 // Cell height is ascent + descent (no leading) — terminals traditionally
 // pack rows tightly. Cell width is the primary font's M advance.
+//
+// Both dimensions are rounded to whole logical pixels: a fractional
+// advance (e.g. Monaco 12pt at ~7.2 px) makes window math deterministic
+// only when integer, since AppKit's setContentResizeIncrements rounds
+// to integer points and gridSize()'s int(W/cellW) needs to match. With
+// integer cellW the OS resize-snap, the gridSize floor-divide, and the
+// renderer's column×cellW positions all line up exactly. Glyphs are
+// already pixel-snapped at draw time so the sub-pixel difference
+// between font advance and rounded cellW is invisible.
 func (a *App) measureCell() renderer.CellMetrics {
+	var m renderer.CellMetrics
 	if a.renderer != nil && a.renderer.Glyphs != nil {
 		lm := a.renderer.Glyphs.LineMetrics()
 		w := a.renderer.Glyphs.PrimaryAdvance()
 		h := lm.Ascent + lm.Descent
 		if w > 0 && h > 0 {
-			return renderer.CellMetrics{Width: w, Height: h}
+			m = renderer.CellMetrics{Width: w, Height: h}
 		}
 	}
-	return renderer.MeasureCell()
+	if m.Width < 1 || m.Height < 1 {
+		m = renderer.MeasureCell()
+	}
+	m.Width = float32(math.Round(float64(m.Width)))
+	m.Height = float32(math.Round(float64(m.Height)))
+	return m
 }
 
 func (a *App) resizeTerminals() {
@@ -1039,10 +1054,11 @@ func (a *App) updateFontMetrics() {
 	cols, rows := a.gridSize()
 
 	// Scale cell metrics proportionally (no atlas rebuild needed —
-	// the renderer uses AddTextFontPtr with explicit font size)
+	// the renderer uses AddTextFontPtr with explicit font size). Round
+	// to whole logical pixels — see measureCell for the rationale.
 	scale := pxSize / a.baseFontSize
-	a.cellW = a.baseCellW * scale
-	a.cellH = a.baseCellH * scale
+	a.cellW = float32(math.Round(float64(a.baseCellW * scale)))
+	a.cellH = float32(math.Round(float64(a.baseCellH * scale)))
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 	a.renderer.FontSize = pxSize
 
