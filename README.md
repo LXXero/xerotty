@@ -6,7 +6,11 @@ Companion to [SevenTTY](https://github.com/LXXero/SevenTTY) — an SSH client an
 
 ## Why
 
-Most terminal emulators get the mouse wrong. They don't have context menus, or they have one with hardcoded items you can't change, or right-click does nothing at all. xerotty's whole reason for existing is *the menu is yours* — order, items, submenus, conditions, shell-exec actions, all driven from `~/.config/xerotty/config.toml`. No recompiling. No hidden defaults you can't override.
+xerotty optimizes for the thing most terminals ignore: the **GUI experience**. Tabs you can click, drag-reorder, and middle-click-close. Scroll that works like scroll. Right-click that works like right-click — opening a context menu that leads with the things you actually opened it for (New Tab, New Window) instead of burying them under clipboard items every shell already has shortcuts for.
+
+The whole reason xerotty exists is that *the menu is yours*. Order, items, submenus, conditions, shell-exec actions — all driven from `~/.config/xerotty/config.toml`. No recompiling. No hidden defaults you can't override.
+
+Same binary, same behavior, same menus on Linux and macOS. Built on ImGui and SDL2 — no GTK, no Cocoa, no platform widget toolkits dragging platform-specific bugs into your daily driver.
 
 The rest follows from "no, you don't have to fight your terminal":
 
@@ -119,7 +123,6 @@ tools/               iterm2-import, glyph-dump diagnostic
 ## Related
 
 - [SevenTTY](https://github.com/LXXero/SevenTTY) — SSH + terminal for classic Mac OS 7/8/9. xerotty is the modern-OS counterpart.
-- [retro-ai-prompt](https://github.com/0xExero/retro-ai-prompt) — same author, retro-themed CLI helper for Claude / Codex via the user's existing subscription.
 
 ## License
 
