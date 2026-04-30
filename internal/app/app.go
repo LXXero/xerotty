@@ -1059,15 +1059,37 @@ func (a *App) updateFontMetrics() {
 	// the window to keep the same number of cols/rows.
 	cols, rows := a.gridSize()
 
-	// Scale cell metrics proportionally (no atlas rebuild needed —
-	// the renderer uses AddTextFontPtr with explicit font size). Ceil
-	// AFTER scaling — baseCellW/H is the pre-ceil float advance so
-	// `ceil(baseCellW * scale)` is the same answer measureCell would
-	// give at this zoom (no compounding of ceiling errors per step).
+	// Scale cell metrics proportionally. Ceil AFTER scaling —
+	// baseCellW/H is the pre-ceil float advance so `ceil(baseCellW *
+	// scale)` is the same answer measureCell would give at this zoom
+	// (no compounding of ceiling errors per step).
 	scale := pxSize / a.baseFontSize
 	a.cellW, a.cellH = ceilCell(a.baseCellW*scale, a.baseCellH*scale)
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 	a.renderer.FontSize = pxSize
+
+	// Rebuild the glyph cache at the new pxSize. Terminal cells render
+	// through r.Glyphs.Get → AddImageV at the cached texture's native
+	// size, so the cache's pxSize IS the size glyphs render at —
+	// scaling the cell width without rebuilding the cache leaves
+	// glyphs frozen at the old size and cells grow around them (the
+	// "space zooms but text doesn't" symptom). Old textures are queued
+	// for GPU deletion via the TextureManager and are safe to drop
+	// here because frame() runs the wheel handler before any
+	// renderer.Draw / AddImageV calls reference them.
+	if a.renderer.Glyphs != nil && fontsys.Default != nil {
+		primaryPath := renderer.ResolveFontPath(&a.cfg)
+		if primaryPath != "" {
+			fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+			if fbScale <= 0 {
+				fbScale = 1
+			}
+			if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, pxSize, fbScale); err == nil {
+				a.renderer.Glyphs.Close()
+				a.renderer.Glyphs = c
+			}
+		}
+	}
 
 	// Resize window to maintain the same grid at the new cell size.
 	// Set a.width/a.height immediately so this frame renders correctly;
