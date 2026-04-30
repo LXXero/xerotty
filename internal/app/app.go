@@ -251,14 +251,15 @@ func (a *App) gridSize() (cols, rows int) {
 // Cell height is ascent + descent (no leading) — terminals traditionally
 // pack rows tightly. Cell width is the primary font's M advance.
 //
-// Both dimensions are rounded to whole logical pixels: a fractional
-// advance (e.g. Monaco 12pt at ~7.2 px) makes window math deterministic
+// Both dimensions are ceil'd to whole logical pixels: fractional
+// advances (e.g. Monaco 12pt at ~7.2 px) make window math deterministic
 // only when integer, since AppKit's setContentResizeIncrements rounds
-// to integer points and gridSize()'s int(W/cellW) needs to match. With
-// integer cellW the OS resize-snap, the gridSize floor-divide, and the
-// renderer's column×cellW positions all line up exactly. Glyphs are
-// already pixel-snapped at draw time so the sub-pixel difference
-// between font advance and rounded cellW is invisible.
+// to integer points and gridSize()'s int(W/cellW) needs to match.
+// Ceil (vs round) is the safer choice for a terminal — the cell is
+// always at least as wide/tall as the font wants, so glyphs never clip
+// at edges, box-drawing rects tile with no gaps, and wide chars never
+// overlap into the next cell. The cost is at most one extra logical
+// pixel per cell, invisible at HiDPI.
 func (a *App) measureCell() renderer.CellMetrics {
 	var m renderer.CellMetrics
 	if a.renderer != nil && a.renderer.Glyphs != nil {
@@ -272,8 +273,8 @@ func (a *App) measureCell() renderer.CellMetrics {
 	if m.Width < 1 || m.Height < 1 {
 		m = renderer.MeasureCell()
 	}
-	m.Width = float32(math.Round(float64(m.Width)))
-	m.Height = float32(math.Round(float64(m.Height)))
+	m.Width = float32(math.Ceil(float64(m.Width)))
+	m.Height = float32(math.Ceil(float64(m.Height)))
 	return m
 }
 
@@ -1054,11 +1055,11 @@ func (a *App) updateFontMetrics() {
 	cols, rows := a.gridSize()
 
 	// Scale cell metrics proportionally (no atlas rebuild needed —
-	// the renderer uses AddTextFontPtr with explicit font size). Round
+	// the renderer uses AddTextFontPtr with explicit font size). Ceil
 	// to whole logical pixels — see measureCell for the rationale.
 	scale := pxSize / a.baseFontSize
-	a.cellW = float32(math.Round(float64(a.baseCellW * scale)))
-	a.cellH = float32(math.Round(float64(a.baseCellH * scale)))
+	a.cellW = float32(math.Ceil(float64(a.baseCellW * scale)))
+	a.cellH = float32(math.Ceil(float64(a.baseCellH * scale)))
 	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 	a.renderer.FontSize = pxSize
 
