@@ -1,10 +1,10 @@
 # xerotty — Terminal Emulator Specification
 
-Version 1.0 — 2026-03-25
+Version 1.1 — 2026-04-29
 
 ## 1. Project Overview
 
-**xerotty** is a customizable terminal emulator for Linux, built in Go with SDL2 and Dear ImGui (via cimgui-go). The core motivation is a fully configurable right-click context menu and a UI that respects mouse users — something most terminal emulators get wrong by either not having context menus or making them unconfigurable.
+**xerotty** is a customizable terminal emulator for Linux and macOS, built in Go with SDL2 and Dear ImGui (via cimgui-go). The core motivation is a fully configurable right-click context menu and a UI that respects mouse users — something most terminal emulators get wrong by either not having context menus or making them unconfigurable.
 
 xerotty is a companion to [SevenTTY](https://github.com/LXXero/SevenTTY), an SSH client and terminal emulator for classic Mac OS 7/8/9. Where SevenTTY brings modern SSH to vintage Macs, xerotty brings the user-centric design philosophy of classic Mac OS to modern Linux terminals.
 
@@ -65,10 +65,22 @@ xerotty/
 │   │   └── clipboard.go      # PRIMARY + CLIPBOARD management, unsafe paste detection
 │   ├── themes/
 │   │   └── themes.go         # Theme loading/parsing, iTerm2 import, color resolution
-│   └── scrollback/
-│       └── scrollback.go     # Scrollback buffer, search, disk swap for unlimited mode
+│   ├── scrollback/
+│   │   └── scrollback.go     # Scrollback buffer, search, disk swap for unlimited mode
+│   ├── fontsys/
+│   │   ├── fontsys.go        # Cross-platform Font / System interfaces
+│   │   ├── fontsys_darwin.go # CoreText: enumerate, FindForCodepoint, rasterize, bold variant
+│   │   └── fontsys_linux.go  # fontconfig + FreeType
+│   ├── glyphcache/
+│   │   └── glyphcache.go     # Per-codepoint GL-texture cache, OS-cascade fallback
+│   ├── sdlhack/
+│   │   ├── mouse.go          # OS-level mouse polling (workaround for Cocoa SDL drops)
+│   │   └── keymod.go         # Keyboard modifier helpers
+│   └── dpi/
+│       └── dpi.go            # Platform DPI conventions (point=pixel on macOS, 96dpi elsewhere)
 ├── tools/
-│   └── iterm2-import.go      # CLI tool: .itermcolors → xerotty TOML theme converter
+│   ├── iterm2-import.go      # CLI tool: .itermcolors → xerotty TOML theme converter
+│   └── glyph-dump/           # Diagnostic: render rasterized glyphs to PNG for visual inspection
 ├── themes/                    # Bundled theme TOML files
 │   ├── dracula.toml
 │   ├── solarized-dark.toml
@@ -99,6 +111,10 @@ xerotty/
 | `input` | Key translation, clipboard ops | `config` |
 | `themes` | Theme file parsing, color resolution | `config` |
 | `scrollback` | Buffer management, search, disk swap | `config` |
+| `fontsys` | OS font discovery + glyph rasterization | (none — leaf, OS-only) |
+| `glyphcache` | Per-codepoint GPU texture cache, fallback cascade | `fontsys` |
+| `sdlhack` | Cgo workarounds for SDL2 platform quirks | (none — leaf, OS-only) |
+| `dpi` | Per-platform DPI/scaling constants | (none — leaf) |
 
 ---
 
@@ -213,6 +229,28 @@ for _, tab := range tabs {
 }
 ```
 
+### 4.5 Platform Support
+
+xerotty runs on Linux and macOS. Cross-platform code is the default; platform-specific behaviour lives in build-tagged files (`*_darwin.go`, `*_linux.go`) inside the relevant package.
+
+**macOS-specific work** (in addition to the cross-platform paths):
+
+| Concern | Where | What |
+|---------|-------|------|
+| DPI | `internal/dpi/dpi_darwin.go` | Returns 72 (point = pixel) so `12pt` matches iTerm; Linux returns 96 |
+| Cmd keybindings | `internal/config/config.go` defaults | Uses cimgui-go's `ConfigMacOSXBehaviors` — physical Cmd is delivered as `ImGuiMod_Ctrl`; defaults bind to `Ctrl+T`/`Ctrl+W` etc. with display labels showing "Cmd+…" |
+| PTY control codes | `internal/input/input.go` | Physical Ctrl is mirrored to Super on darwin so `Ctrl+C` still produces `0x03` even with the cimgui swap |
+| Mouse drops | `internal/sdlhack/mouse.go` | After Cocoa first-responder shifts, SDL drops mouse-up events; we mirror OS-level button state into ImGui each frame |
+| Mirror false-positives | `internal/sdlhack/mouse.go`, `internal/app/app.go` | Inject DOWN only when cursor is in the main window's content rect AND we're not in a live-resize watch frame — keeps window-frame / resize-handle / popped-out-viewport-titlebar drags from manufacturing fake terminal clicks |
+| Clipboard | `internal/input/clipboard.go` | `SDL_GetClipboardText` / `SDL_SetClipboardText` (NSPasteboard); PRIMARY is a no-op on darwin |
+| OSC parser | `internal/terminal/terminal.go` (`preprocessOSC`) | charm/x/ansi treats `\x9c` as String Terminator even mid-UTF-8, corrupting window titles with multi-byte glyphs; we extract OSC 0/1/2 ourselves and feed plain text into `OnTitle` |
+| Window resize | `internal/app/cellsnap_darwin.{m,go}` | `[NSWindow setContentResizeIncrements:]` snaps drag-resize to (cellW, cellH) — equivalent of GTK's `GDK_HINT_RESIZE_INC` |
+| Live resize | `internal/app/liveresize_darwin.go` | AppKit's tracking mode bypasses `NSDefaultRunLoopMode`, starving SDL's pump; an `SDL_AddEventWatch` callback drives a complete ImGui frame from inside the watch (mirrors cimgui-go's `igSDLRunLoop` body) so the user sees real frames during the drag instead of a stretched GL framebuffer |
+
+**Linux-specific work**: PRIMARY selection via `xclip` / `xsel` / `wl-paste` (see §6.8); fontconfig + FreeType for font discovery and rasterization (`internal/fontsys/fontsys_linux.go`).
+
+**Wayland caveat**: There's no Wayland equivalent of `setContentResizeIncrements`. SDL2's Wayland backend always acks `xdg_surface.configure` with the proposed size, leaving us no place to round to cell multiples without flicker. Drag-resize on Linux/Wayland just uses cell-floor on every WM-proposed size — see `docs/RESIZING_PLAN.md`.
+
 ---
 
 ## 5. Rendering Pipeline
@@ -287,15 +325,23 @@ Font loading sequence:
 2. Otherwise, search system font directories for `font.family`
 3. Fallback: embedded default font (built into the binary, e.g., a liberation mono or similar)
 
-**Glyph ranges loaded into ImGui font atlas:**
+**Two-tier font system.** xerotty renders text through two complementary paths:
+
+1. **ImGui's static font atlas** — used for the UI chrome (tab labels, preferences dialog, popups, search box). Built once at startup with a fixed glyph range. ImGui's bundled stbtt parser asserts on OpenType variable fonts, so `fontsys.IsVariableFont()` guards atlas loads (`internal/renderer/font.go::safeToLoad`).
+2. **Runtime glyph cache** (`internal/glyphcache`) — used for terminal cell rendering. Glyphs are rasterized on demand the first time a codepoint is needed and stored as individual GL textures referenced through ImGui's `TextureRef`. This bypasses ImGui's atlas entirely and gives us:
+   - Full Unicode coverage including supplementary-plane emoji (atlas would need every range pre-declared and is 16-bit-codepoint-limited in default builds)
+   - OS-driven font fallback — when the primary font lacks a codepoint, `fontsys.System.FindForCodepoint()` asks CoreText / fontconfig which font to use; `glyphcache` opens it lazily and caches the answer per codepoint
+   - Color glyph support (Apple Color Emoji, Noto Color Emoji) — `Glyph.IsColor` flags glyphs whose bitmap carries real RGB so the renderer draws them with a white tint instead of multiplying through fg color
+   - Real bold via the OS — `fontsys.Font.Bold()` returns the bold variant from the font family; falls back to faux-bold (CoreText `kCGTextFillStroke`) when no bold face exists (e.g. Monaco)
+   - HiDPI sharpness — glyphs are rasterized at `pxSize × fbScale` physical pixels; the renderer divides bitmap dimensions by `fbScale` for on-screen layout and floor-snaps positions to physical pixels
+
+**Atlas glyph ranges** (UI only — terminal cells go through the runtime cache):
 - ASCII (U+0020-U+007E)
 - Latin-1 Supplement (U+00A0-U+00FF)
-- Box Drawing (U+2500-U+257F)
-- Block Elements (U+2580-U+259F)
-- Braille Patterns (U+2800-U+28FF)
-- Geometric Shapes (U+25A0-U+25FF)
-- Powerline symbols (U+E0A0-U+E0D4) — optional, for shell prompt glyphs
-- CJK ranges — optional, loaded only if configured (large atlas)
+
+The atlas additionally merges a UI fallback font for symbols the primary font lacks (Menlo on macOS, DejaVu Sans on Linux) so tab labels rendered through ImGui still display sparkles, ✳, etc.
+
+**Synthesized glyphs.** Box-drawing (U+2500–U+257F) and block elements (U+2580–U+259F) are not rasterized through `fontsys` — many monospace fonts ship slightly-narrow versions of these and they end up with visible gaps/dashes between cells. The renderer synthesizes them as filled rectangles via the cell-tile arm encoding (top/right/bottom/left × {none, light, heavy, double}) so heavy/double/light variants tile pixel-perfectly. See `internal/renderer/renderer.go::drawBoxDrawingGlyph` and `drawBlockGlyph`.
 
 ### 5.6 Color Conversion
 
@@ -884,6 +930,51 @@ The scrollbar is drawn directly via ImDrawList (not an ImGui widget) to maintain
 
 ---
 
+### 6.6.5 Text Selection
+
+#### Overview
+
+Mouse-driven selection follows the iTerm2 / xfce4-terminal pattern: the *initial click* sets a selection mode that persists for the entire drag, so the user picks granularity (char / word / line) up front and the drag end snaps accordingly. The selected text is fed to the X11/Wayland PRIMARY selection on Linux (see §6.8) and is what `copy` / `Cmd+C` reads.
+
+#### Modes
+
+| Trigger | Mode | What gets selected on click | What "drag end" snaps to |
+|---------|------|-----------------------------|--------------------------|
+| Single click + drag | char | Single cell | Cell-precise |
+| Double-click + (drag) | word | Word/whitespace token at click | Word/whitespace/punctuation token under cursor |
+| Triple-click + (drag) | line | Whole row | Whole rows from anchor row to cursor row |
+
+Releasing the button without movement after a double or triple click leaves the original word / line selected — the drag-extend only kicks in if the user actually moves while held.
+
+#### Anchor model
+
+The selection stores both the *anchor* (the bounds of the original click) and the *current selection*. On every drag tick, `extendDrag(curRow, curCol, …)` recomputes the current selection so the anchor end stays put and the moving end snaps per the mode:
+
+- Cursor before anchor → selection runs from `(cursorStartRow, cursorStartCol)` to `anchorEnd`
+- Cursor after anchor → selection runs from `anchorStart` to `(cursorEndRow, cursorEndCol)`
+- Cursor inside anchor → selection equals the original anchor bounds
+
+This means dragging right-then-left through the original word doesn't lose the original — the word stays selected as a floor.
+
+#### Token classification (3-class)
+
+`wordBoundsAt` partitions cells into three classes for word-mode boundary expansion:
+
+| Class | Includes | Run behavior |
+|-------|----------|--------------|
+| `classWord` | letters, digits, `_` | Contiguous run = single token |
+| `classSpace` | whitespace, empty cells | Contiguous run = single token |
+| `classPunct` | everything else | Each cell stands alone |
+
+The 3-class split avoids the 2-class pitfall where `$` and the space after it would merge (`$` and ` ` are both "non-word"). With three classes, double-clicking `$` selects just `$`, and dragging from `foo` through ` $ ` into `bar` extends through 5 distinct tokens.
+
+#### Files
+
+- `internal/app/selection.go` — selection state, modes, anchor, `extendDrag`, `wordBoundsAt`
+- `internal/app/app.go::handleMouseSelection` — wires double/triple-click + drag into the mode-aware selection methods
+
+---
+
 ### 6.7 Resize Overlay
 
 #### Overview
@@ -906,6 +997,14 @@ resize_overlay_duration = 1.0  # seconds to show after resize stops (default: 1.
 5. After `resize_overlay_duration` seconds with no further resize events, fade out the overlay over 300ms
 6. During the fade, alpha decreases linearly from 1.0 to 0.0
 
+#### Cell-snap drag-resize (macOS)
+
+On macOS, drag-resize is constrained to whole-cell increments via `[NSWindow setContentResizeIncrements:]` (`internal/app/cellsnap_darwin.{m,go}`). The increments are set to `(cellW, cellH)` on the first frame and re-applied after font-zoom or font-face changes. This is the AppKit equivalent of GTK's `GDK_HINT_RESIZE_INC` and gives drag-resize the same "snap on cell boundary" feel as xfce4-terminal.
+
+To prevent AppKit's tracking-mode from showing a stretched GL framebuffer between snap steps, an `SDL_AddEventWatch` callback in `internal/app/liveresize_darwin.go` drives a complete ImGui frame from inside the watch — see §4.5.
+
+On Linux/Wayland there's no protocol equivalent of `setContentResizeIncrements`, so drag-resize uses cell-floor on every WM-proposed size. See `docs/RESIZING_PLAN.md`.
+
 #### Rendering
 
 ```go
@@ -926,12 +1025,12 @@ drawList.AddText(pos, imgui.ColorU32(255, 255, 255, 255), text)
 ### 6.8 Clipboard
 
 #### Overview
-Linux has two separate clipboard mechanisms. xerotty supports both and makes them fully configurable.
+Linux has two separate clipboard mechanisms; macOS has one. xerotty supports both Linux conventions where they exist and degrades gracefully on macOS.
 
 | Clipboard | How It Works | Default Behavior in xerotty |
 |-----------|-------------|---------------------------|
-| PRIMARY | Highlight text → automatically copied. Middle-click → paste. | Copy on select |
-| CLIPBOARD | Explicit Ctrl+C → copy. Ctrl+V → paste. | Ctrl+Shift+C / Ctrl+Shift+V |
+| CLIPBOARD (Linux+macOS) | Explicit Ctrl+C / Cmd+C → copy. Ctrl+V / Cmd+V → paste. | bound by default |
+| PRIMARY (Linux only) | Highlight text → automatically copied. Middle-click → paste. | Copy on select; macOS no-op |
 
 #### Config
 
@@ -983,10 +1082,16 @@ When triggered, show an ImGui modal dialog:
 - "Cancel" discards
 - Keyboard: Enter = Cancel (safe default), Ctrl+Enter = Paste Anyway
 
-#### SDL2 Clipboard API
+#### Implementation
 
-- `SDL_GetClipboardText()` for CLIPBOARD
-- For PRIMARY: Use X11 selection via `SDL_X11_GetPrimarySelectionText()` (SDL2 ≥ 2.26) or fall back to xclip/xsel subprocess
+CLIPBOARD: `SDL_GetClipboardText()` / `SDL_SetClipboardText()`. Cross-platform via SDL — uses NSPasteboard on macOS, the GTK/X11/Wayland clipboard manager on Linux, CF_UNICODETEXT on Windows. No dependency on external `xclip` / `pbcopy` tools for CLIPBOARD operations.
+
+PRIMARY: SDL2 has no PRIMARY API, so `internal/input/clipboard.go` shells out:
+- Wayland: `wl-paste --primary` / `wl-copy --primary`
+- X11: `xclip -selection primary` / `xsel --primary`
+- macOS: no-op — Mac has no PRIMARY concept and writing every drag-select to NSPasteboard would clobber the user's real clipboard
+
+`copy_on_select` writes to PRIMARY on Linux and is silently ignored on macOS. Middle-click paste is similarly Linux-only in practice.
 
 ---
 
