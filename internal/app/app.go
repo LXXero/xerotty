@@ -1386,7 +1386,7 @@ func (a *App) renderResizeOverlay() {
 		secondarySize = imgui.CalcTextSize(secondary)
 	}
 
-	lineGap := float32(2)
+	lineGap := primarySize.Y // ~one line of blank space between primary and secondary
 	innerW := primarySize.X
 	if secondarySize.X > innerW {
 		innerW = secondarySize.X
