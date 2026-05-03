@@ -44,12 +44,37 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 		}
 	}
 
-	// Ctrl+letter → ASCII control codes (1-26)
+	// Ctrl+letter → ASCII control codes (1-26), plus the non-letter
+	// punctuation Ctrl combos every shell relies on:
+	//   Ctrl+@ / Ctrl+Space → 0x00 (NUL — readline set-mark)
+	//   Ctrl+[              → 0x1B (ESC — alternate to Escape key)
+	//   Ctrl+\              → 0x1C (FS  — SIGQUIT)
+	//   Ctrl+]              → 0x1D (GS  — telnet escape, readline abort)
+	//   Ctrl+/              → 0x1F (US  — readline undo on some configs)
+	// Shift-required combos (Ctrl+Shift+6 → ^ → 0x1E, Ctrl+Shift+- →
+	// _ → 0x1F) are skipped because they collide with the keybind path
+	// that uses Ctrl+Shift+...; users wanting RS/US can use Ctrl+/ for
+	// 0x1F, and 0x1E is rarely used outside historical contexts.
 	if ctrlPhysical && !alt && !shift {
 		for k := imgui.KeyA; k <= imgui.KeyZ; k++ {
 			if imgui.IsKeyPressedBool(k) {
 				code := byte(k-imgui.KeyA) + 1
 				events = append(events, KeyEvent{Bytes: []byte{code}})
+			}
+		}
+		punct := []struct {
+			key  imgui.Key
+			code byte
+		}{
+			{imgui.KeySpace, 0x00},
+			{imgui.KeyLeftBracket, 0x1B},
+			{imgui.KeyBackslash, 0x1C},
+			{imgui.KeyRightBracket, 0x1D},
+			{imgui.KeySlash, 0x1F},
+		}
+		for _, p := range punct {
+			if imgui.IsKeyPressedBool(p.key) {
+				events = append(events, KeyEvent{Bytes: []byte{p.code}})
 			}
 		}
 		if len(events) > 0 {
