@@ -51,10 +51,15 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	//   Ctrl+\              → 0x1C (FS  — SIGQUIT)
 	//   Ctrl+]              → 0x1D (GS  — telnet escape, readline abort)
 	//   Ctrl+/              → 0x1F (US  — readline undo on some configs)
-	// Shift-required combos (Ctrl+Shift+6 → ^ → 0x1E, Ctrl+Shift+- →
-	// _ → 0x1F) are skipped because they collide with the keybind path
-	// that uses Ctrl+Shift+...; users wanting RS/US can use Ctrl+/ for
-	// 0x1F, and 0x1E is rarely used outside historical contexts.
+	//   Ctrl+Shift+6 (^)    → 0x1E (RS) on US layout
+	//   Ctrl+Shift+- (_)    → 0x1F (US) on US layout (alternate to Ctrl+/)
+	// Keybinds match earlier in this function, so a user who binds
+	// Ctrl+Shift+- to something else still wins; the falls-through path
+	// only fires when nothing claimed the combo. On macOS, the
+	// ConfigMacOSXBehaviors swap means physical Cmd is what arrives as
+	// ModCtrl and triggers keybinds — physical Ctrl arrives as Super
+	// (and ctrlPhysical above), so Ctrl+Shift+- can't collide with a
+	// "Ctrl+Shift+-" keybind there at all.
 	if ctrlPhysical && !alt && !shift {
 		for k := imgui.KeyA; k <= imgui.KeyZ; k++ {
 			if imgui.IsKeyPressedBool(k) {
@@ -73,6 +78,23 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 			{imgui.KeySlash, 0x1F},
 		}
 		for _, p := range punct {
+			if imgui.IsKeyPressedBool(p.key) {
+				events = append(events, KeyEvent{Bytes: []byte{p.code}})
+			}
+		}
+		if len(events) > 0 {
+			return events
+		}
+	}
+	if ctrlPhysical && !alt && shift {
+		shiftPunct := []struct {
+			key  imgui.Key
+			code byte
+		}{
+			{imgui.Key6, 0x1E},     // Ctrl+Shift+6 (^) → RS
+			{imgui.KeyMinus, 0x1F}, // Ctrl+Shift+- (_) → US
+		}
+		for _, p := range shiftPunct {
 			if imgui.IsKeyPressedBool(p.key) {
 				events = append(events, KeyEvent{Bytes: []byte{p.code}})
 			}
