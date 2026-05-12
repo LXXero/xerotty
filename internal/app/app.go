@@ -198,17 +198,26 @@ func (a *App) Run() error {
 	// liveResizeMainFrame{Begin,End}: while the main loop is inside its
 	// frame body, the watch must not drive its own NewFrame (would
 	// double-NewFrame and assert). When the main loop is between
-	// frames — including blocked in SDL_PollEvent during AppKit
-	// tracking — the flag is clear and the watch is free to render.
+	// frames — including blocked in SDL_WaitEventTimeout — the flag is
+	// clear and the watch is free to render.
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
 		a.frame()
+		setEventLoopIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
-	// Main loop
-	a.backend.Run(wrappedFrame)
+	// Wake the main loop when any PTY produces new data. Without this the
+	// loop sleeps in WaitEventTimeout until the next timeout (cursor
+	// blink etc.) and the user sees up to ~500ms latency on incoming
+	// bytes.
+	terminal.Wake = wakeEventLoop
+
+	// Main loop — event-driven via SDL_WaitEventTimeout. CPU goes to
+	// kernel-sleep when nothing's happening; PTY arrival, mouse, keys,
+	// timers all wake it.
+	runEventLoop(bgR, bgG, bgB, wrappedFrame, a.beforeRender, nil)
 
 	// Cleanup all tabs
 	for _, tab := range a.tabs.Tabs {
@@ -289,6 +298,28 @@ func (a *App) resizeTerminals() {
 	for _, tab := range a.tabs.Tabs {
 		tab.Terminal.Resize(cols, rows)
 	}
+}
+
+// idleTimeout returns the maximum milliseconds the WaitEventTimeout
+// can sleep before forcing a render. The runloop only wakes early on
+// real SDL events (mouse, keyboard, window) or PTY-data Wake signals
+// — this is the *fallback* tick for animations and periodic side
+// effects. Active interaction or fade animation: 60Hz. Cursor blink:
+// the configured blink rate. Truly idle: a long safety wake.
+func (a *App) idleTimeout() int {
+	if a.sel.dragging || a.sbDragging || a.resizeOverlay ||
+		a.pendingFontFace || a.pendingRemeasure ||
+		imgui.IsMouseDown(imgui.MouseButtonLeft) {
+		return 16
+	}
+	if a.cfg.Appearance.CursorBlink {
+		rate := a.cfg.Appearance.BlinkRate
+		if rate <= 0 {
+			rate = 530
+		}
+		return rate
+	}
+	return 5000
 }
 
 // beforeRender runs before every NewFrame — both via cimgui-go's
@@ -1070,11 +1101,14 @@ func (a *App) dispatchAction(action string) {
 				applyColorOverrides(&t, &a.cfg)
 				a.renderer.Theme = t
 				a.theme = t
-				// Update SDL background color to match new theme
+				// Update SDL background color to match new theme — both
+				// the cimgui-go backend (used briefly during init before
+				// runEventLoop takes over) and our runloop's clear color.
 				bgR := float32((t.Background>>0)&0xFF) / 255.0
 				bgG := float32((t.Background>>8)&0xFF) / 255.0
 				bgB := float32((t.Background>>16)&0xFF) / 255.0
 				a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
+				updateEventLoopBg(bgR, bgG, bgB)
 			}
 		} else if strings.HasPrefix(action, "exec:") {
 			ctx := a.menuContext()

@@ -448,6 +448,7 @@ func (a *App) applyPreferences() {
 		bgG := float32((t.Background>>8)&0xFF) / 255.0
 		bgB := float32((t.Background>>16)&0xFF) / 255.0
 		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
+		updateEventLoopBg(bgR, bgG, bgB)
 	}
 	a.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
 

@@ -15,6 +15,13 @@ import (
 	"github.com/creack/pty"
 )
 
+// Wake is called from PTY reader goroutines after new data arrives so
+// the main loop can break out of its WaitEventTimeout sleep early and
+// render. App.Run() sets this to a function that pushes an SDL wake
+// event. nil means the main loop is poll-based (cimgui-go default) and
+// the DataCh send alone is enough.
+var Wake func()
+
 // Terminal wraps a SafeEmulator + PTY + reader goroutines for one tab.
 type Terminal struct {
 	Emu      *vt.SafeEmulator
@@ -192,6 +199,9 @@ func (t *Terminal) readPTY() {
 			select {
 			case t.DataCh <- struct{}{}:
 			default:
+			}
+			if Wake != nil {
+				Wake()
 			}
 		}
 		if err != nil {
