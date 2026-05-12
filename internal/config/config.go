@@ -263,13 +263,16 @@ func Save(cfg Config) error {
 	return encoder.Encode(cfg)
 }
 
-// DetectShell returns the shell to use: config override > $SHELL > /bin/sh.
+// DetectShell returns the shell to use: config override > $SHELL > platform default.
 func (c *Config) DetectShell() string {
 	if c.Shell != "" {
 		return c.Shell
 	}
 	if s := os.Getenv("SHELL"); s != "" {
 		return s
+	}
+	if runtime.GOOS == "darwin" {
+		return "/bin/zsh"
 	}
 	return "/bin/sh"
 }

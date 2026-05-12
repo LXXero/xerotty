@@ -22,7 +22,8 @@ type Context struct {
 
 // Render draws the context menu using ImGui. Returns the action to dispatch, or "".
 // The popup must be opened externally via OpenPopupStr("##contextmenu") on right-click,
-// because the terminal window uses NoInputs and ImGui won't detect clicks on it.
+// because the terminal area has no backing ImGui window and ImGui's auto-open paths
+// (BeginPopupContextWindow, etc.) won't detect clicks on it.
 func Render(items []config.MenuItem, ctx *Context) string {
 	if !imgui.BeginPopupV("##contextmenu", 0) {
 		return ""

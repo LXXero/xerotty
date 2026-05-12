@@ -15,10 +15,12 @@ import (
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
 	"github.com/LXXero/xerotty/internal/tabs"
+	"github.com/LXXero/xerotty/internal/terminal"
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -708,9 +710,33 @@ func (a *App) frame() {
 	// Search overlay
 	a.renderSearchOverlay()
 
-	// Context menu — open on right-click (manual detection because terminal window has NoInputs)
+	// Context menu — open on right-click. We detect the click manually because
+	// the terminal isn't an ImGui window (it renders into the main viewport's
+	// BackgroundDrawList), so HoveredWindow is nil over the terminal area.
+	//
+	// That same lack-of-window breaks hover-while-held: when ImGui sees a
+	// mouse-down whose HoveredWindow is nil and no popup is open yet, it
+	// stamps MouseDownOwned[btn]=false for the click, which then forces
+	// HoveredWindow back to nil every subsequent frame the button is held.
+	// Items in the popup never highlight on hover, and at EndFrame the
+	// MouseClicked[1] && HoveredId == 0 path runs ClosePopupsOverWindow and
+	// shuts the menu we just opened.
+	//
+	// Reclaim ownership right after OpenPopup: flip MouseDownOwned to true
+	// so the next frame keeps HoveredWindow tracking the popup, and pin a
+	// non-zero HoveredID for this frame so the right-click-on-empty-space
+	// close path skips us. Result: terminal-style hover preview while the
+	// right button is held; a separate click still confirms.
 	if imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
 		imgui.OpenPopupStr("##contextmenu")
+		io := imgui.CurrentIO()
+		owned := io.MouseDownOwned()
+		owned[imgui.MouseButtonRight] = true
+		io.SetMouseDownOwned(&owned)
+		ownedAlt := io.MouseDownOwnedUnlessPopupClose()
+		ownedAlt[imgui.MouseButtonRight] = true
+		io.SetMouseDownOwnedUnlessPopupClose(&ownedAlt)
+		imgui.InternalSetHoveredID(imgui.ID(1))
 	}
 	a.renderContextMenu()
 
@@ -762,8 +788,15 @@ func (a *App) processKeys() {
 		return
 	}
 
-	// Poll ImGui key state (SDL backend's SetKeyCallback is not implemented)
-	events := input.PollKeys(a.cfg.Keybinds, false)
+	// Poll ImGui key state (SDL backend's SetKeyCallback is not implemented).
+	// Pass the active tab's DECCKM state so arrow keys render as `ESC O X`
+	// in pagers (less, git diff) and other apps that request application
+	// cursor mode.
+	appCursor := false
+	if tab != nil && tab.Terminal != nil {
+		appCursor = tab.Terminal.AppCursorMode()
+	}
+	events := input.PollKeys(a.cfg.Keybinds, appCursor)
 	actionDispatched := false
 
 	for _, ev := range events {
@@ -834,6 +867,7 @@ func (a *App) processKeys() {
 	if tab != nil {
 		io := imgui.CurrentIO()
 		chars := io.InputQueueCharacters()
+		altHeld := imgui.IsKeyDown(imgui.ModAlt)
 		if chars.Size > 0 {
 			// Snap to bottom on text input
 			if s, ok := a.scroll[tab.ID]; ok {
@@ -842,8 +876,15 @@ func (a *App) processKeys() {
 			a.sel.clear()
 			for _, ch := range chars.Slice() {
 				if ch > 0 && ch < 0x10FFFF {
-					buf := make([]byte, 4)
-					n := encodeRune(buf, rune(ch))
+					buf := make([]byte, 5)
+					var n int
+					// Alt+key → ESC key (Meta mapping)
+					if altHeld {
+						buf[0] = 0x1b
+						n = 1 + encodeRune(buf[1:], rune(ch))
+					} else {
+						n = encodeRune(buf, rune(ch))
+					}
 					tab.Terminal.Write(buf[:n])
 				}
 			}
@@ -1539,13 +1580,43 @@ func (a *App) pasteText(text string) {
 	if tab == nil {
 		return
 	}
-	// Show confirmation for multi-line paste or text containing sudo
-	if strings.Contains(text, "\n") || strings.Contains(text, "sudo") {
+	cfg := a.cfg.Clipboard.UnsafePaste
+	if !cfg.Enabled {
+		tab.Terminal.Paste(text)
+		return
+	}
+
+	shouldWarn := false
+	if cfg.MultilineWarning && strings.Contains(text, "\n") {
+		shouldWarn = true
+	}
+	if !shouldWarn && cfg.NewlineGuard && (strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\r\n")) {
+		shouldWarn = true
+	}
+
+	if !shouldWarn && len(cfg.Patterns) > 0 {
+		for _, pattern := range cfg.Patterns {
+			m, err := regexp.MatchString(pattern, text)
+			if err != nil {
+				// Treat invalid regex as unsafe so a broken pattern in
+				// preferences fails closed instead of silently disabling
+				// the guard.
+				shouldWarn = true
+				break
+			}
+			if m {
+				shouldWarn = true
+				break
+			}
+		}
+	}
+
+	if shouldWarn {
 		a.pendingPaste = text
 		imgui.OpenPopupStr("Unsafe Paste")
 		return
 	}
-	tab.Terminal.Write([]byte(text))
+	tab.Terminal.Paste(text)
 }
 
 func (a *App) renderPasteDialog() {
@@ -1564,7 +1635,7 @@ func (a *App) renderPasteDialog() {
 
 		if imgui.Button("Paste") {
 			if tab := a.tabs.Active(); tab != nil {
-				tab.Terminal.Write([]byte(a.pendingPaste))
+				tab.Terminal.Paste(a.pendingPaste)
 			}
 			a.pendingPaste = ""
 			imgui.CloseCurrentPopup()
@@ -1766,7 +1837,9 @@ func (a *App) selectedText() string {
 }
 
 func getCWD(term interface{}) string {
-	// Would need the child PID to read /proc/<pid>/cwd
-	// Placeholder for now
-	return ""
+	t, ok := term.(*terminal.Terminal)
+	if !ok {
+		return ""
+	}
+	return t.GetCWD()
 }

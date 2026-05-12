@@ -1,12 +1,16 @@
 package terminal
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
 )
@@ -24,6 +28,21 @@ type Terminal struct {
 	ExitCode int  // exit code of child process (-1 = still running or unknown)
 	mu       sync.Mutex
 	done     chan struct{}
+
+	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
+	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
+	// less, vim insert-mode movement) recognize them. Flipped on the PTY
+	// reader goroutine via the EnableMode/DisableMode emulator callbacks;
+	// read from the UI goroutine when translating key events.
+	appCursor atomic.Bool
+
+	// sgrMouse tracks SGR mouse mode (1006). When set, mouse events are
+	// reported in SGR format (CSI < ... m) instead of the default format.
+	sgrMouse atomic.Bool
+
+	// bracketedPaste tracks bracketed paste mode (2004). When set, paste
+	// events are wrapped in CSI ? 200 h and CSI ? 201 h.
+	bracketedPaste atomic.Bool
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -50,6 +69,26 @@ func New(cfg *config.Config, cols, rows int) (*Terminal, error) {
 		Title: func(title string) {
 			if t.OnTitle != nil {
 				t.OnTitle(title)
+			}
+		},
+		EnableMode: func(mode ansi.Mode) {
+			switch mode {
+			case ansi.ModeCursorKeys:
+				t.appCursor.Store(true)
+			case ansi.ModeMouseExtSgr:
+				t.sgrMouse.Store(true)
+			case ansi.ModeBracketedPaste:
+				t.bracketedPaste.Store(true)
+			}
+		},
+		DisableMode: func(mode ansi.Mode) {
+			switch mode {
+			case ansi.ModeCursorKeys:
+				t.appCursor.Store(false)
+			case ansi.ModeMouseExtSgr:
+				t.sgrMouse.Store(false)
+			case ansi.ModeBracketedPaste:
+				t.bracketedPaste.Store(false)
 			}
 		},
 	})
@@ -98,6 +137,12 @@ func (t *Terminal) Close() {
 	}
 	_ = t.ptmx.Close()
 	// waitChild goroutine handles cmd.Wait()
+}
+
+// AppCursorMode reports whether DECCKM is currently set, meaning arrow
+// keys should be sent as `ESC O X` instead of `ESC [ X`.
+func (t *Terminal) AppCursorMode() bool {
+	return t.appCursor.Load()
 }
 
 // IsClosed returns true if the terminal has been closed.
@@ -254,4 +299,85 @@ func (t *Terminal) readEmu() {
 			return
 		}
 	}
+}
+
+// GetCWD returns the current working directory of the shell process.
+// Implementation is platform-specific (see terminal_linux.go / terminal_darwin.go).
+func (t *Terminal) GetCWD() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.cmd == nil || t.cmd.Process == nil {
+		return ""
+	}
+	return processCWD(t.cmd.Process.Pid)
+}
+
+// Paste sends text to the PTY, wrapping with bracketed-paste markers
+// (ESC[200~ ... ESC[201~) when the application has enabled DECSET 2004.
+// Use this for all clipboard paste paths so editors/shells that opted
+// into bracketed paste cannot interpret pasted newlines as commands.
+func (t *Terminal) Paste(text string) {
+	if t.bracketedPaste.Load() {
+		_, _ = t.ptmx.WriteString("\x1b[200~" + text + "\x1b[201~")
+		return
+	}
+	_, _ = t.ptmx.WriteString(text)
+}
+
+// scrollbackCell holds serialized cell data for persistence.
+type scrollbackCell struct {
+	Content string
+}
+
+// SaveScrollback serializes the current scrollback buffer to a file.
+func (t *Terminal) SaveScrollback(filePath string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	sbLen := t.Emu.ScrollbackLen()
+	cols := t.Emu.Width()
+	lines := make([][]scrollbackCell, sbLen)
+
+	for row := 0; row < sbLen; row++ {
+		line := make([]scrollbackCell, cols)
+		for col := 0; col < cols; col++ {
+			cell := t.Emu.ScrollbackCellAt(col, row)
+			if cell != nil {
+				line[col] = scrollbackCell{
+					Content: cell.Content,
+				}
+			}
+		}
+		lines[row] = line
+	}
+
+	data, err := json.Marshal(lines)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+
+	return os.WriteFile(filePath, data, 0600)
+}
+
+// LoadScrollback deserializes a scrollback buffer from a file.
+// Note: This loads the data but does not restore it to the emulator
+// (charmbracelet/x/vt does not provide an API to modify scrollback after creation).
+// This is preserved for future use or alternative implementations.
+func (t *Terminal) LoadScrollback(filePath string) ([][]scrollbackCell, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var lines [][]scrollbackCell
+	if err := json.Unmarshal(data, &lines); err != nil {
+		return nil, err
+	}
+
+	return lines, nil
 }
