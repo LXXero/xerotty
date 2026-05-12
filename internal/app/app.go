@@ -1665,17 +1665,28 @@ func (a *App) renderPasteDialog() {
 		lines := strings.Count(a.pendingPaste, "\n") + 1
 		imgui.Text(fmt.Sprintf("Paste %d lines into terminal?", lines))
 		imgui.Text("Multi-line paste may execute commands.")
+		imgui.TextDisabled("Enter = paste   Esc = cancel")
 		imgui.Separator()
 
-		if imgui.Button("Paste") {
+		// Keyboard shortcuts: Enter / KeypadEnter = accept (paste),
+		// Esc = cancel. Both close the popup. The button row is the
+		// authoritative path; this just makes the common case fast.
+		accept := imgui.Button("Paste")
+		imgui.SameLineV(0, 8)
+		cancel := imgui.Button("Cancel")
+		if imgui.IsKeyPressedBool(imgui.KeyEnter) || imgui.IsKeyPressedBool(imgui.KeyKeypadEnter) {
+			accept = true
+		}
+		if imgui.IsKeyPressedBool(imgui.KeyEscape) {
+			cancel = true
+		}
+		if accept {
 			if tab := a.tabs.Active(); tab != nil {
 				tab.Terminal.Paste(a.pendingPaste)
 			}
 			a.pendingPaste = ""
 			imgui.CloseCurrentPopup()
-		}
-		imgui.SameLineV(0, 8)
-		if imgui.Button("Cancel") {
+		} else if cancel {
 			a.pendingPaste = ""
 			imgui.CloseCurrentPopup()
 		}
