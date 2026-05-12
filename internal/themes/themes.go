@@ -78,12 +78,17 @@ func searchPaths(name string) []string {
 		paths = append(paths, filepath.Join(configDir, "xerotty", "themes", name+".toml"))
 	}
 
-	// Bundled themes relative to executable
+	// Bundled themes relative to executable. The third path covers the
+	// macOS .app bundle layout: xerotty.app/Contents/Resources/themes/
+	// is the conventional Mac place for bundled data, and the binary
+	// lives at xerotty.app/Contents/MacOS/xerotty — so ../Resources/
+	// from the exe directory hits it.
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exe)
 		paths = append(paths, filepath.Join(dir, "themes", name+".toml"))
 		paths = append(paths, filepath.Join(dir, "..", "themes", name+".toml"))
+		paths = append(paths, filepath.Join(dir, "..", "Resources", "themes", name+".toml"))
 	}
 
 	return paths

@@ -37,6 +37,7 @@ else
 	mkdir -p $(APP_BUNDLE)/Contents/MacOS
 	mkdir -p $(APP_BUNDLE)/Contents/Resources
 	cp -f $(BINARY) $(APP_BUNDLE)/Contents/MacOS/$(BINARY)
+	cp -Rf themes $(APP_BUNDLE)/Contents/Resources/themes
 	@printf '%s\n' \
 		'<?xml version="1.0" encoding="UTF-8"?>' \
 		'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \

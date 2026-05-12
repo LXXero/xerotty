@@ -19,7 +19,6 @@ import (
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
-	"os/exec"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -962,17 +961,20 @@ func (a *App) dispatchAction(action string) {
 	case "new_window":
 		exe, err := os.Executable()
 		if err == nil {
-			cmd := exec.Command(exe)
 			// Cascade: place child ~30px below and right of parent so it
 			// doesn't stack exactly on top.
+			var envExtras []string
 			if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
 				px, py := sb.GetWindowPos()
-				cmd.Env = append(os.Environ(),
+				envExtras = []string{
 					fmt.Sprintf("XEROTTY_WIN_X=%d", int(px)+30),
 					fmt.Sprintf("XEROTTY_WIN_Y=%d", int(py)+30),
-				)
+				}
 			}
-			cmd.Start()
+			// On macOS inside a .app bundle, routes through `open -n`
+			// so LaunchServices coalesces all xerotty processes under
+			// one Dock icon. See newwindow_darwin.go.
+			newWindowCommand(exe, envExtras).Start()
 		}
 	case "next_tab":
 		a.tabs.Next()
