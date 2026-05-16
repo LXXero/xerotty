@@ -1283,15 +1283,15 @@ func (w *Window) menuContext() *menu.Context {
 	return ctx
 }
 
-func (a *App) renderSearchOverlay() {
-	tab := a.tabs.Active()
+func (w *Window) renderSearchOverlay() {
+	tab := w.tabs.Active()
 	if tab == nil {
-		a.searchInputFocused = false
+		w.searchInputFocused = false
 		return
 	}
-	s := a.getScroll(tab.ID)
+	s := w.getScroll(tab.ID)
 	if !s.Searching {
-		a.searchInputFocused = false
+		w.searchInputFocused = false
 		return
 	}
 
@@ -1299,14 +1299,14 @@ func (a *App) renderSearchOverlay() {
 	if vp := imgui.MainViewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
-	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(a.width) - 320, Y: vpY + a.tabBarH}, imgui.CondAlways, imgui.Vec2{})
+	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(w.width) - 320, Y: vpY + w.tabBarH}, imgui.CondAlways, imgui.Vec2{})
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
-	a.searchInputFocused = false
+	w.searchInputFocused = false
 	if imgui.BeginV("##search", nil, flags) {
 		// Track actual rendered width for the selection hit-test.
-		a.searchOverlayW = imgui.WindowWidth()
+		w.searchOverlayW = imgui.WindowWidth()
 
 		imgui.SetNextItemWidth(180)
 
@@ -1314,15 +1314,15 @@ func (a *App) renderSearchOverlay() {
 		// when it loses focus to the terminal).  Guard with mouse-idle so
 		// SetKeyboardFocusHere never fires while a button click is in
 		// progress — it would steal ActiveId and swallow the click.
-		if a.searchFocusInput && !imgui.IsMouseDown(0) && !imgui.IsMouseReleased(imgui.MouseButtonLeft) {
+		if w.searchFocusInput && !imgui.IsMouseDown(0) && !imgui.IsMouseReleased(imgui.MouseButtonLeft) {
 			imgui.SetKeyboardFocusHere()
-			a.searchFocusInput = false
+			w.searchFocusInput = false
 		}
 
-		_, rows := a.gridSize()
+		_, rows := w.gridSize()
 		prevQuery := s.Query
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
-		a.searchInputFocused = imgui.IsItemFocused()
+		w.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
 			s.Search(tab.Terminal.Emu, rows)
 			s.ScrollToCurrentMatch(rows)
@@ -1346,17 +1346,17 @@ func (a *App) renderSearchOverlay() {
 		if prevClicked {
 			s.PrevMatch()
 			s.ScrollToCurrentMatch(rows)
-			a.searchFocusInput = true
+			w.searchFocusInput = true
 		}
 		if nextClicked {
 			s.NextMatch()
 			s.ScrollToCurrentMatch(rows)
-			a.searchFocusInput = true
+			w.searchFocusInput = true
 		}
 		if closeClicked {
 			s.CloseSearch()
-			a.searchFocusInput = false
-			a.searchInputFocused = false
+			w.searchFocusInput = false
+			w.searchInputFocused = false
 		}
 
 		// Row 2: search options
@@ -1376,10 +1376,10 @@ func (a *App) renderSearchOverlay() {
 	// Highlights are drawn in the terminal window's draw list (see frame())
 }
 
-func (a *App) drawSearchHighlights(s *scrollback.State, drawList *imgui.DrawList) {
-	cellW := a.cellW
-	cellH := a.cellH
-	_, rows := a.gridSize()
+func (w *Window) drawSearchHighlights(s *scrollback.State, drawList *imgui.DrawList) {
+	cellW := w.cellW
+	cellH := w.cellH
+	_, rows := w.gridSize()
 	matchBg := uint32(0x4400FFFF)   // yellow, semi-transparent (ABGR)
 	currentBg := uint32(0x8800AAFF) // orange, more opaque (ABGR)
 
@@ -1392,9 +1392,9 @@ func (a *App) drawSearchHighlights(s *scrollback.State, drawList *imgui.DrawList
 			continue
 		}
 
-		x := a.renderer.OffsetX + float32(m.Col)*cellW
-		y := a.renderer.OffsetY + float32(screenRow)*cellH
-		w := float32(m.Len) * cellW
+		x := w.renderer.OffsetX + float32(m.Col)*cellW
+		y := w.renderer.OffsetY + float32(screenRow)*cellH
+		wd := float32(m.Len) * cellW
 
 		bg := matchBg
 		if i == s.MatchIdx {
@@ -1403,30 +1403,30 @@ func (a *App) drawSearchHighlights(s *scrollback.State, drawList *imgui.DrawList
 
 		drawList.AddRectFilled(
 			imgui.Vec2{X: x, Y: y},
-			imgui.Vec2{X: x + w, Y: y + cellH},
+			imgui.Vec2{X: x + wd, Y: y + cellH},
 			bg,
 		)
 	}
 }
 
-func (a *App) renderResizeOverlay() {
-	if !a.resizeOverlay {
+func (w *Window) renderResizeOverlay() {
+	if !w.resizeOverlay {
 		return
 	}
 
-	elapsed := imgui.Time() - a.resizeTime
+	elapsed := imgui.Time() - w.resizeTime
 	duration := 1.5  // total display time in seconds
 	fadeStart := 1.0 // start fading at this point
 
 	if elapsed > duration {
-		a.resizeOverlay = false
-		a.resizeOverlayText = ""
+		w.resizeOverlay = false
+		w.resizeOverlayText = ""
 		return
 	}
 
-	cols, rows := a.gridSize()
+	cols, rows := w.gridSize()
 	primary := fmt.Sprintf("%d × %d", cols, rows)
-	secondary := a.resizeOverlayText // empty unless triggered by zoom
+	secondary := w.resizeOverlayText // empty unless triggered by zoom
 	primarySize := imgui.CalcTextSize(primary)
 	var secondarySize imgui.Vec2
 	if secondary != "" {
@@ -1454,8 +1454,8 @@ func (a *App) renderResizeOverlay() {
 	if vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
-	cx := vpX + float32(a.width)/2
-	cy := vpY + float32(a.height)/2
+	cx := vpX + float32(w.width)/2
+	cy := vpY + float32(w.height)/2
 
 	// Fade out alpha
 	alpha := float32(1.0)
@@ -1497,14 +1497,14 @@ func (a *App) renderResizeOverlay() {
 	}
 }
 
-func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawList) {
-	vis := a.cfg.Scrollbar.Visible
+func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawList) {
+	vis := w.app.cfg.Scrollbar.Visible
 	if vis == "never" {
 		return
 	}
 
 	sbLen := tab.Terminal.Emu.ScrollbackLen()
-	_, rows := a.gridSize()
+	_, rows := w.gridSize()
 	totalLines := sbLen + rows
 
 	// auto mode: only show when scrolled back
@@ -1512,20 +1512,20 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 		return
 	}
 
-	barW := float32(a.cfg.Scrollbar.Width)
+	barW := float32(w.app.cfg.Scrollbar.Width)
 	var vpOffX, vpOffY float32
 	if vp := imgui.MainViewport(); vp != nil {
 		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
 	}
-	barX := vpOffX + float32(a.width) - barW
-	barY := vpOffY + a.tabBarH
-	termH := float32(a.height) - a.tabBarH // full height below tab bar
+	barX := vpOffX + float32(w.width) - barW
+	barY := vpOffY + w.tabBarH
+	termH := float32(w.height) - w.tabBarH // full height below tab bar
 
 	// Check if mouse is hovering the thumb
 	mpos := imgui.MousePos()
 	hovered := mpos.X >= barX && mpos.X <= barX+barW && mpos.Y >= barY && mpos.Y <= barY+termH
 
-	thumbY, thumbH := a.renderer.DrawScrollbar(renderer.ScrollbarParams{
+	thumbY, thumbH := w.renderer.DrawScrollbar(renderer.ScrollbarParams{
 		X:              barX,
 		Y:              barY,
 		Width:          barW,
@@ -1533,7 +1533,7 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 		ScrollOffset:   scrollOff,
 		TotalLines:     totalLines,
 		VisibleLines:   rows,
-		MinThumbHeight: float32(a.cfg.Scrollbar.MinThumbHeight),
+		MinThumbHeight: float32(w.app.cfg.Scrollbar.MinThumbHeight),
 		Hovered:        hovered,
 	}, drawList)
 
@@ -1541,15 +1541,15 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 	if imgui.IsMouseClickedBool(0) && hovered {
 		if mpos.Y >= thumbY && mpos.Y <= thumbY+thumbH {
 			// Click ON the thumb — start drag
-			a.sbDragging = true
+			w.sbDragging = true
 		} else if mpos.Y < thumbY {
 			// Click above thumb: page up
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.PageUp(rows, sbLen)
 			}
 		} else if mpos.Y > thumbY+thumbH {
 			// Click below thumb: page down
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.PageDown(rows)
 			}
 		}
@@ -1557,12 +1557,12 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 
 	// End scrollbar drag on mouse release
 	if !imgui.IsMouseDown(0) {
-		a.sbDragging = false
+		w.sbDragging = false
 	}
 
 	// Drag thumb: map mouse Y to scroll offset.
 	// Once dragging starts, track Y regardless of X (user may drift sideways).
-	if a.sbDragging {
+	if w.sbDragging {
 		trackSpace := termH - thumbH
 		if trackSpace > 0 {
 			frac := 1.0 - (mpos.Y-barY-thumbH/2)/trackSpace
@@ -1574,7 +1574,7 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 			}
 			maxOff := sbLen
 			newOff := int(frac * float32(maxOff))
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.Offset = newOff
 			}
 		}
@@ -1625,16 +1625,16 @@ func (w *Window) pasteText(text string) {
 	tab.Terminal.Paste(text)
 }
 
-func (a *App) renderPasteDialog() {
-	if a.pendingPaste == "" {
+func (w *Window) renderPasteDialog() {
+	if w.pendingPaste == "" {
 		return
 	}
 
-	center := imgui.Vec2{X: float32(a.width) / 2, Y: float32(a.height) / 2}
+	center := imgui.Vec2{X: float32(w.width) / 2, Y: float32(w.height) / 2}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
 	if imgui.BeginPopupModalV("Unsafe Paste", nil, imgui.WindowFlagsAlwaysAutoResize) {
-		lines := strings.Count(a.pendingPaste, "\n") + 1
+		lines := strings.Count(w.pendingPaste, "\n") + 1
 		imgui.Text(fmt.Sprintf("Paste %d lines into terminal?", lines))
 		imgui.Text("Multi-line paste may execute commands.")
 		imgui.TextDisabled("Enter = paste   Esc = cancel")
@@ -1653,49 +1653,49 @@ func (a *App) renderPasteDialog() {
 			cancel = true
 		}
 		if accept {
-			if tab := a.tabs.Active(); tab != nil {
-				tab.Terminal.Paste(a.pendingPaste)
+			if tab := w.tabs.Active(); tab != nil {
+				tab.Terminal.Paste(w.pendingPaste)
 			}
-			a.pendingPaste = ""
+			w.pendingPaste = ""
 			imgui.CloseCurrentPopup()
 		} else if cancel {
-			a.pendingPaste = ""
+			w.pendingPaste = ""
 			imgui.CloseCurrentPopup()
 		}
 		imgui.EndPopup()
 	}
 }
 
-func (a *App) renderRenameDialog() {
-	if !a.renamingTab {
+func (w *Window) renderRenameDialog() {
+	if !w.renamingTab {
 		return
 	}
 
-	center := imgui.Vec2{X: float32(a.width) / 2, Y: float32(a.height) / 2}
+	center := imgui.Vec2{X: float32(w.width) / 2, Y: float32(w.height) / 2}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
 	if imgui.BeginPopupModalV("Rename Tab", nil, imgui.WindowFlagsAlwaysAutoResize) {
 		imgui.Text("Tab name:")
-		imgui.InputTextWithHint("##rename", "tab name", &a.renameBuffer, 0, nil)
+		imgui.InputTextWithHint("##rename", "tab name", &w.renameBuffer, 0, nil)
 
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
-			if tab := a.tabs.Active(); tab != nil {
-				tab.Title = a.renameBuffer
+			if tab := w.tabs.Active(); tab != nil {
+				tab.Title = w.renameBuffer
 			}
-			a.renamingTab = false
+			w.renamingTab = false
 			imgui.CloseCurrentPopup()
 		}
 
 		if imgui.Button("OK") {
-			if tab := a.tabs.Active(); tab != nil {
-				tab.Title = a.renameBuffer
+			if tab := w.tabs.Active(); tab != nil {
+				tab.Title = w.renameBuffer
 			}
-			a.renamingTab = false
+			w.renamingTab = false
 			imgui.CloseCurrentPopup()
 		}
 		imgui.SameLineV(0, 8)
 		if imgui.Button("Cancel") {
-			a.renamingTab = false
+			w.renamingTab = false
 			imgui.CloseCurrentPopup()
 		}
 		imgui.EndPopup()
