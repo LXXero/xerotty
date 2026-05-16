@@ -9,11 +9,16 @@ package sdlhack
 #cgo pkg-config: sdl2
 #include <SDL2/SDL.h>
 
-static int xerotty_mouse_in_main_content(void) {
+// Returns 1 iff the OS-level cursor position is inside the content
+// rect of whichever SDL_Window currently has mouse focus (any of the
+// app's windows under multi-viewport — main or popped-out secondary).
+// 0 if the cursor is on a window frame / title bar / desktop, which
+// means AppKit consumed any click there and we shouldn't synthesize
+// a fake terminal click out of it.
+static int xerotty_mouse_in_window_content(void) {
 	int gx, gy;
-	Uint32 state = SDL_GetGlobalMouseState(&gx, &gy);
-	(void)state;
-	SDL_Window *win = SDL_GL_GetCurrentWindow();
+	SDL_GetGlobalMouseState(&gx, &gy);
+	SDL_Window *win = SDL_GetMouseFocus();
 	if (!win) return 0;
 	int wx, wy, ww, wh;
 	SDL_GetWindowPosition(win, &wx, &wy);
@@ -35,11 +40,12 @@ func LeftButtonGlobalDown() bool {
 }
 
 // MouseInMainContent reports whether the cursor is currently inside
-// the content rect of the main SDL window (the window owning the GL
-// context). Used to avoid synthesizing fake terminal clicks when the
-// real click landed on a window frame, resize handle, or popped-out
-// viewport — areas AppKit consumes events for and never delivers to
-// SDL.
+// the content rect of whichever SDL_Window in this process currently
+// has mouse focus — the primary window OR any popped-out multi-
+// viewport window. Used to avoid synthesizing fake terminal clicks
+// when the real click landed on a window frame, resize handle, or
+// any non-content area AppKit consumes events for and never delivers
+// to SDL.
 func MouseInMainContent() bool {
-	return C.xerotty_mouse_in_main_content() != 0
+	return C.xerotty_mouse_in_window_content() != 0
 }

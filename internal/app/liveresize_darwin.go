@@ -48,7 +48,11 @@ static int xerottySizeChangedWatch(void* ud, SDL_Event* event) {
 	if (gWatchWindow == NULL) return 0;
 	if (event->type != SDL_WINDOWEVENT) return 0;
 	if (event->window.event != SDL_WINDOWEVENT_SIZE_CHANGED) return 0;
-	if (event->window.windowID != SDL_GetWindowID(gWatchWindow)) return 0;
+	// Don't filter by windowID — any of our SDL windows (the primary
+	// or a multi-viewport popped-out secondary) being resized during
+	// AppKit's tracking mode needs the live-render treatment.
+	// Multi-viewport's igRenderPlatformWindowsDefault handles routing
+	// draws to the right OS window per viewport.
 	if (gWatchInRender) return 0;
 	if (gWatchMainFrameActive) return 0;
 	gWatchInRender = 1;
