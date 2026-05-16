@@ -31,11 +31,10 @@ func init() {
 
 // App is the main application struct. It owns process-wide state
 // (config, theme, base font metrics, font-reload flags) plus the
-// per-window state via an embedded *Window. The embed is a phase-1
-// bridge: existing a.<field> accesses keep working through Go's
-// field promotion. Phase 3 of the multi-window refactor replaces
-// the single embed with `windows []*Window` to land real multi-
-// window support. See docs/MULTI_WINDOW_REFACTOR.md.
+// slice of Windows in this process. One xerotty process can host
+// multiple OS windows (Cmd+N / "new_window") — see
+// docs/MULTI_WINDOW_REFACTOR.md for why this matters on macOS Dock
+// coalescing.
 type App struct {
 	cfg              config.Config
 	theme            renderer.Theme
@@ -45,13 +44,19 @@ type App struct {
 	pendingFontFace  bool    // rebuild font atlas at start of next frame
 	pendingRemeasure bool    // re-run cell measurement next frame (e.g. after font swap)
 
-	*Window // embedded for phase 1 — see window.go
+	windows []*Window // every OS window currently open in this process
+	active  *Window   // the window with input focus, or windows[0] if none
 }
 
-// New creates a new App with the given config.
+// New creates a new App with the given config. The initial Window
+// struct is allocated here; its SDL_Window, GL context, tabs, and
+// renderer are populated during Run() once the cimgui-go backend is
+// initialized.
 func New(cfg config.Config) *App {
 	a := &App{cfg: cfg}
-	a.Window = newWindow(a)
+	w := newWindow(a)
+	a.windows = append(a.windows, w)
+	a.active = w
 	return a
 }
 
@@ -79,6 +84,8 @@ func (w *Window) initialWindowSize() (int, int) {
 
 // Run starts the application main loop.
 func (a *App) Run() error {
+	w := a.active // initial Window allocated by New()
+
 	// Load theme
 	theme, err := themes.Load(a.cfg.Appearance.Theme)
 	if err != nil {
@@ -87,16 +94,16 @@ func (a *App) Run() error {
 	applyColorOverrides(&theme, &a.cfg)
 	a.theme = theme
 
-	a.backend, _ = backend.CreateBackend(sdlbackend.NewSDLBackend())
+	w.backend, _ = backend.CreateBackend(sdlbackend.NewSDLBackend())
 
 	// Font reload runs here — BEFORE every frame's NewFrame. The
 	// alternative (doing it inside our frame() callback after NewFrame
 	// already snapshotted the current font) leaves a freed font in
 	// ImGui's per-frame state and asserts when Render dereferences it.
-	a.backend.SetBeforeRenderHook(a.beforeRender)
+	w.backend.SetBeforeRenderHook(a.beforeRender)
 
-	a.width, a.height = a.initialWindowSize()
-	a.backend.CreateWindow("xerotty", a.width, a.height)
+	w.width, w.height = w.initialWindowSize()
+	w.backend.CreateWindow("xerotty", w.width, w.height)
 
 	// Cascade child windows: when spawned via new_window, parent passes
 	// XEROTTY_WIN_X/Y so each new xerotty appears offset from its predecessor
@@ -104,7 +111,7 @@ func (a *App) Run() error {
 	if xs, ys := os.Getenv("XEROTTY_WIN_X"), os.Getenv("XEROTTY_WIN_Y"); xs != "" && ys != "" {
 		if x, errX := strconv.Atoi(xs); errX == nil {
 			if y, errY := strconv.Atoi(ys); errY == nil {
-				if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
+				if sb, ok := w.backend.(*sdlbackend.SDLBackend); ok {
 					sb.SetWindowPos(x, y)
 				}
 			}
@@ -115,8 +122,8 @@ func (a *App) Run() error {
 	bgR := float32((theme.Background>>0)&0xFF) / 255.0
 	bgG := float32((theme.Background>>8)&0xFF) / 255.0
 	bgB := float32((theme.Background>>16)&0xFF) / 255.0
-	a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
-	a.backend.SetTargetFPS(120)
+	w.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
+	w.backend.SetTargetFPS(120)
 
 	// Keep multi-viewport enabled so child ImGui windows (preferences, etc.)
 	// can be dragged out as native OS windows. The SDL backend already enables
@@ -135,27 +142,23 @@ func (a *App) Run() error {
 	// gets passed to AddTextFontPtr each frame.
 	pxSize := renderer.PixelSize(&a.cfg)
 	a.baseFontSize = pxSize
-	a.cellW = pxSize * 0.6
-	a.cellH = pxSize
+	w.cellW = pxSize * 0.6
+	w.cellH = pxSize
 
 	// Create renderer (metrics will be updated on first frame; the
 	// OS-backed glyph cache is also built on first frame, once
 	// DisplayFramebufferScale has been populated by ImGui's NewFrame).
-	a.renderer = renderer.New(theme, renderer.CellMetrics{
-		Width: a.cellW, Height: a.cellH,
+	w.renderer = renderer.New(theme, renderer.CellMetrics{
+		Width: w.cellW, Height: w.cellH,
 	}, font, pxSize)
-	a.renderer.FontBold = fontBold
+	w.renderer.FontBold = fontBold
 	pad := float32(a.cfg.Appearance.Padding)
-	a.renderer.OffsetX = pad
-	a.renderer.OffsetY = a.tabBarH + pad
-	a.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
-	// vpOffsetX/Y are added each frame so coords match MainViewport position
-	// when ConfigFlagsViewportsEnable is on (draws are in desktop space).
-
-	// Window resize is handled per-frame via ImGui IO.DisplaySize in frame().
+	w.renderer.OffsetX = pad
+	w.renderer.OffsetY = w.tabBarH + pad
+	w.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
 
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
-	a.tabs = tabs.NewManager(&a.cfg)
+	w.tabs = tabs.NewManager(&a.cfg)
 
 	// macOS-only: hook an SDL event watch so a real frame still renders
 	// while AppKit's live-resize tracking mode holds the run loop.
@@ -169,10 +172,16 @@ func (a *App) Run() error {
 	// double-NewFrame and assert). When the main loop is between
 	// frames — including blocked in SDL_WaitEventTimeout — the flag is
 	// clear and the watch is free to render.
+	//
+	// Phase 3 note: this still renders only a.active per frame.
+	// Phase 4 will iterate a.windows here so additional Windows opened
+	// via new_window get rendered too.
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
-		a.frame()
+		if a.active != nil {
+			a.active.frame()
+		}
 		setEventLoopIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
@@ -188,9 +197,14 @@ func (a *App) Run() error {
 	// timers all wake it.
 	runEventLoop(bgR, bgG, bgB, wrappedFrame, a.beforeRender, nil)
 
-	// Cleanup all tabs
-	for _, tab := range a.tabs.Tabs {
-		tab.Terminal.Close()
+	// Cleanup: close all tabs in every Window before exiting.
+	for _, win := range a.windows {
+		if win.tabs == nil {
+			continue
+		}
+		for _, tab := range win.tabs.Tabs {
+			tab.Terminal.Close()
+		}
 	}
 
 	return nil
@@ -275,10 +289,18 @@ func (w *Window) resizeTerminals() {
 // — this is the *fallback* tick for animations and periodic side
 // effects. Active interaction or fade animation: 60Hz. Cursor blink:
 // the configured blink rate. Truly idle: a long safety wake.
+//
+// Aggregates over every Window — if any of them has a drag or fade
+// in progress, we tick at 60 Hz so that Window stays smooth even if
+// the user is currently focused on a different one.
 func (a *App) idleTimeout() int {
-	if a.sel.dragging || a.sbDragging || a.resizeOverlay ||
-		a.pendingFontFace || a.pendingRemeasure ||
-		imgui.IsMouseDown(imgui.MouseButtonLeft) {
+	for _, w := range a.windows {
+		if w.sel.dragging || w.sbDragging || w.resizeOverlay ||
+			imgui.IsMouseDown(imgui.MouseButtonLeft) {
+			return 16
+		}
+	}
+	if a.pendingFontFace || a.pendingRemeasure {
 		return 16
 	}
 	if a.cfg.Appearance.CursorBlink {
@@ -296,18 +318,28 @@ func (a *App) idleTimeout() int {
 // watch in liveresize_darwin.go. Has to live BEFORE NewFrame because
 // font reloads invalidate ImGui's per-frame font pointer; doing the
 // reload mid-frame would assert in Render.
+//
+// Font reloads apply process-wide: every Window picks up the new
+// font, glyph cache, and metrics. Each Window's renderer keeps its
+// own *renderer.Renderer instance (so per-window theming stays
+// possible later) but they all share the new Font/FontBold and a
+// freshly-built glyph cache.
 func (a *App) beforeRender() {
 	if !a.pendingFontFace {
 		return
 	}
 	a.pendingFontFace = false
 	font, fontBold, _ := renderer.ReloadFont(&a.cfg)
-	a.renderer.Font = font
-	a.renderer.FontBold = fontBold
 	a.baseFontSize = renderer.PixelSize(&a.cfg)
-	if a.renderer.Glyphs != nil {
-		a.renderer.Glyphs.Close()
-		a.renderer.Glyphs = nil
+	for _, w := range a.windows {
+		if w.renderer != nil {
+			w.renderer.Font = font
+			w.renderer.FontBold = fontBold
+			if w.renderer.Glyphs != nil {
+				w.renderer.Glyphs.Close()
+				w.renderer.Glyphs = nil
+			}
+		}
 	}
 	if fontsys.Default != nil {
 		primaryPath := renderer.ResolveFontPath(&a.cfg)
@@ -316,8 +348,13 @@ func (a *App) beforeRender() {
 			if fbScale <= 0 {
 				fbScale = 1
 			}
-			if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
-				a.renderer.Glyphs = c
+			for _, w := range a.windows {
+				if w.renderer == nil || w.backend == nil {
+					continue
+				}
+				if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+					w.renderer.Glyphs = c
+				}
 			}
 		}
 	}
@@ -748,7 +785,7 @@ func (a *Window) frame() {
 	a.renderRenameDialog()
 
 	// Preferences dialog
-	a.app.renderPreferences()
+	a.renderPreferences()
 
 	// Resize overlay
 	a.renderResizeOverlay()
@@ -1057,7 +1094,7 @@ func (w *Window) dispatchAction(action string) {
 			imgui.OpenPopupStr("Rename Tab")
 		}
 	case "preferences":
-		w.app.openPreferences()
+		w.openPreferences()
 	default:
 		// Check for parameterized actions
 		if strings.HasPrefix(action, "goto_tab:") {
