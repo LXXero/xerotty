@@ -21,6 +21,10 @@ import (
 // stays on the owning App so font reloads and theme switches apply
 // everywhere at once.
 type Window struct {
+	// Back-reference to the owning App for process-wide state (config,
+	// theme, base font metrics, font-reload flags). Set in newWindow.
+	app *App
+
 	// cimgui-go backend handle. Phase 1: one backend, one Window. Phase
 	// 3: each Window will reference the shared App-level backend but
 	// render through its own ImGui viewport.
@@ -78,8 +82,9 @@ type Window struct {
 // newWindow returns a freshly-initialized Window with the minimum
 // defaults needed before App.Run populates the rest (backend, tabs,
 // renderer, cell metrics — all set during the boot sequence).
-func newWindow() *Window {
+func newWindow(app *App) *Window {
 	return &Window{
+		app:          app,
 		scroll:       make(map[int]*scrollback.State),
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,

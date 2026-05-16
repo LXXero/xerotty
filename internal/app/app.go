@@ -50,32 +50,31 @@ type App struct {
 
 // New creates a new App with the given config.
 func New(cfg config.Config) *App {
-	return &App{
-		cfg:    cfg,
-		Window: newWindow(),
-	}
+	a := &App{cfg: cfg}
+	a.Window = newWindow(a)
+	return a
 }
 
 // initialWindowSize returns the pixel dimensions for the SDL window based on
 // the configured columns/rows and an estimate of cell metrics. The estimate
 // is corrected on the first frame once the font atlas is measured.
-func (a *App) initialWindowSize() (int, int) {
-	px := renderer.PixelSize(&a.cfg)
+func (w *Window) initialWindowSize() (int, int) {
+	px := renderer.PixelSize(&w.app.cfg)
 	estCellW := px * 0.6
 	estCellH := px * 1.2
-	cols, rows := a.cfg.Window.Columns, a.cfg.Window.Rows
+	cols, rows := w.app.cfg.Window.Columns, w.app.cfg.Window.Rows
 	if cols < 2 {
 		cols = 80
 	}
 	if rows < 2 {
 		rows = 24
 	}
-	pad := float32(a.cfg.Appearance.Padding) * 2
+	pad := float32(w.app.cfg.Appearance.Padding) * 2
 	// Add cellSafetyMargin so the eventual gridSize() after window creation
 	// computes back to the same cols/rows we requested.
-	w := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMargin)))
-	h := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMargin)))
-	return w, h
+	wp := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMargin)))
+	hp := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMargin)))
+	return wp, hp
 }
 
 // Run starts the application main loop.
@@ -208,12 +207,12 @@ func (a *App) Run() error {
 // call will floor away one cell.
 const cellSafetyMargin = 8
 
-func (a *App) gridSize() (cols, rows int) {
-	pad := float32(a.cfg.Appearance.Padding) * 2 // padding on both sides
-	availW := float32(a.width) - pad - cellSafetyMargin
-	availH := float32(a.height) - a.tabBarH - pad - cellSafetyMargin
-	cols = int(availW / a.cellW)
-	rows = int(availH / a.cellH)
+func (w *Window) gridSize() (cols, rows int) {
+	pad := float32(w.app.cfg.Appearance.Padding) * 2 // padding on both sides
+	availW := float32(w.width) - pad - cellSafetyMargin
+	availH := float32(w.height) - w.tabBarH - pad - cellSafetyMargin
+	cols = int(availW / w.cellW)
+	rows = int(availH / w.cellH)
 	if cols < 2 {
 		cols = 2
 	}
@@ -241,13 +240,13 @@ func (a *App) gridSize() (cols, rows int) {
 // get if ceil happens at measure time and then again after scaling —
 // the ceiling compounds and cells drift wider than the font wants on
 // every zoom step.)
-func (a *App) measureCell() renderer.CellMetrics {
-	if a.renderer != nil && a.renderer.Glyphs != nil {
-		lm := a.renderer.Glyphs.LineMetrics()
-		w := a.renderer.Glyphs.PrimaryAdvance()
+func (w *Window) measureCell() renderer.CellMetrics {
+	if w.renderer != nil && w.renderer.Glyphs != nil {
+		lm := w.renderer.Glyphs.LineMetrics()
+		adv := w.renderer.Glyphs.PrimaryAdvance()
 		h := lm.Ascent + lm.Descent
-		if w > 0 && h > 0 {
-			return renderer.CellMetrics{Width: w, Height: h}
+		if adv > 0 && h > 0 {
+			return renderer.CellMetrics{Width: adv, Height: h}
 		}
 	}
 	return renderer.MeasureCell()
@@ -263,9 +262,9 @@ func ceilCell(w, h float32) (float32, float32) {
 	return float32(math.Ceil(float64(w))), float32(math.Ceil(float64(h)))
 }
 
-func (a *App) resizeTerminals() {
-	cols, rows := a.gridSize()
-	for _, tab := range a.tabs.Tabs {
+func (w *Window) resizeTerminals() {
+	cols, rows := w.gridSize()
+	for _, tab := range w.tabs.Tabs {
 		tab.Terminal.Resize(cols, rows)
 	}
 }
@@ -754,19 +753,19 @@ func (a *App) frame() {
 	a.renderResizeOverlay()
 }
 
-func (a *App) isSearching() bool {
-	if tab := a.tabs.Active(); tab != nil {
-		if s, ok := a.scroll[tab.ID]; ok {
+func (w *Window) isSearching() bool {
+	if tab := w.tabs.Active(); tab != nil {
+		if s, ok := w.scroll[tab.ID]; ok {
 			return s.Searching
 		}
 	}
 	return false
 }
 
-func (a *App) popupActive() bool {
+func (w *Window) popupActive() bool {
 	// Note: prefDialog is a non-modal window. It manages its own focus
 	// through ImGui's WantCaptureKeyboard, so it shouldn't gate terminal input.
-	return a.renamingTab || a.pendingPaste != ""
+	return w.renamingTab || w.pendingPaste != ""
 }
 
 func (a *App) processKeys() {
@@ -1090,12 +1089,12 @@ func (a *App) dispatchAction(action string) {
 	}
 }
 
-func (a *App) getScroll(tabID int) *scrollback.State {
-	if s, ok := a.scroll[tabID]; ok {
+func (w *Window) getScroll(tabID int) *scrollback.State {
+	if s, ok := w.scroll[tabID]; ok {
 		return s
 	}
 	s := scrollback.New()
-	a.scroll[tabID] = s
+	w.scroll[tabID] = s
 	return s
 }
 
@@ -1265,21 +1264,21 @@ func (a *App) renderContextMenu() {
 	}
 }
 
-func (a *App) menuContext() *menu.Context {
+func (w *Window) menuContext() *menu.Context {
 	ctx := &menu.Context{
-		HasSelection: a.sel.active,
-		Selection:    a.selectedText(),
+		HasSelection: w.sel.active,
+		Selection:    w.selectedText(),
 	}
-	if tab := a.tabs.Active(); tab != nil {
+	if tab := w.tabs.Active(); tab != nil {
 		ctx.TabTitle = tab.Title
 		// CWD detection via /proc
 		if tab.Terminal != nil {
 			ctx.CWD = getCWD(tab.Terminal)
 		}
 	}
-	if a.hoveredLink != nil {
+	if w.hoveredLink != nil {
 		ctx.HasLink = true
-		ctx.Link = a.hoveredLink.URL
+		ctx.Link = w.hoveredLink.URL
 	}
 	return ctx
 }
@@ -1839,19 +1838,19 @@ func (a *App) handleMouseSelection() {
 	}
 }
 
-func (a *App) selectedText() string {
-	if !a.sel.active {
+func (w *Window) selectedText() string {
+	if !w.sel.active {
 		return ""
 	}
-	tab := a.tabs.Active()
+	tab := w.tabs.Active()
 	if tab == nil {
 		return ""
 	}
 	scrollOff := 0
-	if s, ok := a.scroll[tab.ID]; ok {
+	if s, ok := w.scroll[tab.ID]; ok {
 		scrollOff = s.Offset
 	}
-	return a.sel.extractText(tab.Terminal.Emu, scrollOff)
+	return w.sel.extractText(tab.Terminal.Emu, scrollOff)
 }
 
 func getCWD(term interface{}) string {
