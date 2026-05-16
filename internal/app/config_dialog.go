@@ -427,49 +427,49 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 }
 
 // openPreferences loads current config into dialog and shows it.
-func (a *App) openPreferences() {
-	a.prefDialog.loadFrom(&a.cfg)
+func (a *Window) openPreferences() {
+	a.prefDialog.loadFrom(&a.app.cfg)
 	a.prefDialog.open = true
 }
 
 // applyPreferences writes dialog state to config, applies runtime changes, saves to disk.
-func (a *App) applyPreferences() {
-	prevFamily := a.cfg.Font.Family
-	prevPath := a.cfg.Font.Path
+func (a *Window) applyPreferences() {
+	prevFamily := a.app.cfg.Font.Family
+	prevPath := a.app.cfg.Font.Path
 
-	a.prefDialog.applyTo(&a.cfg)
+	a.prefDialog.applyTo(&a.app.cfg)
 
 	// Apply theme change.
-	if t, err := themes.Load(a.cfg.Appearance.Theme); err == nil {
-		applyColorOverrides(&t, &a.cfg)
+	if t, err := themes.Load(a.app.cfg.Appearance.Theme); err == nil {
+		applyColorOverrides(&t, &a.app.cfg)
 		a.renderer.Theme = t
-		a.theme = t
+		a.app.theme = t
 		bgR := float32((t.Background>>0)&0xFF) / 255.0
 		bgG := float32((t.Background>>8)&0xFF) / 255.0
 		bgB := float32((t.Background>>16)&0xFF) / 255.0
 		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 		updateEventLoopBg(bgR, bgG, bgB)
 	}
-	a.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
+	a.renderer.BoldIsBright = a.app.cfg.Appearance.BoldIsBright
 
-	faceChanged := a.cfg.Font.Family != prevFamily || a.cfg.Font.Path != prevPath
+	faceChanged := a.app.cfg.Font.Family != prevFamily || a.app.cfg.Font.Path != prevPath
 	if faceChanged {
 		// Defer the atlas rebuild to the start of the next frame. Clearing
 		// fonts mid-frame leaves draw commands holding stale texture handles,
 		// which manifests as the terminal going blank or input/selection
 		// breaking until a resize forces a redraw.
-		a.pendingFontFace = true
+		a.app.pendingFontFace = true
 	} else {
 		// Size-only change: cheap scaling path, no atlas rebuild.
 		a.updateFontMetrics()
 	}
 
 	// Persist to disk.
-	_ = config.Save(a.cfg)
+	_ = config.Save(a.app.cfg)
 }
 
 // renderPreferences draws the preferences window each frame.
-func (a *App) renderPreferences() {
+func (a *Window) renderPreferences() {
 	if !a.prefDialog.open {
 		return
 	}
@@ -590,7 +590,7 @@ func (a *App) renderPreferences() {
 
 // --- Tab renderers ---
 
-func (a *App) renderPrefAppearance() {
+func (a *Window) renderPrefAppearance() {
 	d := &a.prefDialog
 	w := float32(200)
 
@@ -683,7 +683,7 @@ func (a *App) renderPrefAppearance() {
 	}
 }
 
-func (a *App) renderPrefFont() {
+func (a *Window) renderPrefFont() {
 	d := &a.prefDialog
 	w := float32(280)
 
@@ -758,7 +758,7 @@ func (a *App) renderPrefFont() {
 // hatch. TTF fonts scale continuously, but for terminals only a small handful
 // of sizes are typically useful — surfacing them as discrete picks is friendlier
 // than a freeform 6-72 slider.
-func (a *App) renderPrefFontSize(w float32) {
+func (a *Window) renderPrefFontSize(w float32) {
 	d := &a.prefDialog
 
 	if !d.fontSizeCustom {
@@ -893,7 +893,7 @@ func (d *configDialog) refreshResolved() {
 	d.fontResolved = renderer.ResolveFontPath(&tmp)
 }
 
-func (a *App) renderPrefShellTabs() {
+func (a *Window) renderPrefShellTabs() {
 	d := &a.prefDialog
 	w := float32(250)
 
@@ -918,7 +918,7 @@ func (a *App) renderPrefShellTabs() {
 	imgui.ComboStrarr("##closebtn", &d.closeBtnIdx, prefCloseBtnPos, int32(len(prefCloseBtnPos)))
 }
 
-func (a *App) renderPrefScrollback() {
+func (a *Window) renderPrefScrollback() {
 	d := &a.prefDialog
 	w := float32(200)
 
@@ -948,7 +948,7 @@ func (a *App) renderPrefScrollback() {
 	imgui.Checkbox("Scroll to Bottom on Output", &d.scrollOut)
 }
 
-func (a *App) renderPrefScrollbar() {
+func (a *Window) renderPrefScrollbar() {
 	d := &a.prefDialog
 	w := float32(200)
 
@@ -965,7 +965,7 @@ func (a *App) renderPrefScrollbar() {
 	imgui.SliderInt("##sbminthumb", &d.sbMinThumb, 10, 100)
 }
 
-func (a *App) renderPrefClipboard() {
+func (a *Window) renderPrefClipboard() {
 	d := &a.prefDialog
 
 	imgui.Checkbox("Copy on Select", &d.copyOnSel)
@@ -986,7 +986,7 @@ func (a *App) renderPrefClipboard() {
 	}
 }
 
-func (a *App) renderPrefLinks() {
+func (a *Window) renderPrefLinks() {
 	d := &a.prefDialog
 	w := float32(250)
 
@@ -1002,7 +1002,7 @@ func (a *App) renderPrefLinks() {
 	}
 }
 
-func (a *App) renderPrefKeys() {
+func (a *Window) renderPrefKeys() {
 	d := &a.prefDialog
 	w := float32(200)
 
@@ -1019,7 +1019,7 @@ func (a *App) renderPrefKeys() {
 	imgui.ComboStrarr("##shenter", &d.shEnIdx, prefShiftEnters, int32(len(prefShiftEnters)))
 }
 
-func (a *App) renderPrefMenu() {
+func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
 
 	imgui.Text("Context Menu Items")
@@ -1102,7 +1102,7 @@ func (a *App) renderPrefMenu() {
 	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuActions, int32(len(prefMenuActions)))
 }
 
-func (a *App) renderPrefWindow() {
+func (a *Window) renderPrefWindow() {
 	d := &a.prefDialog
 	w := float32(200)
 
