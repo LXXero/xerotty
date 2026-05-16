@@ -2,17 +2,53 @@
 package tabs
 
 import (
+	"time"
+
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // Tab represents a single terminal tab.
+//
+// Title is set by the OSC 0/2 escape sequence (most shells set it
+// from their prompt, claude/vim/etc set it as their UI title). When
+// no OSC has fired yet, DisplayTitle() falls back to the PTY's
+// foreground process name (vim, top, ssh) so the title bar / tab bar
+// shows what's actually running — matching iTerm2/Terminal.app
+// behaviour for apps that don't emit OSC themselves.
 type Tab struct {
 	ID       int
-	Title    string
+	Title    string // OSC-set title; empty until the shell/app emits one
 	Terminal *terminal.Terminal
 	Dirty    bool
 	Closed   bool
+
+	// foregroundCache + foregroundAt throttle the per-tab PTY-pgid +
+	// processName lookup so we don't fork `ps` on macOS every frame.
+	// The cache is invalidated after foregroundCacheTTL.
+	foregroundCache string
+	foregroundAt    time.Time
+}
+
+const foregroundCacheTTL = 500 * time.Millisecond
+
+// DisplayTitle returns the user-facing title for this tab — OSC-set
+// title if the running app emitted one (priority), otherwise the
+// foreground process name from the PTY (e.g. "vim", "top"), with a
+// "shell" fallback when neither is available. Cached to throttle the
+// foreground lookup (forks `ps` on macOS, cheap on Linux).
+func (t *Tab) DisplayTitle() string {
+	if t.Title != "" {
+		return t.Title
+	}
+	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {
+		t.foregroundCache = t.Terminal.ForegroundProcessName()
+		t.foregroundAt = time.Now()
+	}
+	if t.foregroundCache != "" {
+		return t.foregroundCache
+	}
+	return "shell"
 }
 
 // Manager manages the set of open tabs.
@@ -40,8 +76,10 @@ func (m *Manager) NewTab(cols, rows int) (*Tab, error) {
 
 	tab := &Tab{
 		ID:       m.NextID,
-		Title:    "shell",
 		Terminal: term,
+		// Title intentionally left empty — DisplayTitle() falls back
+		// to the foreground process name (or "shell" if even that
+		// lookup fails) until the app emits an OSC 0/2 title.
 	}
 	term.OnTitle = func(title string) {
 		tab.Title = title

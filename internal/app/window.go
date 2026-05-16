@@ -101,15 +101,15 @@ type Window struct {
 }
 
 // titleForWindow returns the human-readable title for this Window's
-// OS window — the active tab's title if set (terminal apps update it
-// via OSC 0/2 escape sequences and we mirror that through
-// terminal.OnTitle → tab.Title), or a fallback. The macOS Dock
-// right-click menu uses this to show each window distinctly instead
-// of N copies of "xerotty".
+// OS window — delegates to the active tab's DisplayTitle() which
+// prefers OSC-set titles (most shells set them from prompt), falls
+// back to the PTY's foreground process name (vim, top, ssh), then
+// "shell". The macOS Dock right-click menu uses this to show each
+// window distinctly instead of N copies of "xerotty".
 func (w *Window) titleForWindow() string {
 	if w.tabs != nil {
-		if tab := w.tabs.Active(); tab != nil && tab.Title != "" {
-			return tab.Title
+		if tab := w.tabs.Active(); tab != nil {
+			return tab.DisplayTitle()
 		}
 	}
 	return "xerotty"

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // Wake is called from PTY reader goroutines after new data arrives so
@@ -320,6 +321,31 @@ func (t *Terminal) GetCWD() string {
 		return ""
 	}
 	return processCWD(t.cmd.Process.Pid)
+}
+
+// ForegroundProcessName returns the executable name of the PTY's
+// current foreground process group leader — what shell users would
+// think of as "the thing currently running in this tab" (vim, top,
+// ssh, etc). iTerm2 and most modern terminals use this to populate
+// the window title when the app doesn't emit OSC 0/2 itself.
+//
+// We get the foreground process group ID via TIOCGPGRP on the PTY
+// master fd, then look up that PID's name via the platform-specific
+// processName (ps on macOS, /proc/<pid>/comm on Linux).
+//
+// Returns "" if anything in the lookup fails — caller should fall
+// back to OSC title or a default.
+func (t *Terminal) ForegroundProcessName() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ptmx == nil {
+		return ""
+	}
+	pgid, err := unix.IoctlGetInt(int(t.ptmx.Fd()), unix.TIOCGPGRP)
+	if err != nil || pgid <= 0 {
+		return ""
+	}
+	return processName(pgid)
 }
 
 // Paste sends text to the PTY, wrapping with bracketed-paste markers

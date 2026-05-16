@@ -1330,7 +1330,7 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "rename_tab":
 		if tab := w.tabs.Active(); tab != nil {
-			w.renameBuffer = tab.Title
+			w.renameBuffer = tab.DisplayTitle()
 			w.renamingTab = true
 			imgui.OpenPopupStr("Rename Tab")
 		}
@@ -1517,10 +1517,7 @@ func (w *Window) renderTabBar() {
 		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
 		if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
 			for i, tab := range w.tabs.Tabs {
-				label := tab.Title
-				if label == "" {
-					label = fmt.Sprintf("shell %d", tab.ID)
-				}
+				label := tab.DisplayTitle()
 				label = fmt.Sprintf("%s###tab%d", label, tab.ID)
 
 				open := true
@@ -1558,7 +1555,7 @@ func (w *Window) menuContext() *menu.Context {
 		Selection:    w.selectedText(),
 	}
 	if tab := w.tabs.Active(); tab != nil {
-		ctx.TabTitle = tab.Title
+		ctx.TabTitle = tab.DisplayTitle()
 		// CWD detection via /proc
 		if tab.Terminal != nil {
 			ctx.CWD = getCWD(tab.Terminal)
