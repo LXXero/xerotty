@@ -60,6 +60,78 @@ func New(cfg config.Config) *App {
 	return a
 }
 
+// spawnWindow adds a new Window to this App in the same process. The
+// secondary Window shares the cimgui-go SDL backend + ImGui context
+// + GL textures with the main Window, but has its own tabs manager,
+// renderer, glyph cache, and per-window UI state. The render loop in
+// Run() then wraps its frame body in an ImGui top-level window that
+// multi-viewport auto-promotes to its own OS window.
+func (a *App) spawnWindow() {
+	if len(a.windows) == 0 {
+		return // can't spawn before Run() has set up the main Window
+	}
+	main := a.windows[0]
+	if main.renderer == nil || main.backend == nil {
+		return // main Window isn't fully initialized yet
+	}
+
+	w := newWindow(a)
+	w.imguiName = fmt.Sprintf("xerotty##win%d", len(a.windows))
+	// Inherit geometry and cell metrics from the main Window.
+	w.width = main.width
+	w.height = main.height
+	w.cellW = main.cellW
+	w.cellH = main.cellH
+	w.tabBarH = main.tabBarH
+	// Share the SDL backend (same ImGui/GL context); multi-viewport
+	// will create the additional SDL_Window via its platform IO.
+	w.backend = main.backend
+
+	// Per-window renderer — shares the same font handles but gets its
+	// own Metrics / scrollbar / glyph cache so per-Window theming etc.
+	// stays possible later.
+	pad := float32(a.cfg.Appearance.Padding)
+	w.renderer = renderer.New(
+		a.theme,
+		renderer.CellMetrics{Width: w.cellW, Height: w.cellH},
+		main.renderer.Font, main.renderer.FontSize,
+	)
+	w.renderer.FontBold = main.renderer.FontBold
+	w.renderer.OffsetX = pad
+	w.renderer.OffsetY = w.tabBarH + pad
+	w.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
+
+	// New glyph cache for this Window (own textures via the shared
+	// TextureManager).
+	if fontsys.Default != nil {
+		primaryPath := renderer.ResolveFontPath(&a.cfg)
+		if primaryPath != "" {
+			fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+			if fbScale <= 0 {
+				fbScale = 1
+			}
+			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+				w.renderer.Glyphs = c
+			}
+		}
+	}
+
+	// New tabs manager with a single starting tab.
+	w.tabs = tabs.NewManager(&a.cfg)
+	cols, rows := w.gridSize()
+	if _, err := w.tabs.NewTab(cols, rows); err != nil {
+		return
+	}
+
+	// Skip the main-Window-specific first-frame init (CreateWindow,
+	// SetWindowSize, etc.) — multi-viewport handles the platform
+	// window creation for us when the Begin/End wrapper runs.
+	w.ready = true
+
+	a.windows = append(a.windows, w)
+	a.active = w
+}
+
 // initialWindowSize returns the pixel dimensions for the SDL window based on
 // the configured columns/rows and an estimate of cell metrics. The estimate
 // is corrected on the first frame once the font atlas is measured.
@@ -174,25 +246,58 @@ func (a *App) Run() error {
 	// clear and the watch is free to render.
 	//
 	// Iterate every Window each frame. The main Window renders into
-	// cimgui-go's primary SDL_Window via the main viewport; secondary
-	// Windows (phase 5) get wrapped in an ImGui top-level window that
-	// multi-viewport auto-promotes to its own OS window — the only
-	// architecturally clean way to get many OS windows under one Dock
-	// icon on macOS. We cache the viewport on each Window before
-	// calling its frame() so w.viewport() / w.bgDrawList() resolve
-	// correctly during the per-Window render.
+	// cimgui-go's primary SDL_Window via the main viewport. Secondary
+	// Windows render inside an ImGui top-level window with NoDocking
+	// + ConfigFlagsViewportsEnable, which makes multi-viewport auto-
+	// promote each into its own OS window. Same SDL/GL/ImGui context,
+	// same NSApplication on macOS — that's the trick that gives us
+	// one Dock icon for N OS windows.
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
-		for _, w := range a.windows {
-			if w.isMain {
-				w.imViewport = imgui.MainViewport()
-				w.frame()
+		for _, win := range a.windows {
+			if win.isMain {
+				win.imViewport = imgui.MainViewport()
+				win.frame()
 				continue
 			}
-			// Phase 5 wires secondary-Window rendering: imgui.Begin/End
-			// wrapper here, w.imViewport = imgui.GetWindowViewport()
-			// inside, render terminal content into that viewport.
+			// Secondary Window: wrap the frame body in an ImGui
+			// window that multi-viewport promotes to its own
+			// platform window. Position outside the main viewport
+			// the first time so the auto-merge logic pops it out;
+			// after that ImGui remembers per-window position.
+			imgui.SetNextWindowPosV(
+				imgui.Vec2{X: 100, Y: 100},
+				imgui.CondFirstUseEver, imgui.Vec2{X: 0, Y: 0})
+			imgui.SetNextWindowSizeV(
+				imgui.Vec2{X: float32(win.width), Y: float32(win.height)},
+				imgui.CondFirstUseEver)
+			// NoDocking: don't merge into the main viewport.
+			// NoSavedSettings: don't pollute imgui.ini with per-
+			//   secondary-window geometry; we manage that ourselves.
+			// NoTitleBar / NoScrollbar / NoBackground: the SDL_Window
+			//   chrome (NSWindow title bar on Mac, WM-supplied on
+			//   Linux) is what the user interacts with — the ImGui
+			//   window inside is a transparent host for our terminal
+			//   draw list.
+			flags := imgui.WindowFlagsNoDocking |
+				imgui.WindowFlagsNoSavedSettings |
+				imgui.WindowFlagsNoTitleBar |
+				imgui.WindowFlagsNoScrollbar |
+				imgui.WindowFlagsNoScrollWithMouse |
+				imgui.WindowFlagsNoBackground |
+				imgui.WindowFlagsNoBringToFrontOnFocus
+			open := true
+			if imgui.BeginV(win.imguiName, &open, flags) {
+				win.imViewport = imgui.WindowViewport()
+				win.frame()
+			}
+			imgui.End()
+			if !open {
+				// User hit the OS-window close button. Phase 6 wires
+				// up the close path; for now leave the Window in
+				// place — the close will fail-soft.
+			}
 		}
 		setEventLoopIdleTimeout(a.idleTimeout())
 	}
@@ -979,23 +1084,14 @@ func (w *Window) dispatchAction(action string) {
 	case "close_tab":
 		w.tabs.CloseActive()
 	case "new_window":
-		exe, err := os.Executable()
-		if err == nil {
-			// Cascade: place child ~30px below and right of parent so it
-			// doesn't stack exactly on top.
-			var envExtras []string
-			if sb, ok := w.backend.(*sdlbackend.SDLBackend); ok {
-				px, py := sb.GetWindowPos()
-				envExtras = []string{
-					fmt.Sprintf("XEROTTY_WIN_X=%d", int(px)+30),
-					fmt.Sprintf("XEROTTY_WIN_Y=%d", int(py)+30),
-				}
-			}
-			// On macOS inside a .app bundle, routes through `open -n`
-			// so LaunchServices coalesces all xerotty processes under
-			// one Dock icon. See newwindow_darwin.go.
-			newWindowCommand(exe, envExtras).Start()
-		}
+		// Single-process multi-window: append a new Window to this
+		// App's slice. The render loop in Run() picks it up next
+		// frame and wraps it in an ImGui top-level window that
+		// multi-viewport auto-promotes to its own OS window. Same
+		// NSApplication on macOS = one Dock icon for N windows;
+		// same WM_CLASS on Linux = one taskbar group. See
+		// docs/MULTI_WINDOW_REFACTOR.md for the architectural why.
+		w.app.spawnWindow()
 	case "next_tab":
 		w.tabs.Next()
 		if t := w.tabs.Active(); t != nil {
