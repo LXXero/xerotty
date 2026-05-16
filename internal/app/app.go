@@ -768,11 +768,11 @@ func (w *Window) popupActive() bool {
 	return w.renamingTab || w.pendingPaste != ""
 }
 
-func (a *App) processKeys() {
-	tab := a.tabs.Active()
-	searching := a.isSearching()
-	searchInputFocused := searching && a.searchInputFocused
-	popupOpen := a.popupActive()
+func (w *Window) processKeys() {
+	tab := w.tabs.Active()
+	searching := w.isSearching()
+	searchInputFocused := searching && w.searchInputFocused
+	popupOpen := w.popupActive()
 
 	// Modal popups (rename, unsafe paste) eat all input.
 	if popupOpen {
@@ -796,13 +796,13 @@ func (a *App) processKeys() {
 	if tab != nil && tab.Terminal != nil {
 		appCursor = tab.Terminal.AppCursorMode()
 	}
-	events := input.PollKeys(a.cfg.Keybinds, appCursor)
+	events := input.PollKeys(w.app.cfg.Keybinds, appCursor)
 	actionDispatched := false
 
 	for _, ev := range events {
 		// During search, handle Escape and Enter specially
 		if searchInputFocused && tab != nil {
-			s := a.getScroll(tab.ID)
+			s := w.getScroll(tab.ID)
 			if ev.Action == "" && len(ev.Bytes) > 0 {
 				switch ev.Bytes[0] {
 				case 0x1b: // Escape
@@ -810,29 +810,29 @@ func (a *App) processKeys() {
 						s.CloseSearch()
 						searching = false
 						searchInputFocused = false
-						a.searchInputFocused = false
+						w.searchInputFocused = false
 						continue
 					}
 				case '\r': // Enter — same as > (next match)
 					s.NextMatch()
-					if _, rows := a.gridSize(); rows > 0 {
+					if _, rows := w.gridSize(); rows > 0 {
 						s.ScrollToCurrentMatch(rows)
 					}
-					a.searchFocusInput = true
+					w.searchFocusInput = true
 					continue
 				case '\n': // Shift+Enter — same as < (previous match)
 					s.PrevMatch()
-					if _, rows := a.gridSize(); rows > 0 {
+					if _, rows := w.gridSize(); rows > 0 {
 						s.ScrollToCurrentMatch(rows)
 					}
-					a.searchFocusInput = true
+					w.searchFocusInput = true
 					continue
 				}
 			}
 		}
 
 		if ev.Action != "" {
-			a.dispatchAction(ev.Action)
+			w.dispatchAction(ev.Action)
 			actionDispatched = true
 			continue
 		}
@@ -843,10 +843,10 @@ func (a *App) processKeys() {
 		}
 
 		if len(ev.Bytes) > 0 && tab != nil {
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
-			a.sel.clear() // typing clears selection
+			w.sel.clear() // typing clears selection
 			tab.Terminal.Write(ev.Bytes)
 		}
 	}
@@ -870,10 +870,10 @@ func (a *App) processKeys() {
 		altHeld := imgui.IsKeyDown(imgui.ModAlt)
 		if chars.Size > 0 {
 			// Snap to bottom on text input
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
-			a.sel.clear()
+			w.sel.clear()
 			for _, ch := range chars.Slice() {
 				if ch > 0 && ch < 0x10FFFF {
 					buf := make([]byte, 5)
@@ -1702,19 +1702,19 @@ func (w *Window) renderRenameDialog() {
 	}
 }
 
-func (a *App) handleMouseSelection() {
-	tab := a.tabs.Active()
+func (w *Window) handleMouseSelection() {
+	tab := w.tabs.Active()
 	if tab == nil {
 		return
 	}
 
 	mousePos := imgui.MousePos()
-	col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
-	row := int((mousePos.Y - a.renderer.OffsetY) / a.cellH)
+	col := int((mousePos.X - w.renderer.OffsetX) / w.cellW)
+	row := int((mousePos.Y - w.renderer.OffsetY) / w.cellH)
 
 	// Window-local pixel coordinates. ImGui draw lists and MousePos() are in
-	// absolute desktop space when multi-viewport is enabled, but a.width /
-	// a.height / a.tabBarH / a.searchOverlayW are window-local — subtract
+	// absolute desktop space when multi-viewport is enabled, but w.width /
+	// w.height / w.tabBarH / w.searchOverlayW are window-local — subtract
 	// the main viewport position to bring them into the same space.
 	var vpOffX, vpOffY float32
 	if vp := imgui.MainViewport(); vp != nil {
@@ -1724,7 +1724,7 @@ func (a *App) handleMouseSelection() {
 	wmY := mousePos.Y - vpOffY
 
 	// Clamp to grid bounds
-	cols, rows := a.gridSize()
+	cols, rows := w.gridSize()
 	if col < 0 {
 		col = 0
 	}
@@ -1745,81 +1745,81 @@ func (a *App) handleMouseSelection() {
 	// WantCaptureMouse is true when the cursor is over any ImGui window
 	// (prefs, popups, tab bar) — that catches the catch-all case so a click
 	// on the prefs window doesn't seed a phantom terminal selection.
-	barW := float32(a.cfg.Scrollbar.Width)
-	onScrollbar := wmX >= float32(a.width)-barW
-	onSearch := tab != nil && a.getScroll(tab.ID).Searching &&
-		wmX >= float32(a.width)-a.searchOverlayW &&
-		wmY <= a.tabBarH+65
+	barW := float32(w.app.cfg.Scrollbar.Width)
+	onScrollbar := wmX >= float32(w.width)-barW
+	onSearch := tab != nil && w.getScroll(tab.ID).Searching &&
+		wmX >= float32(w.width)-w.searchOverlayW &&
+		wmY <= w.tabBarH+65
 	imguiCaptured := imgui.CurrentIO().WantCaptureMouse()
-	inTerminal := wmY >= a.tabBarH && !onScrollbar && !onSearch && !a.sbDragging && !imguiCaptured
+	inTerminal := wmY >= w.tabBarH && !onScrollbar && !onSearch && !w.sbDragging && !imguiCaptured
 
 	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {
 		scrollOff := 0
-		if s, ok := a.scroll[tab.ID]; ok {
+		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
 		cell := cellAtViewport(tab.Terminal.Emu, col, row, scrollOff)
 		if cell != nil && isSelWordChar(cell.Content) {
-			a.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
 		} else {
-			a.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
 		}
-		if a.sel.active {
+		if w.sel.active {
 			// iTerm2-style: hold-and-drag after a double-click extends
 			// the selection by word, with the original word as the
 			// anchor. Release without movement just keeps the word
 			// selection.
-			a.sel.dragging = true
-			text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
+			w.sel.dragging = true
+			text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
 			if text != "" {
 				input.PrimaryWrite(text)
 			}
 		}
-		a.lastDblClickTime = imgui.Time()
-		a.lastDblClickRow = row
-		a.lastDblClickCol = col
+		w.lastDblClickTime = imgui.Time()
+		w.lastDblClickRow = row
+		w.lastDblClickCol = col
 	} else if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 		// Triple-click detection: click shortly after a double-click on the same row
-		if inTerminal && imgui.Time()-a.lastDblClickTime < 0.4 && row == a.lastDblClickRow {
+		if inTerminal && imgui.Time()-w.lastDblClickTime < 0.4 && row == w.lastDblClickRow {
 			scrollOff := 0
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			a.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
-			if a.sel.active {
+			w.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
+			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
-				a.sel.dragging = true
-				text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
+				w.sel.dragging = true
+				text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
 				if text != "" {
 					input.PrimaryWrite(text)
 				}
 			}
-			a.lastDblClickTime = 0 // consumed
+			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
-			a.sel.clear()
-			a.sel.startCharDrag(row, col)
+			w.sel.clear()
+			w.sel.startCharDrag(row, col)
 		}
 	}
 
 	// Dragging extends selection. Mode (set when the drag started)
 	// decides whether the moving end snaps to char / word / line.
-	if a.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
+	if w.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
 		scrollOff := 0
-		if s, ok := a.scroll[tab.ID]; ok {
+		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		a.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
+		w.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
 	}
 
 	// Release finalizes selection and copies to PRIMARY
-	if a.sel.dragging && imgui.IsMouseReleased(imgui.MouseButtonLeft) {
-		a.sel.dragging = false
-		if a.sel.active {
+	if w.sel.dragging && imgui.IsMouseReleased(imgui.MouseButtonLeft) {
+		w.sel.dragging = false
+		if w.sel.active {
 			scrollOff := 0
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			text := a.sel.extractText(tab.Terminal.Emu, scrollOff)
+			text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
 			if text != "" {
 				input.PrimaryWrite(text)
 			}
@@ -1829,10 +1829,10 @@ func (a *App) handleMouseSelection() {
 	// Middle-click pastes from PRIMARY selection (terminal area only, not on
 	// ImGui windows like prefs/search).
 	if imgui.IsMouseClickedBool(imgui.MouseButtonMiddle) {
-		if wmY >= a.tabBarH && !imguiCaptured {
+		if wmY >= w.tabBarH && !imguiCaptured {
 			text, err := input.PrimaryRead()
 			if err == nil && text != "" {
-				a.pasteText(text)
+				w.pasteText(text)
 			}
 		}
 	}
