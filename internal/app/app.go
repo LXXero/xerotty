@@ -60,6 +60,20 @@ func New(cfg config.Config) *App {
 	return a
 }
 
+// refreshAllFontMetrics propagates a font-size change to every Window.
+// Each Window's cell metrics scale from a.baseCellW/H per its own
+// fontScale; without this loop, only the active Window's metrics
+// would update after a font-zoom action and the others would render
+// at stale cellW/H with stale glyph caches.
+func (a *App) refreshAllFontMetrics() {
+	for _, w := range a.windows {
+		if w.renderer == nil {
+			continue
+		}
+		w.updateFontMetrics()
+	}
+}
+
 // reapClosedWindows removes Windows that the user closed via the OS
 // close button this frame. Closing the last Window quits the process
 // — same semantics as macOS Cmd+Q when the final NSWindow vanishes.
@@ -299,32 +313,33 @@ func (a *App) Run() error {
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
-		// Re-resolve which Window is "active" each frame by checking
-		// which viewport the mouse hovers. Input handling (keys,
-		// mouse-down, wheel, selection) only runs for the active
-		// Window — otherwise typing would forward to every Window's
-		// PTY simultaneously, Cmd+T would create N tabs across all
-		// Windows, etc. Falls back to previous a.active when the
-		// cursor is between windows (over desktop).
-		if hovered := imgui.CurrentIO().MouseHoveredViewport(); hovered != 0 {
-			for _, win := range a.windows {
-				if win.imViewport != nil && win.imViewport.ID() == hovered {
-					a.active = win
-					break
-				}
-			}
-		}
+		// Track which Window has keyboard/click focus across this
+		// frame. Updated inside each secondary's Begin/End via
+		// imgui.IsWindowFocused; if no secondary is focused we
+		// default to the main Window. Input handling (keys, mouse-
+		// down, wheel, selection) is gated to a.active in frame() —
+		// otherwise typing would forward to every Window's PTY.
+		var focusedSecondary *Window
 		for _, win := range a.windows {
 			if win.isMain {
 				win.imViewport = imgui.MainViewport()
 				win.frame()
 				continue
 			}
-			// Secondary Window: wrap the frame body in an ImGui
-			// window that multi-viewport promotes to its own
-			// platform window. Position outside the main viewport
-			// the first time so the auto-merge logic pops it out;
-			// after that ImGui remembers per-window position.
+			// Override the auto-derived viewport flags so the
+			// platform window gets normal OS decorations (native
+			// title bar, close/min/max). Without this override,
+			// ImGui sees NoTitleBar on the ImGui window and
+			// propagates NoDecoration to the platform viewport,
+			// which makes SDL2 create the NSWindow as
+			// SDL_WINDOW_BORDERLESS.
+			windowClass := imgui.NewWindowClass()
+			windowClass.SetViewportFlagsOverrideClear(imgui.ViewportFlagsNoDecoration)
+			imgui.SetNextWindowClass(windowClass)
+			windowClass.Destroy()
+			// Position outside the main viewport the first time so
+			// the auto-merge logic pops it out; after that ImGui
+			// remembers per-window position.
 			imgui.SetNextWindowPosV(
 				imgui.Vec2{X: 100, Y: 100},
 				imgui.CondFirstUseEver, imgui.Vec2{X: 0, Y: 0})
@@ -333,12 +348,13 @@ func (a *App) Run() error {
 				imgui.CondFirstUseEver)
 			// NoDocking: don't merge into the main viewport.
 			// NoSavedSettings: don't pollute imgui.ini with per-
-			//   secondary-window geometry; we manage that ourselves.
-			// NoTitleBar / NoScrollbar / NoBackground: the SDL_Window
-			//   chrome (NSWindow title bar on Mac, WM-supplied on
-			//   Linux) is what the user interacts with — the ImGui
-			//   window inside is a transparent host for our terminal
-			//   draw list.
+			//   secondary-window geometry; we manage that
+			//   ourselves.
+			// NoTitleBar / NoScrollbar / NoBackground: the OS
+			//   chrome (native title bar via the WindowClass
+			//   override above) is the user-facing chrome; the
+			//   ImGui window inside is just a transparent host
+			//   for our terminal draw list.
 			flags := imgui.WindowFlagsNoDocking |
 				imgui.WindowFlagsNoSavedSettings |
 				imgui.WindowFlagsNoTitleBar |
@@ -346,18 +362,29 @@ func (a *App) Run() error {
 				imgui.WindowFlagsNoScrollWithMouse |
 				imgui.WindowFlagsNoBackground |
 				imgui.WindowFlagsNoBringToFrontOnFocus
-			open := true
-			if imgui.BeginV(win.imguiName, &open, flags) {
+			if imgui.BeginV(win.imguiName, nil, flags) {
 				win.imViewport = imgui.WindowViewport()
+				if imgui.IsWindowFocused() {
+					focusedSecondary = win
+				}
 				win.frame()
 			}
 			imgui.End()
-			if !open {
-				// User hit the OS-window close button. Defer the
-				// actual slice removal until after iteration so we
-				// don't mutate a.windows mid-loop.
+			// Use viewport.PlatformRequestClose to detect the OS
+			// close button — without a TitleBar the `&open` bool
+			// passed to BeginV doesn't reliably propagate the close
+			// (no Begin-internal close button). PlatformRequestClose
+			// is set by ImGui_ImplSDL2 directly from
+			// SDL_WINDOWEVENT_CLOSE so it's the source of truth.
+			if win.imViewport != nil && win.imViewport.PlatformRequestClose() {
 				win.pendingClose = true
+				win.imViewport.SetPlatformRequestClose(false)
 			}
+		}
+		if focusedSecondary != nil {
+			a.active = focusedSecondary
+		} else if len(a.windows) > 0 {
+			a.active = a.windows[0]
 		}
 		// Process any closes deferred during the render pass.
 		a.reapClosedWindows()
@@ -1238,15 +1265,15 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "font_size_up":
 		w.app.cfg.Font.Size += 1
-		w.updateFontMetrics()
+		w.app.refreshAllFontMetrics()
 	case "font_size_down":
 		if w.app.cfg.Font.Size > 6 {
 			w.app.cfg.Font.Size -= 1
-			w.updateFontMetrics()
+			w.app.refreshAllFontMetrics()
 		}
 	case "font_size_reset":
 		w.app.cfg.Font.Size = 14
-		w.updateFontMetrics()
+		w.app.refreshAllFontMetrics()
 	case "select_all":
 		if tab := w.tabs.Active(); tab != nil {
 			cols := tab.Terminal.Emu.Width()
