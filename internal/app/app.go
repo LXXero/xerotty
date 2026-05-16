@@ -173,14 +173,26 @@ func (a *App) Run() error {
 	// frames — including blocked in SDL_WaitEventTimeout — the flag is
 	// clear and the watch is free to render.
 	//
-	// Phase 3 note: this still renders only a.active per frame.
-	// Phase 4 will iterate a.windows here so additional Windows opened
-	// via new_window get rendered too.
+	// Iterate every Window each frame. The main Window renders into
+	// cimgui-go's primary SDL_Window via the main viewport; secondary
+	// Windows (phase 5) get wrapped in an ImGui top-level window that
+	// multi-viewport auto-promotes to its own OS window — the only
+	// architecturally clean way to get many OS windows under one Dock
+	// icon on macOS. We cache the viewport on each Window before
+	// calling its frame() so w.viewport() / w.bgDrawList() resolve
+	// correctly during the per-Window render.
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
-		if a.active != nil {
-			a.active.frame()
+		for _, w := range a.windows {
+			if w.isMain {
+				w.imViewport = imgui.MainViewport()
+				w.frame()
+				continue
+			}
+			// Phase 5 wires secondary-Window rendering: imgui.Begin/End
+			// wrapper here, w.imViewport = imgui.GetWindowViewport()
+			// inside, render terminal content into that viewport.
 		}
 		setEventLoopIdleTimeout(a.idleTimeout())
 	}

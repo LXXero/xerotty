@@ -78,30 +78,58 @@ type Window struct {
 	lastTabBarW        float32
 	lastTabBarH        float32
 	skipDisplaySync    int
+
+	// Multi-window plumbing (phase 4+). isMain is true for windows[0]
+	// which uses cimgui-go's main SDL_Window directly; secondary
+	// Windows render inside an ImGui top-level window that multi-
+	// viewport auto-promotes to its own OS window. imguiName is the
+	// unique ImGui window identifier for secondary Windows — empty for
+	// the main Window. imViewport caches the *imgui.Viewport for this
+	// Window each frame, set by the render loop before calling frame()
+	// so w.viewport() returns the right one for coord translation and
+	// draw-list selection.
+	isMain     bool
+	imguiName  string
+	imViewport *imgui.Viewport
 }
 
 // newWindow returns a freshly-initialized Window with the minimum
 // defaults needed before App.Run populates the rest (backend, tabs,
-// renderer, cell metrics — all set during the boot sequence).
+// renderer, cell metrics — all set during the boot sequence). The
+// first Window created (via App.New) is marked isMain so it owns
+// cimgui-go's primary SDL_Window; subsequent Windows opened via
+// new_window get a unique imguiName so multi-viewport pop-out
+// creates their OS window.
 func newWindow(app *App) *Window {
-	return &Window{
+	w := &Window{
 		app:          app,
 		scroll:       make(map[int]*scrollback.State),
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
 	}
+	if len(app.windows) == 0 {
+		w.isMain = true
+	} else {
+		// Phase 5 will set imguiName + initial pos/size for secondary
+		// Windows when new_window appends them.
+	}
+	return w
 }
 
-// viewport returns the ImGui viewport this Window renders into. In
-// phase 1/2 there's exactly one Window and it owns the main viewport;
-// phase 3 will make additional Windows their own ImGui-popped-out
-// viewports, and this method becomes per-instance.
+// viewport returns the ImGui viewport this Window renders into. The
+// render loop caches the correct viewport on the Window each frame
+// before calling frame(); we fall back to the main viewport for
+// safety when nothing has set imViewport yet (e.g. first frame
+// before the render loop has run).
 //
 // Callers use it for (a) coordinate translation between desktop-
 // absolute space (where MousePos and ImGui draw lists live under
 // multi-viewport) and window-local space, and (b) picking the right
 // foreground / background draw list to render into.
 func (w *Window) viewport() *imgui.Viewport {
+	if w.imViewport != nil {
+		return w.imViewport
+	}
 	return imgui.MainViewport()
 }
 
