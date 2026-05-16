@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/AllenDang/cimgui-go/backend"
 	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
+	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
@@ -89,4 +90,32 @@ func newWindow(app *App) *Window {
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
 	}
+}
+
+// viewport returns the ImGui viewport this Window renders into. In
+// phase 1/2 there's exactly one Window and it owns the main viewport;
+// phase 3 will make additional Windows their own ImGui-popped-out
+// viewports, and this method becomes per-instance.
+//
+// Callers use it for (a) coordinate translation between desktop-
+// absolute space (where MousePos and ImGui draw lists live under
+// multi-viewport) and window-local space, and (b) picking the right
+// foreground / background draw list to render into.
+func (w *Window) viewport() *imgui.Viewport {
+	return imgui.MainViewport()
+}
+
+// bgDrawList returns the background draw list for this Window's
+// viewport — what terminal cells, cursor, scrollbar, and link
+// decorations render into. Z-order: behind all ImGui windows.
+func (w *Window) bgDrawList() *imgui.DrawList {
+	return imgui.BackgroundDrawListV(w.viewport())
+}
+
+// fgDrawList returns the foreground draw list for this Window's
+// viewport — what the resize overlay renders into. Z-order: above
+// all ImGui windows, so the overlay sits on top of any popped-out
+// prefs / search overlays.
+func (w *Window) fgDrawList() *imgui.DrawList {
+	return imgui.ForegroundDrawListViewportPtrV(w.viewport())
 }

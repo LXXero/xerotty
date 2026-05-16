@@ -473,7 +473,7 @@ func (a *Window) frame() {
 	wheel := imgui.CurrentIO().MouseWheel()
 	if wheel != 0 {
 		var vpOffY float32
-		if vp := imgui.MainViewport(); vp != nil {
+		if vp := a.viewport(); vp != nil {
 			vpOffY = vp.Pos().Y
 		}
 		if a.tabBarH > 0 && imgui.MousePos().Y-vpOffY < a.tabBarH {
@@ -595,10 +595,11 @@ func (a *Window) frame() {
 		a.tabBarH = 0
 	}
 	pad := float32(a.app.cfg.Appearance.Padding)
-	// Add MainViewport offset so terminal lands inside the SDL window when
-	// multi-viewport is enabled (ImGui draw lists are in absolute desktop coords).
+	// Add the window's viewport offset so terminal lands inside the SDL
+	// window when multi-viewport is enabled (ImGui draw lists are in
+	// absolute desktop coords).
 	var vpOffX, vpOffY float32
-	if vp := imgui.MainViewport(); vp != nil {
+	if vp := a.viewport(); vp != nil {
 		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
 	}
 	// Snap render offsets to whole pixels so glyphs don't get sub-pixel-drifted
@@ -632,13 +633,13 @@ func (a *Window) frame() {
 	// Render tab bar
 	a.renderTabBar()
 
-	// Render active terminal directly onto the main viewport's background
-	// draw list. Using a wrapping ImGui window breaks under multi-viewport
+	// Render active terminal directly onto the window's background draw
+	// list. Using a wrapping ImGui window breaks under multi-viewport
 	// (the window can be promoted to its own viewport, leaving the SDL
-	// surface blank). BackgroundDrawListV pinned to MainViewport guarantees
-	// draws hit the primary SDL window.
+	// surface blank). BackgroundDrawListV pinned to this Window's
+	// viewport guarantees draws hit the right OS window.
 	if tab := a.tabs.Active(); tab != nil {
-		drawList := imgui.BackgroundDrawListV(imgui.MainViewport())
+		drawList := a.bgDrawList()
 		if drawList != nil {
 			scrollOff := 0
 			if s, ok := a.scroll[tab.ID]; ok {
@@ -1181,7 +1182,7 @@ func (w *Window) renderTabBar() {
 	}
 
 	var vpX, vpY float32
-	if vp := imgui.MainViewport(); vp != nil {
+	if vp := w.viewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
 	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
@@ -1296,7 +1297,7 @@ func (w *Window) renderSearchOverlay() {
 	}
 
 	var vpX, vpY float32
-	if vp := imgui.MainViewport(); vp != nil {
+	if vp := w.viewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
 	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(w.width) - 320, Y: vpY + w.tabBarH}, imgui.CondAlways, imgui.Vec2{})
@@ -1447,11 +1448,11 @@ func (w *Window) renderResizeOverlay() {
 	boxW := innerW + padX*2
 	boxH := innerH + padY*2
 
-	// Center on MainViewport in absolute desktop space — under multi-viewport
-	// the global foreground drawlist isn't tied to the SDL window.
+	// Center on the window's viewport in absolute desktop space — under
+	// multi-viewport the global foreground drawlist isn't tied to the
+	// SDL window.
 	var vpX, vpY float32
-	vp := imgui.MainViewport()
-	if vp != nil {
+	if vp := w.viewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
 	cx := vpX + float32(w.width)/2
@@ -1466,7 +1467,7 @@ func (w *Window) renderResizeOverlay() {
 	bgColor := uint32(uint8(alpha*180)) << 24 // semi-transparent black
 	fgColor := uint32(0x00FFFFFF) | (uint32(uint8(alpha*255)) << 24)
 
-	dl := imgui.ForegroundDrawListViewportPtrV(vp)
+	dl := w.fgDrawList()
 	dl.AddRectFilledV(
 		imgui.Vec2{X: cx - boxW/2, Y: cy - boxH/2},
 		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
@@ -1514,7 +1515,7 @@ func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.Dra
 
 	barW := float32(w.app.cfg.Scrollbar.Width)
 	var vpOffX, vpOffY float32
-	if vp := imgui.MainViewport(); vp != nil {
+	if vp := w.viewport(); vp != nil {
 		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
 	}
 	barX := vpOffX + float32(w.width) - barW
@@ -1717,7 +1718,7 @@ func (w *Window) handleMouseSelection() {
 	// w.height / w.tabBarH / w.searchOverlayW are window-local — subtract
 	// the main viewport position to bring them into the same space.
 	var vpOffX, vpOffY float32
-	if vp := imgui.MainViewport(); vp != nil {
+	if vp := w.viewport(); vp != nil {
 		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
 	}
 	wmX := mousePos.X - vpOffX
