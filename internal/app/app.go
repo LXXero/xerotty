@@ -386,7 +386,12 @@ func (a *App) Run() error {
 			beginName := win.titleForWindow() + "###" + win.imguiName
 			if imgui.BeginV(beginName, nil, flags) {
 				win.imViewport = imgui.WindowViewport()
-				if imgui.IsWindowFocused() {
+				// RootAndChildWindows so a click on the tab bar /
+				// search overlay (separate ImGui windows nested
+				// inside the wrapper's frame()) still counts as
+				// focusing this Window — otherwise tab-bar
+				// interaction would drop input gating.
+				if imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows) {
 					focused = win
 				}
 				win.frame()

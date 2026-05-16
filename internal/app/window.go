@@ -166,11 +166,27 @@ func (w *Window) viewport() *imgui.Viewport {
 	return imgui.MainViewport()
 }
 
-// bgDrawList returns the background draw list for this Window's
-// viewport — what terminal cells, cursor, scrollbar, and link
-// decorations render into. Z-order: behind all ImGui windows.
+// bgDrawList returns the draw list terminal cells / cursor /
+// scrollbar / link decorations render into.
+//
+// Every Window now renders inside an ImGui top-level Begin/End
+// (wrappedFrame's wrapper for multi-viewport pop-out). We draw the
+// terminal into the WRAPPER's window draw list rather than the
+// viewport's background draw list — the latter renders BELOW the
+// wrapper's content, which means subsequent peer windows (tab bar,
+// search overlay) created with separate Begin/End would still
+// layer on top of terminal cells, but the wrapper's own
+// NoBringToFrontOnFocus interaction with multi-viewport popped-out
+// windows had bg-drawlist landing in front of the tab bar.
+// Putting cells on the wrapper's window draw list orders them
+// correctly: wrapper's drawlist first, then any peer windows
+// (tab bar, etc.) on top, then viewport foreground drawlist last.
+//
+// Must be called while the wrapper's Begin/End is still on the
+// ImGui window stack — wrappedFrame guarantees that since frame()
+// runs inside the wrapper.
 func (w *Window) bgDrawList() *imgui.DrawList {
-	return imgui.BackgroundDrawListV(w.viewport())
+	return imgui.WindowDrawList()
 }
 
 // fgDrawList returns the foreground draw list for this Window's
