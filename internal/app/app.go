@@ -375,7 +375,8 @@ func (a *App) Run() error {
 				imgui.WindowFlagsNoScrollbar |
 				imgui.WindowFlagsNoScrollWithMouse |
 				imgui.WindowFlagsNoBackground |
-				imgui.WindowFlagsNoCollapse
+				imgui.WindowFlagsNoCollapse |
+				imgui.WindowFlagsNoBringToFrontOnFocus
 			// Strip the wrapper's own padding / border so it
 			// occupies exactly the OS window's content rect with
 			// no offset. Without these, ImGui's default 8px
@@ -1520,10 +1521,25 @@ func (w *Window) renderTabBar() {
 	if vp := w.viewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
-	imgui.SetCursorScreenPos(imgui.Vec2{X: vpX, Y: vpY})
-	innerSpX := imgui.CurrentStyle().ItemInnerSpacing().X
-	imgui.PushStyleVarVec2(imgui.StyleVarItemInnerSpacing, imgui.Vec2{X: innerSpX, Y: 0})
+	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
+	imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(w.width), Y: w.tabBarH}, imgui.CondAlways)
+	// Dedicated tab-bar window so clicks anywhere in the strip route to
+	// ImGui's tab-item hit-tests, not to the wrapper. Both wrapper and
+	// tab-bar have NoBringToFrontOnFocus so clicking either doesn't
+	// shuffle z-order: the wrapper stays beneath (Begin'd first) and
+	// the tab bar stays on top (Begin'd later in the same viewport).
+	tabBarFlags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
+		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
+		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground |
+		imgui.WindowFlagsNoFocusOnAppearing | imgui.WindowFlagsNoNav |
+		imgui.WindowFlagsNoSavedSettings | imgui.WindowFlagsNoBringToFrontOnFocus
+	imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{X: 0, Y: 0})
 	defer imgui.PopStyleVar()
+	if !imgui.BeginV("##tabbar"+w.imguiSuffix(), nil, tabBarFlags) {
+		imgui.End()
+		return
+	}
+	defer imgui.End()
 
 	tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
 	if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
