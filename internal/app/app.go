@@ -29,59 +29,30 @@ func init() {
 	runtime.LockOSThread()
 }
 
-// App is the main application struct.
+// App is the main application struct. It owns process-wide state
+// (config, theme, base font metrics, font-reload flags) plus the
+// per-window state via an embedded *Window. The embed is a phase-1
+// bridge: existing a.<field> accesses keep working through Go's
+// field promotion. Phase 3 of the multi-window refactor replaces
+// the single embed with `windows []*Window` to land real multi-
+// window support. See docs/MULTI_WINDOW_REFACTOR.md.
 type App struct {
-	cfg      config.Config
-	backend  backend.Backend[sdlbackend.SDLWindowFlags]
-	tabs     *tabs.Manager
-	renderer *renderer.Renderer
-	scroll   map[int]*scrollback.State // per-tab scroll state
-	width    int
-	height   int
-	cellW    float32
-	cellH    float32
-	tabBarH  float32
+	cfg              config.Config
+	theme            renderer.Theme
+	baseFontSize     float32 // font size the atlas was built at
+	baseCellW        float32 // cell width at base font size
+	baseCellH        float32 // cell height at base font size
+	pendingFontFace  bool    // rebuild font atlas at start of next frame
+	pendingRemeasure bool    // re-run cell measurement next frame (e.g. after font swap)
 
-	fullscreen         bool
-	tabBarHovered      bool    // true when mouse is over the tab bar
-	tabSwitchReq       int     // tab ID to force-select, -1 = none
-	ready              bool    // true after first frame measures fonts
-	pendingRemeasure   bool    // re-run cell measurement next frame (e.g. after font swap)
-	baseFontSize       float32 // font size the atlas was built at
-	baseCellW          float32 // cell width at base font size
-	baseCellH          float32 // cell height at base font size
-	theme              renderer.Theme
-	sel                selection    // text selection state
-	pendingPaste       string       // text awaiting unsafe-paste confirmation
-	resizeTime         float64      // imgui.Time() when last resize occurred
-	resizeOverlay      bool         // whether to show overlay
-	resizeOverlayText  string       // when set, the overlay shows this text instead of cols×rows (used for zoom%)
-	lastCols           int          // cols at last resize check
-	lastRows           int          // rows at last resize check
-	hoveredLink        *linkHit     // URL under mouse cursor, nil if none
-	renamingTab        bool         // whether rename popup is open
-	renameBuffer       string       // text input for tab rename
-	sbDragging         bool         // true while dragging the scrollbar thumb
-	searchFocusInput   bool         // request keyboard focus to search input next frame
-	searchInputFocused bool         // true when search input currently owns keyboard focus
-	searchOverlayW     float32      // actual rendered width of search overlay (updated each frame)
-	lastDblClickTime   float64      // imgui.Time() of last double-click (for triple-click detection)
-	lastDblClickRow    int          // row of last double-click
-	lastDblClickCol    int          // col of last double-click
-	prefDialog         configDialog // preferences dialog state
-	pendingFontFace    bool         // rebuild font atlas at start of next frame
-	lastTabBarW        float32      // last width sent to SetNextWindowSizeV for tab bar
-	lastTabBarH        float32      // last height sent to SetNextWindowSizeV for tab bar
-	skipDisplaySync    int          // skip DisplaySize→a.width/a.height sync for N frames after a programmatic SetWindowSize, so the WM has time to honour shrink requests before we accept its old (pre-resize) DisplaySize
+	*Window // embedded for phase 1 — see window.go
 }
 
 // New creates a new App with the given config.
 func New(cfg config.Config) *App {
 	return &App{
-		cfg:          cfg,
-		scroll:       make(map[int]*scrollback.State),
-		tabBarH:      0, // starts at 0; updated each frame from imgui.FrameHeight() when >1 tab
-		tabSwitchReq: -1,
+		cfg:    cfg,
+		Window: newWindow(),
 	}
 }
 
