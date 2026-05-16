@@ -88,9 +88,15 @@ type Window struct {
 	// Window each frame, set by the render loop before calling frame()
 	// so w.viewport() returns the right one for coord translation and
 	// draw-list selection.
-	isMain     bool
-	imguiName  string
-	imViewport *imgui.Viewport
+	//
+	// pendingClose is set by the render loop when the user hits the
+	// OS-window close button on a secondary Window. The reap pass
+	// after iteration removes the Window from a.windows and closes
+	// its tabs.
+	isMain       bool
+	imguiName    string
+	imViewport   *imgui.Viewport
+	pendingClose bool
 }
 
 // newWindow returns a freshly-initialized Window with the minimum

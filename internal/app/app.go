@@ -60,6 +60,50 @@ func New(cfg config.Config) *App {
 	return a
 }
 
+// reapClosedWindows removes Windows that the user closed via the OS
+// close button this frame. Closing the last Window quits the process
+// — same semantics as macOS Cmd+Q when the final NSWindow vanishes.
+// Closing the main Window also exits because cimgui-go owns the
+// primary SDL_Window's lifecycle and we can't transfer ownership.
+func (a *App) reapClosedWindows() {
+	survivors := a.windows[:0]
+	for _, w := range a.windows {
+		if !w.pendingClose {
+			survivors = append(survivors, w)
+			continue
+		}
+		if w.isMain {
+			// Closing the primary window quits the app. Honour the
+			// click but don't try to keep secondary windows alive
+			// without their host — multi-viewport platform IO
+			// won't outlast cimgui-go's primary SDL_Window.
+			sdlQuit()
+			survivors = append(survivors, w)
+			w.pendingClose = false
+			continue
+		}
+		// Tear down the secondary Window's terminals and renderer.
+		if w.tabs != nil {
+			for _, tab := range w.tabs.Tabs {
+				tab.Terminal.Close()
+			}
+		}
+		if w.renderer != nil && w.renderer.Glyphs != nil {
+			w.renderer.Glyphs.Close()
+			w.renderer.Glyphs = nil
+		}
+	}
+	a.windows = survivors
+	if a.active != nil && a.active.pendingClose {
+		// Active Window vanished — fall back to the main Window.
+		if len(a.windows) > 0 {
+			a.active = a.windows[0]
+		} else {
+			a.active = nil
+		}
+	}
+}
+
 // spawnWindow adds a new Window to this App in the same process. The
 // secondary Window shares the cimgui-go SDL backend + ImGui context
 // + GL textures with the main Window, but has its own tabs manager,
@@ -309,11 +353,14 @@ func (a *App) Run() error {
 			}
 			imgui.End()
 			if !open {
-				// User hit the OS-window close button. Phase 6 wires
-				// up the close path; for now leave the Window in
-				// place — the close will fail-soft.
+				// User hit the OS-window close button. Defer the
+				// actual slice removal until after iteration so we
+				// don't mutate a.windows mid-loop.
+				win.pendingClose = true
 			}
 		}
+		// Process any closes deferred during the render pass.
+		a.reapClosedWindows()
 		setEventLoopIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
@@ -630,15 +677,27 @@ func (a *Window) frame() {
 	// by the stale (pre-resize) DisplaySize value.
 	if a.skipDisplaySync > 0 {
 		a.skipDisplaySync--
-	} else if ds := imgui.CurrentIO().DisplaySize(); int(ds.X) > 0 && int(ds.Y) > 0 {
-		newW, newH := int(ds.X), int(ds.Y)
-		if newW != a.width || newH != a.height {
-			a.width = newW
-			a.height = newH
-			a.resizeTerminals()
-			a.resizeTime = imgui.Time()
-			a.resizeOverlay = true
-			a.resizeOverlayText = "" // drag-resize: live cols×rows
+	} else {
+		// Pull size from this Window's viewport: main Window reads
+		// io.DisplaySize (which is just MainViewport().Size()) — but
+		// secondary Windows have their own popped-out viewport whose
+		// Size() reflects the user's resizing of THAT OS window,
+		// independent of the main.
+		var dx, dy float32
+		if vp := a.viewport(); vp != nil {
+			sz := vp.Size()
+			dx, dy = sz.X, sz.Y
+		}
+		if int(dx) > 0 && int(dy) > 0 {
+			newW, newH := int(dx), int(dy)
+			if newW != a.width || newH != a.height {
+				a.width = newW
+				a.height = newH
+				a.resizeTerminals()
+				a.resizeTime = imgui.Time()
+				a.resizeOverlay = true
+				a.resizeOverlayText = "" // drag-resize: live cols×rows
+			}
 		}
 	}
 
