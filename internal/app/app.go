@@ -363,10 +363,9 @@ func (a *App) Run() error {
 				sizeCond)
 			// NoDocking: don't merge into the main viewport.
 			// NoSavedSettings: don't pollute imgui.ini with per-
-			//   secondary-window geometry; we manage that
-			//   ourselves.
-			// NoTitleBar / NoScrollbar / NoBackground: the OS
-			//   chrome (native title bar via the WindowClass
+			//   window geometry; we manage that ourselves.
+			// NoTitleBar / NoScrollbar / NoBackground / NoCollapse:
+			//   the OS chrome (native title bar via the WindowClass
 			//   override above) is the user-facing chrome; the
 			//   ImGui window inside is just a transparent host
 			//   for our terminal draw list.
@@ -376,7 +375,16 @@ func (a *App) Run() error {
 				imgui.WindowFlagsNoScrollbar |
 				imgui.WindowFlagsNoScrollWithMouse |
 				imgui.WindowFlagsNoBackground |
-				imgui.WindowFlagsNoBringToFrontOnFocus
+				imgui.WindowFlagsNoCollapse
+			// Strip the wrapper's own padding / border so it
+			// occupies exactly the OS window's content rect with
+			// no offset. Without these, ImGui's default 8px
+			// WindowPadding + 1px WindowBorderSize push the
+			// rendering subtly inside the wrapper, which makes
+			// the tab bar (positioned at viewport.Pos) appear to
+			// overlap the terminal's first row by a few px.
+			imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{X: 0, Y: 0})
+			imgui.PushStyleVarFloat(imgui.StyleVarWindowBorderSize, 0)
 			// "<displayTitle>###<stableID>" — text after ### is the
 			// stable ImGui ID, text before is the display name (which
 			// becomes the OS NSWindow title via ImGui's
@@ -397,6 +405,7 @@ func (a *App) Run() error {
 				win.frame()
 			}
 			imgui.End()
+			imgui.PopStyleVarV(2)
 			// Use viewport.PlatformRequestClose to detect the OS
 			// close button — without a TitleBar the `&open` bool
 			// passed to BeginV doesn't reliably propagate the close
