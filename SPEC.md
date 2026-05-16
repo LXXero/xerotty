@@ -173,16 +173,44 @@ Per Terminal (one per tab):
 
 ### 4.2 Window Model
 
-Each OS window is a separate process. When the user requests "New Window" (via menu or keybind):
+One xerotty process hosts N OS windows. When the user requests "New Window" (via menu or keybind), `App.spawnWindow()` appends a fresh `Window` struct to `App.windows` in the same process; the render loop in the next frame wraps it in an ImGui top-level window with `NoDocking` + `NoTitleBar` + `NoBackground`, and ImGui multi-viewport auto-promotes it into its own NSWindow / X11 window / Wayland surface via the SDL2+OpenGL3 backend's platform_io callbacks. Same NSApplication on macOS = one Dock icon for N windows (the architectural reason this matters — multi-process windows cannot share a Dock icon on Mac; see `docs/MULTI_WINDOW_REFACTOR.md`).
 
 ```go
-exe, _ := os.Executable()
-cmd := exec.Command(exe)
-cmd.Start()
-// No shared state — each process has its own config, tabs, terminals
+type App struct {
+    cfg              config.Config
+    theme            renderer.Theme
+    baseFontSize     float32
+    baseCellW        float32
+    baseCellH        float32
+    pendingFontFace  bool
+    pendingRemeasure bool
+    windows []*Window // every OS window
+    active  *Window   // focused window (input target)
+}
+
+type Window struct {
+    app *App                 // back-reference for process-wide state
+    backend backend.Backend  // shared cimgui-go SDL backend (one per process)
+    width, height int        // logical pixels, synced from viewport.Size()
+    cellW, cellH float32     // ceil(app.baseCellW/H * fontScale)
+    tabs *tabs.Manager       // per-window tabs
+    renderer *renderer.Renderer
+    scroll map[int]*scrollback.State
+    sel selection            // per-window selection state
+    // ...plus all the per-window UI state...
+    isMain bool              // true for windows[0], owns the primary SDL_Window
+    imguiName string         // unique ImGui ID for secondary Windows
+    imViewport *imgui.Viewport // cached each frame by the render loop
+}
 ```
 
-This keeps the architecture simple: no IPC, no shared memory, no window manager within the application. Each process owns exactly one SDL2 window with one ImGui context.
+Each `Window` has its own tabs manager, renderer, glyph cache, selection state, search overlay, scrollback, prefs dialog — so two windows can have independent selections, hovers, and scroll positions without leaking into each other.
+
+Cross-window shared state lives on `App`: config (one TOML file), theme, base font metrics. Font reloads propagate to every Window's renderer; theme changes update every Window's bg color. The shared cimgui-go backend (one SDL/GL/ImGui context per process) means GL textures, fonts, and the ImGui style atlas are reused across windows — opening N windows costs a fixed runtime plus per-window state.
+
+**Process exit**: closing the main Window closes the process (cimgui-go owns the primary SDL_Window's lifecycle). Closing a secondary Window's OS-close button removes it from `App.windows` after the current frame finishes, closes its tabs, and frees its glyph cache.
+
+**Input gating**: ImGui IO is global per-context, so input (keys, mouse-down, wheel, selection drag) only runs for `App.active` — the Window whose viewport the mouse most recently hovered. Otherwise typing 'a' would forward to every Window's PTY and Cmd+T would create N tabs.
 
 ### 4.3 Terminal Lifecycle
 
@@ -534,7 +562,7 @@ shortcut = "Ctrl+Shift+W"
 | Action | Description |
 |--------|-------------|
 | `new_tab` | Open a new tab with the default shell |
-| `new_window` | Spawn a new xerotty process |
+| `new_window` | Append a new Window to this xerotty process (multi-viewport popout, one Dock icon on Mac) |
 | `copy` | Copy selected text to CLIPBOARD |
 | `paste` | Paste from CLIPBOARD |
 | `paste_selection` | Paste from PRIMARY selection |
@@ -1768,7 +1796,7 @@ prefix_key = "Ctrl+B"
 3. All built-in actions:
    - `copy`, `paste`, `paste_selection`
    - `new_tab` (stub — opens in same window for now, tabs come in Phase 4)
-   - `new_window` (spawn new process)
+   - `new_window` (appends a Window to the current process, see §4.2)
    - `close_tab` (exit for now)
    - `search` (stub — search comes in Phase 5)
    - `fullscreen`
@@ -2122,7 +2150,7 @@ Config: `~/.config/xerotty/config.toml`
 - Main thread: SDL2/OpenGL + ImGui rendering (must be OS thread)
 - Per tab: 2 goroutines (PTY reader, emulator reader)
 - SafeEmulator (not Emulator) for thread safety
-- New window = new process, no shared state
+- One process = N windows: `App.windows []*Window` + `App.active *Window`. Secondary windows ride ImGui multi-viewport pop-out for their OS window. Same NSApplication = one Dock icon on macOS.
 
 ## Key Packages
 
