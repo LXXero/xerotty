@@ -36,9 +36,16 @@ type Window struct {
 	width  int
 	height int
 
+	// Per-window font size. Initialized from cfg.Font.Size on spawn,
+	// then diverges on Cmd+= / Cmd+- so each Window can be zoomed
+	// independently (iTerm2-style). The "scale" for this Window is
+	// fontSize / app.baseFontSize — app.baseFontSize stays as the
+	// process-wide reference at which the font advance was measured.
+	fontSize float32
+
 	// Cell geometry — width/height = ceil(app.baseCellW/H * fontScale).
 	// Stored per-window so resize math doesn't have to re-derive on
-	// every cell lookup.
+	// every cell lookup. fontScale = w.fontSize / app.baseFontSize.
 	cellW   float32
 	cellH   float32
 	tabBarH float32

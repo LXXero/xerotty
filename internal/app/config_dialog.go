@@ -460,8 +460,14 @@ func (a *Window) applyPreferences() {
 		// breaking until a resize forces a redraw.
 		a.app.pendingFontFace = true
 	} else {
-		// Size-only change: cheap scaling path, no atlas rebuild.
-		a.updateFontMetrics()
+		// Size-only change from prefs is treated as "reset all windows
+		// to the new default" — overrides any per-window Cmd+= / Cmd+-
+		// zoom that diverged from the previous default.
+		newSize := renderer.PixelSize(&a.app.cfg)
+		for _, win := range a.app.windows {
+			win.fontSize = newSize
+			win.updateFontMetrics()
+		}
 	}
 
 	// Persist to disk.

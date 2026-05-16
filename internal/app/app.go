@@ -60,20 +60,6 @@ func New(cfg config.Config) *App {
 	return a
 }
 
-// refreshAllFontMetrics propagates a font-size change to every Window.
-// Each Window's cell metrics scale from a.baseCellW/H per its own
-// fontScale; without this loop, only the active Window's metrics
-// would update after a font-zoom action and the others would render
-// at stale cellW/H with stale glyph caches.
-func (a *App) refreshAllFontMetrics() {
-	for _, w := range a.windows {
-		if w.renderer == nil {
-			continue
-		}
-		w.updateFontMetrics()
-	}
-}
-
 // reapClosedWindows removes Windows that the user closed via the OS
 // close button this frame. Closing the last Window quits the process
 // — same semantics as macOS Cmd+Q when the final NSWindow vanishes.
@@ -141,8 +127,17 @@ func (a *App) spawnWindow() {
 	// Inherit geometry and cell metrics from the main Window.
 	w.width = main.width
 	w.height = main.height
-	w.cellW = main.cellW
-	w.cellH = main.cellH
+	// Inherit the spawning Window's font size + cell metrics — Cmd+N
+	// from a zoomed window opens a new window at the same zoom, just
+	// like iTerm2. From then on the two diverge if user Cmd+= on
+	// either independently.
+	parent := a.active
+	if parent == nil {
+		parent = main
+	}
+	w.fontSize = parent.fontSize
+	w.cellW = parent.cellW
+	w.cellH = parent.cellH
 	w.tabBarH = main.tabBarH
 	// Share the SDL backend (same ImGui/GL context); multi-viewport
 	// will create the additional SDL_Window via its platform IO.
@@ -155,9 +150,9 @@ func (a *App) spawnWindow() {
 	w.renderer = renderer.New(
 		a.theme,
 		renderer.CellMetrics{Width: w.cellW, Height: w.cellH},
-		main.renderer.Font, main.renderer.FontSize,
+		parent.renderer.Font, w.fontSize,
 	)
-	w.renderer.FontBold = main.renderer.FontBold
+	w.renderer.FontBold = parent.renderer.FontBold
 	w.renderer.OffsetX = pad
 	w.renderer.OffsetY = w.tabBarH + pad
 	w.renderer.BoldIsBright = a.cfg.Appearance.BoldIsBright
@@ -171,7 +166,10 @@ func (a *App) spawnWindow() {
 			if fbScale <= 0 {
 				fbScale = 1
 			}
-			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+			// Cache uses this Window's own fontSize so glyphs are
+			// rasterized at the right physical size (each Window can
+			// have a different zoom).
+			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, w.fontSize, fbScale); err == nil {
 				w.renderer.Glyphs = c
 			}
 		}
@@ -275,6 +273,7 @@ func (a *App) Run() error {
 	// gets passed to AddTextFontPtr each frame.
 	pxSize := renderer.PixelSize(&a.cfg)
 	a.baseFontSize = pxSize
+	w.fontSize = pxSize
 	w.cellW = pxSize * 0.6
 	w.cellH = pxSize
 
@@ -576,7 +575,14 @@ func (a *App) beforeRender() {
 				if w.renderer == nil || w.backend == nil {
 					continue
 				}
-				if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+				// Each Window has its own font size — rebuild the
+				// cache at the Window's current zoom, not the
+				// app-level base.
+				size := w.fontSize
+				if size <= 0 {
+					size = a.baseFontSize
+				}
+				if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, size, fbScale); err == nil {
 					w.renderer.Glyphs = c
 				}
 			}
@@ -765,11 +771,12 @@ func (a *Window) frame() {
 				a.tabSwitchReq = tab.ID
 			}
 		} else if imgui.IsKeyDown(imgui.ModCtrl) {
+			// Ctrl+wheel zoom — per-window, mirrors Cmd+= / Cmd+-.
 			if wheel > 0 {
-				a.app.cfg.Font.Size += 1
+				a.fontSize += 1
 				a.updateFontMetrics()
-			} else if a.app.cfg.Font.Size > 6 {
-				a.app.cfg.Font.Size -= 1
+			} else if a.fontSize > 6 {
+				a.fontSize -= 1
 				a.updateFontMetrics()
 			}
 		} else if tab := a.tabs.Active(); tab != nil {
@@ -1282,16 +1289,19 @@ func (w *Window) dispatchAction(action string) {
 			w.searchFocusInput = true
 		}
 	case "font_size_up":
-		w.app.cfg.Font.Size += 1
-		w.app.refreshAllFontMetrics()
+		// Per-window zoom — only this Window's font size changes.
+		// Other Windows keep their own zoom level (iTerm2-style).
+		w.fontSize += 1
+		w.updateFontMetrics()
 	case "font_size_down":
-		if w.app.cfg.Font.Size > 6 {
-			w.app.cfg.Font.Size -= 1
-			w.app.refreshAllFontMetrics()
+		if w.fontSize > 6 {
+			w.fontSize -= 1
+			w.updateFontMetrics()
 		}
 	case "font_size_reset":
-		w.app.cfg.Font.Size = 14
-		w.app.refreshAllFontMetrics()
+		// Reset to the configured default for this Window only.
+		w.fontSize = renderer.PixelSize(&w.app.cfg)
+		w.updateFontMetrics()
 	case "select_all":
 		if tab := w.tabs.Active(); tab != nil {
 			cols := tab.Terminal.Emu.Width()
@@ -1378,7 +1388,13 @@ func (w *Window) getScroll(tabID int) *scrollback.State {
 }
 
 func (w *Window) updateFontMetrics() {
-	pxSize := renderer.PixelSize(&w.app.cfg)
+	// Per-window font size — Cmd+= / Cmd+- on one Window doesn't
+	// touch the others. w.fontSize is initialized from cfg.Font.Size
+	// at spawn; from then on each Window has its own zoom level.
+	if w.fontSize <= 0 {
+		w.fontSize = renderer.PixelSize(&w.app.cfg)
+	}
+	pxSize := w.fontSize
 	if w.app.baseFontSize <= 0 {
 		w.app.baseFontSize = pxSize
 	}
