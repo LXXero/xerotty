@@ -116,6 +116,20 @@ func newWindow(app *App) *Window {
 	return w
 }
 
+// imguiSuffix returns an ImGui-window-ID suffix that makes any
+// imgui.Begin / imgui.BeginTabBar etc. inside this Window's frame()
+// unique per Window. Without this, the tab bar and search overlay
+// share the same `##tabbar` / `##search` IDs across all Windows and
+// ImGui treats them as the same window — secondary Windows would
+// see no chrome at all. Main Window uses no suffix to keep the ID
+// stable for layout persistence in imgui.ini.
+func (w *Window) imguiSuffix() string {
+	if w.isMain {
+		return ""
+	}
+	return w.imguiName
+}
+
 // viewport returns the ImGui viewport this Window renders into. The
 // render loop caches the correct viewport on the Window each frame
 // before calling frame(); we fall back to the main viewport for

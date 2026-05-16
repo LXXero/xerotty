@@ -255,6 +255,21 @@ func (a *App) Run() error {
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
+		// Re-resolve which Window is "active" each frame by checking
+		// which viewport the mouse hovers. Input handling (keys,
+		// mouse-down, wheel, selection) only runs for the active
+		// Window — otherwise typing would forward to every Window's
+		// PTY simultaneously, Cmd+T would create N tabs across all
+		// Windows, etc. Falls back to previous a.active when the
+		// cursor is between windows (over desktop).
+		if hovered := imgui.CurrentIO().MouseHoveredViewport(); hovered != 0 {
+			for _, win := range a.windows {
+				if win.imViewport != nil && win.imViewport.ID() == hovered {
+					a.active = win
+					break
+				}
+			}
+		}
 		for _, win := range a.windows {
 			if win.isMain {
 				win.imViewport = imgui.MainViewport()
@@ -495,7 +510,11 @@ func (a *Window) frame() {
 	// fake terminal click out of the window-management gesture and
 	// start a phantom selection drag. Releases always inject so a real
 	// drag-then-release that ends outside content still clears state.
-	if runtime.GOOS == "darwin" {
+	// Mouse mirror only runs for the active Window — the underlying
+	// ImGui IO is global per-context, so injecting events here once
+	// per active frame is correct; injecting from every Window per
+	// frame would fire the same mouse-down event N times.
+	if runtime.GOOS == "darwin" && a == a.app.active {
 		osDown := sdlhack.LeftButtonGlobalDown()
 		imguiDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
 		switch {
@@ -624,8 +643,9 @@ func (a *Window) frame() {
 	}
 
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
+	// Only the active Window consumes the global wheel delta.
 	wheel := imgui.CurrentIO().MouseWheel()
-	if wheel != 0 {
+	if wheel != 0 && a == a.app.active {
 		var vpOffY float32
 		if vp := a.viewport(); vp != nil {
 			vpOffY = vp.Pos().Y
@@ -662,26 +682,31 @@ func (a *Window) frame() {
 		}
 	}
 
-	// Handle mouse selection
-	a.handleMouseSelection()
+	// Mouse-selection and link hover only apply to the Window the
+	// cursor is over — same gating as the wheel handler.
+	if a == a.app.active {
+		a.handleMouseSelection()
+	}
 
 	// Detect links under mouse cursor
 	a.hoveredLink = nil
-	if tab := a.tabs.Active(); tab != nil {
-		mousePos := imgui.MousePos()
-		col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
-		row := int((mousePos.Y - a.renderer.OffsetY) / a.cellH)
-		cols, rows := a.gridSize()
-		if col >= 0 && col < cols && row >= 0 && row < rows {
-			scrollOff := 0
-			if s, ok := a.scroll[tab.ID]; ok {
-				scrollOff = s.Offset
-			}
-			a.hoveredLink = detectLinkAt(tab.Terminal.Emu, col, row, scrollOff)
+	if a == a.app.active {
+		if tab := a.tabs.Active(); tab != nil {
+			mousePos := imgui.MousePos()
+			col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
+			row := int((mousePos.Y - a.renderer.OffsetY) / a.cellH)
+			cols, rows := a.gridSize()
+			if col >= 0 && col < cols && row >= 0 && row < rows {
+				scrollOff := 0
+				if s, ok := a.scroll[tab.ID]; ok {
+					scrollOff = s.Offset
+				}
+				a.hoveredLink = detectLinkAt(tab.Terminal.Emu, col, row, scrollOff)
 
-			// Ctrl+click opens link
-			if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-				openURL(a.hoveredLink.URL, a.app.cfg.Links.Opener)
+				// Ctrl+click opens link
+				if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+					openURL(a.hoveredLink.URL, a.app.cfg.Links.Opener)
+				}
 			}
 		}
 	}
@@ -735,8 +760,12 @@ func (a *Window) frame() {
 		return
 	}
 
-	// Process queued key events
-	a.processKeys()
+	// Process queued key events — only the active Window forwards
+	// keystrokes to its PTY, so typing doesn't end up in N PTYs at
+	// once.
+	if a == a.app.active {
+		a.processKeys()
+	}
 
 	// Update tab bar height based on tab count and current font size.
 	// imgui.FrameHeight() = FontSize + style.FramePadding.Y*2, which is
@@ -1371,9 +1400,9 @@ func (w *Window) renderTabBar() {
 	imgui.PushStyleVarVec2(imgui.StyleVarItemInnerSpacing, imgui.Vec2{X: innerSpX, Y: 0})
 	defer imgui.PopStyleVarV(2)
 
-	if imgui.BeginV("##tabbar", nil, flags) {
+	if imgui.BeginV("##tabbar"+w.imguiSuffix(), nil, flags) {
 		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
-		if imgui.BeginTabBarV("tabs", tabFlags) {
+		if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
 			for i, tab := range w.tabs.Tabs {
 				label := tab.Title
 				if label == "" {
@@ -1450,7 +1479,7 @@ func (w *Window) renderSearchOverlay() {
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
 
 	w.searchInputFocused = false
-	if imgui.BeginV("##search", nil, flags) {
+	if imgui.BeginV("##search"+w.imguiSuffix(), nil, flags) {
 		// Track actual rendered width for the selection hit-test.
 		w.searchOverlayW = imgui.WindowWidth()
 
