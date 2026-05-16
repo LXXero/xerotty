@@ -94,9 +94,25 @@ type Window struct {
 	// after iteration removes the Window from a.windows and closes
 	// its tabs.
 	isMain       bool
-	imguiName    string
+	imguiName    string // stable ImGui ID suffix for secondaries (e.g. "win1")
 	imViewport   *imgui.Viewport
 	pendingClose bool
+	lastOSTitle  string // last OS-window title we set; avoids redundant syscalls
+}
+
+// titleForWindow returns the human-readable title for this Window's
+// OS window — the active tab's title if set (terminal apps update it
+// via OSC 0/2 escape sequences and we mirror that through
+// terminal.OnTitle → tab.Title), or a fallback. The macOS Dock
+// right-click menu uses this to show each window distinctly instead
+// of N copies of "xerotty".
+func (w *Window) titleForWindow() string {
+	if w.tabs != nil {
+		if tab := w.tabs.Active(); tab != nil && tab.Title != "" {
+			return tab.Title
+		}
+	}
+	return "xerotty"
 }
 
 // newWindow returns a freshly-initialized Window with the minimum

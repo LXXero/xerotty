@@ -134,7 +134,10 @@ func (a *App) spawnWindow() {
 	}
 
 	w := newWindow(a)
-	w.imguiName = fmt.Sprintf("xerotty##win%d", len(a.windows))
+	// Stable ImGui ID — display title is computed per-frame via the
+	// "###" separator so it can reflect the active tab's title without
+	// invalidating the window's identity.
+	w.imguiName = fmt.Sprintf("xerottywin%d", len(a.windows))
 	// Inherit geometry and cell metrics from the main Window.
 	w.width = main.width
 	w.height = main.height
@@ -323,6 +326,14 @@ func (a *App) Run() error {
 		for _, win := range a.windows {
 			if win.isMain {
 				win.imViewport = imgui.MainViewport()
+				// Keep the main NSWindow / X11 title in sync with
+				// the active tab. macOS Dock right-click menu lists
+				// each window by title, so windows that all read
+				// "xerotty" are indistinguishable.
+				if t := win.titleForWindow(); t != win.lastOSTitle && win.backend != nil {
+					win.backend.SetWindowTitle(t)
+					win.lastOSTitle = t
+				}
 				win.frame()
 				continue
 			}
@@ -362,7 +373,14 @@ func (a *App) Run() error {
 				imgui.WindowFlagsNoScrollWithMouse |
 				imgui.WindowFlagsNoBackground |
 				imgui.WindowFlagsNoBringToFrontOnFocus
-			if imgui.BeginV(win.imguiName, nil, flags) {
+			// "<displayTitle>###<stableID>" — text after ### is the
+			// stable ImGui ID, text before is the display name (which
+			// becomes the OS NSWindow title via ImGui's
+			// Platform_SetWindowTitle callback). So the OS title
+			// tracks the active tab without invalidating the ImGui
+			// window's identity / saved state.
+			beginName := win.titleForWindow() + "###" + win.imguiName
+			if imgui.BeginV(beginName, nil, flags) {
 				win.imViewport = imgui.WindowViewport()
 				if imgui.IsWindowFocused() {
 					focusedSecondary = win
