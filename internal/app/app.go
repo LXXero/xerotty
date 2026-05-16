@@ -1385,17 +1385,26 @@ func (w *Window) updateFontMetrics() {
 	// space.
 	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMargin)))
 	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMargin)))
-	w.backend.SetWindowSize(newW, newH)
-	w.width = newW
-	w.height = newH
-	// Don't let the next 2 frames of stale DisplaySize undo this shrink.
-	w.skipDisplaySync = 2
-	// Some WMs drop input focus across the unmap/remap of SetWindowSize.
-	sdlRaiseWindow()
+	if w.isMain {
+		// Only the main Window's geometry is controlled through the
+		// cimgui-go backend. Secondary Windows live inside ImGui multi-
+		// viewport — their OS-window size tracks the ImGui window's
+		// size and we'd need to use Platform_SetWindowSize to resize
+		// them. For now, secondary Window font-zoom changes cell
+		// metrics but leaves the OS window the same size; the
+		// cols×rows count adjusts to fit the new metrics.
+		w.backend.SetWindowSize(newW, newH)
+		w.width = newW
+		w.height = newH
+		// Don't let the next 2 frames of stale DisplaySize undo this shrink.
+		w.skipDisplaySync = 2
+		// Some WMs drop input focus across the unmap/remap of SetWindowSize.
+		sdlRaiseWindow()
+		// Update the macOS resize-increment to the new cell size so
+		// subsequent drag-resizes stay on the cell grid.
+		setContentResizeIncrements(w.cellW, w.cellH)
+	}
 	w.resizeTerminals()
-	// Update the macOS resize-increment to the new cell size so subsequent
-	// drag-resizes stay on the cell grid.
-	setContentResizeIncrements(w.cellW, w.cellH)
 
 	// Show overlay with the new zoom level. Percent is current pxSize
 	// over the configured base, rounded — so default reads 100%, zoom-in
