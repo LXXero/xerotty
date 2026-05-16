@@ -86,22 +86,24 @@ type Window struct {
 	lastTabBarH        float32
 	skipDisplaySync    int
 
-	// Multi-window plumbing (phase 4+). isMain is true for windows[0]
-	// which uses cimgui-go's main SDL_Window directly; secondary
-	// Windows render inside an ImGui top-level window that multi-
-	// viewport auto-promotes to its own OS window. imguiName is the
-	// unique ImGui window identifier for secondary Windows — empty for
-	// the main Window. imViewport caches the *imgui.Viewport for this
-	// Window each frame, set by the render loop before calling frame()
-	// so w.viewport() returns the right one for coord translation and
-	// draw-list selection.
+	// Multi-window plumbing. Every Window is equal: the cimgui-go
+	// primary SDL_Window stays hidden as an invisible "carrier" for
+	// the ImGui context, and every user-visible Window renders inside
+	// an ImGui top-level window that multi-viewport auto-promotes to
+	// its own OS window. imguiName is the stable ImGui identifier;
+	// the display half of the Begin name (text before "###") comes
+	// from titleForWindow() each frame so the OS title tracks the
+	// active tab. imViewport caches the *imgui.Viewport for this
+	// Window each frame so w.viewport() returns the right one for
+	// coord translation and draw-list selection.
 	//
-	// pendingClose is set by the render loop when the user hits the
-	// OS-window close button on a secondary Window. The reap pass
-	// after iteration removes the Window from a.windows and closes
-	// its tabs.
-	isMain        bool
-	imguiName     string // stable ImGui ID suffix for secondaries (e.g. "win1")
+	// pendingClose is set when the user hits the OS-window close
+	// button (read via viewport.PlatformRequestClose) or when the
+	// last tab in this Window closes. reapClosedWindows after the
+	// iteration removes the Window from a.windows and tears down
+	// its tabs/renderer. When a.windows becomes empty, the app
+	// quits.
+	imguiName     string // stable ImGui ID suffix (e.g. "win0")
 	imViewport    *imgui.Viewport
 	pendingClose  bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
@@ -124,39 +126,26 @@ func (w *Window) titleForWindow() string {
 }
 
 // newWindow returns a freshly-initialized Window with the minimum
-// defaults needed before App.Run populates the rest (backend, tabs,
-// renderer, cell metrics — all set during the boot sequence). The
-// first Window created (via App.New) is marked isMain so it owns
-// cimgui-go's primary SDL_Window; subsequent Windows opened via
-// new_window get a unique imguiName so multi-viewport pop-out
-// creates their OS window.
+// defaults needed before App.Run / spawnWindow populates the rest
+// (backend, tabs, renderer, cell metrics). imguiName is assigned by
+// the caller — every Window is multi-viewport-popped-out, none
+// "owns" the cimgui-go primary SDL_Window (that's a hidden carrier
+// kept alive only for the ImGui context).
 func newWindow(app *App) *Window {
-	w := &Window{
+	return &Window{
 		app:          app,
 		scroll:       make(map[int]*scrollback.State),
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
 	}
-	if len(app.windows) == 0 {
-		w.isMain = true
-	} else {
-		// Phase 5 will set imguiName + initial pos/size for secondary
-		// Windows when new_window appends them.
-	}
-	return w
 }
 
 // imguiSuffix returns an ImGui-window-ID suffix that makes any
 // imgui.Begin / imgui.BeginTabBar etc. inside this Window's frame()
 // unique per Window. Without this, the tab bar and search overlay
 // share the same `##tabbar` / `##search` IDs across all Windows and
-// ImGui treats them as the same window — secondary Windows would
-// see no chrome at all. Main Window uses no suffix to keep the ID
-// stable for layout persistence in imgui.ini.
+// ImGui treats them as the same window.
 func (w *Window) imguiSuffix() string {
-	if w.isMain {
-		return ""
-	}
 	return w.imguiName
 }
 

@@ -64,11 +64,13 @@ static void xerottyEventLoopRun(SDL_Window *win, float r, float g, float b) {
 			do {
 				ImGui_ImplSDL2_ProcessEvent(&event);
 				if (event.type == SDL_QUIT) gEvtDone = 1;
-				if (event.type == SDL_WINDOWEVENT &&
-				    event.window.event == SDL_WINDOWEVENT_CLOSE &&
-				    event.window.windowID == SDL_GetWindowID(win)) {
-					gEvtDone = 1;
-				}
+				// SDL_WINDOWEVENT_CLOSE for any of our windows is
+				// handled in Go via viewport.PlatformRequestClose
+				// (set by ImGui_ImplSDL2 when it processes the
+				// event above). The Go side decides whether the
+				// close means "remove this Window" or "quit the
+				// app" — closing the primary while secondaries
+				// exist hides main instead of quitting.
 			} while (SDL_PollEvent(&event) == 1);
 		}
 

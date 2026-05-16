@@ -31,6 +31,17 @@ void xerottyRaiseWindow(void) {
 		SDL_SetWindowInputFocus(win);
 	}
 }
+
+// Hide the primary SDL_Window without destroying it. cimgui-go owns
+// the SDL_Window so we can't SDL_DestroyWindow it. Hiding lets the
+// process keep running with secondary multi-viewport windows visible
+// when the user clicks close on the main window.
+void xerottyHideMainWindow(void) {
+	SDL_Window *win = SDL_GL_GetCurrentWindow();
+	if (win) {
+		SDL_HideWindow(win);
+	}
+}
 */
 import "C"
 
@@ -48,4 +59,8 @@ func sdlQuit() {
 
 func sdlRaiseWindow() {
 	C.xerottyRaiseWindow()
+}
+
+func sdlHideMainWindow() {
+	C.xerottyHideMainWindow()
 }

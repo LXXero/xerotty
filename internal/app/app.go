@@ -18,7 +18,6 @@ import (
 	"github.com/LXXero/xerotty/internal/terminal"
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
-	"os"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -60,11 +59,10 @@ func New(cfg config.Config) *App {
 	return a
 }
 
-// reapClosedWindows removes Windows that the user closed via the OS
-// close button this frame. Closing the last Window quits the process
-// — same semantics as macOS Cmd+Q when the final NSWindow vanishes.
-// Closing the main Window also exits because cimgui-go owns the
-// primary SDL_Window's lifecycle and we can't transfer ownership.
+// reapClosedWindows removes Windows the user closed this frame. All
+// Windows are equal — no "main" — so the cleanup is uniform. The
+// loop in wrappedFrame quits the process if a.windows becomes empty
+// after the reap (last visible Window gone = app exit).
 func (a *App) reapClosedWindows() {
 	survivors := a.windows[:0]
 	for _, w := range a.windows {
@@ -72,17 +70,7 @@ func (a *App) reapClosedWindows() {
 			survivors = append(survivors, w)
 			continue
 		}
-		if w.isMain {
-			// Closing the primary window quits the app. Honour the
-			// click but don't try to keep secondary windows alive
-			// without their host — multi-viewport platform IO
-			// won't outlast cimgui-go's primary SDL_Window.
-			sdlQuit()
-			survivors = append(survivors, w)
-			w.pendingClose = false
-			continue
-		}
-		// Tear down the secondary Window's terminals and renderer.
+		// Tear down the Window's terminals and renderer.
 		if w.tabs != nil {
 			for _, tab := range w.tabs.Tabs {
 				tab.Terminal.Close()
@@ -94,12 +82,21 @@ func (a *App) reapClosedWindows() {
 		}
 	}
 	a.windows = survivors
-	if a.active != nil && a.active.pendingClose {
-		// Active Window vanished — fall back to the main Window.
-		if len(a.windows) > 0 {
-			a.active = a.windows[0]
-		} else {
-			a.active = nil
+	// If the active Window was reaped, point at any surviving one.
+	if a.active != nil {
+		found := false
+		for _, w := range a.windows {
+			if w == a.active {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if len(a.windows) > 0 {
+				a.active = a.windows[0]
+			} else {
+				a.active = nil
+			}
 		}
 	}
 }
@@ -249,20 +246,18 @@ func (a *App) Run() error {
 	w.backend.SetBeforeRenderHook(a.beforeRender)
 
 	w.width, w.height = w.initialWindowSize()
+	// CreateWindow makes the cimgui-go primary SDL_Window — it's
+	// required for ImGui's context to initialize, but we don't want
+	// it visible to the user. All user-visible Windows are ImGui
+	// multi-viewport pop-outs of equal status; the primary is a
+	// hidden carrier that holds the GL context.
 	w.backend.CreateWindow("xerotty", w.width, w.height)
-
-	// Cascade child windows: when spawned via new_window, parent passes
-	// XEROTTY_WIN_X/Y so each new xerotty appears offset from its predecessor
-	// instead of stacking exactly on top.
-	if xs, ys := os.Getenv("XEROTTY_WIN_X"), os.Getenv("XEROTTY_WIN_Y"); xs != "" && ys != "" {
-		if x, errX := strconv.Atoi(xs); errX == nil {
-			if y, errY := strconv.Atoi(ys); errY == nil {
-				if sb, ok := w.backend.(*sdlbackend.SDLBackend); ok {
-					sb.SetWindowPos(x, y)
-				}
-			}
-		}
-	}
+	sdlHideMainWindow()
+	// Mark this Window for the multi-viewport pop-out path same as
+	// any other Window. windows[0] is no longer "main" — closing it
+	// removes it from a.windows like any other; closing the last
+	// remaining Window quits the app.
+	w.imguiName = "xerottywin0"
 
 	// Set background color from theme (ABGR → RGBA for SDL)
 	bgR := float32((theme.Background>>0)&0xFF) / 255.0
@@ -331,26 +326,11 @@ func (a *App) Run() error {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
 		// Track which Window has keyboard/click focus across this
-		// frame. Updated inside each secondary's Begin/End via
-		// imgui.IsWindowFocused; if no secondary is focused we
-		// default to the main Window. Input handling (keys, mouse-
-		// down, wheel, selection) is gated to a.active in frame() —
-		// otherwise typing would forward to every Window's PTY.
-		var focusedSecondary *Window
+		// frame. Input handling (keys, mouse-down, wheel, selection)
+		// is gated to a.active in frame() — otherwise typing would
+		// forward to every Window's PTY.
+		var focused *Window
 		for _, win := range a.windows {
-			if win.isMain {
-				win.imViewport = imgui.MainViewport()
-				// Keep the main NSWindow / X11 title in sync with
-				// the active tab. macOS Dock right-click menu lists
-				// each window by title, so windows that all read
-				// "xerotty" are indistinguishable.
-				if t := win.titleForWindow(); t != win.lastOSTitle && win.backend != nil {
-					win.backend.SetWindowTitle(t)
-					win.lastOSTitle = t
-				}
-				win.frame()
-				continue
-			}
 			// Override the auto-derived viewport flags so the
 			// platform window gets normal OS decorations (native
 			// title bar, close/min/max). Without this override,
@@ -407,7 +387,7 @@ func (a *App) Run() error {
 			if imgui.BeginV(beginName, nil, flags) {
 				win.imViewport = imgui.WindowViewport()
 				if imgui.IsWindowFocused() {
-					focusedSecondary = win
+					focused = win
 				}
 				win.frame()
 			}
@@ -423,13 +403,26 @@ func (a *App) Run() error {
 				win.imViewport.SetPlatformRequestClose(false)
 			}
 		}
-		if focusedSecondary != nil {
-			a.active = focusedSecondary
-		} else if len(a.windows) > 0 {
-			a.active = a.windows[0]
+		if focused != nil {
+			a.active = focused
+		} else if a.active != nil && a.active.pendingClose {
+			// Active Window is being closed this frame — pick
+			// another so input has somewhere to land for the
+			// rest of the frame body.
+			a.active = nil
+			for _, win := range a.windows {
+				if !win.pendingClose {
+					a.active = win
+					break
+				}
+			}
 		}
-		// Process any closes deferred during the render pass.
+		// Process any closes deferred during the render pass. If
+		// every Window is gone after the reap, the process quits.
 		a.reapClosedWindows()
+		if len(a.windows) == 0 {
+			sdlQuit()
+		}
 		setEventLoopIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
@@ -704,17 +697,14 @@ func (a *Window) frame() {
 		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMargin)))
 		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
 		if desiredW != a.width || desiredH != a.height {
-			a.backend.SetWindowSize(desiredW, desiredH)
+			// Every Window's OS geometry is driven by ImGui multi-
+			// viewport. Set width/height + pendingResize so the
+			// Begin in wrappedFrame uses CondAlways next frame.
 			a.width = desiredW
 			a.height = desiredH
+			a.pendingResize = true
 			a.skipDisplaySync = 2
-			sdlRaiseWindow()
 		}
-
-		// Snap drag-resize to (cellW, cellH) so the window only resizes at
-		// cell boundaries. macOS only — see cellsnap_darwin.m. No-op
-		// elsewhere.
-		setContentResizeIncrements(a.cellW, a.cellH)
 
 		if _, err := a.tabs.NewTab(cfgCols, cfgRows); err != nil {
 			sdlQuit()
@@ -890,17 +880,11 @@ func (a *Window) frame() {
 		}
 	}
 
-	// No tabs left in this Window. For the main Window, that means
-	// quitting the process — cimgui-go owns its SDL_Window lifecycle
-	// so we can't keep secondaries alive without it. For secondary
-	// Windows, just close this Window; the reap pass in wrappedFrame
-	// will remove it from a.windows and tear down its renderer.
+	// No tabs left in this Window — close just this Window. The reap
+	// pass in wrappedFrame removes it; if it was the last Window the
+	// process exits.
 	if a.tabs.Count() == 0 {
-		if a.isMain {
-			sdlQuit()
-		} else {
-			a.pendingClose = true
-		}
+		a.pendingClose = true
 		return
 	}
 
@@ -948,10 +932,9 @@ func (a *Window) frame() {
 			delta := int(math.Ceil(float64(a.tabBarH - oldTabBarH)))
 			if delta != 0 {
 				newH := a.height + delta
-				a.backend.SetWindowSize(a.width, newH)
 				a.height = newH
+				a.pendingResize = true
 				a.skipDisplaySync = 2
-				sdlRaiseWindow()
 			}
 		}
 		a.resizeTerminals()
@@ -1479,32 +1462,15 @@ func (w *Window) updateFontMetrics() {
 	// space.
 	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMargin)))
 	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMargin)))
-	if w.isMain {
-		// Main Window's OS geometry is controlled directly through
-		// the cimgui-go backend (the primary SDL_Window).
-		w.backend.SetWindowSize(newW, newH)
-		w.width = newW
-		w.height = newH
-		// Don't let the next 2 frames of stale DisplaySize undo this shrink.
-		w.skipDisplaySync = 2
-		// Some WMs drop input focus across the unmap/remap of SetWindowSize.
-		sdlRaiseWindow()
-		// Update the macOS resize-increment to the new cell size so
-		// subsequent drag-resizes stay on the cell grid.
-		setContentResizeIncrements(w.cellW, w.cellH)
-	} else {
-		// Secondary Window: its OS geometry rides ImGui multi-
-		// viewport. We can't call backend.SetWindowSize (that'd
-		// resize the primary). Stash the target size and flip
-		// pendingResize; wrappedFrame's Begin uses CondAlways
-		// instead of CondFirstUseEver on the next frame, which
-		// ImGui propagates to the platform window via
-		// Platform_SetWindowSize.
-		w.width = newW
-		w.height = newH
-		w.pendingResize = true
-		w.skipDisplaySync = 2
-	}
+	// Every Window's OS geometry rides ImGui multi-viewport. Stash
+	// the target size and flip pendingResize; wrappedFrame's Begin
+	// uses CondAlways instead of CondFirstUseEver on the next frame,
+	// which ImGui propagates to the platform window via
+	// Platform_SetWindowSize.
+	w.width = newW
+	w.height = newH
+	w.pendingResize = true
+	w.skipDisplaySync = 2
 	w.resizeTerminals()
 
 	// Show overlay with the new zoom level. Percent is current pxSize
