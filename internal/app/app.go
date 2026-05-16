@@ -353,9 +353,19 @@ func (a *App) Run() error {
 			imgui.SetNextWindowPosV(
 				imgui.Vec2{X: 100, Y: 100},
 				imgui.CondFirstUseEver, imgui.Vec2{X: 0, Y: 0})
+			// Size: CondFirstUseEver normally so user drag-resizes
+			// stick. After a font-zoom that wants to maintain
+			// cols×rows we flip to CondAlways for one frame so
+			// multi-viewport's Platform_SetWindowSize fires and
+			// resizes the OS window to win.width × win.height.
+			sizeCond := imgui.CondFirstUseEver
+			if win.pendingResize {
+				sizeCond = imgui.CondAlways
+				win.pendingResize = false
+			}
 			imgui.SetNextWindowSizeV(
 				imgui.Vec2{X: float32(win.width), Y: float32(win.height)},
-				imgui.CondFirstUseEver)
+				sizeCond)
 			// NoDocking: don't merge into the main viewport.
 			// NoSavedSettings: don't pollute imgui.ini with per-
 			//   secondary-window geometry; we manage that
@@ -1447,13 +1457,8 @@ func (w *Window) updateFontMetrics() {
 	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMargin)))
 	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMargin)))
 	if w.isMain {
-		// Only the main Window's geometry is controlled through the
-		// cimgui-go backend. Secondary Windows live inside ImGui multi-
-		// viewport — their OS-window size tracks the ImGui window's
-		// size and we'd need to use Platform_SetWindowSize to resize
-		// them. For now, secondary Window font-zoom changes cell
-		// metrics but leaves the OS window the same size; the
-		// cols×rows count adjusts to fit the new metrics.
+		// Main Window's OS geometry is controlled directly through
+		// the cimgui-go backend (the primary SDL_Window).
 		w.backend.SetWindowSize(newW, newH)
 		w.width = newW
 		w.height = newH
@@ -1464,6 +1469,18 @@ func (w *Window) updateFontMetrics() {
 		// Update the macOS resize-increment to the new cell size so
 		// subsequent drag-resizes stay on the cell grid.
 		setContentResizeIncrements(w.cellW, w.cellH)
+	} else {
+		// Secondary Window: its OS geometry rides ImGui multi-
+		// viewport. We can't call backend.SetWindowSize (that'd
+		// resize the primary). Stash the target size and flip
+		// pendingResize; wrappedFrame's Begin uses CondAlways
+		// instead of CondFirstUseEver on the next frame, which
+		// ImGui propagates to the platform window via
+		// Platform_SetWindowSize.
+		w.width = newW
+		w.height = newH
+		w.pendingResize = true
+		w.skipDisplaySync = 2
 	}
 	w.resizeTerminals()
 

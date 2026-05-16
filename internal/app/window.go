@@ -100,11 +100,12 @@ type Window struct {
 	// OS-window close button on a secondary Window. The reap pass
 	// after iteration removes the Window from a.windows and closes
 	// its tabs.
-	isMain       bool
-	imguiName    string // stable ImGui ID suffix for secondaries (e.g. "win1")
-	imViewport   *imgui.Viewport
-	pendingClose bool
-	lastOSTitle  string // last OS-window title we set; avoids redundant syscalls
+	isMain        bool
+	imguiName     string // stable ImGui ID suffix for secondaries (e.g. "win1")
+	imViewport    *imgui.Viewport
+	pendingClose  bool
+	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
+	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 }
 
 // titleForWindow returns the human-readable title for this Window's
