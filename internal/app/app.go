@@ -890,9 +890,17 @@ func (a *Window) frame() {
 		}
 	}
 
-	// Exit if no tabs remain — push SDL_QUIT since SetShouldClose is unimplemented.
+	// No tabs left in this Window. For the main Window, that means
+	// quitting the process — cimgui-go owns its SDL_Window lifecycle
+	// so we can't keep secondaries alive without it. For secondary
+	// Windows, just close this Window; the reap pass in wrappedFrame
+	// will remove it from a.windows and tear down its renderer.
 	if a.tabs.Count() == 0 {
-		sdlQuit()
+		if a.isMain {
+			sdlQuit()
+		} else {
+			a.pendingClose = true
+		}
 		return
 	}
 
