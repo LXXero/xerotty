@@ -324,7 +324,7 @@ func (a *App) beforeRender() {
 	a.pendingRemeasure = true
 }
 
-func (a *App) frame() {
+func (a *Window) frame() {
 	// macOS: after the first click that shifts the Cocoa first-responder,
 	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
 	// presses nor releases reach the SDL event queue, so ImGui sees no
@@ -365,13 +365,13 @@ func (a *App) frame() {
 		// pixel size and look chunky until the user changed font in
 		// prefs (which rebuilds the cache when fbScale is correct).
 		if a.renderer.Glyphs == nil && fontsys.Default != nil {
-			primaryPath := renderer.ResolveFontPath(&a.cfg)
+			primaryPath := renderer.ResolveFontPath(&a.app.cfg)
 			if primaryPath != "" {
 				fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
 				if fbScale <= 0 {
 					fbScale = 1
 				}
-				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.baseFontSize, fbScale); err == nil {
+				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.app.baseFontSize, fbScale); err == nil {
 					a.renderer.Glyphs = c
 				}
 			}
@@ -385,25 +385,25 @@ func (a *App) frame() {
 		metrics := a.measureCell()
 		if metrics.Width < 1 || metrics.Height < 1 {
 			// Fallback if measurement fails — estimate from atlas pixel size
-			px := renderer.PixelSize(&a.cfg)
+			px := renderer.PixelSize(&a.app.cfg)
 			metrics = renderer.CellMetrics{Width: px * 0.6, Height: px * 1.2}
 		}
-		a.baseCellW = metrics.Width
-		a.baseCellH = metrics.Height
+		a.app.baseCellW = metrics.Width
+		a.app.baseCellH = metrics.Height
 		a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 		a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 
 		// Re-fit the window to the configured columns/rows now that we have
 		// real cell metrics. The initial CreateWindow used estimated metrics,
 		// so the actual window may be a few pixels off in each direction.
-		cfgCols, cfgRows := a.cfg.Window.Columns, a.cfg.Window.Rows
+		cfgCols, cfgRows := a.app.cfg.Window.Columns, a.app.cfg.Window.Rows
 		if cfgCols < 2 {
 			cfgCols = 80
 		}
 		if cfgRows < 2 {
 			cfgRows = 24
 		}
-		pad := float32(a.cfg.Appearance.Padding) * 2
+		pad := float32(a.app.cfg.Appearance.Padding) * 2
 		// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
 		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMargin)))
 		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
@@ -437,14 +437,14 @@ func (a *App) frame() {
 
 	// Re-measure cell metrics after a font face swap (atlas was rebuilt).
 	// Done once, then resize terminals to fit the new cell dimensions.
-	if a.pendingRemeasure {
-		a.pendingRemeasure = false
+	if a.app.pendingRemeasure {
+		a.app.pendingRemeasure = false
 		if metrics := a.measureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
-			a.baseCellW = metrics.Width
-			a.baseCellH = metrics.Height
+			a.app.baseCellW = metrics.Width
+			a.app.baseCellH = metrics.Height
 			a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
-			a.renderer.FontSize = a.baseFontSize
+			a.renderer.FontSize = a.app.baseFontSize
 			a.resizeTerminals()
 			setContentResizeIncrements(a.cellW, a.cellH)
 		}
@@ -488,15 +488,15 @@ func (a *App) frame() {
 			}
 		} else if imgui.IsKeyDown(imgui.ModCtrl) {
 			if wheel > 0 {
-				a.cfg.Font.Size += 1
+				a.app.cfg.Font.Size += 1
 				a.updateFontMetrics()
-			} else if a.cfg.Font.Size > 6 {
-				a.cfg.Font.Size -= 1
+			} else if a.app.cfg.Font.Size > 6 {
+				a.app.cfg.Font.Size -= 1
 				a.updateFontMetrics()
 			}
 		} else if tab := a.tabs.Active(); tab != nil {
 			s := a.getScroll(tab.ID)
-			scrollLines := a.cfg.Scrollback.ScrollSpeed
+			scrollLines := a.app.cfg.Scrollback.ScrollSpeed
 			if scrollLines <= 0 {
 				scrollLines = 3
 			}
@@ -526,8 +526,8 @@ func (a *App) frame() {
 			a.hoveredLink = detectLinkAt(tab.Terminal.Emu, col, row, scrollOff)
 
 			// Ctrl+click opens link
-			if a.hoveredLink != nil && a.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
-				openURL(a.hoveredLink.URL, a.cfg.Links.Opener)
+			if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+				openURL(a.hoveredLink.URL, a.app.cfg.Links.Opener)
 			}
 		}
 	}
@@ -560,7 +560,7 @@ func (a *App) frame() {
 		if !tab.Closed {
 			continue
 		}
-		switch a.cfg.Tabs.OnChildExit {
+		switch a.app.cfg.Tabs.OnChildExit {
 		case "close":
 			a.tabs.CloseTab(i)
 		case "hold":
@@ -594,7 +594,7 @@ func (a *App) frame() {
 	} else {
 		a.tabBarH = 0
 	}
-	pad := float32(a.cfg.Appearance.Padding)
+	pad := float32(a.app.cfg.Appearance.Padding)
 	// Add MainViewport offset so terminal lands inside the SDL window when
 	// multi-viewport is enabled (ImGui draw lists are in absolute desktop coords).
 	var vpOffX, vpOffY float32
@@ -673,8 +673,8 @@ func (a *App) frame() {
 			// Only show cursor when at live position (not scrolled back)
 			if scrollOff == 0 {
 				showCursor := true
-				if a.cfg.Appearance.CursorBlink {
-					rate := float64(a.cfg.Appearance.BlinkRate) / 1000.0
+				if a.app.cfg.Appearance.CursorBlink {
+					rate := float64(a.app.cfg.Appearance.BlinkRate) / 1000.0
 					if rate <= 0 {
 						rate = 0.53
 					}
@@ -683,7 +683,7 @@ func (a *App) frame() {
 				if showCursor {
 					pos := tab.Terminal.Emu.CursorPosition()
 					a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
-						a.cfg.Appearance.CursorStyle, drawList)
+						a.app.cfg.Appearance.CursorStyle, drawList)
 				}
 			}
 
@@ -747,7 +747,7 @@ func (a *App) frame() {
 	a.renderRenameDialog()
 
 	// Preferences dialog
-	a.renderPreferences()
+	a.app.renderPreferences()
 
 	// Resize overlay
 	a.renderResizeOverlay()
