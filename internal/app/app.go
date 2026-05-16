@@ -124,9 +124,6 @@ func (a *App) spawnWindow() {
 	// "###" separator so it can reflect the active tab's title without
 	// invalidating the window's identity.
 	w.imguiName = fmt.Sprintf("xerottywin%d", len(a.windows))
-	// Inherit geometry and cell metrics from the main Window.
-	w.width = main.width
-	w.height = main.height
 	// Inherit the spawning Window's font size + cell metrics — Cmd+N
 	// from a zoomed window opens a new window at the same zoom, just
 	// like iTerm2. From then on the two diverge if user Cmd+= on
@@ -138,7 +135,25 @@ func (a *App) spawnWindow() {
 	w.fontSize = parent.fontSize
 	w.cellW = parent.cellW
 	w.cellH = parent.cellH
-	w.tabBarH = main.tabBarH
+	// Geometry: configured Window.Columns × Window.Rows, NOT the
+	// parent's width/height. New Windows always start with a single
+	// tab so there's no tab bar; copying the parent's dimensions
+	// (which on a multi-tab parent include tabBarH worth of vertical
+	// space the new Window won't use) would manifest as the new
+	// Window opening one row taller than configured. tabBarH starts
+	// at 0 and is recomputed each frame in frame() based on tab
+	// count.
+	w.tabBarH = 0
+	cfgCols, cfgRows := a.cfg.Window.Columns, a.cfg.Window.Rows
+	if cfgCols < 2 {
+		cfgCols = 80
+	}
+	if cfgRows < 2 {
+		cfgRows = 24
+	}
+	padX2 := float32(a.cfg.Appearance.Padding) * 2
+	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMargin)))
+	w.height = int(math.Ceil(float64(float32(cfgRows)*w.cellH + padX2 + cellSafetyMargin)))
 	// Share the SDL backend (same ImGui/GL context); multi-viewport
 	// will create the additional SDL_Window via its platform IO.
 	w.backend = main.backend
