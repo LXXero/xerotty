@@ -954,14 +954,12 @@ func (a *Window) frame() {
 		a.resizeTerminals()
 	}
 
-	// Render tab bar
-	a.renderTabBar()
-
-	// Render active terminal directly onto the window's background draw
-	// list. Using a wrapping ImGui window breaks under multi-viewport
-	// (the window can be promoted to its own viewport, leaving the SDL
-	// surface blank). BackgroundDrawListV pinned to this Window's
-	// viewport guarantees draws hit the right OS window.
+	// Render terminal cells FIRST into the wrapper's window drawlist,
+	// then the tab bar items after. ImGui adds draw commands in call
+	// order so the later commands (tab bar items, decorations) layer
+	// on top of the earlier ones (terminal cells). Without this
+	// ordering the cells would draw over the tab bar's bottom edge
+	// and clip the first terminal row when both share a drawlist.
 	if tab := a.tabs.Active(); tab != nil {
 		drawList := a.bgDrawList()
 		if drawList != nil {
@@ -1031,6 +1029,10 @@ func (a *Window) frame() {
 			a.drawScrollbar(tab, scrollOff, drawList)
 		}
 	}
+
+	// Tab bar — rendered AFTER terminal cells so it visually layers
+	// on top of them when they share the wrapper's drawlist.
+	a.renderTabBar()
 
 	// Search overlay
 	a.renderSearchOverlay()
@@ -1504,77 +1506,48 @@ func (w *Window) renderTabBar() {
 		return // Don't show tab bar with single tab
 	}
 
+	// Render the tab bar inline inside the wrapper's Begin/End block
+	// (which frame() is running inside). No nested Begin for the tab
+	// bar — that previously caused z-order shuffles where clicking
+	// the tab bar would hide it behind the wrapper. Now the tab bar
+	// items render into the wrapper's draw list at the position we
+	// move the cursor to, which guarantees they layer on top of the
+	// terminal cells (we draw cells via the wrapper's drawlist
+	// later, but ImGui widgets always render through the wrapper's
+	// own drawlist so they appear above raw drawlist content drawn
+	// before BeginTabBar).
 	var vpX, vpY float32
 	if vp := w.viewport(); vp != nil {
 		vpX, vpY = vp.Pos().X, vp.Pos().Y
 	}
-	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
-	// Asymmetric size update to keep auto-repeat fast in both directions:
-	//   - On GROW: defer the tab bar size update while the SDL window is in
-	//     mid-resize (skipDisplaySync > 0). Stacking SetNextWindowSizeV on
-	//     top of in-flight Wayland configure cycles starves keyboard
-	//     auto-repeat. Safe to defer because the tab bar's old (smaller)
-	//     size still fits inside the new (larger) viewport, so multi-viewport
-	//     doesn't promote it to its own platform window.
-	//   - On SHRINK: always update immediately. If we deferred, the tab bar's
-	//     old (larger) size would exceed the new (smaller) viewport, and
-	//     multi-viewport WOULD promote it to its own platform window —
-	//     triggering another configure cycle per shrink. Wayland handles
-	//     shrink configures fast, so the immediate path is cheap here.
-	curW, curH := float32(w.width), w.tabBarH
-	sizeChanged := curW != w.lastTabBarW || curH != w.lastTabBarH
-	isShrink := curW < w.lastTabBarW
-	if sizeChanged && (isShrink || w.skipDisplaySync == 0) {
-		imgui.SetNextWindowSizeV(imgui.Vec2{X: curW, Y: curH}, imgui.CondAlways)
-		w.lastTabBarW = curW
-		w.lastTabBarH = curH
-	}
-	// The tab bar is purely a click target — it should never take keyboard
-	// focus. With multiple tabs the bar is the only ImGui window that exists,
-	// so any focus event (initial appearance, click, post-resize re-evaluation)
-	// would otherwise land on it and set WantCaptureKeyboard, which makes
-	// processKeys drop terminal input until the user clicks back on the
-	// terminal area. Explicitly opt out of every focus path:
-	//   NoFocusOnAppearing  — first 1→2-tab transition doesn't grab focus
-	//   NoNav               — no keyboard/gamepad nav targets here
-	//   NoBringToFrontOnFocus — clicking a tab doesn't promote the bar to focus
-	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
-		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
-		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground |
-		imgui.WindowFlagsNoFocusOnAppearing | imgui.WindowFlagsNoNav |
-		imgui.WindowFlagsNoBringToFrontOnFocus
-
+	imgui.SetCursorScreenPos(imgui.Vec2{X: vpX, Y: vpY})
 	innerSpX := imgui.CurrentStyle().ItemInnerSpacing().X
-	imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{X: 0, Y: 0})
 	imgui.PushStyleVarVec2(imgui.StyleVarItemInnerSpacing, imgui.Vec2{X: innerSpX, Y: 0})
-	defer imgui.PopStyleVarV(2)
+	defer imgui.PopStyleVar()
 
-	if imgui.BeginV("##tabbar"+w.imguiSuffix(), nil, flags) {
-		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
-		if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
-			for i, tab := range w.tabs.Tabs {
-				label := tab.DisplayTitle()
-				label = fmt.Sprintf("%s###tab%d", label, tab.ID)
+	tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
+	if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
+		for i, tab := range w.tabs.Tabs {
+			label := tab.DisplayTitle()
+			label = fmt.Sprintf("%s###tab%d", label, tab.ID)
 
-				open := true
-				itemFlags := imgui.TabItemFlags(0)
-				if w.tabSwitchReq == tab.ID {
-					itemFlags = imgui.TabItemFlagsSetSelected
-					w.tabSwitchReq = -1
-				}
-				if imgui.BeginTabItemV(label, &open, itemFlags) {
-					w.tabs.ActiveIdx = i
-					imgui.EndTabItem()
-				}
-				if !open {
-					w.tabs.CloseTab(i)
-					break // tab slice mutated
-				}
+			open := true
+			itemFlags := imgui.TabItemFlags(0)
+			if w.tabSwitchReq == tab.ID {
+				itemFlags = imgui.TabItemFlagsSetSelected
+				w.tabSwitchReq = -1
 			}
-			imgui.EndTabBar()
+			if imgui.BeginTabItemV(label, &open, itemFlags) {
+				w.tabs.ActiveIdx = i
+				imgui.EndTabItem()
+			}
+			if !open {
+				w.tabs.CloseTab(i)
+				break // tab slice mutated
+			}
 		}
+		imgui.EndTabBar()
 	}
-	imgui.End()
 }
 
 func (w *Window) renderContextMenu() {
