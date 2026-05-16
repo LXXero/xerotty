@@ -916,25 +916,25 @@ func encodeRune(buf []byte, r rune) int {
 	}
 }
 
-func (a *App) dispatchAction(action string) {
+func (w *Window) dispatchAction(action string) {
 	switch action {
 	case "new_tab":
-		cols, rows := a.gridSize()
-		if tab, err := a.tabs.NewTab(cols, rows); err == nil && tab != nil {
+		cols, rows := w.gridSize()
+		if tab, err := w.tabs.NewTab(cols, rows); err == nil && tab != nil {
 			// AutoSelectNewTabs only catches new tabs once the bar has prior
 			// frame state. On the 1→2 transition (tab bar first appears) it
 			// can't, so request an explicit switch to the new tab.
-			a.tabSwitchReq = tab.ID
+			w.tabSwitchReq = tab.ID
 		}
 	case "close_tab":
-		a.tabs.CloseActive()
+		w.tabs.CloseActive()
 	case "new_window":
 		exe, err := os.Executable()
 		if err == nil {
 			// Cascade: place child ~30px below and right of parent so it
 			// doesn't stack exactly on top.
 			var envExtras []string
-			if sb, ok := a.backend.(*sdlbackend.SDLBackend); ok {
+			if sb, ok := w.backend.(*sdlbackend.SDLBackend); ok {
 				px, py := sb.GetWindowPos()
 				envExtras = []string{
 					fmt.Sprintf("XEROTTY_WIN_X=%d", int(px)+30),
@@ -947,143 +947,143 @@ func (a *App) dispatchAction(action string) {
 			newWindowCommand(exe, envExtras).Start()
 		}
 	case "next_tab":
-		a.tabs.Next()
-		if t := a.tabs.Active(); t != nil {
-			a.tabSwitchReq = t.ID
+		w.tabs.Next()
+		if t := w.tabs.Active(); t != nil {
+			w.tabSwitchReq = t.ID
 		}
 	case "prev_tab":
-		a.tabs.Prev()
-		if t := a.tabs.Active(); t != nil {
-			a.tabSwitchReq = t.ID
+		w.tabs.Prev()
+		if t := w.tabs.Active(); t != nil {
+			w.tabSwitchReq = t.ID
 		}
 	case "copy":
-		text := a.selectedText()
+		text := w.selectedText()
 		if text != "" {
 			input.ClipboardWrite(text)
 		}
 	case "paste":
 		text, err := input.ClipboardRead()
 		if err == nil && text != "" {
-			a.pasteText(text)
+			w.pasteText(text)
 		}
 	case "paste_selection":
 		text, err := input.PrimaryRead()
 		if err == nil && text != "" {
-			a.pasteText(text)
+			w.pasteText(text)
 		}
 	case "fullscreen":
-		a.fullscreen = !a.fullscreen
-		sdlSetFullscreen(a.fullscreen)
+		w.fullscreen = !w.fullscreen
+		sdlSetFullscreen(w.fullscreen)
 	case "scroll_page_up":
-		if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
-			_, rows := a.gridSize()
+		if tab := w.tabs.Active(); tab != nil {
+			s := w.getScroll(tab.ID)
+			_, rows := w.gridSize()
 			s.PageUp(rows, tab.Terminal.Emu.ScrollbackLen())
 		}
 	case "scroll_page_down":
-		if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
-			_, rows := a.gridSize()
+		if tab := w.tabs.Active(); tab != nil {
+			s := w.getScroll(tab.ID)
+			_, rows := w.gridSize()
 			s.PageDown(rows)
 		}
 	case "scroll_top":
-		if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
+		if tab := w.tabs.Active(); tab != nil {
+			s := w.getScroll(tab.ID)
 			s.Offset = tab.Terminal.Emu.ScrollbackLen()
 		}
 	case "scroll_bottom":
-		if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
+		if tab := w.tabs.Active(); tab != nil {
+			s := w.getScroll(tab.ID)
 			s.Reset()
 		}
 	case "search":
-		if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
+		if tab := w.tabs.Active(); tab != nil {
+			s := w.getScroll(tab.ID)
 			s.OpenSearch()
-			a.searchFocusInput = true
+			w.searchFocusInput = true
 		}
 	case "font_size_up":
-		a.cfg.Font.Size += 1
-		a.updateFontMetrics()
+		w.app.cfg.Font.Size += 1
+		w.updateFontMetrics()
 	case "font_size_down":
-		if a.cfg.Font.Size > 6 {
-			a.cfg.Font.Size -= 1
-			a.updateFontMetrics()
+		if w.app.cfg.Font.Size > 6 {
+			w.app.cfg.Font.Size -= 1
+			w.updateFontMetrics()
 		}
 	case "font_size_reset":
-		a.cfg.Font.Size = 14
-		a.updateFontMetrics()
+		w.app.cfg.Font.Size = 14
+		w.updateFontMetrics()
 	case "select_all":
-		if tab := a.tabs.Active(); tab != nil {
+		if tab := w.tabs.Active(); tab != nil {
 			cols := tab.Terminal.Emu.Width()
 			rows := tab.Terminal.Emu.Height()
-			a.sel.startCol = 0
-			a.sel.startRow = 0
-			a.sel.endCol = cols - 1
-			a.sel.endRow = rows - 1
-			a.sel.active = true
-			a.sel.dragging = false
+			w.sel.startCol = 0
+			w.sel.startRow = 0
+			w.sel.endCol = cols - 1
+			w.sel.endRow = rows - 1
+			w.sel.active = true
+			w.sel.dragging = false
 		}
 	case "clear_scrollback":
-		if tab := a.tabs.Active(); tab != nil {
+		if tab := w.tabs.Active(); tab != nil {
 			tab.Terminal.Emu.ClearScrollback()
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
 		}
 	case "reset_terminal":
-		if tab := a.tabs.Active(); tab != nil {
+		if tab := w.tabs.Active(); tab != nil {
 			// Send RIS (Reset to Initial State) escape sequence
 			tab.Terminal.Write([]byte("\x1bc"))
 			tab.Terminal.Emu.ClearScrollback()
-			if s, ok := a.scroll[tab.ID]; ok {
+			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
-			a.sel.clear()
+			w.sel.clear()
 		}
 	case "open_link":
-		if a.hoveredLink != nil {
-			openURL(a.hoveredLink.URL, a.cfg.Links.Opener)
+		if w.hoveredLink != nil {
+			openURL(w.hoveredLink.URL, w.app.cfg.Links.Opener)
 		}
 	case "copy_link":
-		if a.hoveredLink != nil {
-			input.ClipboardWrite(a.hoveredLink.URL)
+		if w.hoveredLink != nil {
+			input.ClipboardWrite(w.hoveredLink.URL)
 		}
 	case "rename_tab":
-		if tab := a.tabs.Active(); tab != nil {
-			a.renameBuffer = tab.Title
-			a.renamingTab = true
+		if tab := w.tabs.Active(); tab != nil {
+			w.renameBuffer = tab.Title
+			w.renamingTab = true
 			imgui.OpenPopupStr("Rename Tab")
 		}
 	case "preferences":
-		a.openPreferences()
+		w.app.openPreferences()
 	default:
 		// Check for parameterized actions
 		if strings.HasPrefix(action, "goto_tab:") {
 			nStr := strings.TrimPrefix(action, "goto_tab:")
 			if n, err := strconv.Atoi(nStr); err == nil {
-				a.tabs.GoTo(n)
-				if t := a.tabs.Active(); t != nil {
-					a.tabSwitchReq = t.ID
+				w.tabs.GoTo(n)
+				if t := w.tabs.Active(); t != nil {
+					w.tabSwitchReq = t.ID
 				}
 			}
 		} else if strings.HasPrefix(action, "set_theme:") {
 			name := strings.TrimPrefix(action, "set_theme:")
 			if t, err := themes.Load(name); err == nil {
-				applyColorOverrides(&t, &a.cfg)
-				a.renderer.Theme = t
-				a.theme = t
+				applyColorOverrides(&t, &w.app.cfg)
+				w.renderer.Theme = t
+				w.app.theme = t
 				// Update SDL background color to match new theme — both
 				// the cimgui-go backend (used briefly during init before
 				// runEventLoop takes over) and our runloop's clear color.
 				bgR := float32((t.Background>>0)&0xFF) / 255.0
 				bgG := float32((t.Background>>8)&0xFF) / 255.0
 				bgB := float32((t.Background>>16)&0xFF) / 255.0
-				a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
+				w.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 				updateEventLoopBg(bgR, bgG, bgB)
 			}
 		} else if strings.HasPrefix(action, "exec:") {
-			ctx := a.menuContext()
+			ctx := w.menuContext()
 			menu.ExecAction(action, ctx)
 		}
 	}
@@ -1098,24 +1098,24 @@ func (w *Window) getScroll(tabID int) *scrollback.State {
 	return s
 }
 
-func (a *App) updateFontMetrics() {
-	pxSize := renderer.PixelSize(&a.cfg)
-	if a.baseFontSize <= 0 {
-		a.baseFontSize = pxSize
+func (w *Window) updateFontMetrics() {
+	pxSize := renderer.PixelSize(&w.app.cfg)
+	if w.app.baseFontSize <= 0 {
+		w.app.baseFontSize = pxSize
 	}
 
 	// Capture current grid dimensions BEFORE scaling so we can resize
 	// the window to keep the same number of cols/rows.
-	cols, rows := a.gridSize()
+	cols, rows := w.gridSize()
 
 	// Scale cell metrics proportionally. Ceil AFTER scaling —
 	// baseCellW/H is the pre-ceil float advance so `ceil(baseCellW *
 	// scale)` is the same answer measureCell would give at this zoom
 	// (no compounding of ceiling errors per step).
-	scale := pxSize / a.baseFontSize
-	a.cellW, a.cellH = ceilCell(a.baseCellW*scale, a.baseCellH*scale)
-	a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
-	a.renderer.FontSize = pxSize
+	scale := pxSize / w.app.baseFontSize
+	w.cellW, w.cellH = ceilCell(w.app.baseCellW*scale, w.app.baseCellH*scale)
+	w.renderer.Metrics = renderer.CellMetrics{Width: w.cellW, Height: w.cellH}
+	w.renderer.FontSize = pxSize
 
 	// Rebuild the glyph cache at the new pxSize. Terminal cells render
 	// through r.Glyphs.Get → AddImageV at the cached texture's native
@@ -1126,57 +1126,57 @@ func (a *App) updateFontMetrics() {
 	// for GPU deletion via the TextureManager and are safe to drop
 	// here because frame() runs the wheel handler before any
 	// renderer.Draw / AddImageV calls reference them.
-	if a.renderer.Glyphs != nil && fontsys.Default != nil {
-		primaryPath := renderer.ResolveFontPath(&a.cfg)
+	if w.renderer.Glyphs != nil && fontsys.Default != nil {
+		primaryPath := renderer.ResolveFontPath(&w.app.cfg)
 		if primaryPath != "" {
 			fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
 			if fbScale <= 0 {
 				fbScale = 1
 			}
-			if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, pxSize, fbScale); err == nil {
-				a.renderer.Glyphs.Close()
-				a.renderer.Glyphs = c
+			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, pxSize, fbScale); err == nil {
+				w.renderer.Glyphs.Close()
+				w.renderer.Glyphs = c
 			}
 		}
 	}
 
 	// Resize window to maintain the same grid at the new cell size.
-	// Set a.width/a.height immediately so this frame renders correctly;
-	// the per-frame DisplaySize sync (line ~188) will correct them on the
-	// next frame if the WM didn't honour the request.
-	pad := float32(a.cfg.Appearance.Padding) * 2
+	// Set w.width/w.height immediately so this frame renders correctly;
+	// the per-frame DisplaySize sync will correct them on the next
+	// frame if the WM didn't honour the request.
+	pad := float32(w.app.cfg.Appearance.Padding) * 2
 	// Add back the cellSafetyMargin so the post-resize gridSize() returns the
 	// SAME cols/rows we're trying to preserve. Without this, every zoom step
 	// loses one row+col because gridSize subtracts the margin from available
 	// space.
-	newW := int(math.Ceil(float64(float32(cols)*a.cellW + pad + cellSafetyMargin)))
-	newH := int(math.Ceil(float64(float32(rows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
-	a.backend.SetWindowSize(newW, newH)
-	a.width = newW
-	a.height = newH
+	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMargin)))
+	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMargin)))
+	w.backend.SetWindowSize(newW, newH)
+	w.width = newW
+	w.height = newH
 	// Don't let the next 2 frames of stale DisplaySize undo this shrink.
-	a.skipDisplaySync = 2
+	w.skipDisplaySync = 2
 	// Some WMs drop input focus across the unmap/remap of SetWindowSize.
 	sdlRaiseWindow()
-	a.resizeTerminals()
+	w.resizeTerminals()
 	// Update the macOS resize-increment to the new cell size so subsequent
 	// drag-resizes stay on the cell grid.
-	setContentResizeIncrements(a.cellW, a.cellH)
+	setContentResizeIncrements(w.cellW, w.cellH)
 
 	// Show overlay with the new zoom level. Percent is current pxSize
 	// over the configured base, rounded — so default reads 100%, zoom-in
 	// reads >100%, zoom-out reads <100%. skipDisplaySync prevents the
 	// drag-resize trigger in frame() from clobbering this with cols×rows
 	// for the next couple frames.
-	percent := int(math.Round(float64(pxSize / a.baseFontSize * 100)))
-	a.resizeOverlayText = fmt.Sprintf("%d%%", percent)
-	a.resizeTime = imgui.Time()
-	a.resizeOverlay = true
+	percent := int(math.Round(float64(pxSize / w.app.baseFontSize * 100)))
+	w.resizeOverlayText = fmt.Sprintf("%d%%", percent)
+	w.resizeTime = imgui.Time()
+	w.resizeOverlay = true
 }
 
-func (a *App) renderTabBar() {
-	a.tabBarHovered = false
-	if a.tabs.Count() <= 1 {
+func (w *Window) renderTabBar() {
+	w.tabBarHovered = false
+	if w.tabs.Count() <= 1 {
 		return // Don't show tab bar with single tab
 	}
 
@@ -1197,13 +1197,13 @@ func (a *App) renderTabBar() {
 	//     multi-viewport WOULD promote it to its own platform window —
 	//     triggering another configure cycle per shrink. Wayland handles
 	//     shrink configures fast, so the immediate path is cheap here.
-	curW, curH := float32(a.width), a.tabBarH
-	sizeChanged := curW != a.lastTabBarW || curH != a.lastTabBarH
-	isShrink := curW < a.lastTabBarW
-	if sizeChanged && (isShrink || a.skipDisplaySync == 0) {
+	curW, curH := float32(w.width), w.tabBarH
+	sizeChanged := curW != w.lastTabBarW || curH != w.lastTabBarH
+	isShrink := curW < w.lastTabBarW
+	if sizeChanged && (isShrink || w.skipDisplaySync == 0) {
 		imgui.SetNextWindowSizeV(imgui.Vec2{X: curW, Y: curH}, imgui.CondAlways)
-		a.lastTabBarW = curW
-		a.lastTabBarH = curH
+		w.lastTabBarW = curW
+		w.lastTabBarH = curH
 	}
 	// The tab bar is purely a click target — it should never take keyboard
 	// focus. With multiple tabs the bar is the only ImGui window that exists,
@@ -1228,7 +1228,7 @@ func (a *App) renderTabBar() {
 	if imgui.BeginV("##tabbar", nil, flags) {
 		tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
 		if imgui.BeginTabBarV("tabs", tabFlags) {
-			for i, tab := range a.tabs.Tabs {
+			for i, tab := range w.tabs.Tabs {
 				label := tab.Title
 				if label == "" {
 					label = fmt.Sprintf("shell %d", tab.ID)
@@ -1237,16 +1237,16 @@ func (a *App) renderTabBar() {
 
 				open := true
 				itemFlags := imgui.TabItemFlags(0)
-				if a.tabSwitchReq == tab.ID {
+				if w.tabSwitchReq == tab.ID {
 					itemFlags = imgui.TabItemFlagsSetSelected
-					a.tabSwitchReq = -1
+					w.tabSwitchReq = -1
 				}
 				if imgui.BeginTabItemV(label, &open, itemFlags) {
-					a.tabs.ActiveIdx = i
+					w.tabs.ActiveIdx = i
 					imgui.EndTabItem()
 				}
 				if !open {
-					a.tabs.CloseTab(i)
+					w.tabs.CloseTab(i)
 					break // tab slice mutated
 				}
 			}
@@ -1256,11 +1256,11 @@ func (a *App) renderTabBar() {
 	imgui.End()
 }
 
-func (a *App) renderContextMenu() {
-	ctx := a.menuContext()
-	action := menu.Render(a.cfg.Menu.Items, ctx)
+func (w *Window) renderContextMenu() {
+	ctx := w.menuContext()
+	action := menu.Render(w.app.cfg.Menu.Items, ctx)
 	if action != "" {
-		a.dispatchAction(action)
+		w.dispatchAction(action)
 	}
 }
 
@@ -1581,12 +1581,12 @@ func (a *App) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.DrawLi
 	}
 }
 
-func (a *App) pasteText(text string) {
-	tab := a.tabs.Active()
+func (w *Window) pasteText(text string) {
+	tab := w.tabs.Active()
 	if tab == nil {
 		return
 	}
-	cfg := a.cfg.Clipboard.UnsafePaste
+	cfg := w.app.cfg.Clipboard.UnsafePaste
 	if !cfg.Enabled {
 		tab.Terminal.Paste(text)
 		return
@@ -1618,7 +1618,7 @@ func (a *App) pasteText(text string) {
 	}
 
 	if shouldWarn {
-		a.pendingPaste = text
+		w.pendingPaste = text
 		imgui.OpenPopupStr("Unsafe Paste")
 		return
 	}
