@@ -327,7 +327,7 @@ func (a *App) spawnWindow() {
 		cfgRows = 24
 	}
 	padX2 := float32(a.cfg.Appearance.Padding) * 2
-	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMarginH)))
+	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMarginH + cellOriginInsetX)))
 	w.height = int(math.Ceil(float64(float32(cfgRows)*w.cellH + padX2 + cellSafetyMarginV)))
 	// Share the SDL backend (same ImGui/GL context); multi-viewport
 	// will create the additional SDL_Window via its platform IO.
@@ -398,7 +398,7 @@ func (w *Window) initialWindowSize() (int, int) {
 	pad := float32(w.app.cfg.Appearance.Padding) * 2
 	// Add cellSafetyMargin so the eventual gridSize() after window creation
 	// computes back to the same cols/rows we requested.
-	wp := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMarginH)))
+	wp := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMarginH + cellOriginInsetX)))
 	hp := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMarginV)))
 	return wp, hp
 }
@@ -678,30 +678,55 @@ func (a *App) Run() error {
 	return nil
 }
 
-// cellSafetyMarginH reserves a few extra pixels of right-edge gutter beyond
-// what the cell count strictly needs. CalcTextSize returns the font's advance
-// width, but font hinting / anti-aliasing can nudge glyph edge pixels slightly
-// past cellW. Without this margin, when the floor-fitted cell count produces
-// a tight gutter, the rightmost character's AA edge can render over the
-// window boundary and appear clipped before the count reduces.
+// cellSafetyMarginH / cellSafetyMarginV reserve extra pixels of gutter
+// between the cell grid and the window edge, beyond the user-visible
+// Appearance.Padding. Two reasons:
 //
-// cellSafetyMarginV is the vertical equivalent — kept tiny because cellH
-// already accounts for ascent+descent per the font metrics (no glyph
-// "overhang" concern as on the horizontal side). Just enough cushion to
-// absorb float→int rounding when the user drags the window edge so the
-// bottom row doesn't drop off at the snap boundary.
+// 1. Glyph AA spill: CalcTextSize returns the font's advance width, but
+//    font hinting / anti-aliasing can nudge glyph edge pixels slightly
+//    past cellW. Without margin, when the floor-fitted cell count
+//    produces a tight right-edge gutter, the rightmost glyph's AA edge
+//    renders over the window boundary and appears clipped.
+//
+// 2. macOS rounded NSWindow corners (~5 px radius on all four corners)
+//    mask any content rendering at the very edge. The bottom row's
+//    leftmost/rightmost glyphs and the top row's corners get clipped
+//    if cells run flush to the window bounds.
+//
+// Together they translate to "more padding on macOS than other
+// platforms" — same reason iTerm uses noticeable inset.
 //
 // Must be added BACK to the window size in any code that wants to fit a
-// specific cols×rows grid (e.g. font zoom resize), otherwise the next gridSize
-// call will floor away one cell.
-const (
-	cellSafetyMarginH = 8
-	cellSafetyMarginV = 0
+// specific cols×rows grid (e.g. font zoom resize), otherwise the next
+// gridSize call will floor away one cell.
+var (
+	cellSafetyMarginH = func() float32 {
+		if runtime.GOOS == "darwin" {
+			return 12 // 8 for glyph AA + 4 for right corner radius
+		}
+		return 8
+	}()
+	cellSafetyMarginV = func() float32 {
+		if runtime.GOOS == "darwin" {
+			return 6 // covers bottom corner radius
+		}
+		return 0
+	}()
+	// cellOriginInsetX is added to OffsetX on macOS so the LEFT column
+	// also clears the rounded window corner. cellSafetyMarginH alone
+	// only reserves right-edge gutter; without this, the bottom-left
+	// glyph's lower pixels get clipped by the corner mask.
+	cellOriginInsetX = func() float32 {
+		if runtime.GOOS == "darwin" {
+			return 4
+		}
+		return 0
+	}()
 )
 
 func (w *Window) gridSize() (cols, rows int) {
 	pad := float32(w.app.cfg.Appearance.Padding) * 2 // padding on both sides
-	availW := float32(w.width) - pad - cellSafetyMarginH
+	availW := float32(w.width) - pad - cellSafetyMarginH - cellOriginInsetX
 	availH := float32(w.height) - w.tabBarH - pad - cellSafetyMarginV
 	cols = int(availW / w.cellW)
 	rows = int(availH / w.cellH)
@@ -954,7 +979,7 @@ func (a *Window) frame() {
 		}
 		pad := float32(a.app.cfg.Appearance.Padding) * 2
 		// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
-		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMarginH)))
+		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMarginH + cellOriginInsetX)))
 		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMarginV)))
 		if desiredW != a.width || desiredH != a.height {
 			// Every Window's OS geometry is driven by ImGui multi-
@@ -1173,7 +1198,7 @@ func (a *Window) frame() {
 	// between rows. Without this, half-block characters (▀ ▄) and continuous
 	// lines (─ │) can develop visible gaps between rows because their AA
 	// rendering shifts at fractional positions.
-	a.renderer.OffsetX = float32(math.Floor(float64(vpOffX + pad)))
+	a.renderer.OffsetX = float32(math.Floor(float64(vpOffX + pad + cellOriginInsetX)))
 	a.renderer.OffsetY = float32(math.Floor(float64(vpOffY + a.tabBarH + pad)))
 	// When tab bar visibility changes (1↔2 tabs), grow/shrink the SDL window
 	// vertically by the tab bar's height so the terminal grid keeps the same
