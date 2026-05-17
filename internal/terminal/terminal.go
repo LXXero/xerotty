@@ -56,8 +56,8 @@ type Terminal struct {
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
-func New(cfg *config.Config, cols, rows int) (*Terminal, error) {
-	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows))
+func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
+	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd)
 	if err != nil {
 		return nil, err
 	}

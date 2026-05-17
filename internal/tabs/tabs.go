@@ -67,9 +67,12 @@ func NewManager(cfg *config.Config) *Manager {
 	}
 }
 
-// NewTab creates a new tab with a fresh terminal.
-func (m *Manager) NewTab(cols, rows int) (*Tab, error) {
-	term, err := terminal.New(m.cfg, cols, rows)
+// NewTab creates a new tab with a fresh terminal. cwd is the starting
+// directory for the shell; pass "" to inherit xerotty's CWD. Callers
+// thread the parent tab's CWD when cfg.Tabs.InheritCWD is set so
+// "New Tab" opens in the same directory the user was already in.
+func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
+	term, err := terminal.New(m.cfg, cols, rows, cwd)
 	if err != nil {
 		return nil, err
 	}

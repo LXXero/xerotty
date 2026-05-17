@@ -78,7 +78,16 @@ func (s *selection) contains(col, row int) bool {
 
 // extractText reads the selected cell contents from the emulator.
 // scrollOffset is the current scroll position (used with cellAt helper).
-func (s *selection) extractText(emu *vt.SafeEmulator, scrollOffset int) string {
+// trimTrailing strips the right-side cell-grid padding from each row
+// — terminal rows are a fixed-width grid, so a line containing "ls"
+// on an 80-col terminal occupies cells 0-1 with text and 2-79 with
+// literal spaces. With trimTrailing=true (the usual user expectation,
+// matches iTerm "Trim trailing whitespace in copy"), those spaces are
+// dropped per row so the copied text reflects what the user "sees"
+// rather than the grid padding. With trimTrailing=false the full
+// padded row is preserved — useful for copying ASCII art or
+// alignment-sensitive content where column position matters.
+func (s *selection) extractText(emu *vt.SafeEmulator, scrollOffset int, trimTrailing bool) string {
 	if !s.active {
 		return ""
 	}
@@ -114,7 +123,10 @@ func (s *selection) extractText(emu *vt.SafeEmulator, scrollOffset int) string {
 			}
 		}
 
-		text := strings.TrimRight(line.String(), " ")
+		text := line.String()
+		if trimTrailing {
+			text = strings.TrimRight(text, " ")
+		}
 		b.WriteString(text)
 		if row < r2 {
 			b.WriteByte('\n')

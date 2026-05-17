@@ -303,10 +303,22 @@ func (a *App) spawnWindow() {
 	// exactly on top of its parent. Use the parent's current OS-window
 	// position plus a small offset — same pattern macOS/iTerm2 use for
 	// new-window placement.
+	// Cascade by ~30% of the parent's size on each axis. xfce4-terminal
+	// itself does no explicit cascade (it leaves placement to the WM —
+	// gtk_window_move is only called for parsed --geometry strings,
+	// confirmed in terminal-app.c upstream), so there's no "match xfce4"
+	// number to copy. Fixed-pixel offsets (the old 30 / 60) look fine
+	// on small windows and lost on large ones; scaling by parent size
+	// keeps the offset visually consistent across zoom / configured cols
+	// × rows. 30% is enough that the two title bars don't overlap and
+	// the new window's content area starts well clear of the parent's,
+	// without going so far that the new window lands off-screen for
+	// users near a display edge.
 	if parent.imViewport != nil {
 		pp := parent.imViewport.Pos()
-		w.initialPosX = pp.X + 30
-		w.initialPosY = pp.Y + 30
+		ps := parent.imViewport.Size()
+		w.initialPosX = pp.X + ps.X*0.30
+		w.initialPosY = pp.Y + ps.Y*0.30
 		w.hasInitialPos = true
 	}
 	// Geometry: configured Window.Columns × Window.Rows, NOT the
@@ -364,10 +376,19 @@ func (a *App) spawnWindow() {
 		}
 	}
 
-	// New tabs manager with a single starting tab.
+	// New tabs manager with a single starting tab. cfg.Tabs.InheritCWD
+	// makes the new Window's shell start in the parent Window's active
+	// tab's CWD — Cmd+N from inside ~/src/foo gives a new Window also
+	// in ~/src/foo, matching iTerm/Terminal.app's behavior.
 	w.tabs = tabs.NewManager(&a.cfg)
 	cols, rows := w.gridSize()
-	if _, err := w.tabs.NewTab(cols, rows); err != nil {
+	var cwd string
+	if a.cfg.Tabs.InheritCWD && parent != nil {
+		if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
+			cwd = parentTab.Terminal.GetCWD()
+		}
+	}
+	if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
 		return
 	}
 
@@ -1004,7 +1025,9 @@ func (a *Window) frame() {
 			a.skipDisplaySync = 2
 		}
 
-		if _, err := a.tabs.NewTab(cfgCols, cfgRows); err != nil {
+		// First-frame startup tab — no parent to inherit CWD from;
+		// the shell uses xerotty's own CWD (launcher / cwd-at-launch).
+		if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
 			sdlQuit()
 			return
 		}
@@ -1149,16 +1172,24 @@ func (a *Window) frame() {
 
 	// Scroll handling on new output:
 	// - If at live position: stay at bottom (auto-scroll)
-	// - If scrolled back: freeze viewport by adjusting offset for new scrollback lines
+	// - If scrolled back:
+	//     scroll_on_output=true  → snap to bottom (gnome-terminal default)
+	//     scroll_on_output=false → freeze viewport by adjusting offset
+	//                              for new scrollback lines (xterm/iTerm default)
+	scrollOnOutput := a.app.cfg.Scrollback.ScrollOnOutput
 	for _, tab := range a.tabs.Tabs {
 		if tab.Dirty {
 			tab.Dirty = false
 			s := a.getScroll(tab.ID)
 			sbLen := tab.Terminal.Emu.ScrollbackLen()
 			if s.IsScrolled() && s.PrevSBLen > 0 {
-				delta := sbLen - s.PrevSBLen
-				if delta > 0 {
-					s.Offset += delta
+				if scrollOnOutput {
+					s.Reset()
+				} else {
+					delta := sbLen - s.PrevSBLen
+					if delta > 0 {
+						s.Offset += delta
+					}
 				}
 			}
 			s.PrevSBLen = sbLen
@@ -1500,8 +1531,14 @@ func (w *Window) processKeys() {
 		}
 
 		if len(ev.Bytes) > 0 && tab != nil {
-			if s, ok := w.scroll[tab.ID]; ok {
-				s.Reset()
+			// scroll_on_keystroke: gnome-terminal-style "any keypress
+			// snaps back to live position". When off, the user can
+			// type into the prompt (still sends to PTY) while staying
+			// scrolled back to inspect history.
+			if w.app.cfg.Scrollback.ScrollOnKeystroke {
+				if s, ok := w.scroll[tab.ID]; ok {
+					s.Reset()
+				}
 			}
 			w.sel.clear() // typing clears selection
 			tab.Terminal.Write(ev.Bytes)
@@ -1526,9 +1563,15 @@ func (w *Window) processKeys() {
 		chars := io.InputQueueCharacters()
 		altHeld := imgui.IsKeyDown(imgui.ModAlt)
 		if chars.Size > 0 {
-			// Snap to bottom on text input
-			if s, ok := w.scroll[tab.ID]; ok {
-				s.Reset()
+			// scroll_on_keystroke: same gate as the translated-key
+			// path above. Without checking here, plain letters /
+			// numbers (which come through InputQueueCharacters, not
+			// the special-key dispatcher) would always snap back to
+			// live and the pref would do nothing for typing.
+			if w.app.cfg.Scrollback.ScrollOnKeystroke {
+				if s, ok := w.scroll[tab.ID]; ok {
+					s.Reset()
+				}
 			}
 			w.sel.clear()
 			for _, ch := range chars.Slice() {
@@ -1577,7 +1620,18 @@ func (w *Window) dispatchAction(action string) {
 	switch action {
 	case "new_tab":
 		cols, rows := w.gridSize()
-		if tab, err := w.tabs.NewTab(cols, rows); err == nil && tab != nil {
+		// Inherit the currently active tab's CWD when the pref is on
+		// so "New Tab" picks up wherever the user was working. Falls
+		// through to xerotty's CWD when there's no active tab (first
+		// tab) or GetCWD returns "" (process gone, /proc lookup
+		// failed, etc.).
+		var cwd string
+		if w.app.cfg.Tabs.InheritCWD {
+			if parentTab := w.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
+				cwd = parentTab.Terminal.GetCWD()
+			}
+		}
+		if tab, err := w.tabs.NewTab(cols, rows, cwd); err == nil && tab != nil {
 			// AutoSelectNewTabs only catches new tabs once the bar has prior
 			// frame state. On the 1→2 transition (tab bar first appears) it
 			// can't, so request an explicit switch to the new tab.
@@ -1605,6 +1659,8 @@ func (w *Window) dispatchAction(action string) {
 			w.tabSwitchReq = t.ID
 		}
 	case "copy":
+		// selectedText already applies cfg.Clipboard.TrimTrailingWhitespace
+		// per-row via extractText, so no extra trimming here.
 		text := w.selectedText()
 		if text != "" {
 			input.ClipboardWrite(text)
@@ -1727,11 +1783,21 @@ func (w *Window) dispatchAction(action string) {
 			name := strings.TrimPrefix(action, "set_theme:")
 			if t, err := themes.Load(name); err == nil {
 				applyColorOverrides(&t, &w.app.cfg)
-				w.renderer.Theme = t
 				w.app.theme = t
+				// Theme is process-wide: every Window's renderer needs
+				// the new palette or peer Windows render against the
+				// stale one until they're individually re-themed. Same
+				// loop applyPreferences uses for the prefs-driven path.
+				for _, win := range w.app.windows {
+					if win.renderer != nil {
+						win.renderer.Theme = t
+					}
+				}
 				// Update SDL background color to match new theme — both
 				// the cimgui-go backend (used briefly during init before
 				// runEventLoop takes over) and our runloop's clear color.
+				// Backend is shared across Windows (same GL context), so
+				// SetBgColor and updateEventLoopBg run once.
 				bgR := float32((t.Background>>0)&0xFF) / 255.0
 				bgG := float32((t.Background>>8)&0xFF) / 255.0
 				bgB := float32((t.Background>>16)&0xFF) / 255.0
@@ -1811,7 +1877,11 @@ func (w *Window) updateFontMetrics() {
 	// SAME cols/rows we're trying to preserve. Without this, every zoom step
 	// loses one row+col because gridSize subtracts the margin from available
 	// space.
-	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMarginH)))
+	// cellOriginInsetX must be included alongside cellSafetyMarginH so
+	// gridSize (which subtracts BOTH) recomputes back to the same cols.
+	// Without the inset on Darwin (where it's 4px to clear the NSWindow
+	// corner radius), each zoom step floors away one column.
+	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMarginH + cellOriginInsetX)))
 	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMarginV)))
 	// Every Window's OS geometry rides ImGui multi-viewport. Stash
 	// the target size and flip pendingResize; wrappedFrame's Begin
@@ -2245,10 +2315,24 @@ func (w *Window) renderResizeOverlay() {
 	if !w.resizeOverlay {
 		return
 	}
+	// Honor cfg.Appearance.ResizeOverlay (master on/off) — also clear
+	// the latched flag so a later toggle of the pref doesn't stall
+	// with a stale overlay sitting at the resizeTime from before.
+	if !w.app.cfg.Appearance.ResizeOverlay {
+		w.resizeOverlay = false
+		w.resizeOverlayText = ""
+		return
+	}
 
 	elapsed := imgui.Time() - w.resizeTime
-	duration := 1.5  // total display time in seconds
-	fadeStart := 1.0 // start fading at this point
+	// Total display time from prefs (seconds). Fade occupies the last
+	// third (matches the original 1.0s solid + 0.5s fade = 1.5s total
+	// ratio that was hardcoded before).
+	duration := float64(w.app.cfg.Appearance.ResizeOverlayDuration)
+	if duration <= 0 {
+		duration = 1.0
+	}
+	fadeStart := duration * (2.0 / 3.0)
 
 	if elapsed > duration {
 		w.resizeOverlay = false
@@ -2614,10 +2698,7 @@ func (w *Window) handleMouseSelection() {
 			// anchor. Release without movement just keeps the word
 			// selection.
 			w.sel.dragging = true
-			text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
-			if text != "" {
-				input.PrimaryWrite(text)
-			}
+			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 		w.lastDblClickTime = imgui.Time()
 		w.lastDblClickRow = row
@@ -2633,10 +2714,7 @@ func (w *Window) handleMouseSelection() {
 			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
 				w.sel.dragging = true
-				text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
-				if text != "" {
-					input.PrimaryWrite(text)
-				}
+				w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 			}
 			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
@@ -2655,7 +2733,8 @@ func (w *Window) handleMouseSelection() {
 		w.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
 	}
 
-	// Release finalizes selection and copies to PRIMARY
+	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
+	// when copy_on_select is set).
 	if w.sel.dragging && imgui.IsMouseReleased(imgui.MouseButtonLeft) {
 		w.sel.dragging = false
 		if w.sel.active {
@@ -2663,10 +2742,7 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			text := w.sel.extractText(tab.Terminal.Emu, scrollOff)
-			if text != "" {
-				input.PrimaryWrite(text)
-			}
+			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 	}
 
@@ -2685,6 +2761,27 @@ func (w *Window) handleMouseSelection() {
 	}
 }
 
+// writeSelection publishes selected text to the X11/Wayland PRIMARY
+// selection (the middle-click target — Linux convention is to refresh
+// it on every selection regardless of preference) and, when
+// cfg.Clipboard.CopyOnSelect is set, also to the system clipboard
+// (Ctrl+C target). The per-row cell-grid trim is done by
+// extractText() (gated on the same pref); this function only handles
+// the publish.
+//
+// Empty / whitespace-only text is dropped: writing it would clobber
+// whatever the user previously copied without giving them anything
+// useful in return.
+func (w *Window) writeSelection(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	input.PrimaryWrite(text)
+	if w.app.cfg.Clipboard.CopyOnSelect {
+		input.ClipboardWrite(text)
+	}
+}
+
 func (w *Window) selectedText() string {
 	if !w.sel.active {
 		return ""
@@ -2697,7 +2794,7 @@ func (w *Window) selectedText() string {
 	if s, ok := w.scroll[tab.ID]; ok {
 		scrollOff = s.Offset
 	}
-	return w.sel.extractText(tab.Terminal.Emu, scrollOff)
+	return w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
 }
 
 func getCWD(term interface{}) string {

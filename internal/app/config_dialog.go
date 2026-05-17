@@ -987,7 +987,10 @@ func (a *Window) renderPrefScrollbar() {
 func (a *Window) renderPrefClipboard() {
 	d := &a.prefDialog
 
-	imgui.Checkbox("Copy on Select", &d.copyOnSel)
+	imgui.Checkbox("Also copy selection to CLIPBOARD", &d.copyOnSel)
+	if imgui.IsItemHovered() {
+		imgui.SetTooltip("Selection always updates PRIMARY (middle-click target) on Linux.\nEnable to ALSO write CLIPBOARD (Ctrl/Cmd+V target) on every selection.")
+	}
 	imgui.Checkbox("Paste on Middle Click", &d.pasteMiddle)
 	imgui.Checkbox("Trim Trailing Whitespace", &d.trimWS)
 

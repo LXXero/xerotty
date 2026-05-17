@@ -1058,13 +1058,15 @@ Linux has two separate clipboard mechanisms; macOS has one. xerotty supports bot
 | Clipboard | How It Works | Default Behavior in xerotty |
 |-----------|-------------|---------------------------|
 | CLIPBOARD (Linux+macOS) | Explicit Ctrl+C / Cmd+C → copy. Ctrl+V / Cmd+V → paste. | bound by default |
-| PRIMARY (Linux only) | Highlight text → automatically copied. Middle-click → paste. | Copy on select; macOS no-op |
+| PRIMARY (Linux only) | Highlight text → automatically copied. Middle-click → paste. | always on (X11/Wayland convention); macOS no-op |
+
+Selection ALWAYS writes PRIMARY on Linux — that's the Unix convention every X11/Wayland app follows and there's no user-facing toggle for it. `copy_on_select` is the separate "also clobber CLIPBOARD on every selection" bridge (off by default to match xterm / gnome-terminal / xfce4-terminal / iTerm2 / kitty / alacritty); explicit Copy is the normal path to CLIPBOARD.
 
 #### Config
 
 ```toml
 [clipboard]
-copy_on_select = true          # auto-copy selection to PRIMARY (default: true)
+copy_on_select = false         # ALSO copy every selection to CLIPBOARD (default: false; selection always writes PRIMARY regardless)
 paste_on_middle_click = true   # middle-click pastes PRIMARY (default: true)
 trim_trailing_whitespace = true # trim trailing spaces from copied lines (default: true)
 
@@ -1119,7 +1121,7 @@ PRIMARY: SDL2 has no PRIMARY API, so `internal/input/clipboard.go` shells out:
 - X11: `xclip -selection primary` / `xsel --primary`
 - macOS: no-op — Mac has no PRIMARY concept and writing every drag-select to NSPasteboard would clobber the user's real clipboard
 
-`copy_on_select` writes to PRIMARY on Linux and is silently ignored on macOS. Middle-click paste is similarly Linux-only in practice.
+PRIMARY is updated on every selection on Linux regardless of any pref — it's the standard X11/Wayland behavior every app implements. `copy_on_select` controls the orthogonal "also write to CLIPBOARD on selection" path; on macOS it's silently a no-op (Mac has no PRIMARY, and clobbering NSPasteboard on every drag-select would destroy the user's actual clipboard). Middle-click paste is similarly Linux-only in practice.
 
 ---
 
@@ -1616,8 +1618,10 @@ shortcut = "Ctrl+Shift+W"
 # ── Clipboard ──────────────────────────────────────────────────────
 
 [clipboard]
-# Automatically copy selected text to PRIMARY clipboard
-copy_on_select = true
+# Also copy every selection to CLIPBOARD (Ctrl/Cmd+V target).
+# Selection always writes PRIMARY (middle-click target) on Linux
+# regardless of this setting — that's the X11/Wayland convention.
+copy_on_select = false
 
 # Middle-click pastes from PRIMARY clipboard
 paste_on_middle_click = true

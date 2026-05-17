@@ -36,7 +36,7 @@ Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize
 ### Selection
 - Char-precise drag (single click), word-snap drag (double click), line-snap drag (triple click)
 - 3-class token model — `$` is its own token, not "$" + the space after it
-- Selection auto-copies to PRIMARY (Linux) on release; Cmd+C / Ctrl+Shift+C copies to CLIPBOARD
+- Selection auto-copies to PRIMARY (Linux) on release for middle-click paste; Cmd+C / Ctrl+Shift+C copies to CLIPBOARD. Opt-in `copy_on_select` ALSO writes CLIPBOARD on every selection (off by default; matches xterm/gnome/iTerm/etc.)
 
 ### Font / glyph system
 - OS-backed font discovery — CoreText on macOS, fontconfig + FreeType on Linux

@@ -9,11 +9,17 @@ import (
 	"github.com/creack/pty"
 )
 
-// spawnPTY starts the configured shell inside a new PTY.
-// Returns the PTY file descriptor and the child process cmd.
-func spawnPTY(cfg *config.Config, cols, rows uint16) (*os.File, *exec.Cmd, error) {
+// spawnPTY starts the configured shell inside a new PTY. cwd is the
+// working directory for the shell; empty string lets exec inherit the
+// xerotty process's CWD (the usual "open new tab from launcher"
+// behavior). Set to the parent tab's CWD when cfg.Tabs.InheritCWD is
+// on so "New Tab" picks up wherever the user is in the previous tab.
+func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string) (*os.File, *exec.Cmd, error) {
 	shell := cfg.DetectShell()
 	cmd := exec.Command(shell)
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 
 	// Build environment
 	cmd.Env = append(os.Environ(),

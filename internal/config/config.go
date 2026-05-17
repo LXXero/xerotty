@@ -185,7 +185,11 @@ func Default() Config {
 			Opener:    "xdg-open",
 		},
 		Clipboard: ClipboardConfig{
-			CopyOnSelect:           true,
+			// Default off to match xterm / gnome-terminal / xfce4-terminal
+			// / iTerm2 / kitty / alacritty: selection updates PRIMARY only,
+			// CLIPBOARD only changes via explicit Copy. Users who want the
+			// "auto-copy on select" behavior opt in via prefs.
+			CopyOnSelect:           false,
 			PasteOnMiddleClick:     true,
 			TrimTrailingWhitespace: true,
 			UnsafePaste: UnsafePasteConfig{
