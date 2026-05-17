@@ -49,8 +49,7 @@ type App struct {
 	baseFontSize     float32 // font size the atlas was built at
 	baseCellW        float32 // cell width at base font size
 	baseCellH        float32 // cell height at base font size
-	pendingFontFace  bool    // rebuild font atlas at start of next frame
-	pendingRemeasure bool    // re-run cell measurement next frame (e.g. after font swap)
+	pendingFontFace bool // rebuild font atlas at start of next frame
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -803,8 +802,13 @@ func (a *App) idleTimeout() int {
 			return 16
 		}
 	}
-	if a.pendingFontFace || a.pendingRemeasure {
+	if a.pendingFontFace {
 		return 16
+	}
+	for _, w := range a.windows {
+		if w.pendingRemeasure {
+			return 16
+		}
 	}
 	timeout := 5000
 	if a.cfg.Appearance.CursorBlink {
@@ -868,7 +872,16 @@ func (a *App) beforeRender() {
 			}
 		}
 	}
-	a.pendingRemeasure = true
+	// Each Window measures cells in its own frame() — every Window can
+	// be at a different font zoom, so a single shared "re-measure now"
+	// flag would be consumed by whichever Window framed first and
+	// stamp those metrics as if they applied everywhere. Per-Window
+	// flags let each Window run its own measureCell() against its own
+	// glyph cache; the first to consume also sets the app-wide
+	// baseCellW/H (scaled back from its local fontSize).
+	for _, w := range a.windows {
+		w.pendingRemeasure = true
+	}
 }
 
 func (a *Window) frame() {
@@ -1007,17 +1020,26 @@ func (a *Window) frame() {
 	// installed in Run() right after the backend is created.
 
 	// Re-measure cell metrics after a font face swap (atlas was rebuilt).
-	// Done once, then resize terminals to fit the new cell dimensions.
-	if a.app.pendingRemeasure {
-		a.app.pendingRemeasure = false
+	// Each Window does its own measurement against its own glyph cache
+	// because Windows can be at different zoom levels — if this Window
+	// is zoomed 2x, metrics.Width is 2x what baseCellW should be, so
+	// divide by this Window's scale before stamping the app-wide base.
+	if a.pendingRemeasure {
+		a.pendingRemeasure = false
 		if metrics := a.measureCell(); metrics.Width >= 1 && metrics.Height >= 1 {
-			a.app.baseCellW = metrics.Width
-			a.app.baseCellH = metrics.Height
+			scale := float32(1)
+			if a.app.baseFontSize > 0 && a.fontSize > 0 {
+				scale = a.fontSize / a.app.baseFontSize
+			}
+			if scale > 0 {
+				a.app.baseCellW = metrics.Width / scale
+				a.app.baseCellH = metrics.Height / scale
+			}
 			a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
-			a.renderer.FontSize = a.app.baseFontSize
+			a.renderer.FontSize = a.fontSize
 			a.resizeTerminals()
-			setContentResizeIncrements(a.cellW, a.cellH)
+			setContentResizeIncrements(a.sdlWindowHandle(), a.cellW, a.cellH)
 		}
 	}
 
@@ -1096,9 +1118,12 @@ func (a *Window) frame() {
 		a.handleMouseSelection()
 	}
 
-	// Detect links under mouse cursor
+	// Detect links under mouse cursor. Gate the whole pass on
+	// Links.Enabled — when off, hoveredLink stays nil so the underline
+	// decoration in the renderer disappears and the click handlers
+	// below are no-ops by virtue of `hoveredLink != nil` checks.
 	a.hoveredLink = nil
-	if a == a.app.active {
+	if a == a.app.active && a.app.cfg.Links.Enabled {
 		if tab := a.tabs.Active(); tab != nil {
 			mousePos := imgui.MousePos()
 			col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
@@ -1405,7 +1430,11 @@ func (w *Window) processKeys() {
 	if tab != nil && tab.Terminal != nil {
 		appCursor = tab.Terminal.AppCursorMode()
 	}
-	events := input.PollKeys(w.app.cfg.Keybinds, appCursor)
+	events := input.PollKeys(w.app.cfg.Keybinds, appCursor, input.KeyOptions{
+		Backspace:  w.app.cfg.Keys.Backspace,
+		Delete:     w.app.cfg.Keys.Delete,
+		ShiftEnter: w.app.cfg.Keys.ShiftEnter,
+	})
 	actionDispatched := false
 
 	for _, ev := range events {
@@ -1592,7 +1621,12 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "fullscreen":
 		w.fullscreen = !w.fullscreen
-		sdlSetFullscreen(w.fullscreen)
+		// Multi-window: target THIS Window's SDL_Window, not the
+		// hidden carrier. SDL_GL_GetCurrentWindow() would silently
+		// fullscreen the invisible carrier and look like a no-op.
+		if h := w.sdlWindowHandle(); h != 0 {
+			sdlSetFullscreen(h, w.fullscreen)
+		}
 	case "scroll_page_up":
 		if tab := w.tabs.Active(); tab != nil {
 			s := w.getScroll(tab.ID)
@@ -2425,7 +2459,11 @@ func (w *Window) renderPasteDialog() {
 		return
 	}
 
-	center := imgui.Vec2{X: float32(w.width) / 2, Y: float32(w.height) / 2}
+	// Center in the OWNING Window's content rect in absolute desktop
+	// coords. width/height alone are Window-local; under multi-viewport
+	// the popup needs the desktop position of THIS Window's content
+	// origin or it would land on the (0,0) of the hidden carrier.
+	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
 	if imgui.BeginPopupModalV("Unsafe Paste", nil, imgui.WindowFlagsAlwaysAutoResize) {
@@ -2466,7 +2504,9 @@ func (w *Window) renderRenameDialog() {
 		return
 	}
 
-	center := imgui.Vec2{X: float32(w.width) / 2, Y: float32(w.height) / 2}
+	// Center in the OWNING Window's content rect (see renderPasteDialog
+	// for why width/height alone aren't enough under multi-viewport).
+	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
 	if imgui.BeginPopupModalV("Rename Tab", nil, imgui.WindowFlagsAlwaysAutoResize) {
@@ -2546,6 +2586,18 @@ func (w *Window) handleMouseSelection() {
 	inTerminal := wmY >= w.tabBarH && !onScrollbar && !onSearch && !w.sbDragging && !imguiCaptured
 
 	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {
+		// Links.DoubleClick: open the URL under the cursor on
+		// double-click. Wins over the word-select default — the user
+		// who turned this on wanted clicks on links to navigate, not
+		// select. Plain double-click on non-link text falls through
+		// to the word/whitespace selection paths.
+		if w.hoveredLink != nil && w.app.cfg.Links.Enabled && w.app.cfg.Links.DoubleClick {
+			openURL(w.hoveredLink.URL, w.app.cfg.Links.Opener)
+			w.lastDblClickTime = imgui.Time()
+			w.lastDblClickRow = row
+			w.lastDblClickCol = col
+			return
+		}
 		scrollOff := 0
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
@@ -2619,8 +2671,11 @@ func (w *Window) handleMouseSelection() {
 	}
 
 	// Middle-click pastes from PRIMARY selection (terminal area only, not on
-	// ImGui windows like prefs/search).
-	if imgui.IsMouseClickedBool(imgui.MouseButtonMiddle) {
+	// ImGui windows like prefs/search). Gated on Clipboard.PasteOnMiddleClick
+	// — when off, middle-click is a no-op (some users rebind their X11
+	// middle button or don't want accidental pastes from the primary
+	// selection while reading).
+	if w.app.cfg.Clipboard.PasteOnMiddleClick && imgui.IsMouseClickedBool(imgui.MouseButtonMiddle) {
 		if wmY >= w.tabBarH && !imguiCaptured {
 			text, err := input.PrimaryRead()
 			if err == nil && text != "" {

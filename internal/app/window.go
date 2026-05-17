@@ -86,6 +86,15 @@ type Window struct {
 	lastTabBarH        float32
 	skipDisplaySync    int
 
+	// pendingRemeasure means this Window needs to re-run measureCell()
+	// next frame — e.g. after the font atlas was rebuilt by
+	// beforeRender. Per-Window because each Window can be at a
+	// different font zoom, so the cellW/H produced by a measurement on
+	// Window A doesn't apply to Window B. Whichever Window consumes
+	// the flag first also updates the app-wide baseCellW/H, scaled
+	// back from the Window's local fontSize via its scale ratio.
+	pendingRemeasure bool
+
 	// Multi-window plumbing. Every Window is equal: the cimgui-go
 	// primary SDL_Window stays hidden as an invisible "carrier" for
 	// the ImGui context, and every user-visible Window renders inside
@@ -182,6 +191,30 @@ func (w *Window) viewport() *imgui.Viewport {
 		return w.imViewport
 	}
 	return imgui.MainViewport()
+}
+
+// sdlWindowHandle returns the SDL window ID (uint32, widened to
+// uintptr for cgo) for this Window's OS window. ImGui's SDL2 backend
+// stores the WindowID — not the SDL_Window* pointer — in
+// ImGuiViewport::PlatformHandle (changed upstream 2024-08-19 to avoid
+// dangling pointer races on window destroy). The C helpers that
+// receive this value call SDL_GetWindowFromID to recover the actual
+// SDL_Window*.
+//
+// Used by the SDL helpers that need to target the visible OS window
+// (fullscreen toggle, macOS cell-snap resize increments) instead of
+// the hidden cimgui-go carrier window which is what
+// SDL_GL_GetCurrentWindow() returns.
+//
+// Returns 0 if the viewport hasn't been created yet (very early in
+// startup, before the first BeginV call). Callers should treat 0 as
+// "skip the operation" rather than crash.
+func (w *Window) sdlWindowHandle() uintptr {
+	vp := w.viewport()
+	if vp == nil {
+		return 0
+	}
+	return vp.PlatformHandle()
 }
 
 // bgDrawList returns the draw list terminal cells / cursor /

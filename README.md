@@ -97,7 +97,7 @@ PTY (creack/pty)  →  SafeEmulator (charmbracelet/x/vt)  →  ImDrawList (cimgu
   keyboard / mouse  ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←  SDL2 window
 ```
 
-Two goroutines per terminal (PTY reader, emulator-response reader); main thread locked to the OS thread for SDL2/OpenGL drives the ImGui frame loop. Each "New Window" is a fresh OS process — no shared state, no IPC.
+Two goroutines per terminal (PTY reader, emulator-response reader); main thread locked to the OS thread for SDL2/OpenGL drives the ImGui frame loop. "New Window" spawns an additional in-process OS window via ImGui multi-viewport — one process, one ImGui context, N visible windows sharing font caches and config. See [`docs/MULTI_WINDOW_REFACTOR.md`](docs/MULTI_WINDOW_REFACTOR.md) for the architecture.
 
 Full architecture, package responsibilities, and rendering pipeline detail in [`SPEC.md`](SPEC.md).
 

@@ -11,10 +11,17 @@
 // cursor movement).
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
+#include <stdint.h>
 #import <Cocoa/Cocoa.h>
 
-void xerottySetContentResizeIncrements(double w, double h) {
-	SDL_Window *win = SDL_GL_GetCurrentWindow();
+// Caller passes the SDL window ID (uint32) that ImGui's SDL2 backend
+// stores in ImGuiViewport::PlatformHandle — multi-viewport means each
+// Window has its own SDL_Window and SDL_GL_GetCurrentWindow() would
+// return the hidden cimgui-go carrier instead, leaving the visible
+// window's drag-resize unsnapped. SDL_GetWindowFromID converts the ID
+// back to the SDL_Window* we need for SDL_GetWindowWMInfo.
+void xerottySetContentResizeIncrementsOn(uintptr_t window_id, double w, double h) {
+	SDL_Window *win = SDL_GetWindowFromID((Uint32)window_id);
 	if (!win) return;
 	SDL_SysWMinfo info;
 	SDL_VERSION(&info.version);

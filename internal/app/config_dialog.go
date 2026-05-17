@@ -439,18 +439,31 @@ func (a *Window) applyPreferences() {
 
 	a.prefDialog.applyTo(&a.app.cfg)
 
-	// Apply theme change.
+	// Apply theme change. The cimgui-go backend is shared across all
+	// Windows (multi-viewport pop-out reuses the carrier's GL context),
+	// so SetBgColor and updateEventLoopBg are process-wide and only run
+	// once. The renderer is per-Window though — loop so theme switches
+	// from prefs in Window A still re-color Windows B, C, ...
 	if t, err := themes.Load(a.app.cfg.Appearance.Theme); err == nil {
 		applyColorOverrides(&t, &a.app.cfg)
-		a.renderer.Theme = t
 		a.app.theme = t
+		for _, win := range a.app.windows {
+			if win.renderer != nil {
+				win.renderer.Theme = t
+			}
+		}
 		bgR := float32((t.Background>>0)&0xFF) / 255.0
 		bgG := float32((t.Background>>8)&0xFF) / 255.0
 		bgB := float32((t.Background>>16)&0xFF) / 255.0
 		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 		updateEventLoopBg(bgR, bgG, bgB)
 	}
-	a.renderer.BoldIsBright = a.app.cfg.Appearance.BoldIsBright
+	// BoldIsBright also lives on each Window's renderer.
+	for _, win := range a.app.windows {
+		if win.renderer != nil {
+			win.renderer.BoldIsBright = a.app.cfg.Appearance.BoldIsBright
+		}
+	}
 
 	faceChanged := a.app.cfg.Font.Family != prevFamily || a.app.cfg.Font.Path != prevPath
 	if faceChanged {
@@ -480,10 +493,15 @@ func (a *Window) renderPreferences() {
 		return
 	}
 
-	center := imgui.Vec2{X: float32(a.width) / 2, Y: float32(a.height) / 2}
-	if main := imgui.MainViewport(); main != nil {
-		pos := main.Pos()
-		size := main.Size()
+	// Center on the OWNING Window's viewport — not MainViewport, which
+	// is the hidden cimgui-go carrier and would put prefs at the
+	// carrier's (likely 0,0 or wherever the OS placed the invisible
+	// window) position. Each Window has its own popped-out viewport
+	// captured into imViewport during its frame's BeginV.
+	center := imgui.Vec2{X: a.contentOriginX + float32(a.width)/2, Y: a.contentOriginY + float32(a.height)/2}
+	if vp := a.viewport(); vp != nil {
+		pos := vp.Pos()
+		size := vp.Size()
 		center = imgui.Vec2{X: pos.X + size.X*0.5, Y: pos.Y + size.Y*0.5}
 	}
 
@@ -928,21 +946,16 @@ func (a *Window) renderPrefScrollback() {
 	d := &a.prefDialog
 	w := float32(200)
 
-	imgui.Text("Scrollback Mode")
+	// Scrollback Mode / Disk Directory / Unlimited are persisted in
+	// TOML for forward-compat with planned disk-backed scrollback, but
+	// nothing in the scrollback package consumes them yet — only
+	// in-memory mode is implemented. Hiding the Mode dropdown and the
+	// DiskDir input here avoids showing options that silently do
+	// nothing. Reintroduce both when scrollback.go grows the disk /
+	// unlimited backends.
+	imgui.Text("Lines")
 	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##sbmode", &d.sbModeIdx, prefSBModes, int32(len(prefSBModes)))
-
-	if d.sbModeIdx != 2 { // not unlimited
-		imgui.Text("Lines")
-		imgui.SetNextItemWidth(w)
-		imgui.InputInt("##sblines", &d.sbLines)
-	}
-
-	if d.sbModeIdx == 1 { // disk
-		imgui.Text("Disk Directory")
-		imgui.SetNextItemWidth(300)
-		imgui.InputTextWithHint("##diskdir", "/tmp/xerotty", &d.diskDir, 0, nil)
-	}
+	imgui.InputInt("##sblines", &d.sbLines)
 
 	imgui.Separator()
 

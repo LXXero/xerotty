@@ -30,12 +30,14 @@ type Terminal struct {
 	cmd      *exec.Cmd
 	DataCh   chan struct{} // signals new data for rendering (buffered, cap 1)
 	OnTitle  func(string)  // called when OSC 0/2 sets window title
-	cols     int
-	rows     int
-	closed   bool
-	ExitCode int  // exit code of child process (-1 = still running or unknown)
-	mu       sync.Mutex
-	done     chan struct{}
+	cols        int
+	rows        int
+	closed      bool // Close() has run and released resources
+	childExited bool // child process has exited (Wait() returned)
+	ExitCode    int  // exit code of child process (-1 = still running or unknown)
+	mu          sync.Mutex
+	closeOnce   sync.Once
+	done        chan struct{}
 
 	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
 	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
@@ -129,22 +131,23 @@ func (t *Terminal) Resize(cols, rows int) {
 	t.Emu.Resize(cols, rows)
 }
 
-// Close shuts down the terminal: kills the child, closes the PTY, stops goroutines.
+// Close shuts down the terminal: kills the child, closes the PTY, stops
+// goroutines. Idempotent via sync.Once so the natural-exit path
+// (waitChild already returned, child reaped) still releases the PTY fd
+// when the user later closes the tab.
 func (t *Terminal) Close() {
-	t.mu.Lock()
-	if t.closed {
+	t.closeOnce.Do(func() {
+		t.mu.Lock()
+		t.closed = true
 		t.mu.Unlock()
-		return
-	}
-	t.closed = true
-	t.mu.Unlock()
 
-	close(t.done)
-	if t.cmd.Process != nil {
-		_ = t.cmd.Process.Kill()
-	}
-	_ = t.ptmx.Close()
-	// waitChild goroutine handles cmd.Wait()
+		close(t.done)
+		if t.cmd.Process != nil {
+			_ = t.cmd.Process.Kill()
+		}
+		_ = t.ptmx.Close()
+		// waitChild goroutine handles cmd.Wait()
+	})
 }
 
 // AppCursorMode reports whether DECCKM is currently set, meaning arrow
@@ -153,14 +156,21 @@ func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
 }
 
-// IsClosed returns true if the terminal has been closed.
+// IsClosed reports whether this Terminal is no longer usable — either
+// because Close() ran or because the child process exited on its own.
+// Used by tabs.CheckClosed to mark a tab as "Closed" in the UI so the
+// on-child-exit policy (close/hold) can apply.
 func (t *Terminal) IsClosed() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.closed
+	return t.closed || t.childExited
 }
 
 // waitChild waits for the child process to exit and records its exit code.
+// Sets childExited (not closed) so a later Close() call still runs the
+// cleanup once — otherwise the PTY fd, done channel, and any other
+// per-tab resources would leak whenever a tab exits naturally before the
+// user closes it explicitly.
 func (t *Terminal) waitChild() {
 	err := t.cmd.Wait()
 	t.mu.Lock()
@@ -172,7 +182,7 @@ func (t *Terminal) waitChild() {
 	} else {
 		t.ExitCode = 1
 	}
-	t.closed = true
+	t.childExited = true
 }
 
 // readPTY reads from the PTY and writes to the SafeEmulator.

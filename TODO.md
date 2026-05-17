@@ -13,10 +13,10 @@
 - [x] on_child_exit — close / hold / hold_on_error
 - [x] Shift+Enter — newline or escape sequence (configurable)
 - [x] new tab inherits CWD — `inherit_cwd` config option
-- [x] disk scrollback — `[scrollback].mode = "memory" | "disk" | "unlimited"` with `disk_dir`
 - [x] select_all / clear_scrollback / reset_terminal actions
 - [x] config dialog (preferences UI; flat font picker, theme picker, keybinds, clipboard, links, etc.)
 - [x] context menu submenus — `[[menu.items.submenu]]` nested arrays in TOML
+- [x] multi-window — single process, ImGui multi-viewport, one Dock icon for N OS windows
 
 ### Selection
 - [x] double-click word selection (3-class: word / whitespace / punctuation)
@@ -47,6 +47,7 @@
 ## Open
 
 ### High priority
+- [ ] **disk scrollback** — `[scrollback].mode = "memory" | "disk" | "unlimited"` with `disk_dir`. TOML schema + prefs persistence exist; backend in `internal/scrollback` is still memory-only (Mode/DiskDir hidden from prefs UI until wired)
 - [ ] **image paste / Kitty graphics protocol** — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
 - [ ] **scrollback search** — refresh on scroll, prefix highlight (partially scaffolded; check what works)
 

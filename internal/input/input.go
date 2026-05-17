@@ -14,9 +14,23 @@ type KeyEvent struct {
 	Action string // keybind action name, empty if not a keybind
 }
 
+// KeyOptions configures per-key behavior the prefs UI exposes:
+// what Backspace / Delete send, and whether Shift+Enter is a plain
+// newline or a distinguishable escape sequence. Mirrors cfg.Keys so
+// the app layer can just hand the struct through.
+//
+// Empty strings fall back to terminal-conventional defaults
+// (ascii_del / vt_sequence / newline) so callers don't have to
+// initialize the struct when they don't care.
+type KeyOptions struct {
+	Backspace  string // "ascii_del" (0x7F, default) | "ascii_bs" (0x08)
+	Delete     string // "vt_sequence" (\x1b[3~, default) | "ascii_del" (0x7F)
+	ShiftEnter string // "newline" (\n, default) | "escape_sequence" (\x1bOM)
+}
+
 // PollKeys checks ImGui's key state and returns all pending key events.
 // This replaces the broken SDL key callback approach.
-func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
+func PollKeys(keybinds map[string]string, appMode bool, opts KeyOptions) []KeyEvent {
 	ctrl := imgui.IsKeyDown(imgui.ModCtrl)
 	shift := imgui.IsKeyDown(imgui.ModShift)
 	alt := imgui.IsKeyDown(imgui.ModAlt)
@@ -113,9 +127,35 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 
 	enterFn := func(_, shift, _, _ bool) KeyEvent {
 		if shift {
+			// "newline" (default): \n — distinguishable from plain
+			// Enter's \r so apps like REPLs / chat UIs can detect
+			// shift+enter as "soft newline" rather than "submit".
+			// "escape_sequence": \x1bOM — the VT100 keypad-Enter
+			// sequence; rarely the desired default but some users
+			// bind it for app-specific shortcuts.
+			if opts.ShiftEnter == "escape_sequence" {
+				return KeyEvent{Bytes: []byte("\x1bOM")}
+			}
 			return KeyEvent{Bytes: []byte("\n")}
 		}
 		return KeyEvent{Bytes: []byte("\r")}
+	}
+	// Backspace: most modern terminfo entries (xterm-256color, etc.)
+	// expect 0x7F so the shell's "erase" character matches what kbs=
+	// reports — that's why "ascii_del" is the default. Some legacy
+	// curses apps / very old hosts want 0x08 (^H) instead, which is
+	// what "ascii_bs" emits.
+	bsByte := byte(0x7f)
+	if opts.Backspace == "ascii_bs" {
+		bsByte = 0x08
+	}
+	// Delete: \x1b[3~ is the xterm-style VT sequence every modern
+	// editor knows. Some users prefer the simpler 0x7F so Delete acts
+	// the same as Backspace (handy on keyboards where Backspace is
+	// remapped or absent, like old-school Mac layouts).
+	delBytes := []byte("\x1b[3~")
+	if opts.Delete == "ascii_del" {
+		delBytes = []byte{0x7f}
 	}
 	specials := []specialKey{
 		// Enter / Backspace / Tab: terminals routinely auto-repeat
@@ -123,7 +163,7 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 		{imgui.KeyEnter, true, enterFn},
 		{imgui.KeyKeypadEnter, true, enterFn},
 		{imgui.KeyBackspace, true, func(_, _, _, _ bool) KeyEvent {
-			return KeyEvent{Bytes: []byte{0x7f}}
+			return KeyEvent{Bytes: []byte{bsByte}}
 		}},
 		{imgui.KeyTab, true, func(_, shift, _, _ bool) KeyEvent {
 			if shift {
@@ -143,7 +183,7 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 			return KeyEvent{Bytes: []byte{0x1b}}
 		}},
 		{imgui.KeyDelete, true, func(_, _, _, _ bool) KeyEvent {
-			return KeyEvent{Bytes: []byte("\x1b[3~")}
+			return KeyEvent{Bytes: delBytes}
 		}},
 		{imgui.KeyInsert, true, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte("\x1b[2~")}
