@@ -18,11 +18,20 @@ import (
 	"github.com/LXXero/xerotty/internal/terminal"
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
+	"os"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// disableMirror is a runtime kill switch for the macOS mouse-event
+// mirror — set XEROTTY_DISABLE_MIRROR=1 to shut it off entirely. Kept
+// because the mirror is the kind of fragile workaround we want a way
+// to disable if a future SDL/cimgui-go upgrade fixes the underlying
+// Cocoa event-drop bug and the mirror becomes net-negative.
+var disableMirror = os.Getenv("XEROTTY_DISABLE_MIRROR") != ""
 
 func init() {
 	runtime.LockOSThread()
@@ -45,6 +54,16 @@ type App struct {
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
+
+	// prevOsLeftDown is the OS-level left mouse button state observed
+	// at the end of the previous frame's mouse-mirror check. The mirror
+	// injects events on TRANSITIONS of this value rather than diffing
+	// against ImGui's IsMouseDown — IsMouseDown can lag behind the
+	// real OS state during macOS focus shifts (the exact scenario the
+	// mirror exists to compensate for), which causes the mirror to
+	// skip injection when ImGui's view spuriously already matches a
+	// half-applied OS state.
+	prevOsLeftDown bool
 }
 
 // New creates a new App with the given config. The initial Window
@@ -101,6 +120,155 @@ func (a *App) reapClosedWindows() {
 	}
 }
 
+// mouseOverOwnedContent returns true iff the OS-level cursor is
+// currently inside the content rect of any visible Window in this
+// App. Used by the macOS mouse-mirror to gate synthetic DOWN
+// injection: we only inject if the user clicked on something this
+// app owns, otherwise a click on the desktop or another app would
+// generate a phantom terminal selection here.
+//
+// Primary signal: ImGui's MouseHoveredViewport, which is the
+// platform-reported viewport-under-cursor (set each frame by the
+// SDL backend). If ImGui has a hovered viewport and it's one of
+// ours, return true.
+//
+// Fallback: iterate our Window list and bounds-check the OS-level
+// cursor against each viewport's Pos/Size. We never used to need
+// the fallback before realizing MouseHoveredViewport can briefly
+// be 0 right after a focus shift (the very moment the mirror is
+// trying to compensate for).
+// mouseOverOwnedContentPos: like mouseOverOwnedContent, but also
+// returns the mouse pos we determined to be "inside one of our
+// viewports" — used by the mirror to feed ImGui a valid AddMousePosEvent
+// when ImGui's own MousePos is sentinel (-FLT_MAX) during a focus
+// shift. Without that, a synthetic DOWN lands at -FLT_MAX, the hit
+// test misses every widget, and the click does nothing.
+func (a *App) mouseOverOwnedContentPos() (bool, imgui.Vec2) {
+	ok := a.mouseOverOwnedContent()
+	if !ok {
+		return false, imgui.Vec2{}
+	}
+	// Recompute the in-viewport position so callers can feed it to
+	// ImGui. Prefer ImGui's tracked MousePos when valid; fall back
+	// to SDL's OS-level pos (raw or scaled — whichever fits a
+	// viewport).
+	mp := imgui.MousePos()
+	const noMouseSentinel = -3.4e+37
+	if mp.X > noMouseSentinel {
+		return true, mp
+	}
+	gx, gy := sdlhack.GlobalMousePos()
+	rawPos := imgui.Vec2{X: float32(gx), Y: float32(gy)}
+	fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+	if fbScale < 1 {
+		fbScale = 1
+	}
+	scaledPos := imgui.Vec2{X: rawPos.X / fbScale, Y: rawPos.Y / fbScale}
+	for _, w := range a.windows {
+		if w.imViewport == nil {
+			continue
+		}
+		pos := w.imViewport.Pos()
+		size := w.imViewport.Size()
+		if rawPos.X >= pos.X && rawPos.X < pos.X+size.X &&
+			rawPos.Y >= pos.Y && rawPos.Y < pos.Y+size.Y {
+			return true, rawPos
+		}
+		if scaledPos.X >= pos.X && scaledPos.X < pos.X+size.X &&
+			scaledPos.Y >= pos.Y && scaledPos.Y < pos.Y+size.Y {
+			return true, scaledPos
+		}
+	}
+	return true, rawPos // shouldn't reach (mouseOverOwnedContent said ok), but be safe
+}
+
+func (a *App) mouseOverOwnedContent() bool {
+	// Primary: ImGui's MouseHoveredViewport (platform-reported
+	// viewport the cursor is over).
+	hovered := imgui.CurrentIO().MouseHoveredViewport()
+	if hovered != 0 {
+		for _, w := range a.windows {
+			if w.imViewport != nil && w.imViewport.ID() == hovered {
+				return true
+			}
+		}
+	}
+	// Bounds-check the mouse pos against each viewport rect. Use
+	// ImGui's MousePos if it has a real value, otherwise fall back
+	// to SDL_GetGlobalMouseState. ImGui sets MousePos to -FLT_MAX
+	// when the app has no mouse focus (e.g. mid-Cocoa-focus-shift),
+	// which is *exactly* when the mirror needs to compensate.
+	mp := imgui.MousePos()
+	const noMouseSentinel = -3.4e+37 // approximates -FLT_MAX comparison
+	if mp.X <= noMouseSentinel {
+		gx, gy := sdlhack.GlobalMousePos()
+		mp = imgui.Vec2{X: float32(gx), Y: float32(gy)}
+	}
+	// SDL on macOS sometimes returns physical pixels for
+	// SDL_GetGlobalMouseState even though viewport.Pos/Size are in
+	// logical pixels — observed in practice as (~2× the expected
+	// values) on Retina. Compute a scale-corrected pos too so the
+	// bounds check accepts either unit if it lands inside a viewport.
+	fbScale := imgui.CurrentIO().DisplayFramebufferScale().X
+	if fbScale < 1 {
+		fbScale = 1
+	}
+	mpScaled := imgui.Vec2{X: mp.X / fbScale, Y: mp.Y / fbScale}
+	for _, w := range a.windows {
+		if w.imViewport == nil {
+			continue
+		}
+		pos := w.imViewport.Pos()
+		size := w.imViewport.Size()
+		inRaw := mp.X >= pos.X && mp.X < pos.X+size.X &&
+			mp.Y >= pos.Y && mp.Y < pos.Y+size.Y
+		inScaled := mpScaled.X >= pos.X && mpScaled.X < pos.X+size.X &&
+			mpScaled.Y >= pos.Y && mpScaled.Y < pos.Y+size.Y
+		if inRaw || inScaled {
+			return true
+		}
+	}
+	return false
+}
+
+// startMouseMirrorWakePoller keeps the event-driven run loop responsive to
+// macOS mouse-button edges even when SDL drops the underlying Cocoa event.
+// It only pushes a wake event; the actual ImGui injection still happens on
+// the main thread from Window.frame().
+func (a *App) startMouseMirrorWakePoller() func() {
+	if runtime.GOOS != "darwin" || disableMirror {
+		return func() {}
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		prev := sdlhack.LeftButtonPhysicalDown()
+		ticker := time.NewTicker(30 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				down := sdlhack.LeftButtonPhysicalDown()
+				if down != prev {
+					prev = down
+					wakeEventLoop()
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
 // spawnWindow adds a new Window to this App in the same process. The
 // secondary Window shares the cimgui-go SDL backend + ImGui context
 // + GL textures with the main Window, but has its own tabs manager,
@@ -132,6 +300,16 @@ func (a *App) spawnWindow() {
 	w.fontSize = parent.fontSize
 	w.cellW = parent.cellW
 	w.cellH = parent.cellH
+	// Cascade the new Window's initial position so it doesn't open
+	// exactly on top of its parent. Use the parent's current OS-window
+	// position plus a small offset — same pattern macOS/iTerm2 use for
+	// new-window placement.
+	if parent.imViewport != nil {
+		pp := parent.imViewport.Pos()
+		w.initialPosX = pp.X + 30
+		w.initialPosY = pp.Y + 30
+		w.hasInitialPos = true
+	}
 	// Geometry: configured Window.Columns × Window.Rows, NOT the
 	// parent's width/height. New Windows always start with a single
 	// tab so there's no tab bar; copying the parent's dimensions
@@ -344,9 +522,17 @@ func (a *App) Run() error {
 			windowClass.Destroy()
 			// Position outside the main viewport the first time so
 			// the auto-merge logic pops it out; after that ImGui
-			// remembers per-window position.
+			// remembers per-window position. spawnWindow sets
+			// hasInitialPos with a cascaded offset from the parent's
+			// current OS position so new windows don't stack on top
+			// of the parent.
+			posX, posY := float32(100), float32(100)
+			if win.hasInitialPos {
+				posX, posY = win.initialPosX, win.initialPosY
+				win.hasInitialPos = false
+			}
 			imgui.SetNextWindowPosV(
-				imgui.Vec2{X: 100, Y: 100},
+				imgui.Vec2{X: posX, Y: posY},
 				imgui.CondFirstUseEver, imgui.Vec2{X: 0, Y: 0})
 			// Size: CondFirstUseEver normally so user drag-resizes
 			// stick. After a font-zoom that wants to maintain
@@ -369,9 +555,16 @@ func (a *App) Run() error {
 			//   override above) is the user-facing chrome; the
 			//   ImGui window inside is just a transparent host
 			//   for our terminal draw list.
+			// NoMove: with NoTitleBar set, ImGui makes the entire window
+			// drag-to-move. That makes clicks on the scrollbar (or any
+			// terminal cell) start a window move. The OS title bar
+			// (from the WindowClass viewport-flag override above)
+			// handles window movement; the wrapper must not.
 			flags := imgui.WindowFlagsNoDocking |
 				imgui.WindowFlagsNoSavedSettings |
 				imgui.WindowFlagsNoTitleBar |
+				imgui.WindowFlagsNoMove |
+				imgui.WindowFlagsNoResize |
 				imgui.WindowFlagsNoScrollbar |
 				imgui.WindowFlagsNoScrollWithMouse |
 				imgui.WindowFlagsNoBackground |
@@ -393,8 +586,25 @@ func (a *App) Run() error {
 			// tracks the active tab without invalidating the ImGui
 			// window's identity / saved state.
 			beginName := win.titleForWindow() + "###" + win.imguiName
-			if imgui.BeginV(beginName, nil, flags) {
+			shouldRenderFrame := imgui.BeginV(beginName, nil, flags)
+			// Pop the wrapper-only styles IMMEDIATELY after Begin so
+			// they only affect the wrapper window (its content rect
+			// is set by ImGui from the at-Begin-time style). Without
+			// this early pop, the styles stay on the stack through
+			// the entire frame body, and any popup/menu/dialog
+			// opened inside frame() inherits WindowPadding=0 — making
+			// the right-click context menu items have zero padding.
+			imgui.PopStyleVarV(2)
+			if shouldRenderFrame {
 				win.imViewport = imgui.WindowViewport()
+				// Capture the wrapper's actual content origin (NOT
+				// viewport.Pos — see contentOriginY comment on
+				// Window). CursorScreenPos right after Begin is the
+				// authoritative top-left of the area we're allowed
+				// to draw into.
+				cp := imgui.CursorScreenPos()
+				win.contentOriginX = cp.X
+				win.contentOriginY = cp.Y
 				// RootAndChildWindows so a click on the tab bar /
 				// search overlay (separate ImGui windows nested
 				// inside the wrapper's frame()) still counts as
@@ -406,7 +616,6 @@ func (a *App) Run() error {
 				win.frame()
 			}
 			imgui.End()
-			imgui.PopStyleVarV(2)
 			// Use viewport.PlatformRequestClose to detect the OS
 			// close button — without a TitleBar the `&open` bool
 			// passed to BeginV doesn't reliably propagate the close
@@ -447,6 +656,9 @@ func (a *App) Run() error {
 	// blink etc.) and the user sees up to ~500ms latency on incoming
 	// bytes.
 	terminal.Wake = wakeEventLoop
+
+	stopMouseWakePoller := a.startMouseMirrorWakePoller()
+	defer stopMouseWakePoller()
 
 	// Main loop — event-driven via SDL_WaitEventTimeout. CPU goes to
 	// kernel-sleep when nothing's happening; PTY arrival, mouse, keys,
@@ -559,14 +771,14 @@ func (a *App) idleTimeout() int {
 	if a.pendingFontFace || a.pendingRemeasure {
 		return 16
 	}
+	timeout := 5000
 	if a.cfg.Appearance.CursorBlink {
-		rate := a.cfg.Appearance.BlinkRate
-		if rate <= 0 {
-			rate = 530
+		timeout = a.cfg.Appearance.BlinkRate
+		if timeout <= 0 {
+			timeout = 530
 		}
-		return rate
 	}
-	return 5000
+	return timeout
 }
 
 // beforeRender runs before every NewFrame — both via cimgui-go's
@@ -645,17 +857,40 @@ func (a *Window) frame() {
 	// ImGui IO is global per-context, so injecting events here once
 	// per active frame is correct; injecting from every Window per
 	// frame would fire the same mouse-down event N times.
-	if runtime.GOOS == "darwin" && a == a.app.active {
-		osDown := sdlhack.LeftButtonGlobalDown()
-		imguiDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
+	if runtime.GOOS == "darwin" && a == a.app.active && !disableMirror {
+		osDown := sdlhack.LeftButtonPhysicalDown()
+		// Transition-based mirror: inject events on every OS button
+		// edge, NOT just when ImGui's view diverges from OS state.
+		// Diffing against ImGui's view (the previous approach) misses
+		// edges when ImGui happens to already have the right state
+		// from a partial event delivery — but the click never registers
+		// as "fresh" because MouseClicked needs a transition. Injecting
+		// on every real OS transition guarantees ImGui sees the
+		// transition even if a real event also got through.
 		switch {
-		case osDown && !imguiDown:
-			if sdlhack.MouseInMainContent() && !inLiveResizeWatch() {
+		case osDown && !a.app.prevOsLeftDown:
+			// OS-level press edge. Gate DOWN on "cursor inside one of
+			// our windows" so clicks on window decorations or other
+			// apps don't manufacture phantom terminal selections here.
+			over, inViewportPos := a.app.mouseOverOwnedContentPos()
+			if !inLiveResizeWatch() && over {
+				// If ImGui's MousePos is sentinel (no app focus),
+				// inject a synthetic position FIRST so the DOWN event
+				// hit-tests against a valid coord instead of -FLT_MAX
+				// (which lands on no widget and the click "disappears").
+				mp := imgui.MousePos()
+				const noMouseSentinel = -3.4e+37
+				if mp.X <= noMouseSentinel {
+					imgui.CurrentIO().AddMousePosEvent(inViewportPos.X, inViewportPos.Y)
+				}
 				imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), true)
 			}
-		case !osDown && imguiDown:
+		case !osDown && a.app.prevOsLeftDown:
+			// OS-level release edge. Always inject UP so any drag
+			// that ended outside our windows still clears ImGui state.
 			imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
 		}
+		a.app.prevOsLeftDown = osDown
 	}
 
 	// First frame: measure font metrics and create terminal
@@ -786,10 +1021,7 @@ func (a *Window) frame() {
 	// Only the active Window consumes the global wheel delta.
 	wheel := imgui.CurrentIO().MouseWheel()
 	if wheel != 0 && a == a.app.active {
-		var vpOffY float32
-		if vp := a.viewport(); vp != nil {
-			vpOffY = vp.Pos().Y
-		}
+		vpOffY := a.contentOriginY
 		if a.tabBarH > 0 && imgui.MousePos().Y-vpOffY < a.tabBarH {
 			// Mouse over tab bar — switch tabs
 			if wheel > 0 {
@@ -911,9 +1143,10 @@ func (a *Window) frame() {
 	}
 
 	// Update tab bar height based on tab count and current font size.
-	// imgui.FrameHeight() = FontSize + style.FramePadding.Y*2, which is
-	// exactly the vertical space a tab item needs. Add a few px so the
-	// active-tab underline (drawn at the bottom edge) isn't clipped.
+	// FrameHeight = FontSize + FramePadding.Y*2 — the visible tab item
+	// rect. +2 covers the underline separator drawn just inside Max.y.
+	// With inline tab bar, this is the EXACT bar height — no separate
+	// window with extra internal padding.
 	oldTabBarH := a.tabBarH
 	if a.tabs.Count() > 1 {
 		a.tabBarH = imgui.FrameHeight() + 2
@@ -921,19 +1154,15 @@ func (a *Window) frame() {
 		a.tabBarH = 0
 	}
 	pad := float32(a.app.cfg.Appearance.Padding)
-	// Add the window's viewport offset so terminal lands inside the SDL
-	// window when multi-viewport is enabled (ImGui draw lists are in
-	// absolute desktop coords).
-	var vpOffX, vpOffY float32
-	if vp := a.viewport(); vp != nil {
-		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
-	}
+	// Use the wrapper's actual content origin (captured in
+	// wrappedFrame). With inline tab bar, the BarRect ends at
+	// contentOrigin.Y + FrameHeight; cells render `pad` px below
+	// that, naturally tight against the visible tab bar.
+	vpOffX, vpOffY := a.contentOriginX, a.contentOriginY
 	// Snap render offsets to whole pixels so glyphs don't get sub-pixel-drifted
 	// between rows. Without this, half-block characters (▀ ▄) and continuous
 	// lines (─ │) can develop visible gaps between rows because their AA
-	// rendering shifts at fractional positions. A resize "fixes" this only
-	// because the new offsets happen to land cleanly — pixel-snapping makes
-	// every offset land cleanly.
+	// rendering shifts at fractional positions.
 	a.renderer.OffsetX = float32(math.Floor(float64(vpOffX + pad)))
 	a.renderer.OffsetY = float32(math.Floor(float64(vpOffY + a.tabBarH + pad)))
 	// When tab bar visibility changes (1↔2 tabs), grow/shrink the SDL window
@@ -1507,62 +1736,174 @@ func (w *Window) renderTabBar() {
 		return // Don't show tab bar with single tab
 	}
 
-	// Render the tab bar inline inside the wrapper's Begin/End block
-	// (which frame() is running inside). No nested Begin for the tab
-	// bar — that previously caused z-order shuffles where clicking
-	// the tab bar would hide it behind the wrapper. Now the tab bar
-	// items render into the wrapper's draw list at the position we
-	// move the cursor to, which guarantees they layer on top of the
-	// terminal cells (we draw cells via the wrapper's drawlist
-	// later, but ImGui widgets always render through the wrapper's
-	// own drawlist so they appear above raw drawlist content drawn
-	// before BeginTabBar).
-	var vpX, vpY float32
-	if vp := w.viewport(); vp != nil {
-		vpX, vpY = vp.Pos().X, vp.Pos().Y
-	}
-	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX, Y: vpY}, imgui.CondAlways, imgui.Vec2{})
-	imgui.SetNextWindowSizeV(imgui.Vec2{X: float32(w.width), Y: w.tabBarH}, imgui.CondAlways)
-	// Dedicated tab-bar window so clicks anywhere in the strip route to
-	// ImGui's tab-item hit-tests, not to the wrapper. Both wrapper and
-	// tab-bar have NoBringToFrontOnFocus so clicking either doesn't
-	// shuffle z-order: the wrapper stays beneath (Begin'd first) and
-	// the tab bar stays on top (Begin'd later in the same viewport).
-	tabBarFlags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
-		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
-		imgui.WindowFlagsNoScrollWithMouse | imgui.WindowFlagsNoBackground |
-		imgui.WindowFlagsNoFocusOnAppearing | imgui.WindowFlagsNoNav |
-		imgui.WindowFlagsNoSavedSettings | imgui.WindowFlagsNoBringToFrontOnFocus
-	imgui.PushStyleVarVec2(imgui.StyleVarWindowPadding, imgui.Vec2{X: 0, Y: 0})
-	defer imgui.PopStyleVar()
-	if !imgui.BeginV("##tabbar"+w.imguiSuffix(), nil, tabBarFlags) {
-		imgui.End()
-		return
-	}
-	defer imgui.End()
+	// Custom tab bar — every tab gets an equal share of the available
+	// width (totalW / numTabs), iTerm/Terminal.app style. ImGui's
+	// BeginTabBar doesn't have a stretch-to-fit option (only Shrink
+	// and Scroll fitting policies), so we lay out tabs manually with
+	// InvisibleButtons for hit detection and drawlist primitives for
+	// the visuals. Rendered into the wrapper's WindowDrawList so the
+	// tab visuals layer ON TOP of the terminal cells drawn earlier in
+	// frame().
+	originX := w.contentOriginX
+	originY := w.contentOriginY
+	totalW := float32(w.width)
+	height := w.tabBarH
+	numTabs := w.tabs.Count()
+	tabW := totalW / float32(numTabs)
 
-	tabFlags := imgui.TabBarFlagsReorderable | imgui.TabBarFlagsAutoSelectNewTabs
-	if imgui.BeginTabBarV("tabs"+w.imguiSuffix(), tabFlags) {
-		for i, tab := range w.tabs.Tabs {
-			label := tab.DisplayTitle()
-			label = fmt.Sprintf("%s###tab%d", label, tab.ID)
+	style := imgui.CurrentStyle()
+	col := func(c imgui.Col) uint32 { return imgui.ColorU32Col(c) }
+	activeBg := col(imgui.ColTabSelected)
+	hoverBg := col(imgui.ColTabHovered)
+	inactiveBg := col(imgui.ColTab)
+	textCol := col(imgui.ColText)
+	underlineCol := col(imgui.ColTabSelectedOverline)
 
-			open := true
-			itemFlags := imgui.TabItemFlags(0)
-			if w.tabSwitchReq == tab.ID {
-				itemFlags = imgui.TabItemFlagsSetSelected
-				w.tabSwitchReq = -1
+	drawList := imgui.WindowDrawList()
+	closeBtnW := imgui.FrameHeight() * 0.6
+	framePad := style.FramePadding()
+	clickedIdx := -1
+	closedIdx := -1
+
+	for i, tab := range w.tabs.Tabs {
+		x0 := originX + float32(i)*tabW
+		x1 := originX + float32(i+1)*tabW
+		y0 := originY
+		y1 := originY + height
+		isActive := i == w.tabs.ActiveIdx
+
+		// Whole-tab invisible button for hit detection. We use ONE
+		// button rather than two (with the close X as a second
+		// overlapping InvisibleButton), because ImGui's "first item
+		// wins hover" rule means a later-submitted close-button
+		// InvisibleButton can't override the tab's. Instead we
+		// dispatch the click based on where the cursor was: in the
+		// close-button rect → close; otherwise → switch.
+		closeX0 := x1 - closeBtnW - framePad.X
+		closeY0 := y0 + (height-closeBtnW)/2
+		closeX1 := closeX0 + closeBtnW
+		closeY1 := closeY0 + closeBtnW
+
+		imgui.SetCursorScreenPos(imgui.Vec2{X: x0, Y: y0})
+		tabID := fmt.Sprintf("##tab%d%s", tab.ID, w.imguiSuffix())
+		// PressedOnClick → fires on mouse-DOWN instead of mouse-UP,
+		// so tab switches and close-button hits feel snappy rather
+		// than waiting for the release edge. Flag lives in
+		// ButtonFlagsPrivate, hence the cast.
+		clicked := imgui.InvisibleButtonV(tabID, imgui.Vec2{X: tabW, Y: height}, imgui.ButtonFlags(imgui.ButtonFlagsPressedOnClick))
+		hovered := imgui.IsItemHovered()
+		if hovered {
+			w.tabBarHovered = true
+		}
+
+		// Background
+		bg := inactiveBg
+		switch {
+		case isActive:
+			bg = activeBg
+		case hovered:
+			bg = hoverBg
+		}
+		drawList.AddRectFilled(imgui.Vec2{X: x0, Y: y0}, imgui.Vec2{X: x1, Y: y1}, bg)
+		// Active-tab underline (matches ImGui's TabBarOverline style).
+		if isActive {
+			overlineH := float32(2)
+			drawList.AddRectFilled(
+				imgui.Vec2{X: x0, Y: y1 - overlineH},
+				imgui.Vec2{X: x1, Y: y1},
+				underlineCol,
+			)
+		}
+
+		// Centered label, clipped to the tab's interior so long
+		// titles don't bleed into the close button or the next tab.
+		label := tab.DisplayTitle()
+		labelSize := imgui.CalcTextSize(label)
+		labelX := x0 + framePad.X
+		labelMaxX := x1 - closeBtnW - framePad.X*2
+		if labelMaxX-labelX > labelSize.X {
+			// Center if there's slack.
+			labelX = x0 + (tabW-closeBtnW-labelSize.X)/2
+		}
+		labelY := y0 + (height-labelSize.Y)/2
+		// PushClipRect so long labels truncate at the close-button edge.
+		drawList.PushClipRectV(
+			imgui.Vec2{X: x0 + framePad.X, Y: y0},
+			imgui.Vec2{X: labelMaxX, Y: y1},
+			true,
+		)
+		drawList.AddTextVec2V(imgui.Vec2{X: labelX, Y: labelY}, textCol, label)
+		drawList.PopClipRect()
+
+		// Manual hover-test for the close-button area (no separate
+		// InvisibleButton — see comment above).
+		mp := imgui.MousePos()
+		mouseInClose := hovered &&
+			mp.X >= closeX0 && mp.X < closeX1 &&
+			mp.Y >= closeY0 && mp.Y < closeY1
+		// Show the X on hover of the tab or for the active tab.
+		// Use full textCol (not dim) so it's readable against the
+		// tab background; mouseInClose paints a hover-bg rect behind
+		// the X to give clear feedback the button is targetable.
+		if hovered || isActive {
+			xCol := textCol
+			if mouseInClose {
+				drawList.AddRectFilled(
+					imgui.Vec2{X: closeX0, Y: closeY0},
+					imgui.Vec2{X: closeX1, Y: closeY1},
+					hoverBg,
+				)
 			}
-			if imgui.BeginTabItemV(label, &open, itemFlags) {
-				w.tabs.ActiveIdx = i
-				imgui.EndTabItem()
-			}
-			if !open {
-				w.tabs.CloseTab(i)
-				break // tab slice mutated
+			pad := closeBtnW * 0.25
+			thick := float32(1.5)
+			drawList.AddLineV(
+				imgui.Vec2{X: closeX0 + pad, Y: closeY0 + pad},
+				imgui.Vec2{X: closeX1 - pad, Y: closeY1 - pad},
+				xCol, thick,
+			)
+			drawList.AddLineV(
+				imgui.Vec2{X: closeX1 - pad, Y: closeY0 + pad},
+				imgui.Vec2{X: closeX0 + pad, Y: closeY1 - pad},
+				xCol, thick,
+			)
+		}
+
+		// Dispatch the click: cursor inside the close X rect → close,
+		// anywhere else on the tab → switch.
+		if clicked {
+			if mouseInClose {
+				closedIdx = i
+			} else {
+				clickedIdx = i
 			}
 		}
-		imgui.EndTabBar()
+	}
+
+	// Honor any pending Cmd+N / wheel / etc. switch request before
+	// applying click-based switches; the click handler below would
+	// otherwise be a no-op for the keyboard path since clickedIdx<0.
+	if w.tabSwitchReq != -1 {
+		for i, tab := range w.tabs.Tabs {
+			if tab.ID == w.tabSwitchReq {
+				w.tabs.ActiveIdx = i
+				break
+			}
+		}
+		w.tabSwitchReq = -1
+	}
+
+	if clickedIdx >= 0 {
+		w.tabs.ActiveIdx = clickedIdx
+	}
+	if closedIdx >= 0 {
+		w.tabs.CloseTab(closedIdx)
+		// Wake the run loop so the next frame fires immediately
+		// instead of waiting for WaitEventTimeout to expire. The
+		// tab-bar→no-tab-bar transition triggers an SDL window
+		// resize at the START of the next frame; without the wake,
+		// the user can see up to ~30ms of stale window-size before
+		// the resize lands.
+		wakeEventLoop()
 	}
 }
 
@@ -1605,16 +1946,25 @@ func (w *Window) renderSearchOverlay() {
 		return
 	}
 
-	var vpX, vpY float32
-	if vp := w.viewport(); vp != nil {
-		vpX, vpY = vp.Pos().X, vp.Pos().Y
-	}
+	// AlwaysAutoResize so the overlay stays as compact as the original
+	// did. The match counter uses a fixed-width Dummy slot below so
+	// digit-count changes (1/9 vs 10/14 vs 100/120) don't trigger
+	// the auto-resize and reshuffle the buttons.
+	vpX, vpY := w.contentOriginX, w.contentOriginY
 	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(w.width) - 320, Y: vpY + w.tabBarH}, imgui.CondAlways, imgui.Vec2{})
+	// NoBringToFrontOnFocus matches the wrapper + tab bar so opening /
+	// closing the overlay doesn't shuffle the z-order list — without
+	// this, the tab bar gets pushed behind the wrapper after the
+	// overlay's first focus event. We re-bring the search overlay to
+	// front explicitly below so it doesn't get covered by terminal
+	// cells rendered into the wrapper's drawlist.
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
-		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar | imgui.WindowFlagsAlwaysAutoResize
+		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
+		imgui.WindowFlagsAlwaysAutoResize | imgui.WindowFlagsNoBringToFrontOnFocus
 
 	w.searchInputFocused = false
-	if imgui.BeginV("##search"+w.imguiSuffix(), nil, flags) {
+	searchWinName := "##search" + w.imguiSuffix()
+	if imgui.BeginV(searchWinName, nil, flags) {
 		// Track actual rendered width for the selection hit-test.
 		w.searchOverlayW = imgui.WindowWidth()
 
@@ -1637,11 +1987,31 @@ func (w *Window) renderSearchOverlay() {
 			s.Search(tab.Terminal.Emu, rows)
 			s.ScrollToCurrentMatch(rows)
 		}
+		// Counter: render into a fixed-width Dummy slot via drawList
+		// so the window's auto-resize doesn't care about the digit
+		// count. The text is drawn manually centered inside the slot.
 		imgui.SameLineV(0, 4)
+		slotW := float32(56)
+		slotH := imgui.FrameHeight()
+		slotPos := imgui.CursorScreenPos()
+		// AlignTextToFramePadding so the Dummy's Y matches a button row.
+		imgui.AlignTextToFramePadding()
+		imgui.Dummy(imgui.Vec2{X: slotW, Y: slotH})
+		var counterText string
 		if len(s.Matches) > 0 {
-			imgui.Text(fmt.Sprintf("%d/%d", s.MatchIdx+1, len(s.Matches)))
+			counterText = fmt.Sprintf("%d/%d", s.MatchIdx+1, len(s.Matches))
 		} else if s.Query != "" {
-			imgui.Text("0")
+			counterText = "0"
+		}
+		if counterText != "" {
+			ts := imgui.CalcTextSize(counterText)
+			tx := slotPos.X
+			ty := slotPos.Y + (slotH-ts.Y)/2
+			imgui.WindowDrawList().AddTextVec2V(
+				imgui.Vec2{X: tx, Y: ty},
+				imgui.ColorU32Col(imgui.ColText),
+				counterText,
+			)
 		}
 
 		imgui.SameLineV(0, 4)
@@ -1683,6 +2053,16 @@ func (w *Window) renderSearchOverlay() {
 		}
 	}
 	imgui.End()
+
+	// Force the search overlay to the END of ImGui's global windows
+	// list so it renders LAST = on top. Without this the wrapper's
+	// drawlist (which gets the terminal cells drawn into it earlier
+	// in frame()) ends up rendering after the overlay's drawlist
+	// when focus events shuffle the order, and the overlay disappears
+	// behind the terminal.
+	if sw := imgui.InternalFindWindowByName(searchWinName); sw != nil {
+		imgui.InternalBringWindowToDisplayFront(sw)
+	}
 	// Highlights are drawn in the terminal window's draw list (see frame())
 }
 
@@ -1823,10 +2203,7 @@ func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.Dra
 	}
 
 	barW := float32(w.app.cfg.Scrollbar.Width)
-	var vpOffX, vpOffY float32
-	if vp := w.viewport(); vp != nil {
-		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
-	}
+	vpOffX, vpOffY := w.contentOriginX, w.contentOriginY
 	barX := vpOffX + float32(w.width) - barW
 	barY := vpOffY + w.tabBarH
 	termH := float32(w.height) - w.tabBarH // full height below tab bar
@@ -2025,11 +2402,8 @@ func (w *Window) handleMouseSelection() {
 	// Window-local pixel coordinates. ImGui draw lists and MousePos() are in
 	// absolute desktop space when multi-viewport is enabled, but w.width /
 	// w.height / w.tabBarH / w.searchOverlayW are window-local — subtract
-	// the main viewport position to bring them into the same space.
-	var vpOffX, vpOffY float32
-	if vp := w.viewport(); vp != nil {
-		vpOffX, vpOffY = vp.Pos().X, vp.Pos().Y
-	}
+	// the wrapper's content origin to bring them into the same space.
+	vpOffX, vpOffY := w.contentOriginX, w.contentOriginY
 	wmX := mousePos.X - vpOffX
 	wmY := mousePos.Y - vpOffY
 

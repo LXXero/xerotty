@@ -39,6 +39,16 @@ func LeftButtonGlobalDown() bool {
 	return uint32(state)&C.SDL_BUTTON_LMASK != 0
 }
 
+// GlobalMousePos returns the current OS-level cursor position in
+// screen coordinates. Independent of SDL's event-queue-cached
+// position, so it stays accurate even when SDL drops mouse events
+// during Cocoa focus shifts.
+func GlobalMousePos() (int, int) {
+	var x, y C.int
+	C.SDL_GetGlobalMouseState(&x, &y)
+	return int(x), int(y)
+}
+
 // MouseInMainContent reports whether the cursor is currently inside
 // the content rect of whichever SDL_Window in this process currently
 // has mouse focus — the primary window OR any popped-out multi-

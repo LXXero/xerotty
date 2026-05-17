@@ -108,6 +108,24 @@ type Window struct {
 	pendingClose  bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
+
+	// Initial position for the first BeginV call. spawnWindow sets this
+	// to the parent's current OS-window position plus a cascade offset
+	// so new windows don't stack exactly on top of their parent.
+	initialPosX float32
+	initialPosY float32
+	hasInitialPos bool
+
+	// Actual top-left of the wrapper's content region in absolute
+	// desktop coords, captured each frame via CursorScreenPos right
+	// after BeginV returns. Used as the reference origin for cell
+	// offsets and the tab-bar SetNextWindowPos. Necessary because
+	// viewport.Pos() and ImGui's internal content origin can differ
+	// in subtle ways (window border allowance, content-region inset
+	// applied even with WindowPadding=0 pushed) — using the same
+	// reference for both keeps them pixel-aligned.
+	contentOriginX float32
+	contentOriginY float32
 }
 
 // titleForWindow returns the human-readable title for this Window's
