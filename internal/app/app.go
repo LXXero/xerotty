@@ -1357,19 +1357,38 @@ func (w *Window) processKeys() {
 	actionDispatched := false
 
 	for _, ev := range events {
-		// During search, handle Escape and Enter specially
+		// Escape closes search whenever search is open, even if the
+		// InputText hasn't visibly grabbed focus yet — searchInputFocused
+		// lags by a frame on re-open because IsItemFocused() is set
+		// after the InputText is submitted, which happens AFTER
+		// processKeys runs in the same frame. Gating on `searching`
+		// (the synchronous flag from OpenSearch) makes the first
+		// Escape on a re-opened search always close it.
+		if searching && tab != nil && ev.Action == "" && len(ev.Bytes) == 1 && ev.Bytes[0] == 0x1b {
+			s := w.getScroll(tab.ID)
+			s.CloseSearch()
+			// Inject a synthetic Escape-UP into ImGui's IO queue.
+			// SDL can drop the real KEYUP during the Cocoa focus
+			// shift triggered by InputText deactivating — leaving
+			// ImGui with KeyEscape stuck "down" even though the
+			// user released it. The next time the user presses
+			// Escape (to close a re-opened search), ImGui sees no
+			// edge transition (because it's "already down") and our
+			// PollKeys returns no event. Force the up edge now so
+			// the next real press is a clean transition.
+			imgui.CurrentIO().AddKeyEvent(imgui.KeyEscape, false)
+			searching = false
+			searchInputFocused = false
+			w.searchInputFocused = false
+			continue
+		}
+		// Enter / Shift+Enter for next/prev match — these still gate
+		// on searchInputFocused because if the user clicked the
+		// terminal mid-search, Enter should go to the terminal.
 		if searchInputFocused && tab != nil {
 			s := w.getScroll(tab.ID)
 			if ev.Action == "" && len(ev.Bytes) > 0 {
 				switch ev.Bytes[0] {
-				case 0x1b: // Escape
-					if len(ev.Bytes) == 1 {
-						s.CloseSearch()
-						searching = false
-						searchInputFocused = false
-						w.searchInputFocused = false
-						continue
-					}
 				case '\r': // Enter — same as > (next match)
 					s.NextMatch()
 					if _, rows := w.gridSize(); rows > 0 {
@@ -1804,13 +1823,30 @@ func (w *Window) renderTabBar() {
 		case hovered:
 			bg = hoverBg
 		}
-		drawList.AddRectFilled(imgui.Vec2{X: x0, Y: y0}, imgui.Vec2{X: x1, Y: y1}, bg)
+		// Visible tab body: inset only on the right edge (except for
+		// the last tab) so adjacent tabs have a single-pixel gap
+		// between them. Rounded top corners + square bottom so the
+		// tab sits on the underline like a tab dock.
+		const sideGap = 1
+		const tabRounding = 3
+		bgX0 := x0
+		bgX1 := x1
+		if i < numTabs-1 {
+			bgX1 -= sideGap
+		}
+		drawList.AddRectFilledV(
+			imgui.Vec2{X: bgX0, Y: y0},
+			imgui.Vec2{X: bgX1, Y: y1},
+			bg,
+			tabRounding,
+			imgui.DrawFlagsRoundCornersTop,
+		)
 		// Active-tab underline (matches ImGui's TabBarOverline style).
 		if isActive {
 			overlineH := float32(2)
 			drawList.AddRectFilled(
-				imgui.Vec2{X: x0, Y: y1 - overlineH},
-				imgui.Vec2{X: x1, Y: y1},
+				imgui.Vec2{X: bgX0, Y: y1 - overlineH},
+				imgui.Vec2{X: bgX1, Y: y1},
 				underlineCol,
 			)
 		}
@@ -1951,16 +1987,34 @@ func (w *Window) renderSearchOverlay() {
 	// digit-count changes (1/9 vs 10/14 vs 100/120) don't trigger
 	// the auto-resize and reshuffle the buttons.
 	vpX, vpY := w.contentOriginX, w.contentOriginY
-	imgui.SetNextWindowPosV(imgui.Vec2{X: vpX + float32(w.width) - 320, Y: vpY + w.tabBarH}, imgui.CondAlways, imgui.Vec2{})
-	// NoBringToFrontOnFocus matches the wrapper + tab bar so opening /
-	// closing the overlay doesn't shuffle the z-order list — without
-	// this, the tab bar gets pushed behind the wrapper after the
-	// overlay's first focus event. We re-bring the search overlay to
-	// front explicitly below so it doesn't get covered by terminal
-	// cells rendered into the wrapper's drawlist.
+	// Anchor by TOP-RIGHT pivot so the overlay's right edge sits
+	// inside the wrapper regardless of its actual width — using a
+	// fixed left-edge offset breaks any time the overlay's natural
+	// auto-resized width grows past that offset. Inset by the
+	// scrollbar width so the overlay doesn't cover the scrollbar.
+	scrollbarInset := float32(w.app.cfg.Scrollbar.Width)
+	// Pin the overlay to the wrapper's viewport so multi-viewport's
+	// auto-pop-out logic can't detach it into its own OS window —
+	// without this, the overlay can end up "floating behind" the
+	// wrapper and the user has to close/reopen to get it back.
+	if w.imViewport != nil {
+		imgui.SetNextWindowViewport(w.imViewport.ID())
+	}
+	imgui.SetNextWindowPosV(
+		imgui.Vec2{X: vpX + float32(w.width) - scrollbarInset, Y: vpY + w.tabBarH},
+		imgui.CondAlways,
+		imgui.Vec2{X: 1, Y: 0},
+	)
+	// NOT setting NoBringToFrontOnFocus here even though the wrapper has
+	// it — this overlay needs to be the focused ImGui window so the
+	// InputText keyboard nav routes correctly. NavWindow has to be the
+	// overlay; without that, re-opening Ctrl-F (overlay → Esc → overlay)
+	// can leave keyboard focus stuck on the wrapper and the input never
+	// captures keystrokes. Z-order is enforced separately via
+	// InternalBringWindowToDisplayFront at the end of this function.
 	flags := imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoResize |
 		imgui.WindowFlagsNoMove | imgui.WindowFlagsNoScrollbar |
-		imgui.WindowFlagsAlwaysAutoResize | imgui.WindowFlagsNoBringToFrontOnFocus
+		imgui.WindowFlagsAlwaysAutoResize | imgui.WindowFlagsNoDocking
 
 	w.searchInputFocused = false
 	searchWinName := "##search" + w.imguiSuffix()
@@ -1971,10 +2025,12 @@ func (w *Window) renderSearchOverlay() {
 		imgui.SetNextItemWidth(180)
 
 		// Re-focus the input when requested (on open, after < > clicks, or
-		// when it loses focus to the terminal).  Guard with mouse-idle so
-		// SetKeyboardFocusHere never fires while a button click is in
-		// progress — it would steal ActiveId and swallow the click.
-		if w.searchFocusInput && !imgui.IsMouseDown(0) && !imgui.IsMouseReleased(imgui.MouseButtonLeft) {
+		// when it loses focus to the terminal). Guard only on IsMouseDown
+		// so we don't snatch ActiveId mid-click. We DO NOT guard on
+		// IsMouseReleased — the macOS mirror's transition-based synthetic
+		// UP events flip IsMouseReleased true on unrelated frames, which
+		// was blocking the focus grab on Ctrl-F re-open.
+		if w.searchFocusInput && !imgui.IsMouseDown(0) {
 			imgui.SetKeyboardFocusHere()
 			w.searchFocusInput = false
 		}

@@ -106,8 +106,9 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 
 	// Special keys
 	type specialKey struct {
-		key imgui.Key
-		fn  func(ctrl, shift, alt, appMode bool) KeyEvent
+		key    imgui.Key
+		repeat bool // fire on OS key-repeat too, or edge-only?
+		fn     func(ctrl, shift, alt, appMode bool) KeyEvent
 	}
 
 	enterFn := func(_, shift, _, _ bool) KeyEvent {
@@ -117,58 +118,67 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 		return KeyEvent{Bytes: []byte("\r")}
 	}
 	specials := []specialKey{
-		{imgui.KeyEnter, enterFn},
-		// Keypad Enter is a separate key in SDL/ImGui — same PTY semantics.
-		{imgui.KeyKeypadEnter, enterFn},
-		{imgui.KeyBackspace, func(_, _, _, _ bool) KeyEvent {
+		// Enter / Backspace / Tab: terminals routinely auto-repeat
+		// (hold backspace to delete a word, hold arrow to navigate).
+		{imgui.KeyEnter, true, enterFn},
+		{imgui.KeyKeypadEnter, true, enterFn},
+		{imgui.KeyBackspace, true, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte{0x7f}}
 		}},
-		{imgui.KeyTab, func(_, shift, _, _ bool) KeyEvent {
+		{imgui.KeyTab, true, func(_, shift, _, _ bool) KeyEvent {
 			if shift {
 				return KeyEvent{Bytes: []byte("\x1b[Z")}
 			}
 			return KeyEvent{Bytes: []byte("\t")}
 		}},
-		{imgui.KeyEscape, func(_, _, _, _ bool) KeyEvent {
+		// Escape: explicitly no-repeat. With repeat=true, holding
+		// Escape for >500ms triggers OS key-repeat at ~30ms intervals.
+		// That stream of 0x1b bytes keeps firing well after the user
+		// has stopped intending to press Escape, and any code that
+		// reopens a UI element keyed off "search action" gets
+		// immediately closed again by the still-streaming repeats.
+		// Real terminal apps that want repeated Escape are vanishingly
+		// rare.
+		{imgui.KeyEscape, false, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte{0x1b}}
 		}},
-		{imgui.KeyDelete, func(_, _, _, _ bool) KeyEvent {
+		{imgui.KeyDelete, true, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte("\x1b[3~")}
 		}},
-		{imgui.KeyInsert, func(_, _, _, _ bool) KeyEvent {
+		{imgui.KeyInsert, true, func(_, _, _, _ bool) KeyEvent {
 			return KeyEvent{Bytes: []byte("\x1b[2~")}
 		}},
-		{imgui.KeyUpArrow, func(ctrl, shift, _, app bool) KeyEvent {
+		{imgui.KeyUpArrow, true, func(ctrl, shift, _, app bool) KeyEvent {
 			return arrowKey('A', ctrl, shift, app)
 		}},
-		{imgui.KeyDownArrow, func(ctrl, shift, _, app bool) KeyEvent {
+		{imgui.KeyDownArrow, true, func(ctrl, shift, _, app bool) KeyEvent {
 			return arrowKey('B', ctrl, shift, app)
 		}},
-		{imgui.KeyRightArrow, func(ctrl, shift, _, app bool) KeyEvent {
+		{imgui.KeyRightArrow, true, func(ctrl, shift, _, app bool) KeyEvent {
 			return arrowKey('C', ctrl, shift, app)
 		}},
-		{imgui.KeyLeftArrow, func(ctrl, shift, _, app bool) KeyEvent {
+		{imgui.KeyLeftArrow, true, func(ctrl, shift, _, app bool) KeyEvent {
 			return arrowKey('D', ctrl, shift, app)
 		}},
-		{imgui.KeyHome, func(_, _, _, app bool) KeyEvent {
+		{imgui.KeyHome, true, func(_, _, _, app bool) KeyEvent {
 			if app {
 				return KeyEvent{Bytes: []byte("\x1bOH")}
 			}
 			return KeyEvent{Bytes: []byte("\x1b[H")}
 		}},
-		{imgui.KeyEnd, func(_, _, _, app bool) KeyEvent {
+		{imgui.KeyEnd, true, func(_, _, _, app bool) KeyEvent {
 			if app {
 				return KeyEvent{Bytes: []byte("\x1bOF")}
 			}
 			return KeyEvent{Bytes: []byte("\x1b[F")}
 		}},
-		{imgui.KeyPageUp, func(_, shift, _, _ bool) KeyEvent {
+		{imgui.KeyPageUp, true, func(_, shift, _, _ bool) KeyEvent {
 			if shift {
 				return KeyEvent{Action: "scroll_page_up"}
 			}
 			return KeyEvent{Bytes: []byte("\x1b[5~")}
 		}},
-		{imgui.KeyPageDown, func(_, shift, _, _ bool) KeyEvent {
+		{imgui.KeyPageDown, true, func(_, shift, _, _ bool) KeyEvent {
 			if shift {
 				return KeyEvent{Action: "scroll_page_down"}
 			}
@@ -190,38 +200,38 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	// regardless of NumLock state, same as Enter).
 	if !sdlhack.NumLockOn() {
 		specials = append(specials,
-			specialKey{imgui.KeyKeypad8, func(c, s, _, app bool) KeyEvent { return arrowKey('A', c, s, app) }},
-			specialKey{imgui.KeyKeypad2, func(c, s, _, app bool) KeyEvent { return arrowKey('B', c, s, app) }},
-			specialKey{imgui.KeyKeypad6, func(c, s, _, app bool) KeyEvent { return arrowKey('C', c, s, app) }},
-			specialKey{imgui.KeyKeypad4, func(c, s, _, app bool) KeyEvent { return arrowKey('D', c, s, app) }},
-			specialKey{imgui.KeyKeypad7, func(_, _, _, app bool) KeyEvent {
+			specialKey{imgui.KeyKeypad8, true, func(c, s, _, app bool) KeyEvent { return arrowKey('A', c, s, app) }},
+			specialKey{imgui.KeyKeypad2, true, func(c, s, _, app bool) KeyEvent { return arrowKey('B', c, s, app) }},
+			specialKey{imgui.KeyKeypad6, true, func(c, s, _, app bool) KeyEvent { return arrowKey('C', c, s, app) }},
+			specialKey{imgui.KeyKeypad4, true, func(c, s, _, app bool) KeyEvent { return arrowKey('D', c, s, app) }},
+			specialKey{imgui.KeyKeypad7, true, func(_, _, _, app bool) KeyEvent {
 				if app {
 					return KeyEvent{Bytes: []byte("\x1bOH")}
 				}
 				return KeyEvent{Bytes: []byte("\x1b[H")}
 			}},
-			specialKey{imgui.KeyKeypad1, func(_, _, _, app bool) KeyEvent {
+			specialKey{imgui.KeyKeypad1, true, func(_, _, _, app bool) KeyEvent {
 				if app {
 					return KeyEvent{Bytes: []byte("\x1bOF")}
 				}
 				return KeyEvent{Bytes: []byte("\x1b[F")}
 			}},
-			specialKey{imgui.KeyKeypad9, func(_, shift, _, _ bool) KeyEvent {
+			specialKey{imgui.KeyKeypad9, true, func(_, shift, _, _ bool) KeyEvent {
 				if shift {
 					return KeyEvent{Action: "scroll_page_up"}
 				}
 				return KeyEvent{Bytes: []byte("\x1b[5~")}
 			}},
-			specialKey{imgui.KeyKeypad3, func(_, shift, _, _ bool) KeyEvent {
+			specialKey{imgui.KeyKeypad3, true, func(_, shift, _, _ bool) KeyEvent {
 				if shift {
 					return KeyEvent{Action: "scroll_page_down"}
 				}
 				return KeyEvent{Bytes: []byte("\x1b[6~")}
 			}},
-			specialKey{imgui.KeyKeypad0, func(_, _, _, _ bool) KeyEvent {
+			specialKey{imgui.KeyKeypad0, true, func(_, _, _, _ bool) KeyEvent {
 				return KeyEvent{Bytes: []byte("\x1b[2~")}
 			}},
-			specialKey{imgui.KeyKeypadDecimal, func(_, _, _, _ bool) KeyEvent {
+			specialKey{imgui.KeyKeypadDecimal, true, func(_, _, _, _ bool) KeyEvent {
 				return KeyEvent{Bytes: []byte("\x1b[3~")}
 			}},
 		)
@@ -241,7 +251,7 @@ func PollKeys(keybinds map[string]string, appMode bool) []KeyEvent {
 	}
 
 	for _, sk := range specials {
-		if imgui.IsKeyPressedBool(sk.key) {
+		if imgui.IsKeyPressedBoolV(sk.key, sk.repeat) {
 			ev := sk.fn(ctrlPhysical, shift, alt, appMode)
 			events = append(events, ev)
 		}
