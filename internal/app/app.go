@@ -327,8 +327,8 @@ func (a *App) spawnWindow() {
 		cfgRows = 24
 	}
 	padX2 := float32(a.cfg.Appearance.Padding) * 2
-	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMargin)))
-	w.height = int(math.Ceil(float64(float32(cfgRows)*w.cellH + padX2 + cellSafetyMargin)))
+	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMarginH)))
+	w.height = int(math.Ceil(float64(float32(cfgRows)*w.cellH + padX2 + cellSafetyMarginV)))
 	// Share the SDL backend (same ImGui/GL context); multi-viewport
 	// will create the additional SDL_Window via its platform IO.
 	w.backend = main.backend
@@ -398,8 +398,8 @@ func (w *Window) initialWindowSize() (int, int) {
 	pad := float32(w.app.cfg.Appearance.Padding) * 2
 	// Add cellSafetyMargin so the eventual gridSize() after window creation
 	// computes back to the same cols/rows we requested.
-	wp := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMargin)))
-	hp := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMargin)))
+	wp := int(math.Ceil(float64(float32(cols)*estCellW + pad + cellSafetyMarginH)))
+	hp := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMarginV)))
 	return wp, hp
 }
 
@@ -678,21 +678,31 @@ func (a *App) Run() error {
 	return nil
 }
 
-// cellSafetyMargin reserves a few extra pixels of right/bottom gutter beyond
+// cellSafetyMarginH reserves a few extra pixels of right-edge gutter beyond
 // what the cell count strictly needs. CalcTextSize returns the font's advance
 // width, but font hinting / anti-aliasing can nudge glyph edge pixels slightly
 // past cellW. Without this margin, when the floor-fitted cell count produces
 // a tight gutter, the rightmost character's AA edge can render over the
 // window boundary and appear clipped before the count reduces.
+//
+// cellSafetyMarginV is the vertical equivalent — kept tiny because cellH
+// already accounts for ascent+descent per the font metrics (no glyph
+// "overhang" concern as on the horizontal side). Just enough cushion to
+// absorb float→int rounding when the user drags the window edge so the
+// bottom row doesn't drop off at the snap boundary.
+//
 // Must be added BACK to the window size in any code that wants to fit a
 // specific cols×rows grid (e.g. font zoom resize), otherwise the next gridSize
 // call will floor away one cell.
-const cellSafetyMargin = 8
+const (
+	cellSafetyMarginH = 8
+	cellSafetyMarginV = 0
+)
 
 func (w *Window) gridSize() (cols, rows int) {
 	pad := float32(w.app.cfg.Appearance.Padding) * 2 // padding on both sides
-	availW := float32(w.width) - pad - cellSafetyMargin
-	availH := float32(w.height) - w.tabBarH - pad - cellSafetyMargin
+	availW := float32(w.width) - pad - cellSafetyMarginH
+	availH := float32(w.height) - w.tabBarH - pad - cellSafetyMarginV
 	cols = int(availW / w.cellW)
 	rows = int(availH / w.cellH)
 	if cols < 2 {
@@ -944,8 +954,8 @@ func (a *Window) frame() {
 		}
 		pad := float32(a.app.cfg.Appearance.Padding) * 2
 		// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
-		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMargin)))
-		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMargin)))
+		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMarginH)))
+		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMarginV)))
 		if desiredW != a.width || desiredH != a.height {
 			// Every Window's OS geometry is driven by ImGui multi-
 			// viewport. Set width/height + pendingResize so the
@@ -1284,7 +1294,14 @@ func (a *Window) frame() {
 	// non-zero HoveredID for this frame so the right-click-on-empty-space
 	// close path skips us. Result: terminal-style hover preview while the
 	// right button is held; a separate click still confirms.
-	if imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
+	// Gate to the active Window: ImGui's IsMouseClicked / OpenPopup are
+	// global, so without this every Window's frame() would see the click,
+	// each call OpenPopupStr("##contextmenu") with the same ID (last write
+	// wins), and the wrong Window's renderContextMenu would receive the
+	// chosen action. Result: right-click "New Tab" in Window 1 actually
+	// created a tab in the last-iterated Window. Same reason processKeys
+	// gates on a.app.active.
+	if a == a.app.active && imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
 		imgui.OpenPopupStr("##contextmenu")
 		io := imgui.CurrentIO()
 		owned := io.MouseDownOwned()
@@ -1295,7 +1312,9 @@ func (a *Window) frame() {
 		io.SetMouseDownOwnedUnlessPopupClose(&ownedAlt)
 		imgui.InternalSetHoveredID(imgui.ID(1))
 	}
-	a.renderContextMenu()
+	if a == a.app.active {
+		a.renderContextMenu()
+	}
 
 	// Unsafe paste confirmation dialog
 	a.renderPasteDialog()
@@ -1326,6 +1345,14 @@ func (w *Window) popupActive() bool {
 }
 
 func (w *Window) processKeys() {
+	// Only the focused Window consumes keyboard input. ImGui's IsKeyPressed
+	// is global, so without this gate every Window's frame() would see the
+	// same keybind event and dispatchAction would fire in every Window —
+	// e.g. Cmd+T would create a new tab in every open Window at once
+	// instead of just the one the user is typing into.
+	if w != w.app.active {
+		return
+	}
 	tab := w.tabs.Active()
 	searching := w.isSearching()
 	searchInputFocused := searching && w.searchInputFocused
@@ -1725,8 +1752,8 @@ func (w *Window) updateFontMetrics() {
 	// SAME cols/rows we're trying to preserve. Without this, every zoom step
 	// loses one row+col because gridSize subtracts the margin from available
 	// space.
-	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMargin)))
-	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMargin)))
+	newW := int(math.Ceil(float64(float32(cols)*w.cellW + pad + cellSafetyMarginH)))
+	newH := int(math.Ceil(float64(float32(rows)*w.cellH + pad + w.tabBarH + cellSafetyMarginV)))
 	// Every Window's OS geometry rides ImGui multi-viewport. Stash
 	// the target size and flip pendingResize; wrappedFrame's Begin
 	// uses CondAlways instead of CondFirstUseEver on the next frame,
