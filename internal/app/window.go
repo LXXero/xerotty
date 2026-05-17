@@ -86,6 +86,19 @@ type Window struct {
 	lastTabBarH        float32
 	skipDisplaySync    int
 
+	// Context menu state. ImGui's BeginPopup auto-closes the popup
+	// whenever the OS window loses focus / mouse crosses the parent
+	// viewport edge — fine for typical single-window apps, but we want
+	// the menu to stay put once the user has right-clicked. So we
+	// manage open/close manually here and render via BeginV (not
+	// BeginPopup), which gives us total control over the lifecycle.
+	contextMenuOpen        bool
+	contextMenuX           float32
+	contextMenuY           float32
+	contextMenuOpenedFrame int  // frame the menu was opened on — close-on-click-outside skips this frame so the opening right-click doesn't immediately close it
+	contextMenuCaptured    bool // SDL_CaptureMouse succeeded — best-effort global mouse capture so clicks outside our windows reach us; partial on Wayland and sdl2-compat → SDL3 X11
+	contextMenuOutCount    int  // (legacy) running counter once used by an experimental cursor-out timer; kept as a field to avoid churning the struct layout during the menu-detection saga, currently unused
+
 	// pendingRemeasure means this Window needs to re-run measureCell()
 	// next frame — e.g. after the font atlas was rebuilt by
 	// beforeRender. Per-Window because each Window can be at a

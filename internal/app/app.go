@@ -831,6 +831,18 @@ func (a *App) idleTimeout() int {
 			return 16
 		}
 	}
+	// Whenever the context menu is open, tick fast so the close
+	// detector (XGetInputFocus poll on x11, cursor-out decay
+	// elsewhere) actually runs every frame. Without this the loop
+	// would sleep on its normal timeout while the cursor is on
+	// another app — no SDL events arrive to wake us, so the
+	// per-frame focus poll wouldn't fire for hundreds of ms at a
+	// time and close lagged behind the user's actual click.
+	for _, w := range a.windows {
+		if w.contextMenuOpen {
+			return 16
+		}
+	}
 	timeout := 5000
 	if a.cfg.Appearance.CursorBlink {
 		timeout = a.cfg.Appearance.BlinkRate
@@ -1098,9 +1110,17 @@ func (a *Window) frame() {
 	}
 
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
-	// Only the active Window consumes the global wheel delta.
+	// Geometric scope: only the Window whose content rect contains the
+	// cursor consumes the wheel. Using a.app.active fails the same way
+	// the selection / right-click gates did on Wayland multi-viewport
+	// — focus tracking is unreliable so the wheel would silently no-op.
+	mpW := imgui.MousePos()
+	wheelInThisWindow := mpW.X >= a.contentOriginX &&
+		mpW.X < a.contentOriginX+float32(a.width) &&
+		mpW.Y >= a.contentOriginY &&
+		mpW.Y < a.contentOriginY+float32(a.height)
 	wheel := imgui.CurrentIO().MouseWheel()
-	if wheel != 0 && a == a.app.active {
+	if wheel != 0 && wheelInThisWindow {
 		vpOffY := a.contentOriginY
 		if a.tabBarH > 0 && imgui.MousePos().Y-vpOffY < a.tabBarH {
 			// Mouse over tab bar — switch tabs
@@ -1135,18 +1155,25 @@ func (a *Window) frame() {
 		}
 	}
 
-	// Mouse-selection and link hover only apply to the Window the
-	// cursor is over — same gating as the wheel handler.
-	if a == a.app.active {
-		a.handleMouseSelection()
-	}
+	// Mouse-selection and link hover are GEOMETRICALLY scoped — they
+	// only fire when the cursor's actual position lands in this
+	// Window's content rect. handleMouseSelection has its own
+	// inTerminal check (computed from MousePos vs contentOrigin /
+	// width / height) and link detection bails when (col, row) is
+	// outside (cols, rows). No focus-based gate needed; in fact
+	// gating on a.app.active broke selection entirely because
+	// IsWindowFocusedV is unreliable under multi-viewport on
+	// Wayland — wrapper windows often never register as focused,
+	// so a.app.active never matched and selection / middle-click /
+	// right-click all silently no-op'd.
+	a.handleMouseSelection()
 
 	// Detect links under mouse cursor. Gate the whole pass on
 	// Links.Enabled — when off, hoveredLink stays nil so the underline
 	// decoration in the renderer disappears and the click handlers
 	// below are no-ops by virtue of `hoveredLink != nil` checks.
 	a.hoveredLink = nil
-	if a == a.app.active && a.app.cfg.Links.Enabled {
+	if a.app.cfg.Links.Enabled {
 		if tab := a.tabs.Active(); tab != nil {
 			mousePos := imgui.MousePos()
 			col := int((mousePos.X - a.renderer.OffsetX) / a.cellW)
@@ -1382,20 +1409,50 @@ func (a *Window) frame() {
 	// chosen action. Result: right-click "New Tab" in Window 1 actually
 	// created a tab in the last-iterated Window. Same reason processKeys
 	// gates on a.app.active.
-	if a == a.app.active && imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
-		imgui.OpenPopupStr("##contextmenu")
-		io := imgui.CurrentIO()
-		owned := io.MouseDownOwned()
-		owned[imgui.MouseButtonRight] = true
-		io.SetMouseDownOwned(&owned)
-		ownedAlt := io.MouseDownOwnedUnlessPopupClose()
-		ownedAlt[imgui.MouseButtonRight] = true
-		io.SetMouseDownOwnedUnlessPopupClose(&ownedAlt)
-		imgui.InternalSetHoveredID(imgui.ID(1))
+	// Geometric scope: only the Window whose content rect contains the
+	// cursor opens its context menu. (Focus-based gating fails on
+	// Wayland multi-viewport — wrappers often don't register as
+	// focused. Mouse-position is unambiguous: exactly one Window
+	// contains the cursor at any moment.)
+	//
+	// We don't use ImGui's BeginPopup / OpenPopupStr machinery
+	// because that ties the menu lifecycle to the host viewport's
+	// focus — once the cursor crosses the terminal edge ImGui
+	// considers the popup "closed by click-out" and snaps it shut,
+	// even though the user is just moving toward the menu. Instead
+	// just record the position; renderContextMenu draws via BeginV
+	// and we control when it closes.
+	mp := imgui.MousePos()
+	mouseInThisWindow := mp.X >= a.contentOriginX &&
+		mp.X < a.contentOriginX+float32(a.width) &&
+		mp.Y >= a.contentOriginY &&
+		mp.Y < a.contentOriginY+float32(a.height)
+	// Only OPEN the menu via right-click; never re-open or reposition
+	// while it's already open. If the user right-clicks the terminal
+	// with the menu showing, the click counts as a click-outside and
+	// dismisses the menu via menu.Render's close-on-click path. If we
+	// re-set contextMenuOpenedFrame here, allowCloseClick would be
+	// false for that frame and the menu would silently reposition
+	// instead of closing.
+	if mouseInThisWindow && imgui.IsMouseClickedBool(imgui.MouseButtonRight) && !a.contextMenuOpen {
+		a.contextMenuOpen = true
+		a.contextMenuX = mp.X
+		a.contextMenuY = mp.Y
+		// Remember which frame we opened on — renderContextMenu skips
+		// its close-on-click-outside check for that frame so the very
+		// right-click that opened the menu doesn't immediately close
+		// it (IsMouseClickedBool stays true for the rest of this
+		// frame).
+		a.contextMenuOpenedFrame = int(imgui.FrameCount())
+		a.contextMenuOutCount = 0
+		// (Previously called SDL_CaptureMouse here for global click
+		// delivery, but under sdl2-compat → SDL3 it's a silent no-op
+		// on X11 anyway and observed under VNC to interfere with
+		// MenuItem's hover-based activation. Click-inside-xerotty +
+		// Escape are the only reliable dismiss paths until SDL3's
+		// proper popup window primitive is wired in.)
 	}
-	if a == a.app.active {
-		a.renderContextMenu()
-	}
+	a.renderContextMenu()
 
 	// Unsafe paste confirmation dialog
 	a.renderPasteDialog()
@@ -2100,10 +2157,63 @@ func (w *Window) renderTabBar() {
 }
 
 func (w *Window) renderContextMenu() {
+	if !w.contextMenuOpen {
+		return
+	}
+
 	ctx := w.menuContext()
-	action := menu.Render(w.app.cfg.Menu.Items, ctx)
+	// Skip close-on-click-outside for the same frame the menu opened —
+	// the opening right-click leaves IsMouseClicked true for the rest
+	// of the frame and would otherwise immediately close us.
+	allowCloseClick := int(imgui.FrameCount()) != w.contextMenuOpenedFrame
+	action, close, _ := menu.Render(w.app.cfg.Menu.Items, ctx, w.contextMenuX, w.contextMenuY, allowCloseClick)
+
+	// No auto-close-on-pivot-away path. Every signal we tried
+	// (IsWindowFocused, AppFocusLost, SDL_WINDOW_INPUT_FOCUS,
+	// SDL_GetMouseFocus, XGetInputFocus, _NET_ACTIVE_WINDOW) fires
+	// on mere pointer hover under labwc and similar compositors with
+	// focus-follows-pointer behavior. An auto-close based on any of
+	// them produces a menu that vanishes the instant the cursor
+	// moves off, which is way worse than no auto-close at all.
+	//
+	// User dismisses via:
+	//   - Escape
+	//   - click inside the menu (item selection)
+	//   - click anywhere else inside xerotty (covered by menu.Render's
+	//     IsMouseClickedBool check)
+	//   - click another X11 app (covered by SDL_CaptureMouse + the
+	//     above on real X11; on XWayland sdl2-compat doesn't actually
+	//     XGrab native Wayland windows, so those need a manual
+	//     dismiss too).
+	//
+	// A proper "click anywhere outside dismisses" requires xdg_popup
+	// (Wayland) / NSMenu (macOS) / TrackPopupMenu (Windows). SDL2
+	// can't expose those primitives; SDL3 can via SDL_CreatePopupWindow
+	// but cimgui-go doesn't have a SDL3 backend yet. Tracked
+	// separately as a SDL3-platform spike.
+
 	if action != "" {
 		w.dispatchAction(action)
+		w.contextMenuOpen = false
+	}
+	if close {
+		w.contextMenuOpen = false
+		w.contextMenuOutCount = 0
+		// Force an immediate wake so the next frame fires and ImGui's
+		// multi-viewport actually destroys the menu's OS window.
+		// Without this, the loop's idleTimeout drops back to the
+		// normal value (~5s) the instant contextMenuOpen flips false,
+		// so the menu's physical SDL window stays visible for up to
+		// 5 seconds until something else (PTY output, cursor blink)
+		// wakes the loop.
+		wakeEventLoop()
+	}
+	// Always release the global mouse capture when the menu closes —
+	// otherwise xerotty would keep intercepting mouse events globally
+	// after the menu's gone, blocking other apps from receiving them.
+	if !w.contextMenuOpen && w.contextMenuCaptured {
+		sdlCaptureMouse(false)
+		w.contextMenuCaptured = false
 	}
 }
 
@@ -2543,14 +2653,34 @@ func (w *Window) renderPasteDialog() {
 		return
 	}
 
-	// Center in the OWNING Window's content rect in absolute desktop
-	// coords. width/height alone are Window-local; under multi-viewport
-	// the popup needs the desktop position of THIS Window's content
-	// origin or it would land on the (0,0) of the hidden carrier.
+	// Dim THIS Window's content rect only. ImGui's BeginPopupModalV
+	// would auto-dim every OTHER viewport too (hardcoded in
+	// imgui.cpp's RenderDimmedBackgrounds — "Draw dimming background
+	// on _other_ viewports than the ones our windows are in"), which
+	// made the user's peer terminals look greyed-out even though
+	// they're fully usable. Use a regular BeginV with our own dim
+	// quad scoped to this Window's wrapper drawlist instead.
+	dimCol := uint32(0x80000000) // 50% black, ABGR
+	w.bgDrawList().AddRectFilled(
+		imgui.Vec2{X: w.contentOriginX, Y: w.contentOriginY},
+		imgui.Vec2{X: w.contentOriginX + float32(w.width), Y: w.contentOriginY + float32(w.height)},
+		dimCol,
+	)
+
+	// Center the dialog in the OWNING Window's content rect in
+	// absolute desktop coords. Pin to this Window's viewport so it
+	// doesn't pop out into its own OS window for a tiny dialog.
 	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
+	if vp := w.viewport(); vp != nil {
+		imgui.SetNextWindowViewport(vp.ID())
+	}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
-	if imgui.BeginPopupModalV("Unsafe Paste", nil, imgui.WindowFlagsAlwaysAutoResize) {
+	flags := imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoDocking
+	if imgui.BeginV("Unsafe Paste###pastedlg"+w.imguiSuffix(), nil, flags) {
 		lines := strings.Count(w.pendingPaste, "\n") + 1
 		imgui.Text(fmt.Sprintf("Paste %d lines into terminal?", lines))
 		imgui.Text("Multi-line paste may execute commands.")
@@ -2558,8 +2688,11 @@ func (w *Window) renderPasteDialog() {
 		imgui.Separator()
 
 		// Keyboard shortcuts: Enter / KeypadEnter = accept (paste),
-		// Esc = cancel. Both close the popup. The button row is the
-		// authoritative path; this just makes the common case fast.
+		// Esc = cancel. Input gating happens in processKeys via
+		// popupActive() (returns true when pendingPaste != ""), so
+		// these IsKeyPressedBool calls catch the keys before they
+		// reach the PTY. The button row is the authoritative path;
+		// this just makes the common case fast.
 		accept := imgui.Button("Paste")
 		imgui.SameLineV(0, 8)
 		cancel := imgui.Button("Cancel")
@@ -2574,13 +2707,11 @@ func (w *Window) renderPasteDialog() {
 				tab.Terminal.Paste(w.pendingPaste)
 			}
 			w.pendingPaste = ""
-			imgui.CloseCurrentPopup()
 		} else if cancel {
 			w.pendingPaste = ""
-			imgui.CloseCurrentPopup()
 		}
-		imgui.EndPopup()
 	}
+	imgui.End()
 }
 
 func (w *Window) renderRenameDialog() {
@@ -2588,12 +2719,25 @@ func (w *Window) renderRenameDialog() {
 		return
 	}
 
-	// Center in the OWNING Window's content rect (see renderPasteDialog
-	// for why width/height alone aren't enough under multi-viewport).
+	// Dim THIS Window only — same reason as renderPasteDialog.
+	dimCol := uint32(0x80000000)
+	w.bgDrawList().AddRectFilled(
+		imgui.Vec2{X: w.contentOriginX, Y: w.contentOriginY},
+		imgui.Vec2{X: w.contentOriginX + float32(w.width), Y: w.contentOriginY + float32(w.height)},
+		dimCol,
+	)
+
+	if vp := w.viewport(); vp != nil {
+		imgui.SetNextWindowViewport(vp.ID())
+	}
 	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
 	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
 
-	if imgui.BeginPopupModalV("Rename Tab", nil, imgui.WindowFlagsAlwaysAutoResize) {
+	flags := imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoDocking
+	if imgui.BeginV("Rename Tab###renamedlg"+w.imguiSuffix(), nil, flags) {
 		imgui.Text("Tab name:")
 		imgui.InputTextWithHint("##rename", "tab name", &w.renameBuffer, 0, nil)
 
@@ -2602,7 +2746,6 @@ func (w *Window) renderRenameDialog() {
 				tab.Title = w.renameBuffer
 			}
 			w.renamingTab = false
-			imgui.CloseCurrentPopup()
 		}
 
 		if imgui.Button("OK") {
@@ -2610,15 +2753,13 @@ func (w *Window) renderRenameDialog() {
 				tab.Title = w.renameBuffer
 			}
 			w.renamingTab = false
-			imgui.CloseCurrentPopup()
 		}
 		imgui.SameLineV(0, 8)
 		if imgui.Button("Cancel") {
 			w.renamingTab = false
-			imgui.CloseCurrentPopup()
 		}
-		imgui.EndPopup()
 	}
+	imgui.End()
 }
 
 func (w *Window) handleMouseSelection() {
@@ -2655,19 +2796,25 @@ func (w *Window) handleMouseSelection() {
 	}
 
 	// Left click starts selection — but only in the terminal area.
-	// IsAnyItemHovered() is reset by ImGui's NewFrame() and is always 0 here
-	// (before any items are rendered this frame), so we use explicit rect
-	// checks instead: skip the scrollbar column and the search overlay region.
-	// WantCaptureMouse is true when the cursor is over any ImGui window
-	// (prefs, popups, tab bar) — that catches the catch-all case so a click
-	// on the prefs window doesn't seed a phantom terminal selection.
+	// Explicit rect checks skip the scrollbar column and the search
+	// overlay region. The "any other ImGui window is on top" filter
+	// used to be CurrentIO().WantCaptureMouse(), but post-multi-window
+	// the terminal renders INSIDE the wrapper ImGui window so
+	// WantCaptureMouse is ALWAYS true over the terminal — that made
+	// selection silently no-op everywhere.
+	//
+	// IsWindowHovered() (no flags) is the right primitive: returns
+	// true only when the wrapper itself is the topmost hovered window
+	// — false when a popup or modal (rename, unsafe-paste, the
+	// context menu) is over the wrapper, but true when the mouse is
+	// over plain terminal cells with nothing on top.
 	barW := float32(w.app.cfg.Scrollbar.Width)
 	onScrollbar := wmX >= float32(w.width)-barW
 	onSearch := tab != nil && w.getScroll(tab.ID).Searching &&
 		wmX >= float32(w.width)-w.searchOverlayW &&
 		wmY <= w.tabBarH+65
-	imguiCaptured := imgui.CurrentIO().WantCaptureMouse()
-	inTerminal := wmY >= w.tabBarH && !onScrollbar && !onSearch && !w.sbDragging && !imguiCaptured
+	wrapperHovered := imgui.IsWindowHovered()
+	inTerminal := wrapperHovered && wmY >= w.tabBarH && !onScrollbar && !onSearch && !w.sbDragging
 
 	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {
 		// Links.DoubleClick: open the URL under the cursor on
@@ -2752,7 +2899,7 @@ func (w *Window) handleMouseSelection() {
 	// middle button or don't want accidental pastes from the primary
 	// selection while reading).
 	if w.app.cfg.Clipboard.PasteOnMiddleClick && imgui.IsMouseClickedBool(imgui.MouseButtonMiddle) {
-		if wmY >= w.tabBarH && !imguiCaptured {
+		if wmY >= w.tabBarH && wrapperHovered {
 			text, err := input.PrimaryRead()
 			if err == nil && text != "" {
 				w.pasteText(text)

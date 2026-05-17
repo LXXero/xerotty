@@ -44,6 +44,34 @@ static void xerottyHideMainWindow(void) {
 		SDL_HideWindow(win);
 	}
 }
+
+// SDL_CaptureMouse globally captures mouse events: on X11 issues
+// XGrabPointer(owner_events=True), on macOS uses Quartz, on Windows
+// uses SetCapture. Used as the context menu's best-effort "click
+// outside dismisses" path — clicks delivered to our event queue
+// while captured reach menu.Render's IsMouseClicked close branch.
+//
+// Quirks observed:
+//   - sdl2-compat → SDL3 (Arch's default) returns success on X11 but
+//     doesn't actually XGrab native Wayland clients under XWayland,
+//     so clicks on Wayland-native apps still bypass us.
+//   - Wayland refuses for security; returns nonzero, no-op.
+// A proper fix needs SDL3 + SDL_CreatePopupWindow which isn't
+// wrapped by cimgui-go yet.
+//
+// Caller must always pair an enable with a disable, or the user's
+// other apps stop receiving events when xerotty is in the background.
+static int xerottyCaptureMouse(int enable) {
+	return SDL_CaptureMouse(enable ? SDL_TRUE : SDL_FALSE);
+}
+
+// Identifies the underlying SDL video driver as a stable short string
+// ("x11", "wayland", "cocoa", "windows", etc). Used to gate behaviors
+// SDL exposes uniformly but that work only on some backends.
+static const char *xerottyVideoDriver(void) {
+	const char *s = SDL_GetCurrentVideoDriver();
+	return s ? s : "";
+}
 */
 import "C"
 
@@ -61,4 +89,23 @@ func sdlQuit() {
 
 func sdlHideMainWindow() {
 	C.xerottyHideMainWindow()
+}
+
+// sdlCaptureMouse turns global mouse capture on or off. Returns true
+// when the request succeeded (X11, macOS, Windows); false when the
+// backend can't honor it (Wayland — compositor reserves global event
+// delivery for itself).
+func sdlCaptureMouse(enable bool) bool {
+	flag := C.int(0)
+	if enable {
+		flag = 1
+	}
+	return C.xerottyCaptureMouse(flag) == 0
+}
+
+// sdlVideoDriver returns the SDL video backend ("x11", "wayland",
+// "cocoa", "windows", ...). Used to gate behaviors that work on some
+// backends and silently no-op on others.
+func sdlVideoDriver() string {
+	return C.GoString(C.xerottyVideoDriver())
 }
