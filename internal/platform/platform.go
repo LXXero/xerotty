@@ -22,7 +22,12 @@ package platform
 // set all three in imconfig.h instead and don't pass anything via -D.
 #cgo CPPFLAGS: -I${SRCDIR}/imgui -I${SRCDIR}/imgui_backends
 #cgo CXXFLAGS: -std=c++17 -fno-exceptions -fno-rtti -Wno-unused-function
-#cgo LDFLAGS: -lGL -lstdc++ -lm -lwayland-client -lX11
+// Per-OS link line. On Linux we pull in libGL + libwayland-client + libX11
+// for the real wlgrab/xgrab implementations. On macOS those translate to
+// the OpenGL framework, and the wayland/X11 libs are absent (replaced by
+// the _darwin.c stub TUs); Cocoa is already linked by cellsnap_darwin.go.
+#cgo linux  LDFLAGS: -lGL -lstdc++ -lm -lwayland-client -lX11
+#cgo darwin LDFLAGS: -lstdc++ -lm -framework OpenGL
 
 #include <stdlib.h>
 #include <SDL3/SDL.h>
