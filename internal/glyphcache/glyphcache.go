@@ -17,9 +17,9 @@
 package glyphcache
 
 import (
-	"github.com/AllenDang/cimgui-go/backend"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/platform"
 )
 
 // Entry is one cached glyph. The texture is the size of the rasterized
@@ -51,7 +51,7 @@ type Entry struct {
 // quad coords, so the GPU sample-rate matches the physical pixel grid.
 type Cache struct {
 	sys     fontsys.System
-	tex     backend.TextureManager
+	tex     platform.TextureManager
 	pxSize  float32
 	fbScale float32
 	primary fontsys.Font
@@ -83,7 +83,7 @@ const missingSentinel = "\x00missing"
 // about HiDPI sharpness. Bold variant is discovered automatically via
 // fontsys.Font.Bold() (CoreText/fontconfig know about a font family's
 // weights, no need for the caller to find a sibling bold file).
-func New(sys fontsys.System, tex backend.TextureManager, primaryPath string, pxSize, fbScale float32) (*Cache, error) {
+func New(sys fontsys.System, tex platform.TextureManager, primaryPath string, pxSize, fbScale float32) (*Cache, error) {
 	primary, err := sys.Open(primaryPath)
 	if err != nil {
 		return nil, err

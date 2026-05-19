@@ -91,6 +91,15 @@ func Render(items []config.MenuItem, ctx *Context, x, y float32, allowCloseClick
 	return action, close, handle
 }
 
+// RenderItemsOnly walks items and emits MenuItem / Separator / nested
+// BeginMenu calls into the CURRENT ImGui window. No Begin/End wrapper
+// — caller (e.g. platform.RunImGuiPopup's draw callback) owns the
+// window. Returns the action of the clicked item, empty string for
+// nothing-this-frame.
+func RenderItemsOnly(items []config.MenuItem, ctx *Context) string {
+	return renderItems(items, ctx)
+}
+
 func renderItems(items []config.MenuItem, ctx *Context) string {
 	for _, item := range items {
 		enabled := checkEnabled(item.Enabled, ctx)

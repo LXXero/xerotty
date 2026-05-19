@@ -1,8 +1,6 @@
 package app
 
 import (
-	"github.com/AllenDang/cimgui-go/backend"
-	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
@@ -26,10 +24,10 @@ type Window struct {
 	// theme, base font metrics, font-reload flags). Set in newWindow.
 	app *App
 
-	// cimgui-go backend handle. Phase 1: one backend, one Window. Phase
-	// 3: each Window will reference the shared App-level backend but
-	// render through its own ImGui viewport.
-	backend backend.Backend[sdlbackend.SDLWindowFlags]
+	// (Old: per-Window cimgui-go backend handle. Removed during the
+	// SDL3 platform migration — the platform layer owns lifecycle
+	// process-wide; per-Window state is just OS-window metadata
+	// retrieved via imgui.Viewport when needed.)
 
 	// Window dimensions in logical pixels, synced each frame from
 	// imgui.IO.DisplaySize.
@@ -92,6 +90,15 @@ type Window struct {
 	// the menu to stay put once the user has right-clicked. So we
 	// manage open/close manually here and render via BeginV (not
 	// BeginPopup), which gives us total control over the lifecycle.
+	// tabDragIdx is the slice index of the tab currently being
+	// drag-reordered by the user, or -1 if no drag is in progress.
+	// Updated as the user drags past tab boundaries; the tab bar
+	// renderer swaps slots live so the user sees the reorder happen
+	// as they drag. Reset to -1 on mouse release.
+	tabDragIdx        int
+	tabDragStartX     float32 // mouse X at the moment tabDragIdx was set
+	tabDragStartY     float32 // mouse Y at the moment tabDragIdx was set
+
 	contextMenuOpen        bool
 	contextMenuX           float32
 	contextMenuY           float32
@@ -177,6 +184,7 @@ func newWindow(app *App) *Window {
 		scroll:       make(map[int]*scrollback.State),
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
+		tabDragIdx:   -1,
 	}
 }
 

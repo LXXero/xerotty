@@ -4,8 +4,8 @@
 package dpi
 
 /*
-#cgo pkg-config: sdl2
-#include <SDL2/SDL.h>
+#cgo pkg-config: sdl3
+#include <SDL3/SDL.h>
 */
 import "C"
 
@@ -55,10 +55,18 @@ func resolve() float32 {
 	if runtime.GOOS == "darwin" {
 		return 72
 	}
+	// SDL3 removed SDL_GetDisplayDPI; the replacement is
+	// SDL_GetDisplayContentScale which returns a multiplier where
+	// 1.0 = the platform's "standard" density (96 dpi on Linux/Win,
+	// the dpi-equivalent of the macOS pt-as-px convention handled
+	// above). Multiplying by Default gives a comparable DPI number
+	// for the points→pixels conversion above.
 	if C.SDL_WasInit(C.SDL_INIT_VIDEO) != 0 {
-		var ddpi, hdpi, vdpi C.float
-		if C.SDL_GetDisplayDPI(0, &ddpi, &hdpi, &vdpi) == 0 && hdpi > 0 {
-			return float32(hdpi)
+		if did := C.SDL_GetPrimaryDisplay(); did != 0 {
+			scale := float32(C.SDL_GetDisplayContentScale(did))
+			if scale > 0 {
+				return scale * Default
+			}
 		}
 	}
 	return Default

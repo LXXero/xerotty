@@ -3,14 +3,13 @@ package app
 
 import (
 	"fmt"
-	"github.com/AllenDang/cimgui-go/backend"
-	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/fontsys"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/menu"
+	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
@@ -44,15 +43,24 @@ func init() {
 // docs/MULTI_WINDOW_REFACTOR.md for why this matters on macOS Dock
 // coalescing.
 type App struct {
-	cfg              config.Config
-	theme            renderer.Theme
-	baseFontSize     float32 // font size the atlas was built at
-	baseCellW        float32 // cell width at base font size
-	baseCellH        float32 // cell height at base font size
-	pendingFontFace bool // rebuild font atlas at start of next frame
+	cfg             config.Config
+	theme           renderer.Theme
+	baseFontSize    float32 // font size the atlas was built at
+	baseCellW       float32 // cell width at base font size
+	baseCellH       float32 // cell height at base font size
+	pendingFontFace bool    // rebuild font atlas at start of next frame
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
+
+	// dragTab is the process-wide state for an in-progress drag of a
+	// tab across windows. nil when no drag is happening. Set when the
+	// user drags a tab down past the tab bar (lift-off threshold)
+	// from any Window's tab bar; the source Window has already
+	// RemoveTab'd the entry by then so the Terminal lives only in
+	// dragTab.Term until release. The app resolves the final target
+	// once per frame after all Windows have rendered.
+	dragTab *tabDrag
 
 	// prevOsLeftDown is the OS-level left mouse button state observed
 	// at the end of the previous frame's mouse-mirror check. The mirror
@@ -63,6 +71,26 @@ type App struct {
 	// skip injection when ImGui's view spuriously already matches a
 	// half-applied OS state.
 	prevOsLeftDown bool
+}
+
+// tabDrag is the in-flight state of a tab being dragged across
+// Windows. The Terminal lives ONLY inside Term while drag is
+// active — source Window's tabs.Manager has already RemoveTab'd
+// it. On release, either the cursor's-over Window adopts the
+// Terminal (intra-process Window-to-Window move) or a new Window
+// gets spawned and adopts it (detach-to-new).
+//
+// LastFocus is only a fallback signal. On Wayland the compositor's
+// implicit pointer grab can keep it stuck on the source Window, so a
+// Wayland data-device drop target or geometry hit-test wins first.
+type tabDrag struct {
+	Term               *terminal.Terminal
+	Label              string  // for floating-preview rendering
+	From               *Window // window the tab originated in; used to reject stale source focus
+	LastFocus          uintptr // SDL_WindowID last seen under the cursor during the drag
+	WaylandStarted     bool
+	WaylandDropSeen    bool
+	WaylandDropSurface uintptr
 }
 
 // New creates a new App with the given config. The initial Window
@@ -254,7 +282,7 @@ func (a *App) startMouseMirrorWakePoller() func() {
 				down := sdlhack.LeftButtonPhysicalDown()
 				if down != prev {
 					prev = down
-					wakeEventLoop()
+					platform.PostWake()
 				}
 			case <-stop:
 				return
@@ -268,6 +296,14 @@ func (a *App) startMouseMirrorWakePoller() func() {
 	}
 }
 
+// spawnWindowAdopting spawns a new Window like spawnWindow, except
+// its first tab adopts the given already-running Terminal instead
+// of starting a fresh shell. Used by cross-Window tab drag when the
+// user drops the floating tab outside any existing Window.
+func (a *App) spawnWindowAdopting(term *terminal.Terminal) {
+	a.spawnWindowImpl(term)
+}
+
 // spawnWindow adds a new Window to this App in the same process. The
 // secondary Window shares the cimgui-go SDL backend + ImGui context
 // + GL textures with the main Window, but has its own tabs manager,
@@ -275,11 +311,15 @@ func (a *App) startMouseMirrorWakePoller() func() {
 // Run() then wraps its frame body in an ImGui top-level window that
 // multi-viewport auto-promotes to its own OS window.
 func (a *App) spawnWindow() {
+	a.spawnWindowImpl(nil)
+}
+
+func (a *App) spawnWindowImpl(adopt *terminal.Terminal) {
 	if len(a.windows) == 0 {
 		return // can't spawn before Run() has set up the main Window
 	}
 	main := a.windows[0]
-	if main.renderer == nil || main.backend == nil {
+	if main.renderer == nil {
 		return // main Window isn't fully initialized yet
 	}
 
@@ -340,9 +380,10 @@ func (a *App) spawnWindow() {
 	padX2 := float32(a.cfg.Appearance.Padding) * 2
 	w.width = int(math.Ceil(float64(float32(cfgCols)*w.cellW + padX2 + cellSafetyMarginH + cellOriginInsetX)))
 	w.height = int(math.Ceil(float64(float32(cfgRows)*w.cellH + padX2 + cellSafetyMarginV)))
-	// Share the SDL backend (same ImGui/GL context); multi-viewport
-	// will create the additional SDL_Window via its platform IO.
-	w.backend = main.backend
+	// (Old: w.backend = main.backend — no per-Window backend now.
+	// Every Window shares the process-wide platform layer and uses
+	// ImGui multi-viewport for its OS window.)
+	_ = main
 
 	// Per-window renderer — shares the same font handles but gets its
 	// own Metrics / scrollbar / glyph cache so per-Window theming etc.
@@ -370,7 +411,7 @@ func (a *App) spawnWindow() {
 			// Cache uses this Window's own fontSize so glyphs are
 			// rasterized at the right physical size (each Window can
 			// have a different zoom).
-			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, w.fontSize, fbScale); err == nil {
+			if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, w.fontSize, fbScale); err == nil {
 				w.renderer.Glyphs = c
 			}
 		}
@@ -382,14 +423,24 @@ func (a *App) spawnWindow() {
 	// in ~/src/foo, matching iTerm/Terminal.app's behavior.
 	w.tabs = tabs.NewManager(&a.cfg)
 	cols, rows := w.gridSize()
-	var cwd string
-	if a.cfg.Tabs.InheritCWD && parent != nil {
-		if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
-			cwd = parentTab.Terminal.GetCWD()
+	if adopt != nil {
+		// Adopt the already-running Terminal from a cross-Window
+		// tab drag. Resize it to this Window's grid so its PTY +
+		// vt emulator match what the new Window's renderer expects.
+		if cols > 1 && rows > 1 {
+			adopt.Resize(cols, rows)
 		}
-	}
-	if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
-		return
+		w.tabs.AdoptTab(adopt)
+	} else {
+		var cwd string
+		if a.cfg.Tabs.InheritCWD && parent != nil {
+			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
+				cwd = parentTab.Terminal.GetCWD()
+			}
+		}
+		if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
+			return
+		}
 	}
 
 	// Skip the main-Window-specific first-frame init (CreateWindow,
@@ -435,34 +486,38 @@ func (a *App) Run() error {
 	applyColorOverrides(&theme, &a.cfg)
 	a.theme = theme
 
-	w.backend, _ = backend.CreateBackend(sdlbackend.NewSDLBackend())
-
-	// Font reload runs here — BEFORE every frame's NewFrame. The
-	// alternative (doing it inside our frame() callback after NewFrame
-	// already snapshotted the current font) leaves a freed font in
-	// ImGui's per-frame state and asserts when Render dereferences it.
-	w.backend.SetBeforeRenderHook(a.beforeRender)
-
 	w.width, w.height = w.initialWindowSize()
-	// CreateWindow makes the cimgui-go primary SDL_Window — it's
-	// required for ImGui's context to initialize, but we don't want
-	// it visible to the user. All user-visible Windows are ImGui
-	// multi-viewport pop-outs of equal status; the primary is a
-	// hidden carrier that holds the GL context.
-	w.backend.CreateWindow("xerotty", w.width, w.height)
-	sdlHideMainWindow()
-	// Mark this Window for the multi-viewport pop-out path same as
-	// any other Window. windows[0] is no longer "main" — closing it
-	// removes it from a.windows like any other; closing the last
-	// remaining Window quits the app.
+
+	// platform.Init creates the SDL3 window + GL context and brings up
+	// Dear ImGui with the SDL3 + OpenGL3 backends. Replaces cimgui-go's
+	// backend.CreateBackend + sdlbackend.NewSDLBackend + CreateWindow
+	// chain — single call, no hidden carrier window (the OS window IS
+	// the main window).
+	if err := platform.Init("xerotty", w.width, w.height); err != nil {
+		return fmt.Errorf("platform.Init: %w", err)
+	}
+
+	// Font reload runs BEFORE every frame's NewFrame. The alternative
+	// (doing it inside our frame() callback after NewFrame already
+	// snapshotted the current font) leaves a freed font in ImGui's
+	// per-frame state and asserts when Render dereferences it.
+	platform.SetBeforeRenderHook(a.beforeRender)
+
+	// Hidden-carrier model: the SDL_Window platform.Init created holds
+	// the GL context but isn't user-visible. Every Window — including
+	// the first — pops out as its own OS window via ImGui multi-
+	// viewport. Same approach as the SDL2 design; the platform layer
+	// just needs an explicit hide call now.
+	platform.HideMainWindow()
 	w.imguiName = "xerottywin0"
 
-	// Set background color from theme (ABGR → RGBA for SDL)
+	// Set background color from theme (ABGR → RGBA for the GL clear).
 	bgR := float32((theme.Background>>0)&0xFF) / 255.0
 	bgG := float32((theme.Background>>8)&0xFF) / 255.0
 	bgB := float32((theme.Background>>16)&0xFF) / 255.0
-	w.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
-	w.backend.SetTargetFPS(120)
+	platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
+	// (Old SetTargetFPS(120) removed — the platform's WaitEventTimeout
+	// loop is event-driven and self-paces to the display refresh.)
 
 	// Keep multi-viewport enabled so child ImGui windows (preferences, etc.)
 	// can be dragged out as native OS windows. The SDL backend already enables
@@ -554,11 +609,6 @@ func (a *App) Run() error {
 			imgui.SetNextWindowPosV(
 				imgui.Vec2{X: posX, Y: posY},
 				imgui.CondFirstUseEver, imgui.Vec2{X: 0, Y: 0})
-			// Size: CondFirstUseEver normally so user drag-resizes
-			// stick. After a font-zoom that wants to maintain
-			// cols×rows we flip to CondAlways for one frame so
-			// multi-viewport's Platform_SetWindowSize fires and
-			// resizes the OS window to win.width × win.height.
 			sizeCond := imgui.CondFirstUseEver
 			if win.pendingResize {
 				sizeCond = imgui.CondAlways
@@ -665,25 +715,30 @@ func (a *App) Run() error {
 		// every Window is gone after the reap, the process quits.
 		a.reapClosedWindows()
 		if len(a.windows) == 0 {
-			sdlQuit()
+			platform.Quit()
 		}
-		setEventLoopIdleTimeout(a.idleTimeout())
+		a.updateTabDragDrop()
+		platform.SetIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
-	// Wake the main loop when any PTY produces new data. Without this the
-	// loop sleeps in WaitEventTimeout until the next timeout (cursor
-	// blink etc.) and the user sees up to ~500ms latency on incoming
-	// bytes.
-	terminal.Wake = wakeEventLoop
+	// Wake the platform loop when any PTY produces new data. Without
+	// this the loop sleeps in WaitEventTimeout until the next timeout
+	// (cursor blink etc.) and the user sees up to ~500ms latency on
+	// incoming bytes.
+	terminal.Wake = platform.PostWake
 
 	stopMouseWakePoller := a.startMouseMirrorWakePoller()
 	defer stopMouseWakePoller()
 
-	// Main loop — event-driven via SDL_WaitEventTimeout. CPU goes to
-	// kernel-sleep when nothing's happening; PTY arrival, mouse, keys,
-	// timers all wake it.
-	runEventLoop(bgR, bgG, bgB, wrappedFrame, a.beforeRender, nil)
+	// Main loop — event-driven via SDL_WaitEventTimeout inside
+	// platform.Frame. CPU goes to kernel-sleep when nothing's
+	// happening; PTY arrival, mouse, keys, timers all wake it.
+	// beforeRender was registered above via platform.SetBeforeRenderHook
+	// and fires automatically before each NewFrame inside Frame().
+	for platform.Frame(wrappedFrame) {
+	}
+	platform.Shutdown()
 
 	// Cleanup: close all tabs in every Window before exiting.
 	for _, win := range a.windows {
@@ -702,16 +757,16 @@ func (a *App) Run() error {
 // between the cell grid and the window edge, beyond the user-visible
 // Appearance.Padding. Two reasons:
 //
-// 1. Glyph AA spill: CalcTextSize returns the font's advance width, but
-//    font hinting / anti-aliasing can nudge glyph edge pixels slightly
-//    past cellW. Without margin, when the floor-fitted cell count
-//    produces a tight right-edge gutter, the rightmost glyph's AA edge
-//    renders over the window boundary and appears clipped.
+//  1. Glyph AA spill: CalcTextSize returns the font's advance width, but
+//     font hinting / anti-aliasing can nudge glyph edge pixels slightly
+//     past cellW. Without margin, when the floor-fitted cell count
+//     produces a tight right-edge gutter, the rightmost glyph's AA edge
+//     renders over the window boundary and appears clipped.
 //
-// 2. macOS rounded NSWindow corners (~5 px radius on all four corners)
-//    mask any content rendering at the very edge. The bottom row's
-//    leftmost/rightmost glyphs and the top row's corners get clipped
-//    if cells run flush to the window bounds.
+//  2. macOS rounded NSWindow corners (~5 px radius on all four corners)
+//     mask any content rendering at the very edge. The bottom row's
+//     leftmost/rightmost glyphs and the top row's corners get clipped
+//     if cells run flush to the window bounds.
 //
 // Together they translate to "more padding on macOS than other
 // platforms" — same reason iTerm uses noticeable inset.
@@ -889,7 +944,7 @@ func (a *App) beforeRender() {
 				fbScale = 1
 			}
 			for _, w := range a.windows {
-				if w.renderer == nil || w.backend == nil {
+				if w.renderer == nil {
 					continue
 				}
 				// Each Window has its own font size — rebuild the
@@ -899,7 +954,7 @@ func (a *App) beforeRender() {
 				if size <= 0 {
 					size = a.baseFontSize
 				}
-				if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, size, fbScale); err == nil {
+				if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, size, fbScale); err == nil {
 					w.renderer.Glyphs = c
 				}
 			}
@@ -915,6 +970,132 @@ func (a *App) beforeRender() {
 	for _, w := range a.windows {
 		w.pendingRemeasure = true
 	}
+}
+
+// updateTabDragDrop advances and finalizes an in-flight cross-window tab drag.
+// It runs once per app frame after all Windows rendered, so drop resolution is
+// deterministic instead of whichever Window happens to frame first.
+func (a *App) updateTabDragDrop() {
+	d := a.dragTab
+	if d == nil {
+		return
+	}
+	// Update last-seen focus while drag is in flight. We do this in
+	// every frame, but don't rely on a source-window match by itself:
+	// Wayland's implicit pointer grab can keep reporting the source
+	// surface even after the cursor is physically over another window.
+	if cur := platform.MouseFocusWindowID(); cur != 0 {
+		d.LastFocus = cur
+	}
+	a.refreshWaylandTabDrop(d)
+
+	mouseDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
+	if d.WaylandStarted && (d.WaylandDropSeen || !platform.WaylandDragActive()) {
+		mouseDown = false
+	}
+	if mouseDown {
+		return
+	}
+
+	target, wait := a.tabDropTarget(d)
+	if wait {
+		return
+	}
+	if target != nil {
+		target.adoptDraggedTab(d)
+		a.dragTab = nil
+		return
+	}
+
+	a.spawnWindowAdopting(d.Term)
+	a.dragTab = nil
+}
+
+func (a *App) tabDropTarget(d *tabDrag) (*Window, bool) {
+	a.refreshWaylandTabDrop(d)
+	if d.WaylandStarted && !d.WaylandDropSeen {
+		if target := platform.WaylandDropTarget(); target != 0 && !platform.WaylandDragActive() {
+			d.WaylandDropSeen = true
+			d.WaylandDropSurface = target
+		} else if platform.WaylandDragActive() {
+			return nil, true
+		}
+	}
+
+	if d.WaylandDropSeen {
+		if d.WaylandDropSurface == 0 {
+			return nil, false
+		}
+		for _, w := range a.windows {
+			if platform.WindowWLSurfacePtr(w.sdlWindowHandle()) == d.WaylandDropSurface {
+				return w, false
+			}
+		}
+		return nil, false
+	}
+
+	mp := imgui.MousePos()
+	mouseValid := validMousePos(mp)
+	if mouseValid && platform.VideoDriver() != "wayland" {
+		for i := len(a.windows) - 1; i >= 0; i-- {
+			if a.windows[i].containsMousePos(mp) {
+				return a.windows[i], false
+			}
+		}
+	}
+
+	if d.LastFocus != 0 {
+		for _, w := range a.windows {
+			if w.sdlWindowHandle() != d.LastFocus {
+				continue
+			}
+			if w == d.From && (!mouseValid || !w.containsMousePos(mp)) {
+				return nil, false
+			}
+			return w, false
+		}
+	}
+
+	if mouseValid {
+		for i := len(a.windows) - 1; i >= 0; i-- {
+			if a.windows[i].containsMousePos(mp) {
+				return a.windows[i], false
+			}
+		}
+	}
+
+	return nil, false
+}
+
+func (a *App) refreshWaylandTabDrop(d *tabDrag) {
+	if !d.WaylandStarted || d.WaylandDropSeen {
+		return
+	}
+	if platform.WaylandDropFired() {
+		d.WaylandDropSeen = true
+		d.WaylandDropSurface = platform.WaylandDropTarget()
+	}
+}
+
+func (w *Window) adoptDraggedTab(d *tabDrag) {
+	cols, rows := w.gridSize()
+	if cols > 1 && rows > 1 {
+		d.Term.Resize(cols, rows)
+	}
+	w.tabs.AdoptTab(d.Term)
+}
+
+func validMousePos(mp imgui.Vec2) bool {
+	const noMouseSentinel = -3.4e+37
+	return mp.X > noMouseSentinel && mp.Y > noMouseSentinel
+}
+
+func (w *Window) containsMousePos(mp imgui.Vec2) bool {
+	return validMousePos(mp) &&
+		mp.X >= w.contentOriginX &&
+		mp.X < w.contentOriginX+float32(w.width) &&
+		mp.Y >= w.contentOriginY &&
+		mp.Y < w.contentOriginY+float32(w.height)
 }
 
 func (a *Window) frame() {
@@ -991,7 +1172,7 @@ func (a *Window) frame() {
 				if fbScale <= 0 {
 					fbScale = 1
 				}
-				if c, err := glyphcache.New(fontsys.Default, a.backend, primaryPath, a.app.baseFontSize, fbScale); err == nil {
+				if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, a.app.baseFontSize, fbScale); err == nil {
 					a.renderer.Glyphs = c
 				}
 			}
@@ -1012,6 +1193,8 @@ func (a *Window) frame() {
 		a.app.baseCellH = metrics.Height
 		a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 		a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
+		// Tell the WM to snap drag-resize to whole-cell increments.
+		platform.SetResizeIncrements(a.sdlWindowHandle(), int(a.cellW), int(a.cellH))
 
 		// Re-fit the window to the configured columns/rows now that we have
 		// real cell metrics. The initial CreateWindow used estimated metrics,
@@ -1040,7 +1223,7 @@ func (a *Window) frame() {
 		// First-frame startup tab — no parent to inherit CWD from;
 		// the shell uses xerotty's own CWD (launcher / cwd-at-launch).
 		if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
-			sdlQuit()
+			platform.Quit()
 			return
 		}
 		return
@@ -1074,7 +1257,7 @@ func (a *Window) frame() {
 			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 			a.renderer.FontSize = a.fontSize
 			a.resizeTerminals()
-			setContentResizeIncrements(a.sdlWindowHandle(), a.cellW, a.cellH)
+			platform.SetResizeIncrements(a.sdlWindowHandle(), int(a.cellW), int(a.cellH))
 		}
 	}
 
@@ -1148,7 +1331,7 @@ func (a *Window) frame() {
 				scrollLines = 3
 			}
 			if wheel > 0 {
-				s.ScrollUp(scrollLines, tab.Terminal.Emu.ScrollbackLen())
+				s.ScrollUp(scrollLines, tab.Terminal.ScrollbackLen())
 			} else {
 				s.ScrollDown(scrollLines)
 			}
@@ -1208,7 +1391,7 @@ func (a *Window) frame() {
 		if tab.Dirty {
 			tab.Dirty = false
 			s := a.getScroll(tab.ID)
-			sbLen := tab.Terminal.Emu.ScrollbackLen()
+			sbLen := tab.Terminal.ScrollbackLen()
 			if s.IsScrolled() && s.PrevSBLen > 0 {
 				if scrollOnOutput {
 					s.Reset()
@@ -1315,7 +1498,7 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			a.renderer.Draw(tab.Terminal.Emu, drawList, scrollOff)
+			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
 
 			// Draw selection highlight
 			if a.sel.active {
@@ -1434,7 +1617,15 @@ func (a *Window) frame() {
 	// re-set contextMenuOpenedFrame here, allowCloseClick would be
 	// false for that frame and the menu would silently reposition
 	// instead of closing.
-	if mouseInThisWindow && imgui.IsMouseClickedBool(imgui.MouseButtonRight) && !a.contextMenuOpen {
+	// Only the focused Window opens its menu — without this gate,
+	// overlapping multi-viewport popout rects mean a right-click in
+	// the overlap area fires "menu open" on BOTH windows (verified:
+	// same mouse pos passes mouseInThisWindow for both), producing
+	// duplicate menus and an ImGui ID conflict. We use IsWindowFocused
+	// inline (not a.app.active, which is last-frame's value updated
+	// post-render) so the *clicked* window is the one that responds.
+	thisWindowFocused := imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows)
+	if thisWindowFocused && mouseInThisWindow && imgui.IsMouseClickedBool(imgui.MouseButtonRight) && !a.contextMenuOpen {
 		a.contextMenuOpen = true
 		a.contextMenuX = mp.X
 		a.contextMenuY = mp.Y
@@ -1738,13 +1929,13 @@ func (w *Window) dispatchAction(action string) {
 		// hidden carrier. SDL_GL_GetCurrentWindow() would silently
 		// fullscreen the invisible carrier and look like a no-op.
 		if h := w.sdlWindowHandle(); h != 0 {
-			sdlSetFullscreen(h, w.fullscreen)
+			platform.SetFullscreen(h, w.fullscreen)
 		}
 	case "scroll_page_up":
 		if tab := w.tabs.Active(); tab != nil {
 			s := w.getScroll(tab.ID)
 			_, rows := w.gridSize()
-			s.PageUp(rows, tab.Terminal.Emu.ScrollbackLen())
+			s.PageUp(rows, tab.Terminal.ScrollbackLen())
 		}
 	case "scroll_page_down":
 		if tab := w.tabs.Active(); tab != nil {
@@ -1755,7 +1946,7 @@ func (w *Window) dispatchAction(action string) {
 	case "scroll_top":
 		if tab := w.tabs.Active(); tab != nil {
 			s := w.getScroll(tab.ID)
-			s.Offset = tab.Terminal.Emu.ScrollbackLen()
+			s.Offset = tab.Terminal.ScrollbackLen()
 		}
 	case "scroll_bottom":
 		if tab := w.tabs.Active(); tab != nil {
@@ -1850,16 +2041,11 @@ func (w *Window) dispatchAction(action string) {
 						win.renderer.Theme = t
 					}
 				}
-				// Update SDL background color to match new theme — both
-				// the cimgui-go backend (used briefly during init before
-				// runEventLoop takes over) and our runloop's clear color.
-				// Backend is shared across Windows (same GL context), so
-				// SetBgColor and updateEventLoopBg run once.
+				// Update SDL background color to match new theme.
 				bgR := float32((t.Background>>0)&0xFF) / 255.0
 				bgG := float32((t.Background>>8)&0xFF) / 255.0
 				bgB := float32((t.Background>>16)&0xFF) / 255.0
-				w.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
-				updateEventLoopBg(bgR, bgG, bgB)
+				platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 			}
 		} else if strings.HasPrefix(action, "exec:") {
 			ctx := w.menuContext()
@@ -1918,7 +2104,7 @@ func (w *Window) updateFontMetrics() {
 			if fbScale <= 0 {
 				fbScale = 1
 			}
-			if c, err := glyphcache.New(fontsys.Default, w.backend, primaryPath, pxSize, fbScale); err == nil {
+			if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, pxSize, fbScale); err == nil {
 				w.renderer.Glyphs.Close()
 				w.renderer.Glyphs = c
 			}
@@ -2143,6 +2329,78 @@ func (w *Window) renderTabBar() {
 
 	if clickedIdx >= 0 {
 		w.tabs.ActiveIdx = clickedIdx
+		// Click seeds drag-from-this-tab state. Drag only activates
+		// once the user moves the cursor past a threshold from the
+		// press position, so plain clicks still feel like clicks.
+		w.tabDragIdx = clickedIdx
+		mp := imgui.MousePos()
+		w.tabDragStartX = mp.X
+		w.tabDragStartY = mp.Y
+	}
+
+	// Drag-to-reorder within this tab bar, OR lift-off into a cross-
+	// Window drag. Thresholds are RELATIVE to the press position, not
+	// absolute screen Y — otherwise a click that happened to land
+	// near either vertical edge of the tab bar would instantly trigger
+	// detach with no actual movement.
+	const liftOffPx = 30 // vertical movement required to detach
+	const dragSlopPx = 4 // dead zone around the click before we consider any drag
+	if w.tabDragIdx >= 0 && imgui.IsMouseDown(imgui.MouseButtonLeft) {
+		mp := imgui.MousePos()
+		dx := mp.X - w.tabDragStartX
+		dy := mp.Y - w.tabDragStartY
+		moved := dx*dx+dy*dy > dragSlopPx*dragSlopPx
+
+		// Cursor feedback once we're past the dead zone — "Hand"
+		// reads as "you're dragging this".
+		if moved {
+			imgui.SetMouseCursor(imgui.MouseCursorHand)
+		}
+
+		if dy > liftOffPx || dy < -liftOffPx {
+			// Lift off — pull the tab out of this Window into the
+			// process-wide drag state. After this point the tab
+			// is no longer in any Window's tabs.Manager. We also
+			// kick off a Wayland data_device drag so the compositor
+			// will route cursor enter/leave/drop to other surfaces
+			// during the held drag (Wayland's implicit pointer
+			// grab otherwise blocks cross-surface events).
+			if t := w.tabs.RemoveTab(w.tabDragIdx); t != nil {
+				drag := &tabDrag{
+					Term:      t.Terminal,
+					Label:     t.DisplayTitle(),
+					From:      w,
+					LastFocus: w.sdlWindowHandle(),
+				}
+				if cur := platform.MouseFocusWindowID(); cur != 0 {
+					drag.LastFocus = cur
+				}
+				drag.WaylandStarted = platform.StartWaylandTabDrag(w.sdlWindowHandle())
+				w.app.dragTab = drag
+			}
+			w.tabDragIdx = -1
+		} else if moved && mp.Y >= originY && mp.Y < originY+height && mp.X >= originX {
+			targetIdx := int((mp.X - originX) / tabW)
+			if targetIdx < 0 {
+				targetIdx = 0
+			}
+			if targetIdx >= numTabs {
+				targetIdx = numTabs - 1
+			}
+			if targetIdx != w.tabDragIdx {
+				w.tabs.MoveTab(w.tabDragIdx, targetIdx)
+				w.tabDragIdx = targetIdx
+			}
+		}
+	} else if !imgui.IsMouseDown(imgui.MouseButtonLeft) {
+		w.tabDragIdx = -1
+	}
+
+	// While a cross-Window drag is in flight (any Window's drag),
+	// show the "moving" cursor everywhere over our wrapper so the
+	// user has feedback that the floating tab is held.
+	if w.app.dragTab != nil {
+		imgui.SetMouseCursor(imgui.MouseCursorResizeAll)
 	}
 	if closedIdx >= 0 {
 		w.tabs.CloseTab(closedIdx)
@@ -2152,7 +2410,7 @@ func (w *Window) renderTabBar() {
 		// resize at the START of the next frame; without the wake,
 		// the user can see up to ~30ms of stale window-size before
 		// the resize lands.
-		wakeEventLoop()
+		platform.PostWake()
 	}
 }
 
@@ -2161,60 +2419,111 @@ func (w *Window) renderContextMenu() {
 		return
 	}
 
+	// Open an SDL3 xdg_popup parented to THIS Window's OS window so
+	// the compositor positions the menu relative to the parent
+	// surface (Wayland forbids absolute toplevel positioning, which
+	// is why the old multi-viewport-pop-out approach landed the menu
+	// in the middle of the screen). RunImGuiPopup blocks until the
+	// menu dismisses — the rest of the app pauses, which matches
+	// native context-menu semantics on every OS.
+	parentID := uintptr(0)
+	if vp := w.viewport(); vp != nil {
+		parentID = vp.PlatformHandle()
+	}
+	// Click pos is in absolute desktop coords. The popup wants
+	// parent-relative coords. Compute relative from the Window's
+	// captured contentOrigin (the wrapper Begin's screen-space top-
+	// left) so the popup opens at the click position even if the
+	// compositor stuck the OS window somewhere we didn't ask for.
+	relX := int(w.contextMenuX - w.contentOriginX)
+	relY := int(w.contextMenuY - w.contentOriginY)
+	if relX < 0 {
+		relX = 0
+	}
+	if relY < 0 {
+		relY = 0
+	}
+
 	ctx := w.menuContext()
-	// Skip close-on-click-outside for the same frame the menu opened —
-	// the opening right-click leaves IsMouseClicked true for the rest
-	// of the frame and would otherwise immediately close us.
-	allowCloseClick := int(imgui.FrameCount()) != w.contextMenuOpenedFrame
-	action, close, _ := menu.Render(w.app.cfg.Menu.Items, ctx, w.contextMenuX, w.contextMenuY, allowCloseClick)
-
-	// No auto-close-on-pivot-away path. Every signal we tried
-	// (IsWindowFocused, AppFocusLost, SDL_WINDOW_INPUT_FOCUS,
-	// SDL_GetMouseFocus, XGetInputFocus, _NET_ACTIVE_WINDOW) fires
-	// on mere pointer hover under labwc and similar compositors with
-	// focus-follows-pointer behavior. An auto-close based on any of
-	// them produces a menu that vanishes the instant the cursor
-	// moves off, which is way worse than no auto-close at all.
+	// Pre-compute popup size matching the popup's actual rendering.
+	// Values are empirical — captured by tracing CursorPosY of an
+	// 11-item / 4-separator menu in the popup's default font + style
+	// and back-solving. See popup_imgui.cpp trace lines.
 	//
-	// User dismisses via:
-	//   - Escape
-	//   - click inside the menu (item selection)
-	//   - click anywhere else inside xerotty (covered by menu.Render's
-	//     IsMouseClickedBool check)
-	//   - click another X11 app (covered by SDL_CaptureMouse + the
-	//     above on real X11; on XWayland sdl2-compat doesn't actually
-	//     XGrab native Wayland windows, so those need a manual
-	//     dismiss too).
+	//   items * 17 + separators * 4 + 16 (top+bottom WindowPadding)
+	//   == actual rendered height
 	//
-	// A proper "click anywhere outside dismisses" requires xdg_popup
-	// (Wayland) / NSMenu (macOS) / TrackPopupMenu (Windows). SDL2
-	// can't expose those primitives; SDL3 can via SDL_CreatePopupWindow
-	// but cimgui-go doesn't have a SDL3 backend yet. Tracked
-	// separately as a SDL3-platform spike.
+	// These are properties of ImGui's default font + default style
+	// rendering MenuItem/Separator, so they hold for any
+	// user-customized menu items list.
+	const (
+		popupItemAdvance = 17.0 // MenuItem cursor advance (default font+style)
+		popupSepAdvance  = 4.0  // Separator cursor advance
+		popupWindowPadY  = 8.0
+		popupWindowPadX  = 8.0
+		popupCharW       = 7.0 // ~ default ImGui font monospace width
+	)
+	popupW := float32(120)
+	popupH := float32(popupWindowPadY * 2)
+	for _, item := range w.app.cfg.Menu.Items {
+		if item.Action == "separator" {
+			popupH += popupSepAdvance
+			continue
+		}
+		labelW := float32(len(item.Label)) * popupCharW
+		shortcutW := float32(len(item.Shortcut)) * popupCharW
+		w := labelW + shortcutW + 30
+		if w > popupW {
+			popupW = w
+		}
+		popupH += popupItemAdvance
+	}
+	popupW += float32(popupWindowPadX * 2)
+	var selectedAction string
+	platform.RunImGuiPopup(parentID, relX, relY, int(popupW), int(popupH),
+		func() platform.PopupMenuDrawResult {
+			io := imgui.CurrentIO()
+			imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
+			imgui.SetNextWindowSize(io.DisplaySize())
+			flags := imgui.WindowFlagsNoTitleBar |
+				imgui.WindowFlagsNoResize |
+				imgui.WindowFlagsNoMove |
+				imgui.WindowFlagsNoSavedSettings |
+				imgui.WindowFlagsNoCollapse |
+				imgui.WindowFlagsNoScrollbar
+			var action string
+			var contentH float32
+			var contentW float32
+			if imgui.BeginV("##popupmenu", nil, flags) {
+				action = menu.RenderItemsOnly(w.app.cfg.Menu.Items, ctx)
+				// CursorPosY after the last item is exactly where the
+				// next item would go — i.e. the true rendered content
+				// height. Use it (plus a bit of bottom padding) as
+				// the desired SDL popup size; the C side then shrinks
+				// the OS window to fit. Robust against any
+				// miscalculation in the pre-Open estimate.
+				contentH = imgui.CursorPosY() + 8 // bottom padding
+				contentW = imgui.WindowSize().X
+			}
+			imgui.End()
+			res := platform.PopupMenuDrawResult{
+				DesiredWidth:  int(contentW),
+				DesiredHeight: int(contentH),
+			}
+			if action != "" {
+				selectedAction = action
+				res.Close = true
+			}
+			return res
+		})
 
-	if action != "" {
-		w.dispatchAction(action)
-		w.contextMenuOpen = false
+	w.contextMenuOpen = false
+	w.contextMenuOutCount = 0
+	w.contextMenuCaptured = false
+	if selectedAction != "" {
+		w.dispatchAction(selectedAction)
 	}
-	if close {
-		w.contextMenuOpen = false
-		w.contextMenuOutCount = 0
-		// Force an immediate wake so the next frame fires and ImGui's
-		// multi-viewport actually destroys the menu's OS window.
-		// Without this, the loop's idleTimeout drops back to the
-		// normal value (~5s) the instant contextMenuOpen flips false,
-		// so the menu's physical SDL window stays visible for up to
-		// 5 seconds until something else (PTY output, cursor blink)
-		// wakes the loop.
-		wakeEventLoop()
-	}
-	// Always release the global mouse capture when the menu closes —
-	// otherwise xerotty would keep intercepting mouse events globally
-	// after the menu's gone, blocking other apps from receiving them.
-	if !w.contextMenuOpen && w.contextMenuCaptured {
-		sdlCaptureMouse(false)
-		w.contextMenuCaptured = false
-	}
+	platform.PostWake()
 }
 
 func (w *Window) menuContext() *menu.Context {
@@ -2529,7 +2838,7 @@ func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.Dra
 		return
 	}
 
-	sbLen := tab.Terminal.Emu.ScrollbackLen()
+	sbLen := tab.Terminal.ScrollbackLen()
 	_, rows := w.gridSize()
 	totalLines := sbLen + rows
 
