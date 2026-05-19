@@ -931,8 +931,27 @@ static void ImGui_ImplSDL3_GetWindowSizeAndFramebufferScale(SDL_Window* window, 
         w = h = 0;
 
 #if defined(__APPLE__)
-    float fb_scale_x = SDL_GetWindowDisplayScale(window); // Seems more reliable during resolution change (#8703)
-    float fb_scale_y = fb_scale_x;
+    // xerotty patch: SDL_GetWindowDisplayScale always returns the
+    // display's scale (e.g. 2.0 on Retina), regardless of whether the
+    // window was created with SDL_WINDOW_HIGH_PIXEL_DENSITY. Popup
+    // windows in our app are NOT created with HighPixelDensity, so
+    // their backing buffer is 1:1 — but DisplayFramebufferScale=2.0
+    // makes ImGui's renderer draw items twice as large as the hit
+    // areas it tracks, producing the "hover lands on the wrong row"
+    // bug. Use pixel-size ÷ logical-size when the window doesn't
+    // have HighPixelDensity set; only fall back to DisplayScale
+    // (upstream's "more reliable during res change") for windows
+    // that ARE HighPixelDensity-backed.
+    float fb_scale_x, fb_scale_y;
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_HIGH_PIXEL_DENSITY) {
+        fb_scale_x = SDL_GetWindowDisplayScale(window);
+        fb_scale_y = fb_scale_x;
+    } else {
+        int display_w, display_h;
+        SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
+        fb_scale_x = (w > 0) ? (float)display_w / w : 1.0f;
+        fb_scale_y = (h > 0) ? (float)display_h / h : 1.0f;
+    }
 #else
     int display_w, display_h;
     SDL_GetWindowSizeInPixels(window, &display_w, &display_h);
