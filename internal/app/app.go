@@ -693,8 +693,19 @@ func (a *App) Run() error {
 			// is set by ImGui_ImplSDL2 directly from
 			// SDL_WINDOWEVENT_CLOSE so it's the source of truth.
 			if win.imViewport != nil && win.imViewport.PlatformRequestClose() {
-				win.pendingClose = true
 				win.imViewport.SetPlatformRequestClose(false)
+				if win.swallowOSCloseFrames > 0 {
+					// Suppressed: our close_tab keybind just fired
+					// and the OS-level Cmd+W close event is the
+					// echo of that same keystroke. See the
+					// swallowOSCloseFrames doc on Window for the
+					// macOS Cmd+W double-fire rationale.
+				} else {
+					win.pendingClose = true
+				}
+			}
+			if win.swallowOSCloseFrames > 0 {
+				win.swallowOSCloseFrames--
 			}
 		}
 		if focused != nil {
@@ -1433,6 +1444,16 @@ func (a *Window) frame() {
 	// process exits.
 	if a.tabs.Count() == 0 {
 		a.pendingClose = true
+		// Clear ImGui's input key state so any key the user was
+		// holding at close time (Ctrl-D / Enter / etc. — i.e. the
+		// keystroke that caused the last tab to exit) doesn't stay
+		// stuck "down" in ImGui's state. SDL3 drops KEYUP events
+		// during the Cocoa focus shift that closing a window
+		// triggers; without this clear, focus transfers to the
+		// surviving Window with the key still registered as held,
+		// and ImGui's auto-repeat fires it again and again — which
+		// is how closing one window cascades into closing them all.
+		imgui.CurrentIO().ClearInputKeys()
 		return
 	}
 
@@ -1887,6 +1908,13 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "close_tab":
 		w.tabs.CloseActive()
+		// macOS's NSWindow performClose: default-binds to Cmd+W and
+		// fires AFTER our keybind handler, so without swallowing the
+		// "close one tab" keypress also closes the whole window. The
+		// flag is checked in the PlatformRequestClose path below. ~5
+		// frames is enough to cover the latency between the keybind
+		// firing and SDL3 surfacing the OS-level close event.
+		w.swallowOSCloseFrames = 5
 	case "new_window":
 		// Single-process multi-window: append a new Window to this
 		// App's slice. The render loop in Run() picks it up next

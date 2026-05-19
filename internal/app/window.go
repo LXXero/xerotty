@@ -138,6 +138,15 @@ type Window struct {
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 
+	// swallowOSCloseFrames suppresses PlatformRequestClose events for
+	// this many subsequent frames. macOS's NSWindow performClose:
+	// default-binds to Cmd+W, so when our close_tab keybind handles
+	// Cmd+W the OS ALSO fires a window-close event. Without swallowing,
+	// "close a tab" turns into "close the whole window." Our close_tab
+	// dispatch arms this; reapClosedWindows / PlatformRequestClose
+	// reads + decrements it.
+	swallowOSCloseFrames int
+
 	// Initial position for the first BeginV call. spawnWindow sets this
 	// to the parent's current OS-window position plus a cascade offset
 	// so new windows don't stack exactly on top of their parent.

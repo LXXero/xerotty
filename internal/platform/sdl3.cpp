@@ -64,9 +64,13 @@ extern "C" int platform_init(const char* title, int width, int height) {
     // grabs (popup-menu click-outside dismiss is silently broken),
     // and our wlgrab shim only works against actual Wayland. Allow
     // SDL_VIDEODRIVER to override (e.g. user explicitly testing X11).
+    // Linux only — macOS's only video driver is "cocoa", forcing
+    // wayland/x11 there makes SDL_Init fail with no useful error.
+#if !defined(__APPLE__)
     if (!SDL_GetHint(SDL_HINT_VIDEO_DRIVER)) {
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
     }
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         set_err("SDL_Init");
         return 0;
