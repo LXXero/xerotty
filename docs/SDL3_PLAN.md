@@ -168,8 +168,9 @@ independent input and menus.
 - Move the rest of `internal/app` over to `internal/platform`.
 - Delete the cimgui-go/backend/sdlbackend dependency from `go.mod`.
 - Delete the unused experimental code: XGrabPointer / focus polling
-  helpers / wlpopup spike (or fold it as reference into the new
-  popup implementation).
+  helpers (the `wlpopup` spike was deleted once `SDL_CreatePopupWindow`
+  proved out; our own `wlgrab`/`xgrab` shims in `internal/platform`
+  now handle the missing grab/dismiss behavior).
 - Update SPEC.md to describe the new architecture.
 
 **Done when**: feature parity with current xerotty, all open issues
@@ -201,7 +202,7 @@ related to menus / Wayland fixed, no SDL2 dependency.
 ## What to delete after migration
 
 - `internal/app/sdl_helpers.go` — SDL2-specific
-- `internal/wlpopup/` — superseded by `SDL_CreatePopupWindow`
+- ~~`internal/wlpopup/`~~ — deleted; superseded by `SDL_CreatePopupWindow` + `internal/platform/wlgrab_linux.c`
 - `internal/app/cellsnap_*.go` — SDL3 has resize-increment APIs that
   may obsolete the macOS hack
 - `internal/app/liveresize_*.go` — same
