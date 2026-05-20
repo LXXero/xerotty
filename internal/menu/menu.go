@@ -128,18 +128,36 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 		// inconsistent — the click event reaches ImGui but MenuItem's
 		// internal hover gate doesn't fire activation. Selectable is
 		// the more primitive widget that just activates on click and
-		// works reliably regardless of window flags. Lay out the
-		// shortcut hint manually on the right edge to keep the same
-		// visual.
-		label := item.Label
-		if item.Shortcut != "" {
-			label = label + "  " + item.Shortcut
-		}
+		// works reliably regardless of window flags.
+		//
+		// To match MenuItem's "shortcut at far right" visual we snapshot
+		// the row's top-left + available width BEFORE Selectable runs,
+		// let Selectable render its background + left-aligned label,
+		// then overlay the shortcut via the window draw list positioned
+		// at row_right - shortcut_width. Drawing through the draw list
+		// (rather than SameLine + Text) keeps the cursor flow clean and
+		// guarantees the shortcut sits on the same row regardless of
+		// item height changes from style tweaks.
+		rowStart := imgui.CursorScreenPos()
+		availW := imgui.ContentRegionAvail().X
 		flags := imgui.SelectableFlags(0)
 		if !enabled {
 			flags |= imgui.SelectableFlagsDisabled
 		}
-		if imgui.SelectableBoolV(label, false, flags, imgui.Vec2{X: 0, Y: 0}) {
+		sel := imgui.SelectableBoolV(item.Label, false, flags, imgui.Vec2{X: 0, Y: 0})
+		if item.Shortcut != "" {
+			sw := imgui.CalcTextSize(item.Shortcut).X
+			var col uint32
+			if enabled {
+				col = imgui.ColorU32Col(imgui.ColText)
+			} else {
+				col = imgui.ColorU32Col(imgui.ColTextDisabled)
+			}
+			imgui.WindowDrawList().AddTextVec2(
+				imgui.Vec2{X: rowStart.X + availW - sw, Y: rowStart.Y},
+				col, item.Shortcut)
+		}
+		if sel {
 			return item.Action
 		}
 	}
