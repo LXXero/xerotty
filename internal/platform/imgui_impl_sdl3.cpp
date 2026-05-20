@@ -729,7 +729,22 @@ static void ImGui_ImplSDL3_UpdateMouseData()
 
         // (Optional) Fallback to provide mouse position when focused (SDL_EVENT_MOUSE_MOTION already provides this when hovered or captured)
         const bool is_relative_mouse_mode = SDL_GetWindowRelativeMouseMode(bd->Window);
-        if (bd->MouseCanUseGlobalState && bd->MouseButtonsDown == 0 && !is_relative_mouse_mode)
+        // xerotty patch: SDL3 popup windows (SDL_WINDOW_POPUP_MENU /
+        // SDL_WINDOW_TOOLTIP) on macOS return PARENT-RELATIVE position
+        // from SDL_GetWindowPosition (the offset they were created with),
+        // while SDL_GetGlobalMouseState returns ABSOLUTE desktop coords.
+        // The fallback below computes global - SDL_GetWindowPosition and
+        // treats the result as popup-local, which is wrong by exactly
+        // (parent_absolute_x, parent_absolute_y). Since the popup's
+        // SDL_EVENT_MOUSE_MOTION path already delivers correct
+        // popup-local coords via ProcessEvent, we can safely skip the
+        // fallback override here for popup-class windows — the fallback
+        // is only needed for cases where motion events don't fire (e.g.
+        // captured drag outside window), which isn't a popup use case.
+        const Uint32 focused_flags = focused_window ? SDL_GetWindowFlags(focused_window) : 0;
+        const bool focused_is_popup =
+            (focused_flags & (SDL_WINDOW_POPUP_MENU | SDL_WINDOW_TOOLTIP)) != 0;
+        if (bd->MouseCanUseGlobalState && bd->MouseButtonsDown == 0 && !is_relative_mouse_mode && !focused_is_popup)
         {
             // Single-viewport mode: mouse position in client window coordinates (io.MousePos is (0,0) when the mouse is on the upper-left corner of the app window)
             // Multi-viewport mode: mouse position in OS absolute coordinates (io.MousePos is (0,0) when the mouse is on the upper-left of the primary monitor)
