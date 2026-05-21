@@ -41,11 +41,23 @@ type clientConn struct {
 
 	session *Session // nil until Attach succeeds
 
-	// Subscriptions: per attached tab, the goroutine pumping
-	// PTY-data → CellFull frames. Cancelled when client detaches
-	// or disconnects.
+	// Subscriptions: per attached tab, a publish goroutine + the
+	// state it needs (cancel channel + last-shipped grid for diff
+	// computation).
 	subsMu sync.Mutex
-	subs   map[uint32]chan struct{} // tab id → cancel channel
+	subs   map[uint32]*tabSub
+}
+
+type tabSub struct {
+	cancel   chan struct{}
+	// lastGrid is what we last shipped to this client for this
+	// tab. Used to compute CellDiff frames — only cells whose
+	// contents/style/width changed since last send go on the wire.
+	// nil until the first CellFull has been sent. Sized as
+	// rows × cols; resize invalidates and forces a fresh CellFull.
+	lastGrid [][]protocol.Cell
+	lastCols uint16
+	lastRows uint16
 }
 
 func (c *clientConn) handshake() error {
@@ -336,24 +348,24 @@ func (c *clientConn) handleInput(id uint32, b []byte) error {
 func (c *clientConn) subscribe(t *Tab) {
 	c.subsMu.Lock()
 	if c.subs == nil {
-		c.subs = make(map[uint32]chan struct{})
+		c.subs = make(map[uint32]*tabSub)
 	}
 	if _, exists := c.subs[t.ID]; exists {
 		c.subsMu.Unlock()
 		return
 	}
-	cancel := make(chan struct{})
-	c.subs[t.ID] = cancel
+	sub := &tabSub{cancel: make(chan struct{})}
+	c.subs[t.ID] = sub
 	c.subsMu.Unlock()
 
-	go c.publishLoop(t, cancel)
+	go c.publishLoop(t, sub)
 }
 
 func (c *clientConn) unsubscribe(id uint32) {
 	c.subsMu.Lock()
 	defer c.subsMu.Unlock()
-	if cancel, ok := c.subs[id]; ok {
-		close(cancel)
+	if sub, ok := c.subs[id]; ok {
+		close(sub.cancel)
 		delete(c.subs, id)
 	}
 }
@@ -361,59 +373,110 @@ func (c *clientConn) unsubscribe(id uint32) {
 func (c *clientConn) stopAllSubs() {
 	c.subsMu.Lock()
 	defer c.subsMu.Unlock()
-	for id, cancel := range c.subs {
-		close(cancel)
+	for id, sub := range c.subs {
+		close(sub.cancel)
 		delete(c.subs, id)
 	}
 }
 
-// publishLoop watches a tab's DataCh and emits a CellFull frame on
-// every wake. Phase 0 deliberately ships full-frame on every change
-// because it's simplest; cell-diff comes in Phase 1.
+// publishLoop watches a tab's DataCh and emits cell frames whenever
+// the terminal produces new output. First frame for each tab is a
+// CellFull (so the client gets full state); subsequent frames are
+// CellDiff (only changed cells) for bandwidth efficiency.
 //
-// Also sends a Cursor frame at the same cadence so the UI's cursor
-// position stays accurate.
+// A grid resize (or first publish) invalidates the cached lastGrid
+// and forces a CellFull resync. Cursor updates go out at the same
+// cadence as cell updates.
 //
-// Also sends an initial CellFull right away so attaching clients
-// see whatever was on screen before they connected.
-func (c *clientConn) publishLoop(t *Tab, cancel <-chan struct{}) {
-	// initial paint
-	c.sendCellFull(t)
-	c.sendCursor(t)
+// Doesn't run a high-rate cursor-blink timer — UIs handle blink
+// locally. The select timeout is just a cancel-responsiveness floor.
+func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
+	// Initial full paint + cursor.
+	c.sendCellsAndCursor(t, sub)
 
 	for {
 		select {
-		case <-cancel:
+		case <-sub.cancel:
 			return
 		case <-t.Term.DataCh:
-			c.sendCellFull(t)
-			c.sendCursor(t)
+			c.sendCellsAndCursor(t, sub)
 		case <-time.After(500 * time.Millisecond):
-			// Cursor blink wakes — UI handles blink locally so we
-			// don't actually need to send anything. The timeout
-			// keeps us responsive to cancel without a tight loop.
+			// Keeps us responsive to cancel. No-op otherwise.
 		}
 	}
 }
 
-func (c *clientConn) sendCellFull(t *Tab) {
-	cols := t.Term.Width()
-	rows := t.Term.Height()
+// sendCellsAndCursor publishes whatever changed since the last
+// publish for this (client, tab) pair: either a CellFull (resync /
+// first frame) or a CellDiff. Then a Cursor frame.
+func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
+	cols := uint16(t.Term.Width())
+	rows := uint16(t.Term.Height())
+
+	// Build current grid snapshot.
 	grid := make([][]protocol.Cell, rows)
-	for r := 0; r < rows; r++ {
+	for r := uint16(0); r < rows; r++ {
 		row := make([]protocol.Cell, cols)
-		for col := 0; col < cols; col++ {
-			cell := t.Term.CellAt(col, r)
-			row[col] = cellFromUV(cell)
+		for col := uint16(0); col < cols; col++ {
+			row[col] = cellFromUV(t.Term.CellAt(int(col), int(r)))
 		}
 		grid[r] = row
 	}
-	_ = c.writeFrame(protocol.MsgCellFull, &protocol.CellFull{
-		ID:   t.ID,
-		Cols: uint16(cols),
-		Rows: uint16(rows),
-		Grid: grid,
-	})
+
+	// Decide: resync with CellFull (first paint, or dimensions
+	// changed), or diff against lastGrid.
+	if sub.lastGrid == nil || sub.lastCols != cols || sub.lastRows != rows {
+		_ = c.writeFrame(protocol.MsgCellFull, &protocol.CellFull{
+			ID:   t.ID,
+			Cols: cols,
+			Rows: rows,
+			Grid: grid,
+		})
+		sub.lastGrid = grid
+		sub.lastCols = cols
+		sub.lastRows = rows
+	} else {
+		diff := computeCellDiff(t.ID, sub.lastGrid, grid)
+		if len(diff.Cells) > 0 {
+			_ = c.writeFrame(protocol.MsgCellDiff, diff)
+			sub.lastGrid = grid
+		}
+		// If nothing changed (rare — usually only happens when an
+		// app emits cursor-only escapes), skip the frame entirely.
+	}
+
+	c.sendCursor(t)
+}
+
+// computeCellDiff produces a CellDiff containing only cells that
+// changed between prev and cur. Both grids must be the same
+// dimensions (caller's responsibility — dimension change forces
+// CellFull above).
+func computeCellDiff(tabID uint32, prev, cur [][]protocol.Cell) *protocol.CellDiff {
+	out := &protocol.CellDiff{ID: tabID}
+	for r := 0; r < len(cur); r++ {
+		for col := 0; col < len(cur[r]); col++ {
+			if !cellEqual(prev[r][col], cur[r][col]) {
+				out.Cells = append(out.Cells, protocol.CellDiffEntry{
+					Row:  uint16(r),
+					Col:  uint16(col),
+					Cell: cur[r][col],
+				})
+			}
+		}
+	}
+	return out
+}
+
+// cellEqual reports whether two cells are visually identical. The
+// generated *_gen.go provides MarshalMsg etc but no Equal — define
+// it here to localize the "what counts as a change" decision.
+func cellEqual(a, b protocol.Cell) bool {
+	return a.Content == b.Content &&
+		a.Style == b.Style &&
+		a.Width == b.Width &&
+		a.FgRGB == b.FgRGB &&
+		a.BgRGB == b.BgRGB
 }
 
 func (c *clientConn) sendCursor(t *Tab) {

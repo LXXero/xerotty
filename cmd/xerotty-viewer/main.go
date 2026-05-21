@@ -93,6 +93,12 @@ type viewer struct {
 	rows     uint16
 	curRow   uint16
 	curCol   uint16
+
+	// Local mirror of the daemon's cell grid for this tab. CellFull
+	// frames replace it wholesale; CellDiff frames patch individual
+	// cells. We always repaint after either, but eventually the
+	// renderer can use the mirror to do partial repaints too.
+	mirror [][]protocol.Cell
 }
 
 func (v *viewer) run() error {
@@ -126,7 +132,11 @@ func (v *viewer) run() error {
 	for {
 		select {
 		case full := <-v.c.CellFull():
-			v.renderFull(full)
+			v.applyFull(full)
+			v.repaint()
+		case diff := <-v.c.CellDiff():
+			v.applyDiff(diff)
+			v.repaint()
 		case cur := <-v.c.Cursor():
 			v.mu.Lock()
 			v.curRow = cur.Row
@@ -182,20 +192,51 @@ func (v *viewer) pumpResize() {
 	}
 }
 
-func (v *viewer) renderFull(f *protocol.CellFull) {
+// applyFull replaces the local mirror with a full grid frame.
+func (v *viewer) applyFull(f *protocol.CellFull) {
 	if f.ID != v.tabID {
-		return // ignore frames for tabs we're not viewing
+		return
 	}
 	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.cols = f.Cols
 	v.rows = f.Rows
-	v.mu.Unlock()
+	// Deep-copy isn't necessary — daemon already shipped fresh
+	// slices; the protocol decoder allocated them for us.
+	v.mirror = f.Grid
+}
 
+// applyDiff patches changed cells in the local mirror.
+func (v *viewer) applyDiff(d *protocol.CellDiff) {
+	if d.ID != v.tabID {
+		return
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for _, entry := range d.Cells {
+		if int(entry.Row) >= len(v.mirror) {
+			continue
+		}
+		if int(entry.Col) >= len(v.mirror[entry.Row]) {
+			continue
+		}
+		v.mirror[entry.Row][entry.Col] = entry.Cell
+	}
+}
+
+// repaint emits the local mirror as ANSI escape sequences to the
+// host terminal. Done after every full or diff apply for simplicity;
+// future optimization could repaint only the cells the most recent
+// diff touched.
+func (v *viewer) repaint() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.mirror == nil {
+		return
+	}
 	var sb strings.Builder
-	// Park cursor at home before redrawing.
 	sb.WriteString("\x1b[H")
-	for r, row := range f.Grid {
-		// Move to start of this row.
+	for r, row := range v.mirror {
 		sb.WriteString(fmt.Sprintf("\x1b[%d;1H", r+1))
 		for _, cell := range row {
 			sb.WriteString(sgrForStyle(cell.Style, cell.FgRGB, cell.BgRGB))
@@ -205,14 +246,9 @@ func (v *viewer) renderFull(f *protocol.CellFull) {
 			}
 			sb.WriteString(c)
 		}
-		// Reset SGR at end of row so cursor restore doesn't carry
-		// state into following stdout writes.
 		sb.WriteString("\x1b[0m")
 	}
-	// Restore cursor to the daemon's reported position.
-	v.mu.Lock()
 	sb.WriteString(fmt.Sprintf("\x1b[%d;%dH", v.curRow+1, v.curCol+1))
-	v.mu.Unlock()
 	_, _ = os.Stdout.WriteString(sb.String())
 }
 

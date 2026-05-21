@@ -63,9 +63,15 @@ func TestDaemonRoundTrip(t *testing.T) {
 	}
 	tabID := attached.Tabs[0].ID
 
+	// Daemon sends CellFull on first paint then CellDiff for
+	// subsequent updates. Maintain a local mirror so we can check
+	// the grid regardless of which frame type the daemon emits.
+	var mirror [][]protocol.Cell
+
 	// Drain initial CellFull (from attach's initial paint).
 	select {
-	case <-c.CellFull():
+	case full := <-c.CellFull():
+		mirror = full.Grid
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial CellFull")
 	}
@@ -77,18 +83,45 @@ func TestDaemonRoundTrip(t *testing.T) {
 		t.Fatalf("send input: %v", err)
 	}
 
-	// Wait up to 5s for a CellFull whose grid contains the marker.
+	// Wait up to 5s for the marker to appear in our mirror after
+	// applying any CellFull / CellDiff frames the daemon sends.
 	deadline := time.After(5 * time.Second)
 	for {
+		if mirrorContains(mirror, marker) {
+			return // success
+		}
 		select {
 		case full := <-c.CellFull():
-			if gridContains(full, marker) {
-				return // success
+			mirror = full.Grid
+		case diff := <-c.CellDiff():
+			for _, e := range diff.Cells {
+				if int(e.Row) < len(mirror) && int(e.Col) < len(mirror[e.Row]) {
+					mirror[e.Row][e.Col] = e.Cell
+				}
 			}
 		case <-deadline:
 			t.Fatalf("timed out waiting for marker %q in cell grid", marker)
 		}
 	}
+}
+
+// mirrorContains returns true if any row of the cell mirror,
+// reconstructed left-to-right, contains needle.
+func mirrorContains(mirror [][]protocol.Cell, needle string) bool {
+	for _, row := range mirror {
+		var sb strings.Builder
+		for _, c := range row {
+			if c.Content == "" {
+				sb.WriteByte(' ')
+				continue
+			}
+			sb.WriteString(c.Content)
+		}
+		if strings.Contains(sb.String(), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestDaemonWindowLayout exercises the Window concept: open multiple
@@ -196,21 +229,3 @@ func TestDaemonWindowLayout(t *testing.T) {
 	}
 }
 
-// gridContains returns true if any row of the CellFull's grid,
-// reconstructed left-to-right, contains the given substring.
-func gridContains(f *protocol.CellFull, needle string) bool {
-	for _, row := range f.Grid {
-		var sb strings.Builder
-		for _, c := range row {
-			if c.Content == "" {
-				sb.WriteByte(' ')
-				continue
-			}
-			sb.WriteString(c.Content)
-		}
-		if strings.Contains(sb.String(), needle) {
-			return true
-		}
-	}
-	return false
-}
