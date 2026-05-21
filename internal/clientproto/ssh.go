@@ -36,7 +36,7 @@ import (
 // daemon to exit, which ends ssh(1), which fires our wait reaper.
 func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) {
 	if daemonCmd == "" {
-		daemonCmd = "xerottyd --stdio"
+		daemonCmd = "xerotty serve --stdio"
 	}
 	args := append([]string{}, extraSSHArgs...)
 	// -T disables pseudo-tty allocation for stdin/stdout, which is

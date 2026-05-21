@@ -13,9 +13,9 @@ import (
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
-// TestSubprocessDial spawns `go run ./cmd/xerottyd --stdio` and drives
-// it end-to-end through the same DialCommand path that DialSSH uses
-// in production. Exercises:
+// TestSubprocessDial spawns `go run ./cmd/xerotty serve --stdio` and
+// drives it end-to-end through the same DialCommand path that
+// DialSSH uses in production. Exercises:
 //
 //   - process spawn + pipe setup
 //   - hello/attach over a real subprocess transport
@@ -39,7 +39,7 @@ func TestSubprocessDial(t *testing.T) {
 		t.Fatalf("chdir %s: %v", root, err)
 	}
 
-	c, err := clientproto.DialCommand("go", "run", "./cmd/xerottyd", "--stdio")
+	c, err := clientproto.DialCommand("go", "run", "./cmd/xerotty", "serve", "--stdio")
 	if err != nil {
 		t.Fatalf("dial subprocess: %v", err)
 	}

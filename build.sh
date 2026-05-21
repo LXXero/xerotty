@@ -43,11 +43,9 @@ Darwin)
     # icon/xerotty-256.png via icon/embed.go and applies it to each
     # SDL_Window at startup (see internal/app/icon_linux.go) — WM
     # taskbars and Alt-Tab pick that up.
+    # One binary now — `xerotty`, `xerotty serve`, `xerotty connect`
+    # are all the same file dispatched on the first positional arg.
     go build -o xerotty ./cmd/xerotty
     echo "built: $(pwd)/xerotty"
-    go build -o xerottyd ./cmd/xerottyd
-    echo "built: $(pwd)/xerottyd"
-    go build -o xerotty-viewer ./cmd/xerotty-viewer
-    echo "built: $(pwd)/xerotty-viewer"
     ;;
 esac
