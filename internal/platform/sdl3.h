@@ -107,23 +107,6 @@ void platform_set_window_icon(unsigned long window_id,
 // so the next frame renders without waiting out the frame-cap window.
 void platform_post_wake(void);
 
-// platform_popup_run opens an SDL_WINDOW_POPUP_MENU child of the main
-// window at (offset_x, offset_y) relative to the parent's top-left.
-// Blocks until the popup dismisses, returning:
-//   >= 0     index of the strip the user clicked on (0..num_items-1)
-//   -1       dismissed without selection (compositor popup_done,
-//            click-outside grab broken, Escape, or window close)
-// On Wayland the popup is a real xdg_popup (compositor handles
-// click-anywhere-outside dismiss including over native apps). On X11
-// it's an override-redirect window with _NET_WM_WINDOW_TYPE_POPUP_MENU
-// and an active XGrabPointer for the same behavior.
-//
-// For the spike, items are rendered as solid-color horizontal strips
-// (raw GL, no ImGui inside the popup) — enough to prove the popup
-// primitive itself works. Item text rendering can be layered on once
-// the dismiss/grab paths are validated.
-int platform_popup_run(int offset_x, int offset_y, int w, int h, int num_items);
-
 #ifdef __cplusplus
 }
 #endif

@@ -104,7 +104,6 @@ type Window struct {
 	contextMenuY           float32
 	contextMenuOpenedFrame int  // frame the menu was opened on — close-on-click-outside skips this frame so the opening right-click doesn't immediately close it
 	contextMenuCaptured    bool // SDL_CaptureMouse succeeded — best-effort global mouse capture so clicks outside our windows reach us; partial on Wayland and sdl2-compat → SDL3 X11
-	contextMenuOutCount    int  // (legacy) running counter once used by an experimental cursor-out timer; kept as a field to avoid churning the struct layout during the menu-detection saga, currently unused
 
 	// pendingRemeasure means this Window needs to re-run measureCell()
 	// next frame — e.g. after the font atlas was rebuilt by

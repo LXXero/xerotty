@@ -220,13 +220,6 @@ func SetFullscreen(windowID uintptr, enable bool) {
 	C.platform_set_fullscreen(C.ulong(windowID), flag)
 }
 
-// SetIdleTimeout is a no-op compatibility shim. The old SDL2 runloop
-// used a per-frame max-sleep value (cursor blink etc); the new
-// platform Frame is capped to the display refresh interval which is
-// always short enough for the existing animations. Kept so the
-// internal/app callers don't need to change their call sites.
-func SetIdleTimeout(_ int) {}
-
 // SetBgColor updates the framebuffer clear color used by end_frame.
 // Replaces backend.Backend.SetBgColor + updateEventLoopBg.
 func SetBgColor(c imgui.Vec4) {
@@ -257,19 +250,4 @@ func (t TextureManager) CreateTextureRgba(img *image.RGBA, width, height int) im
 
 func (TextureManager) DeleteTexture(ref imgui.TextureRef) {
 	C.platform_delete_texture(C.ulonglong(ref.TexID()))
-}
-
-// RunPopup opens an SDL3 popup-menu window as a child of the main
-// window and blocks until the popup is dismissed. (x, y) is relative
-// to the parent window's top-left.
-//
-// Returns the 0-based index of the strip clicked, or -1 if the popup
-// was dismissed without a selection (click outside, Escape, etc.).
-//
-// On Wayland the popup is a real xdg_popup so click-anywhere-outside
-// dismiss works even over other native Wayland apps — the bug this
-// whole migration exists to fix.
-func RunPopup(x, y, w, h, numItems int) int {
-	return int(C.platform_popup_run(C.int(x), C.int(y),
-		C.int(w), C.int(h), C.int(numItems)))
 }

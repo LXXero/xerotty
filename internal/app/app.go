@@ -867,7 +867,6 @@ func (a *App) Run() error {
 			platform.Quit()
 		}
 		a.updateTabDragDrop()
-		platform.SetIdleTimeout(a.idleTimeout())
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
@@ -1010,52 +1009,6 @@ func (w *Window) resizeTerminals() {
 	}
 }
 
-// idleTimeout returns the maximum milliseconds the WaitEventTimeout
-// can sleep before forcing a render. The runloop only wakes early on
-// real SDL events (mouse, keyboard, window) or PTY-data Wake signals
-// — this is the *fallback* tick for animations and periodic side
-// effects. Active interaction or fade animation: 60Hz. Cursor blink:
-// the configured blink rate. Truly idle: a long safety wake.
-//
-// Aggregates over every Window — if any of them has a drag or fade
-// in progress, we tick at 60 Hz so that Window stays smooth even if
-// the user is currently focused on a different one.
-func (a *App) idleTimeout() int {
-	for _, w := range a.windows {
-		if w.sel.dragging || w.sbDragging || w.resizeOverlay ||
-			imgui.IsMouseDown(imgui.MouseButtonLeft) {
-			return 16
-		}
-	}
-	if a.pendingFontFace {
-		return 16
-	}
-	for _, w := range a.windows {
-		if w.pendingRemeasure {
-			return 16
-		}
-	}
-	// Whenever the context menu is open, tick fast so the close
-	// detector (XGetInputFocus poll on x11, cursor-out decay
-	// elsewhere) actually runs every frame. Without this the loop
-	// would sleep on its normal timeout while the cursor is on
-	// another app — no SDL events arrive to wake us, so the
-	// per-frame focus poll wouldn't fire for hundreds of ms at a
-	// time and close lagged behind the user's actual click.
-	for _, w := range a.windows {
-		if w.contextMenuOpen {
-			return 16
-		}
-	}
-	timeout := 5000
-	if a.cfg.Appearance.CursorBlink {
-		timeout = a.cfg.Appearance.BlinkRate
-		if timeout <= 0 {
-			timeout = 530
-		}
-	}
-	return timeout
-}
 
 // beforeRender runs before every NewFrame — both via cimgui-go's
 // SetBeforeRenderHook in the main loop and via the macOS live-resize
@@ -1937,7 +1890,6 @@ func (a *Window) frame() {
 		// it (IsMouseClickedBool stays true for the rest of this
 		// frame).
 		a.contextMenuOpenedFrame = int(imgui.FrameCount())
-		a.contextMenuOutCount = 0
 		// (Previously called SDL_CaptureMouse here for global click
 		// delivery, but under sdl2-compat → SDL3 it's a silent no-op
 		// on X11 anyway and observed under VNC to interfere with
@@ -2848,7 +2800,6 @@ func (w *Window) renderContextMenu() {
 		})
 
 	w.contextMenuOpen = false
-	w.contextMenuOutCount = 0
 	w.contextMenuCaptured = false
 	if selectedAction != "" {
 		w.dispatchAction(selectedAction)
