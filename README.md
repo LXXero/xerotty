@@ -10,7 +10,7 @@ xerotty optimizes for the thing most terminals ignore: the **GUI experience**. T
 
 The whole reason xerotty exists is that *the menu is yours*. Order, items, submenus, conditions, shell-exec actions — all driven from `~/.config/xerotty/config.toml`. No recompiling. No hidden defaults you can't override.
 
-Same binary, same behavior, same menus on Linux and macOS. Built on ImGui and SDL2 — no GTK, no Cocoa, no platform widget toolkits dragging platform-specific bugs into your daily driver.
+Same binary, same behavior, same menus on Linux and macOS. Built on ImGui and SDL3 — no GTK, no Cocoa, no platform widget toolkits dragging platform-specific bugs into your daily driver.
 
 The rest follows from "no, you don't have to fight your terminal":
 
@@ -28,7 +28,7 @@ Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize
 
 ### Terminal
 - Tabs (rename, close, drag-to-reorder, on-exit policy: close / hold / hold_on_error)
-- Configurable scrollback (memory / disk / unlimited), search (Ctrl+F), Shift+Home / Shift+End
+- Configurable scrollback (memory / unlimited), search (Ctrl+F), Shift+Home / Shift+End
 - Unsafe-paste detection (multiline / `sudo` / `rm -rf` / `curl | sh` patterns) with a yes/no confirm dialog
 - Process-aware tab title from terminal escape sequences (OSC 0/1/2)
 - Fullscreen (F11), runtime theme switching, font zoom (Ctrl+= / Ctrl+- / Ctrl+0)
@@ -57,19 +57,21 @@ Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize
 
 ## Build
 
-Requires Go 1.22+ and SDL2 development headers.
+Requires Go 1.22+ and SDL3 development headers.
 
 ```bash
-# Linux (Debian/Ubuntu)
-sudo apt install libsdl2-dev libfontconfig-dev libfreetype-dev pkg-config
+# Linux (Debian/Ubuntu — SDL3 is in apt from trixie/24.04+; on older
+# releases, build it from https://github.com/libsdl-org/SDL)
+sudo apt install libsdl3-dev libfontconfig-dev libfreetype-dev pkg-config
 
 # macOS (Homebrew)
-brew install sdl2 pkg-config
+brew install sdl3 pkg-config
 
 git clone https://github.com/LXXero/xerotty
 cd xerotty
 ./build.sh
-./xerotty
+# macOS: builds xerotty.app/ — open via `open xerotty.app` or copy to /Applications
+# Linux: builds ./xerotty — run directly
 ```
 
 ## Configuration

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 
 	"github.com/LXXero/xerotty/internal/config"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 	"github.com/creack/pty"
@@ -53,6 +54,15 @@ type Terminal struct {
 	// bracketedPaste tracks bracketed paste mode (2004). When set, paste
 	// events are wrapped in CSI ? 200 h and CSI ? 201 h.
 	bracketedPaste atomic.Bool
+
+	// disk-backed scrollback state, used only when the configured
+	// scrollback Mode is "unlimited". When vt's in-mem scrollback
+	// grows past 2*liveWindow, the oldest (memLen - liveWindow)
+	// lines are evicted to disk in one batch. Lines live in EXACTLY
+	// ONE place — disk for indices 0..disk.Len()-1, vt's in-mem
+	// ring for the rest.
+	disk       *DiskScrollback
+	liveWindow int // soft cap on in-mem scrollback when disk-backed
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -74,6 +84,7 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 		ExitCode: -1,
 		done:     make(chan struct{}),
 	}
+	t.applyScrollbackConfig(cfg)
 
 	emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
@@ -112,6 +123,170 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 
 	return t, nil
 }
+
+// liveWindowDefault is how many recent lines we keep in vt's
+// in-memory ring under unlimited mode before trimming to disk.
+// 4096 ≈ 100 page-fulls of an 80x40 terminal — enough that the
+// active scrollback experience never hits disk for typical use.
+const liveWindowDefault = 4096
+
+// applyScrollbackConfig sets the emulator's scrollback buffer size
+// from config. Mode == "unlimited" maps to a very large cap (no
+// realistic terminal session hits 2 billion lines) and spills oldest
+// lines to disk via NewDiskScrollback; "memory" (or any other value)
+// uses cfg.Scrollback.Lines as a finite ring buffer with no disk
+// backing.
+//
+// Caller must hold t.mu (or be in a path where racing is OK, e.g.
+// during construction before goroutines start).
+func (t *Terminal) applyScrollbackConfig(cfg *config.Config) {
+	if t.Emu == nil {
+		return
+	}
+	switch cfg.Scrollback.Mode {
+	case "unlimited":
+		// Keep vt's MaxLines high so it doesn't auto-evict; we
+		// manage trimming ourselves after mirroring to disk.
+		t.Emu.SetScrollbackSize(int(^uint(0) >> 1))
+		t.liveWindow = liveWindowDefault
+		if t.disk == nil {
+			if d, err := NewDiskScrollback(); err == nil {
+				t.disk = d
+			}
+			// If disk creation fails we silently fall back to
+			// memory-only "unlimited" — same UX as before this
+			// patch. Practically rare (/tmp not writable etc.).
+		}
+	default:
+		lines := cfg.Scrollback.Lines
+		if lines < 0 {
+			lines = 0
+		}
+		t.Emu.SetScrollbackSize(lines)
+		t.liveWindow = 0
+		if t.disk != nil {
+			_ = t.disk.Close()
+			t.disk = nil
+		}
+	}
+}
+
+// SetScrollbackFromConfig re-applies the scrollback Mode + Lines
+// config to a running terminal. Called from the preferences-apply
+// path when the user changes scrollback settings without quitting.
+func (t *Terminal) SetScrollbackFromConfig(cfg *config.Config) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.applyScrollbackConfig(cfg)
+}
+
+// mirrorScrollback evicts old in-memory scrollback lines to disk
+// whenever vt's in-mem count exceeds 2x liveWindow. Strict
+// eviction: a line either lives in vt's in-mem ring OR on disk,
+// never both. No-op if disk isn't initialized (not unlimited mode).
+//
+// Invariant:
+//   - lines [0 .. disk.Len()-1]                  live ONLY on disk
+//   - lines [disk.Len() .. disk.Len()+memLen-1]  live ONLY in vt
+//   - total ScrollbackLen() = disk.Len() + memLen
+//
+// 2x hysteresis on the trim point avoids trim-on-every-line thrash:
+// the in-mem window grows up to 2*liveWindow, then we evict the
+// oldest (memLen - liveWindow) lines in one batch.
+func (t *Terminal) mirrorScrollback() {
+	t.mu.Lock()
+	disk := t.disk
+	liveWindow := t.liveWindow
+	t.mu.Unlock()
+
+	if disk == nil || liveWindow <= 0 {
+		return
+	}
+
+	memLen := t.Emu.ScrollbackLen()
+	if memLen <= liveWindow*2 {
+		return
+	}
+	dropCount := memLen - liveWindow
+
+	sb := t.Emu.Scrollback()
+	if sb == nil {
+		return
+	}
+	lines := sb.Lines()
+	// Defensive: lines should always have at least dropCount entries
+	// (we just read memLen and dropCount = memLen - liveWindow), but
+	// guard against a concurrent ScrollbackLen change between read
+	// and Lines().
+	if dropCount > len(lines) {
+		dropCount = len(lines)
+	}
+	for i := 0; i < dropCount; i++ {
+		if err := disk.Append(lines[i]); err != nil {
+			// Disk write failed mid-eviction — stop and let vt
+			// keep these lines in memory. Next call retries
+			// from this point. Partial-eviction is safe: the
+			// lines we DID write are gone from vt only after
+			// SetScrollbackSize runs below.
+			dropCount = i
+			break
+		}
+	}
+	if dropCount <= 0 {
+		return
+	}
+	// Drop the oldest dropCount lines from vt. SetScrollbackSize
+	// shrink path discards exactly the prefix we already wrote.
+	t.Emu.SetScrollbackSize(liveWindow)
+	t.Emu.SetScrollbackSize(int(^uint(0) >> 1))
+}
+
+// ScrollbackLen returns total scrollback length (disk + in-memory).
+// Used by the renderer and scroll-offset clamping logic; replaces
+// callers that used to read Emu.ScrollbackLen() directly.
+func (t *Terminal) ScrollbackLen() int {
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+	memLen := t.Emu.ScrollbackLen()
+	if disk == nil {
+		return memLen
+	}
+	return disk.Len() + memLen
+}
+
+// ScrollbackCellAt returns the cell at (col, row) in scrollback,
+// reading from disk for rows below disk.Len() and from vt's
+// in-memory ring for rows above. Returns nil for out-of-range or
+// past-end-of-line indices (renderer treats as empty cell).
+func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+
+	if disk == nil {
+		return t.Emu.ScrollbackCellAt(col, row)
+	}
+	diskLen := disk.Len()
+	if row < diskLen {
+		line := disk.LineAt(row)
+		if line == nil || col < 0 || col >= len(line) {
+			return nil
+		}
+		c := line[col]
+		return &c
+	}
+	return t.Emu.ScrollbackCellAt(col, row-diskLen)
+}
+
+// Width / Height / CellAt / CursorPosition pass through to the
+// emulator. Defined here so callers can use *terminal.Terminal as
+// the renderer.EmulatorView interface without changing every site
+// to dig through .Emu.
+func (t *Terminal) Width() int                  { return t.Emu.Width() }
+func (t *Terminal) Height() int                 { return t.Emu.Height() }
+func (t *Terminal) CellAt(col, row int) *uv.Cell { return t.Emu.CellAt(col, row) }
+func (t *Terminal) CursorPosition() uv.Position { return t.Emu.CursorPosition() }
 
 // Write sends data to the PTY (keyboard input).
 func (t *Terminal) Write(p []byte) (int, error) {
@@ -206,6 +381,10 @@ func (t *Terminal) readPTY() {
 			inOSC = newInOSC
 			if len(cleaned) > 0 {
 				t.Emu.Write(cleaned)
+				// Mirror new scrollback lines to disk in unlimited
+				// mode. No-op otherwise. Runs on this goroutine so
+				// the mirror always sees writes in PTY-arrival order.
+				t.mirrorScrollback()
 			}
 			select {
 			case t.DataCh <- struct{}{}:

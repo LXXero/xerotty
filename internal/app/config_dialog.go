@@ -11,6 +11,7 @@ import (
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/themes"
 )
@@ -31,7 +32,7 @@ func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
 // Combo option lists.
 var (
 	prefCursorStyles = []string{"block", "underline", "bar"}
-	prefSBModes      = []string{"memory", "disk", "unlimited"}
+	prefSBModes      = []string{"memory", "unlimited"}
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
@@ -132,7 +133,6 @@ type configDialog struct {
 	sbLines   int32
 	sbModeIdx int32
 	scrollSpd int32
-	diskDir   string
 	scrollKey bool
 	scrollOut bool
 
@@ -281,7 +281,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
 	d.scrollSpd = int32(cfg.Scrollback.ScrollSpeed)
-	d.diskDir = cfg.Scrollback.DiskDir
 	d.scrollKey = cfg.Scrollback.ScrollOnKeystroke
 	d.scrollOut = cfg.Scrollback.ScrollOnOutput
 
@@ -373,7 +372,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Scrollback.Mode = prefSBModes[d.sbModeIdx]
 	}
 	cfg.Scrollback.ScrollSpeed = int(d.scrollSpd)
-	cfg.Scrollback.DiskDir = d.diskDir
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 
@@ -455,8 +453,7 @@ func (a *Window) applyPreferences() {
 		bgR := float32((t.Background>>0)&0xFF) / 255.0
 		bgG := float32((t.Background>>8)&0xFF) / 255.0
 		bgB := float32((t.Background>>16)&0xFF) / 255.0
-		a.backend.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
-		updateEventLoopBg(bgR, bgG, bgB)
+		platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	}
 	// BoldIsBright also lives on each Window's renderer.
 	for _, win := range a.app.windows {
@@ -483,6 +480,21 @@ func (a *Window) applyPreferences() {
 		}
 	}
 
+	// Re-apply scrollback config to every running terminal — affects
+	// the vt.SafeEmulator's buffer size immediately, so switching to
+	// "unlimited" or bumping Lines doesn't require reopening the
+	// terminal. Walks every Window's every Tab.
+	for _, win := range a.app.windows {
+		if win.tabs == nil {
+			continue
+		}
+		for _, tab := range win.tabs.Tabs {
+			if tab.Terminal != nil {
+				tab.Terminal.SetScrollbackFromConfig(&a.app.cfg)
+			}
+		}
+	}
+
 	// Persist to disk.
 	_ = config.Save(a.app.cfg)
 }
@@ -505,9 +517,17 @@ func (a *Window) renderPreferences() {
 		center = imgui.Vec2{X: pos.X + size.X*0.5, Y: pos.Y + size.Y*0.5}
 	}
 
-	if (imgui.CurrentIO().ConfigFlags() & imgui.ConfigFlagsViewportsEnable) != 0 {
+	multiViewport := (imgui.CurrentIO().ConfigFlags() & imgui.ConfigFlagsViewportsEnable) != 0
+	if multiViewport {
+		// Clear NoDecoration so the platform window gets normal OS
+		// chrome (title bar, close/min/max, native drag-to-move),
+		// and set NoAutoMerge so it pops out as its own window.
+		// Pair with WindowFlagsNoTitleBar below — otherwise ImGui
+		// also draws a title and we get double chrome. The same
+		// trick is used for the main terminal wrapper window.
 		windowClass := imgui.NewWindowClass()
 		windowClass.SetViewportFlagsOverrideSet(imgui.ViewportFlagsNoAutoMerge)
+		windowClass.SetViewportFlagsOverrideClear(imgui.ViewportFlagsNoDecoration)
 		imgui.SetNextWindowClass(windowClass)
 		windowClass.Destroy()
 	}
@@ -518,7 +538,24 @@ func (a *Window) renderPreferences() {
 	)
 	imgui.SetNextWindowSizeV(imgui.Vec2{X: 720, Y: 720}, imgui.CondAppearing)
 
-	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, imgui.WindowFlagsNoDocking) {
+	// Title bar handling: when multi-viewport is on we want the OS
+	// to draw the chrome (no ImGui title); when it's off the prefs
+	// renders inside the parent viewport and ImGui's title is the
+	// only thing the user has to drag/close with.
+	prefFlags := imgui.WindowFlagsNoDocking
+	if multiViewport {
+		prefFlags |= imgui.WindowFlagsNoTitleBar
+	}
+	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, prefFlags) {
+		// OS close-button: under multi-viewport ImGui's &open bool
+		// doesn't propagate the WM's close — viewport.PlatformRequestClose
+		// does. Mirror it back to our open state.
+		if multiViewport {
+			if vp := imgui.WindowViewport(); vp != nil && vp.PlatformRequestClose() {
+				a.prefDialog.open = false
+				vp.SetPlatformRequestClose(false)
+			}
+		}
 		// Reserve space for bottom separator + button row.
 		// Negative Y in BeginChildStrV means "fill, but leave -Y at the bottom".
 		bottomReserve := imgui.FrameHeightWithSpacing() + 12
@@ -946,16 +983,18 @@ func (a *Window) renderPrefScrollback() {
 	d := &a.prefDialog
 	w := float32(200)
 
-	// Scrollback Mode / Disk Directory / Unlimited are persisted in
-	// TOML for forward-compat with planned disk-backed scrollback, but
-	// nothing in the scrollback package consumes them yet — only
-	// in-memory mode is implemented. Hiding the Mode dropdown and the
-	// DiskDir input here avoids showing options that silently do
-	// nothing. Reintroduce both when scrollback.go grows the disk /
-	// unlimited backends.
-	imgui.Text("Lines")
+	imgui.Text("Mode")
 	imgui.SetNextItemWidth(w)
-	imgui.InputInt("##sblines", &d.sbLines)
+	imgui.ComboStrarr("##sbmode", &d.sbModeIdx, prefSBModes, int32(len(prefSBModes)))
+
+	// Lines is only meaningful in "memory" mode — under "unlimited"
+	// the buffer grows without bound, so the number wouldn't do
+	// anything. Skip it so the UI doesn't suggest otherwise.
+	if int(d.sbModeIdx) < len(prefSBModes) && prefSBModes[d.sbModeIdx] == "memory" {
+		imgui.Text("Lines")
+		imgui.SetNextItemWidth(w)
+		imgui.InputInt("##sblines", &d.sbLines)
+	}
 
 	imgui.Separator()
 

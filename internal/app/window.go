@@ -1,8 +1,6 @@
 package app
 
 import (
-	"github.com/AllenDang/cimgui-go/backend"
-	"github.com/AllenDang/cimgui-go/backend/sdlbackend"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
@@ -26,10 +24,10 @@ type Window struct {
 	// theme, base font metrics, font-reload flags). Set in newWindow.
 	app *App
 
-	// cimgui-go backend handle. Phase 1: one backend, one Window. Phase
-	// 3: each Window will reference the shared App-level backend but
-	// render through its own ImGui viewport.
-	backend backend.Backend[sdlbackend.SDLWindowFlags]
+	// (Old: per-Window cimgui-go backend handle. Removed during the
+	// SDL3 platform migration — the platform layer owns lifecycle
+	// process-wide; per-Window state is just OS-window metadata
+	// retrieved via imgui.Viewport when needed.)
 
 	// Window dimensions in logical pixels, synced each frame from
 	// imgui.IO.DisplaySize.
@@ -92,12 +90,20 @@ type Window struct {
 	// the menu to stay put once the user has right-clicked. So we
 	// manage open/close manually here and render via BeginV (not
 	// BeginPopup), which gives us total control over the lifecycle.
+	// tabDragIdx is the slice index of the tab currently being
+	// drag-reordered by the user, or -1 if no drag is in progress.
+	// Updated as the user drags past tab boundaries; the tab bar
+	// renderer swaps slots live so the user sees the reorder happen
+	// as they drag. Reset to -1 on mouse release.
+	tabDragIdx    int
+	tabDragStartX float32 // mouse X at the moment tabDragIdx was set
+	tabDragStartY float32 // mouse Y at the moment tabDragIdx was set
+
 	contextMenuOpen        bool
 	contextMenuX           float32
 	contextMenuY           float32
 	contextMenuOpenedFrame int  // frame the menu was opened on — close-on-click-outside skips this frame so the opening right-click doesn't immediately close it
 	contextMenuCaptured    bool // SDL_CaptureMouse succeeded — best-effort global mouse capture so clicks outside our windows reach us; partial on Wayland and sdl2-compat → SDL3 X11
-	contextMenuOutCount    int  // (legacy) running counter once used by an experimental cursor-out timer; kept as a field to avoid churning the struct layout during the menu-detection saga, currently unused
 
 	// pendingRemeasure means this Window needs to re-run measureCell()
 	// next frame — e.g. after the font atlas was rebuilt by
@@ -130,12 +136,45 @@ type Window struct {
 	pendingClose  bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
+	// pendingFocus is set by spawnWindow on freshly-created Windows.
+	// After the new viewport's SDL_Window exists (first frame), the
+	// main loop calls platform.RaiseWindow on it so macOS transitions
+	// keyboard focus to the new NSWindow immediately — without this
+	// the first keybind after Cmd+N (e.g. Cmd+T) routes to the
+	// spawning Window because the OS hasn't moved focus yet.
+	pendingFocus bool
+
+	// resizeIncrementSet* tracks which native window + cell dimensions
+	// we've already pushed to NSWindow.setContentResizeIncrements via
+	// platform.SetResizeIncrements. Early frames can see either no
+	// handle or the hidden carrier/main viewport before ImGui creates
+	// this Window's popped-out SDL_Window, so the handle is part of the
+	// cache key.
+	resizeIncrementSetWindow uintptr
+	resizeIncrementSetCellW  int
+	resizeIncrementSetCellH  int
+
+	// iconApplied flips true after the embedded app icon has been
+	// pushed to this Window's SDL_Window via SDL_SetWindowIcon.
+	// One-shot — same retry-until-handle-valid pattern as the resize
+	// increments above. No-op on macOS (bundle's .icns wins for the
+	// Dock; per-window SDL icon isn't useful there).
+	iconApplied bool
+
+	// swallowOSCloseFrames suppresses PlatformRequestClose events for
+	// this many subsequent frames. macOS's NSWindow performClose:
+	// default-binds to Cmd+W, so when our close_tab keybind handles
+	// Cmd+W the OS ALSO fires a window-close event. Without swallowing,
+	// "close a tab" turns into "close the whole window." Our close_tab
+	// dispatch arms this; reapClosedWindows / PlatformRequestClose
+	// reads + decrements it.
+	swallowOSCloseFrames int
 
 	// Initial position for the first BeginV call. spawnWindow sets this
 	// to the parent's current OS-window position plus a cascade offset
 	// so new windows don't stack exactly on top of their parent.
-	initialPosX float32
-	initialPosY float32
+	initialPosX   float32
+	initialPosY   float32
 	hasInitialPos bool
 
 	// Actual top-left of the wrapper's content region in absolute
@@ -177,6 +216,7 @@ func newWindow(app *App) *Window {
 		scroll:       make(map[int]*scrollback.State),
 		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq: -1,
+		tabDragIdx:   -1,
 	}
 }
 

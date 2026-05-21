@@ -7,7 +7,6 @@ import (
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/charmbracelet/x/vt"
 )
 
 // Renderer draws the terminal cell grid using ImGui's DrawList.
@@ -39,9 +38,21 @@ func New(theme Theme, metrics CellMetrics, font *imgui.Font, fontSize float32) *
 	}
 }
 
+// EmulatorView is the subset of the terminal emulator API the
+// renderer needs. Both *vt.SafeEmulator (in-memory only) and
+// *terminal.Terminal (in-memory + disk-backed scrollback under
+// "unlimited" mode) satisfy it.
+type EmulatorView interface {
+	Width() int
+	Height() int
+	CellAt(col, row int) *uv.Cell
+	ScrollbackLen() int
+	ScrollbackCellAt(col, row int) *uv.Cell
+}
+
 // cellAt returns the cell at viewport position (col, row) accounting for scroll offset.
 // When scrollOffset > 0, top rows come from the scrollback buffer.
-func cellAt(emu *vt.SafeEmulator, col, row, scrollOffset int) *uv.Cell {
+func cellAt(emu EmulatorView, col, row, scrollOffset int) *uv.Cell {
 	sbLen := emu.ScrollbackLen()
 	contentIdx := sbLen - scrollOffset + row
 	if contentIdx < sbLen {
@@ -83,7 +94,7 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell) (fg, bg uint32) {
 
 // Draw renders the terminal's visible cells onto the background draw list.
 // scrollOffset is the number of lines scrolled back (0 = live view).
-func (r *Renderer) Draw(emu *vt.SafeEmulator, drawList *imgui.DrawList, scrollOffset int) {
+func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset int) {
 	cols := emu.Width()
 	rows := emu.Height()
 	cellW := r.Metrics.Width

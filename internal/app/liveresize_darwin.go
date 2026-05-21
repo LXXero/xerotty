@@ -2,20 +2,31 @@
 
 package app
 
+// macOS live-resize smooth-render watch.
+//
+// AppKit handles NSWindow live-resize in NSEventTrackingRunLoopMode.
+// While that tracking loop is active, the normal SDL_WaitEventTimeout
+// frame pump does not advance, so the OS stretches the last framebuffer
+// until the resize gesture ends. The event watch below drives one normal
+// ImGui frame for real AppKit live-resize size events only.
+//
+// The important guard is platform_cocoa_window_in_live_resize(). Ordinary
+// SDL_EVENT_WINDOW_RESIZED events also fire while ImGui creates or updates
+// multi-viewport windows; rendering from the watch for those events calls
+// NewFrame outside the normal loop and can consume queued input.
+
 /*
-#cgo pkg-config: sdl2
-#cgo CFLAGS: -DGL_SILENCE_DEPRECATION
+#cgo pkg-config: sdl3
+#cgo CFLAGS: -DGL_SILENCE_DEPRECATION -I${SRCDIR}/../platform
 #cgo LDFLAGS: -framework OpenGL
 
-#include <SDL2/SDL.h>
+#include <stdbool.h>
+#include <SDL3/SDL.h>
 #include <OpenGL/gl.h>
+#include "cocoa_focus.h"
 
-// cimgui-go's vendored cimgui.a archive ships these as plain C symbols
-// (verified with `nm`). They're the same functions cimgui-go's
-// igSDLRunLoop calls every iteration; we replicate the loop body inside
-// an SDL event watch so a full frame still renders even when AppKit's
-// live-resize tracking mode is starving the main loop.
-extern void ImGui_ImplSDL2_NewFrame(void);
+extern void ImGui_ImplSDL3_NewFrame(void);
+extern bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event);
 extern void ImGui_ImplOpenGL3_NewFrame(void);
 extern void ImGui_ImplOpenGL3_RenderDrawData(void* draw_data);
 extern void igNewFrame(void);
@@ -29,90 +40,85 @@ extern void xerottyLiveResizeFrame(void);
 extern void xerottyLiveResizeBeforeRender(void);
 
 static SDL_Window *gWatchWindow = NULL;
+static SDL_GLContext gWatchContext = NULL;
 static float gWatchBg[4] = {0, 0, 0, 1};
-// Re-entrancy guard: a render we drive from the watch can itself queue
-// SDL events (via SDL_GL_SwapWindow on some drivers, or via ImGui's
-// platform IO updates) that fire the watch again. Bail out if we're
-// already in the middle of one.
 static int gWatchInRender = 0;
-// True while cimgui-go's main loop is between NewFrame and Render —
-// i.e. user code (our frame()) might be running and could call into
-// SDL APIs (SetWindowSize) that synchronously fire the size-changed
-// watch. If we drove a render from the watch in that window we'd call
-// NewFrame twice without an intervening Render and trip ImGui's
-// assertion. Bracket frame() in Go to set/clear this flag.
 static int gWatchMainFrameActive = 0;
+static int gWatchInstalled = 0;
 
-static int xerottySizeChangedWatch(void* ud, SDL_Event* event) {
-	(void)ud;
-	if (gWatchWindow == NULL) return 0;
-	if (event->type != SDL_WINDOWEVENT) return 0;
-	if (event->window.event != SDL_WINDOWEVENT_SIZE_CHANGED) return 0;
-	// Don't filter by windowID — any of our SDL windows (the primary
-	// or a multi-viewport popped-out secondary) being resized during
-	// AppKit's tracking mode needs the live-render treatment.
-	// Multi-viewport's igRenderPlatformWindowsDefault handles routing
-	// draws to the right OS window per viewport.
-	if (gWatchInRender) return 0;
-	if (gWatchMainFrameActive) return 0;
-	gWatchInRender = 1;
+static bool xerottyLiveResizeEvent(const SDL_Event* event) {
+  return event->type == SDL_EVENT_WINDOW_RESIZED ||
+         event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
+}
 
-	// Same body as cimgui-go's igSDLRunLoop iteration, minus
-	// SDL_PollEvent (the main loop already drives that) and minus the
-	// multi-viewport platform-windows pass (popped-out ImGui windows
-	// catch up after the resize ends).
-	xerottyLiveResizeBeforeRender();
+static bool xerottySizeChangedWatch(void* ud, SDL_Event* event) {
+  (void)ud;
+  if (gWatchWindow == NULL || gWatchContext == NULL) return false;
+  if (!xerottyLiveResizeEvent(event)) return false;
+  if (event->window.windowID == 0) return false;
+  if (!platform_cocoa_window_in_live_resize((unsigned long)event->window.windowID)) return false;
+  if (gWatchInRender) return false;
+  if (gWatchMainFrameActive) return false;
 
-	ImGui_ImplOpenGL3_NewFrame();
-	ImGui_ImplSDL2_NewFrame();
-	igNewFrame();
+  gWatchInRender = 1;
 
-	int w, h;
-	SDL_GL_GetDrawableSize(gWatchWindow, &w, &h);
-	glViewport(0, 0, w, h);
-	glClearColor(gWatchBg[0], gWatchBg[1], gWatchBg[2], gWatchBg[3]);
-	glClear(GL_COLOR_BUFFER_BIT);
+  SDL_Window *backup_window = SDL_GL_GetCurrentWindow();
+  SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
+  SDL_GL_MakeCurrent(gWatchWindow, gWatchContext);
 
-	xerottyLiveResizeFrame();
+  xerottyLiveResizeBeforeRender();
 
-	igRender();
-	ImGui_ImplOpenGL3_RenderDrawData(igGetDrawData());
+  ImGui_ImplOpenGL3_NewFrame();
+  if (event->type == SDL_EVENT_WINDOW_RESIZED) {
+    ImGui_ImplSDL3_ProcessEvent(event);
+  }
+  ImGui_ImplSDL3_NewFrame();
+  igNewFrame();
 
-	// Multi-viewport bookkeeping: when ConfigFlagsViewportsEnable is on
-	// (which it is — popped-out prefs), ImGui's NewFrame on the NEXT
-	// frame asserts that UpdatePlatformWindows was called between the
-	// previous Render and now. Skipping it here would assert when
-	// either the main loop or another watch invocation hits NewFrame.
-	// Save/restore the GL context around the call because rendering
-	// platform windows can switch contexts.
-	SDL_Window *backup_window = SDL_GL_GetCurrentWindow();
-	SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-	igUpdatePlatformWindows();
-	igRenderPlatformWindowsDefault(NULL, NULL);
-	SDL_GL_MakeCurrent(backup_window, backup_context);
+  int w = 0, h = 0;
+  SDL_GetWindowSizeInPixels(gWatchWindow, &w, &h);
+  glViewport(0, 0, w, h);
+  glClearColor(gWatchBg[0], gWatchBg[1], gWatchBg[2], gWatchBg[3]);
+  glClear(GL_COLOR_BUFFER_BIT);
 
-	SDL_GL_SwapWindow(gWatchWindow);
+  xerottyLiveResizeFrame();
 
-	gWatchInRender = 0;
-	return 0;
+  igRender();
+  ImGui_ImplOpenGL3_RenderDrawData(igGetDrawData());
+
+  igUpdatePlatformWindows();
+  igRenderPlatformWindowsDefault(NULL, NULL);
+
+  SDL_GL_MakeCurrent(gWatchWindow, gWatchContext);
+  SDL_GL_SwapWindow(gWatchWindow);
+
+  if (backup_window != NULL && backup_context != NULL) {
+    SDL_GL_MakeCurrent(backup_window, backup_context);
+  }
+  gWatchInRender = 0;
+  return false;
 }
 
 static void xerottyInstallLiveResizeWatch(float r, float g, float b) {
-	gWatchWindow = SDL_GL_GetCurrentWindow();
-	gWatchBg[0] = r; gWatchBg[1] = g; gWatchBg[2] = b; gWatchBg[3] = 1.0f;
-	SDL_AddEventWatch(xerottySizeChangedWatch, NULL);
+  gWatchWindow = SDL_GL_GetCurrentWindow();
+  gWatchContext = SDL_GL_GetCurrentContext();
+  gWatchBg[0] = r; gWatchBg[1] = g; gWatchBg[2] = b; gWatchBg[3] = 1.0f;
+  if (!gWatchInstalled) {
+    SDL_AddEventWatch(xerottySizeChangedWatch, NULL);
+    gWatchInstalled = 1;
+  }
 }
 
 static void xerottyUpdateLiveResizeBg(float r, float g, float b) {
-	gWatchBg[0] = r; gWatchBg[1] = g; gWatchBg[2] = b;
+  gWatchBg[0] = r; gWatchBg[1] = g; gWatchBg[2] = b;
 }
 
 static void xerottyLiveResizeSetMainFrame(int active) {
-	gWatchMainFrameActive = active;
+  gWatchMainFrameActive = active;
 }
 
 static int xerottyLiveResizeInWatch(void) {
-	return gWatchInRender;
+  return gWatchInRender;
 }
 */
 import "C"
@@ -136,35 +142,16 @@ func xerottyLiveResizeBeforeRender() {
 	}
 }
 
-// installLiveResizeWatch hooks an SDL event watch on the current GL
-// window so SDL_WINDOWEVENT_SIZE_CHANGED triggers a full frame even
-// while AppKit's live-resize tracking mode is holding the main loop.
-// Must be called after the window+GL context exist (i.e. after
-// CreateWindow) but before Run() takes over.
 func installLiveResizeWatch(bgR, bgG, bgB float32, frame, beforeRender func()) {
 	liveResizeFrameFn = frame
 	liveResizeBeforeRenderFn = beforeRender
 	C.xerottyInstallLiveResizeWatch(C.float(bgR), C.float(bgG), C.float(bgB))
 }
 
-// updateLiveResizeBg updates the clear color the watch uses. Called
-// when the user changes themes so mid-resize clears match.
 func updateLiveResizeBg(bgR, bgG, bgB float32) {
 	C.xerottyUpdateLiveResizeBg(C.float(bgR), C.float(bgG), C.float(bgB))
 }
 
-// liveResizeMainFrameBegin tells the watch the main loop is inside a
-// frame body now (between NewFrame and Render). The watch must not
-// drive its own NewFrame during this window or ImGui asserts.
 func liveResizeMainFrameBegin() { C.xerottyLiveResizeSetMainFrame(1) }
-
-// liveResizeMainFrameEnd marks the end of the main-loop frame — watch
-// is free to render again.
-func liveResizeMainFrameEnd() { C.xerottyLiveResizeSetMainFrame(0) }
-
-// inLiveResizeWatch reports whether the current frame is being driven
-// from the live-resize event watch (i.e. AppKit is in tracking mode
-// holding the main loop). Used to suppress mouse-event synthesis during
-// resize so we don't turn the resize-handle drag into a fake terminal
-// click+selection.
-func inLiveResizeWatch() bool { return C.xerottyLiveResizeInWatch() != 0 }
+func liveResizeMainFrameEnd()   { C.xerottyLiveResizeSetMainFrame(0) }
+func inLiveResizeWatch() bool   { return C.xerottyLiveResizeInWatch() != 0 }

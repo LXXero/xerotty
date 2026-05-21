@@ -67,6 +67,75 @@ func NewManager(cfg *config.Config) *Manager {
 	}
 }
 
+// RemoveTab pulls a tab out of the manager without closing its
+// terminal — used by drag-between-windows to detach a tab so a
+// different Manager can AdoptTab it. Returns the removed *Tab (or
+// nil on out-of-range). Adjusts ActiveIdx so the active tab stays
+// the same (or shifts to a neighbor if the removed tab was active).
+func (m *Manager) RemoveTab(idx int) *Tab {
+	if idx < 0 || idx >= len(m.Tabs) {
+		return nil
+	}
+	tab := m.Tabs[idx]
+	m.Tabs = append(m.Tabs[:idx], m.Tabs[idx+1:]...)
+	if len(m.Tabs) == 0 {
+		m.ActiveIdx = 0
+	} else if m.ActiveIdx >= len(m.Tabs) {
+		m.ActiveIdx = len(m.Tabs) - 1
+	} else if idx < m.ActiveIdx {
+		m.ActiveIdx--
+	}
+	return tab
+}
+
+// AdoptTab takes ownership of an already-running Terminal,
+// wrapping it in a new Tab entry at the end of this manager's
+// list and switching focus to it. The Terminal's existing PTY +
+// goroutines keep running; only the tab-list ownership changes.
+// Used by drag-between-windows after the source Manager
+// RemoveTab'd the entry.
+func (m *Manager) AdoptTab(term *terminal.Terminal) *Tab {
+	tab := &Tab{
+		ID:       m.NextID,
+		Terminal: term,
+	}
+	m.NextID++
+	m.Tabs = append(m.Tabs, tab)
+	m.ActiveIdx = len(m.Tabs) - 1
+	return tab
+}
+
+// MoveTab reorders the tabs slice: removes the tab currently at
+// index `from` and inserts it at `to`. Keeps ActiveIdx pointing at
+// the same Tab (its slice position shifts based on the move). Used
+// by drag-to-reorder in the tab bar. No-op on out-of-range or
+// no-change moves.
+func (m *Manager) MoveTab(from, to int) {
+	n := len(m.Tabs)
+	if from < 0 || from >= n || to < 0 || to >= n || from == to {
+		return
+	}
+	active := m.Tabs[m.ActiveIdx]
+	tab := m.Tabs[from]
+	// Remove from current position.
+	m.Tabs = append(m.Tabs[:from], m.Tabs[from+1:]...)
+	// Insert at target position (which may need adjusting if the
+	// removal shifted the indices, but `to` is the user-visible
+	// target slot — interpret as "I want the dragged tab to end up
+	// at slice index `to` in the final order").
+	if to > len(m.Tabs) {
+		to = len(m.Tabs)
+	}
+	m.Tabs = append(m.Tabs[:to], append([]*Tab{tab}, m.Tabs[to:]...)...)
+	// Re-resolve ActiveIdx so the same Tab stays selected after move.
+	for i, t := range m.Tabs {
+		if t == active {
+			m.ActiveIdx = i
+			break
+		}
+	}
+}
+
 // NewTab creates a new tab with a fresh terminal. cwd is the starting
 // directory for the shell; pass "" to inherit xerotty's CWD. Callers
 // thread the parent tab's CWD when cfg.Tabs.InheritCWD is set so

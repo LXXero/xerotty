@@ -1,8 +1,8 @@
 package input
 
 /*
-#cgo pkg-config: sdl2
-#include <SDL2/SDL.h>
+#cgo pkg-config: sdl3
+#include <SDL3/SDL.h>
 #include <stdlib.h>
 */
 import "C"
@@ -34,7 +34,8 @@ func ClipboardRead() (string, error) {
 func ClipboardWrite(text string) error {
 	cs := C.CString(text)
 	defer C.free(unsafe.Pointer(cs))
-	if C.SDL_SetClipboardText(cs) != 0 {
+	// SDL3 changed SDL_SetClipboardText to return bool (true=success).
+	if !C.SDL_SetClipboardText(cs) {
 		return errors.New(C.GoString(C.SDL_GetError()))
 	}
 	return nil

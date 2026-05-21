@@ -342,7 +342,14 @@ func matchKeybind(bind string, ctrl, shift, alt, super bool) bool {
 	if imKey == imgui.KeyNone {
 		return false
 	}
-	return imgui.IsKeyPressedBool(imKey)
+	// repeat=false: keybind actions are conceptually discrete (Cmd+W
+	// closes ONE tab, Cmd+T opens ONE tab, Cmd+F opens search ONCE).
+	// With the default repeat=true, holding the keybind for ~500ms
+	// triggers OS key-repeat at ~30ms intervals — Cmd+W cascades
+	// through every tab in the window until the window itself empties
+	// and closes. Edge-only matches user intent: hold doesn't fire,
+	// only the initial press.
+	return imgui.IsKeyPressedBoolV(imKey, false)
 }
 
 func nameToImGuiKey(name string) imgui.Key {
