@@ -132,9 +132,10 @@ const liveWindowDefault = 4096
 
 // applyScrollbackConfig sets the emulator's scrollback buffer size
 // from config. Mode == "unlimited" maps to a very large cap (no
-// realistic terminal session hits 2 billion lines); "memory" uses
-// cfg.Scrollback.Lines as a finite ring buffer; "disk" is not
-// implemented yet and falls back to memory mode.
+// realistic terminal session hits 2 billion lines) and spills oldest
+// lines to disk via NewDiskScrollback; "memory" (or any other value)
+// uses cfg.Scrollback.Lines as a finite ring buffer with no disk
+// backing.
 //
 // Caller must hold t.mu (or be in a path where racing is OK, e.g.
 // during construction before goroutines start).

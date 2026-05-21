@@ -32,12 +32,7 @@ func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
 // Combo option lists.
 var (
 	prefCursorStyles = []string{"block", "underline", "bar"}
-	// UI exposes only the modes the backend actually implements.
-	// "disk" stays a valid TOML value (cfg.Scrollback.Mode is a free
-	// string) but is hidden here until scrollback.go grows the
-	// disk-backed buffer. Existing configs with Mode="disk" load as
-	// "memory" in the UI (prefIndexOf returns 0 for not-found).
-	prefSBModes = []string{"memory", "unlimited"}
+	prefSBModes      = []string{"memory", "unlimited"}
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
@@ -138,7 +133,6 @@ type configDialog struct {
 	sbLines   int32
 	sbModeIdx int32
 	scrollSpd int32
-	diskDir   string
 	scrollKey bool
 	scrollOut bool
 
@@ -287,7 +281,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
 	d.scrollSpd = int32(cfg.Scrollback.ScrollSpeed)
-	d.diskDir = cfg.Scrollback.DiskDir
 	d.scrollKey = cfg.Scrollback.ScrollOnKeystroke
 	d.scrollOut = cfg.Scrollback.ScrollOnOutput
 
@@ -379,7 +372,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Scrollback.Mode = prefSBModes[d.sbModeIdx]
 	}
 	cfg.Scrollback.ScrollSpeed = int(d.scrollSpd)
-	cfg.Scrollback.DiskDir = d.diskDir
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 

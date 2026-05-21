@@ -47,9 +47,7 @@
 ## Open
 
 ### High priority
-- [ ] **disk scrollback** — `[scrollback].mode = "memory" | "disk" | "unlimited"` with `disk_dir`. TOML schema + prefs persistence exist; backend in `internal/scrollback` is still memory-only (Mode/DiskDir hidden from prefs UI until wired)
 - [ ] **image paste / Kitty graphics protocol** — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
-- [ ] **scrollback search** — refresh on scroll, prefix highlight (partially scaffolded; check what works)
 
 ### Low priority / later
 - [ ] Tmux helpers (SPEC §6.13) — explicitly last per original plan

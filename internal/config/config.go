@@ -84,8 +84,7 @@ type MenuItem struct {
 // ScrollbackConfig controls scrollback buffer behavior.
 type ScrollbackConfig struct {
 	Lines             int    `toml:"lines"`
-	Mode              string `toml:"mode"`               // "memory" | "disk" | "unlimited"
-	DiskDir           string `toml:"disk_dir"`
+	Mode              string `toml:"mode"`               // "memory" | "unlimited"
 	ScrollSpeed       int    `toml:"scroll_speed"`        // lines per mouse wheel tick
 	ScrollOnKeystroke bool   `toml:"scroll_on_keystroke"` // snap to bottom on keypress
 	ScrollOnOutput    bool   `toml:"scroll_on_output"`    // snap to bottom on new output
