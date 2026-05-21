@@ -61,9 +61,15 @@ type Hello struct {
 
 // HelloAck answers a Hello. ServerVersion lets the client decide
 // whether to proceed (the client may downgrade behavior to match).
+//
+// Hostname is the daemon's host (typically os.Hostname() — for SSH
+// transports it's the remote box's name). UIs use this to render
+// per-tab host badges so users know which machine each tab lives
+// on when they have a mix of local + remote daemons attached.
 type HelloAck struct {
 	ServerVersion uint16 `msg:"server_version"`
-	ServerID      string `msg:"server_id"`        // e.g. hostname + daemon pid
+	ServerID      string `msg:"server_id"`        // unique per daemon instance: hostname:pid
+	Hostname      string `msg:"hostname,omitempty"` // just the hostname, for UI display
 }
 
 // Attach asks the server to attach this connection to a session. A

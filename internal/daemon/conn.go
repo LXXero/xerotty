@@ -18,14 +18,16 @@ import (
 func (d *Daemon) serveConn(conn net.Conn) {
 	defer conn.Close()
 	c := &clientConn{
-		daemon: d,
-		conn:   conn,
-		reader: protocol.NewFrameReader(conn),
+		daemon:  d,
+		conn:    conn,
+		reader:  protocol.NewFrameReader(conn),
+		joined:  time.Now(),
 	}
 	if err := c.handshake(); err != nil {
 		fmt.Fprintf(os.Stderr, "xerottyd: handshake failed: %v\n", err)
 		return
 	}
+	defer d.unregisterClient(c)
 	c.runReadLoop()
 }
 
@@ -38,6 +40,9 @@ type clientConn struct {
 	reader *protocol.FrameReader
 
 	writeMu sync.Mutex // serializes WriteFrame across goroutines
+
+	clientID string    // from Hello
+	joined   time.Time // when this conn was accepted
 
 	session *Session // nil until Attach succeeds
 
@@ -82,9 +87,14 @@ func (c *clientConn) handshake() error {
 		return fmt.Errorf("version mismatch (client %d, server %d)", hello.Version, protocol.ProtocolVersion)
 	}
 	host, _ := os.Hostname()
+	// Record this connection's claimed client ID on the daemon so
+	// other clients / MCP agents can see who's attached.
+	c.clientID = hello.ClientID
+	c.daemon.registerClient(c)
 	return c.writeFrame(protocol.MsgHelloAck, &protocol.HelloAck{
 		ServerVersion: protocol.ProtocolVersion,
 		ServerID:      fmt.Sprintf("%s:%d", host, os.Getpid()),
+		Hostname:      host,
 	})
 }
 

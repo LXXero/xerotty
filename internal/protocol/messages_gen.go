@@ -2404,6 +2404,12 @@ func (z *HelloAck) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ServerID")
 				return
 			}
+		case "hostname":
+			z.Hostname, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Hostname")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -2417,26 +2423,54 @@ func (z *HelloAck) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z HelloAck) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 2
-	// write "server_version"
-	err = en.Append(0x82, 0xae, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e)
+	// check for omitted fields
+	zb0001Len := uint32(3)
+	var zb0001Mask uint8 /* 3 bits */
+	_ = zb0001Mask
+	if z.Hostname == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint16(z.ServerVersion)
-	if err != nil {
-		err = msgp.WrapError(err, "ServerVersion")
-		return
-	}
-	// write "server_id"
-	err = en.Append(0xa9, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x69, 0x64)
-	if err != nil {
-		return
-	}
-	err = en.WriteString(z.ServerID)
-	if err != nil {
-		err = msgp.WrapError(err, "ServerID")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "server_version"
+		err = en.Append(0xae, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.ServerVersion)
+		if err != nil {
+			err = msgp.WrapError(err, "ServerVersion")
+			return
+		}
+		// write "server_id"
+		err = en.Append(0xa9, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.ServerID)
+		if err != nil {
+			err = msgp.WrapError(err, "ServerID")
+			return
+		}
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// write "hostname"
+			err = en.Append(0xa8, 0x68, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Hostname)
+			if err != nil {
+				err = msgp.WrapError(err, "Hostname")
+				return
+			}
+		}
 	}
 	return
 }
@@ -2444,13 +2478,31 @@ func (z HelloAck) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z HelloAck) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 2
-	// string "server_version"
-	o = append(o, 0x82, 0xae, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e)
-	o = msgp.AppendUint16(o, z.ServerVersion)
-	// string "server_id"
-	o = append(o, 0xa9, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x69, 0x64)
-	o = msgp.AppendString(o, z.ServerID)
+	// check for omitted fields
+	zb0001Len := uint32(3)
+	var zb0001Mask uint8 /* 3 bits */
+	_ = zb0001Mask
+	if z.Hostname == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "server_version"
+		o = append(o, 0xae, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x76, 0x65, 0x72, 0x73, 0x69, 0x6f, 0x6e)
+		o = msgp.AppendUint16(o, z.ServerVersion)
+		// string "server_id"
+		o = append(o, 0xa9, 0x73, 0x65, 0x72, 0x76, 0x65, 0x72, 0x5f, 0x69, 0x64)
+		o = msgp.AppendString(o, z.ServerID)
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// string "hostname"
+			o = append(o, 0xa8, 0x68, 0x6f, 0x73, 0x74, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Hostname)
+		}
+	}
 	return
 }
 
@@ -2484,6 +2536,12 @@ func (z *HelloAck) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "ServerID")
 				return
 			}
+		case "hostname":
+			z.Hostname, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Hostname")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -2498,7 +2556,7 @@ func (z *HelloAck) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z HelloAck) Msgsize() (s int) {
-	s = 1 + 15 + msgp.Uint16Size + 10 + msgp.StringPrefixSize + len(z.ServerID)
+	s = 1 + 15 + msgp.Uint16Size + 10 + msgp.StringPrefixSize + len(z.ServerID) + 9 + msgp.StringPrefixSize + len(z.Hostname)
 	return
 }
 

@@ -23,6 +23,56 @@ type Daemon struct {
 	// Sessions, keyed by name. Phase 0 only ever holds "default".
 	mu       sync.Mutex
 	sessions map[string]*Session
+
+	// All currently-connected clients (wire protocol; MCP agents
+	// are tracked separately). Used by MCP agent/clients + future
+	// "who's attached" UI.
+	clientsMu sync.Mutex
+	clients   map[*clientConn]struct{}
+}
+
+// AttachedClient is a snapshot of one connected wire-protocol client.
+// Mirrors what the MCP surface needs to render "who's attached".
+type AttachedClient struct {
+	ClientID    string
+	RemoteAddr  string
+	SessionName string
+	JoinedUnix  int64
+}
+
+// AttachedClients returns a snapshot of all currently-connected
+// wire-protocol clients. Safe to call from any goroutine.
+func (d *Daemon) AttachedClients() []AttachedClient {
+	d.clientsMu.Lock()
+	defer d.clientsMu.Unlock()
+	out := make([]AttachedClient, 0, len(d.clients))
+	for c := range d.clients {
+		ac := AttachedClient{
+			ClientID:   c.clientID,
+			RemoteAddr: c.conn.RemoteAddr().String(),
+			JoinedUnix: c.joined.Unix(),
+		}
+		if c.session != nil {
+			ac.SessionName = c.session.Name
+		}
+		out = append(out, ac)
+	}
+	return out
+}
+
+func (d *Daemon) registerClient(c *clientConn) {
+	d.clientsMu.Lock()
+	defer d.clientsMu.Unlock()
+	if d.clients == nil {
+		d.clients = make(map[*clientConn]struct{})
+	}
+	d.clients[c] = struct{}{}
+}
+
+func (d *Daemon) unregisterClient(c *clientConn) {
+	d.clientsMu.Lock()
+	defer d.clientsMu.Unlock()
+	delete(d.clients, c)
 }
 
 // New constructs a daemon configured to listen on socketPath. The

@@ -173,9 +173,26 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleClipboard(req)
 	case "agent/mode":
 		return c.handleAgentMode(req)
+	case "agent/clients":
+		return c.handleAgentClients(req)
+	case "server/info":
+		return c.handleServerInfo(req)
 	default:
 		return methodNotFound(req.ID, req.Method)
 	}
+}
+
+func (c *agentConn) handleAgentClients(req *rpcRequest) *rpcResponse {
+	out := c.srv.d.AttachedClients()
+	return ok(req.ID, out)
+}
+
+func (c *agentConn) handleServerInfo(req *rpcRequest) *rpcResponse {
+	host, _ := os.Hostname()
+	return ok(req.ID, map[string]any{
+		"hostname": host,
+		"pid":      os.Getpid(),
+	})
 }
 
 func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
