@@ -5,6 +5,8 @@
 #include <SDL3/SDL.h>
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 // AppKit's responder chain catches Cmd+W via `performKeyEquivalent:`
 // and dispatches to the focused NSWindow's `performClose:` BEFORE
@@ -82,6 +84,101 @@ void platform_cocoa_focus_window(unsigned long window_id) {
     //      SDL_EVENT_KEY_DOWN routes to this window.
     [NSApp activateIgnoringOtherApps:YES];
     [nswin makeKeyAndOrderFront:NSApp];
+}
+
+int platform_cocoa_window_z_rank(unsigned long window_id) {
+    SDL_Window* sdlwin = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!sdlwin) return -1;
+    SDL_PropertiesID props = SDL_GetWindowProperties(sdlwin);
+    NSWindow* target = (__bridge NSWindow*)SDL_GetPointerProperty(
+        props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!target) return -1;
+
+    int rank = 0;
+    for (NSWindow* w in [NSApp orderedWindows]) {
+        if (![w isVisible]) continue;
+        if (w == target) return rank;
+        rank++;
+    }
+    return -1;
+}
+
+int platform_cocoa_any_window_moved(void) {
+    static NSMutableDictionary<NSNumber*, NSValue*>* lastOrigins = nil;
+    if (!lastOrigins) lastOrigins = [[NSMutableDictionary alloc] init];
+
+    static int dbg = -1;
+    if (dbg < 0) { const char* v = getenv("XEROTTY_DEBUG_MIRROR"); dbg = (v && *v && *v != '0') ? 1 : 0; }
+    static int call_count = 0;
+    static int last_logged = 0;
+    call_count++;
+
+    int moved = 0;
+    NSMutableSet<NSNumber*>* seen = [NSMutableSet set];
+    for (NSWindow* w in [NSApp windows]) {
+        if (![w isVisible]) continue;
+        NSNumber* key = @([w windowNumber]);
+        [seen addObject:key];
+        NSPoint origin = [w frame].origin;
+        NSValue* prev = lastOrigins[key];
+        if (prev) {
+            NSPoint p = [prev pointValue];
+            if (p.x != origin.x || p.y != origin.y) {
+                moved = 1;
+                if (dbg) fprintf(stderr,
+                    "[move] win#%ld moved (%.1f,%.1f)->(%.1f,%.1f)\n",
+                    (long)[w windowNumber], p.x, p.y, origin.x, origin.y);
+            }
+        }
+        lastOrigins[key] = [NSValue valueWithPoint:origin];
+    }
+    NSMutableArray<NSNumber*>* stale = [NSMutableArray array];
+    for (NSNumber* k in lastOrigins) {
+        if (![seen containsObject:k]) [stale addObject:k];
+    }
+    for (NSNumber* k in stale) [lastOrigins removeObjectForKey:k];
+    // Periodically log call count even if no movement, so we can tell
+    // if the function is being called during drags at all.
+    if (dbg && (call_count - last_logged) >= 60) {
+        fprintf(stderr, "[move] heartbeat: %d calls, %d visible\n",
+                call_count, (int)[seen count]);
+        last_logged = call_count;
+    }
+    return moved;
+}
+
+int platform_cocoa_event_on_chrome(void) {
+    NSPoint screenLoc = [NSEvent mouseLocation];
+    static int dbg = -1;
+    if (dbg < 0) { const char* v = getenv("XEROTTY_DEBUG_MIRROR"); dbg = (v && *v && *v != '0') ? 1 : 0; }
+    if (dbg) fprintf(stderr, "[chrome] cursor screen=(%.1f,%.1f) [bottom-left]\n", screenLoc.x, screenLoc.y);
+    // Use orderedWindows, not windows. [NSApp windows] is not a
+    // reliable front-to-back hit-test order, so when two terminal
+    // windows overlap it can report the lower content window before
+    // the dragged/front title bar. That misclassifies a title-bar
+    // drag as a content click and lets the mouse mirror synthesize a
+    // phantom terminal selection.
+    for (NSWindow *w in [NSApp orderedWindows]) {
+        if (![w isVisible]) continue;
+        NSRect winFrame = [w frame];
+        if (dbg) fprintf(stderr, "[chrome]   win '%s' frame=(%.0f,%.0f,%.0fx%.0f) visible\n",
+                        [[w title] UTF8String] ?: "", winFrame.origin.x, winFrame.origin.y, winFrame.size.width, winFrame.size.height);
+        if (!NSPointInRect(screenLoc, winFrame)) continue;
+        NSView *cv = [w contentView];
+        if (!cv) {
+            if (dbg) fprintf(stderr, "[chrome]   -> no cv, CHROME\n");
+            return 1;
+        }
+        NSRect cvWinRect = [cv frame];
+        NSRect cvScreenRect = [w convertRectToScreen:cvWinRect];
+        int in = NSPointInRect(screenLoc, cvScreenRect);
+        if (dbg) fprintf(stderr, "[chrome]   cvScreen=(%.0f,%.0f,%.0fx%.0f) in=%d -> %s\n",
+                        cvScreenRect.origin.x, cvScreenRect.origin.y, cvScreenRect.size.width, cvScreenRect.size.height,
+                        in, in ? "content" : "CHROME");
+        return in ? 0 : 1;
+    }
+    if (dbg) fprintf(stderr, "[chrome]   no window contains cursor\n");
+    return 0;
 }
 
 unsigned int platform_cocoa_modifier_flags(void) {

@@ -71,6 +71,28 @@ type App struct {
 	// skip injection when ImGui's view spuriously already matches a
 	// half-applied OS state.
 	prevOsLeftDown bool
+
+	// anyWindowMovingThisFrame is set at the top of wrappedFrame
+	// if any Window's NSWindow.frame.origin changed since last
+	// frame (i.e. the OS is dragging the window). Read by the
+	// mouse mirror's deferred-DOWN logic to abort an
+	// about-to-be-injected synthetic DOWN whose source turns out
+	// to be a window-drag gesture rather than a content click.
+	anyWindowMovingThisFrame bool
+
+	// mirrorPendingDown is set on the OS button-down edge — but
+	// instead of injecting the synthetic DOWN immediately we wait
+	// a few frames. If the window starts moving OR the cursor
+	// moves substantially during the wait, the click was a drag
+	// gesture (window drag or selection drag) and should be
+	// aborted (the latter already had its DOWN delivered through
+	// SDL; the former should never inject). Otherwise inject after
+	// the timer expires.
+	mirrorPendingDown       bool
+	mirrorPendingPos        imgui.Vec2
+	mirrorPendingGlobalX    int
+	mirrorPendingGlobalY    int
+	mirrorPendingFramesLeft int
 }
 
 // tabDrag is the in-flight state of a tab being dragged across
@@ -138,13 +160,40 @@ func (a *App) reapClosedWindows() {
 			}
 		}
 		if !found {
-			if len(a.windows) > 0 {
-				a.active = a.windows[0]
-			} else {
-				a.active = nil
-			}
+			a.active = a.bestFocusReplacement()
 		}
 	}
+}
+
+func (a *App) bestFocusReplacement() *Window {
+	var fallback *Window
+	for i := len(a.windows) - 1; i >= 0; i-- {
+		if !a.windows[i].pendingClose {
+			fallback = a.windows[i]
+			break
+		}
+	}
+
+	bestRank := int(^uint(0) >> 1)
+	var best *Window
+	for _, win := range a.windows {
+		if win.pendingClose || win.imViewport == nil {
+			continue
+		}
+		handle := win.imViewport.PlatformHandle()
+		if handle == 0 {
+			continue
+		}
+		rank := platform.CocoaWindowZRank(handle)
+		if rank >= 0 && rank < bestRank {
+			bestRank = rank
+			best = win
+		}
+	}
+	if best != nil {
+		return best
+	}
+	return fallback
 }
 
 // mouseOverOwnedContent returns true iff the OS-level cursor is
@@ -590,6 +639,12 @@ func (a *App) Run() error {
 		// imgui.NewFrame consumes the input queue, otherwise the
 		// re-asserted modifier state only takes effect next frame
 		// and the current frame's KEY_DOWN edge sees a stale view.)
+		// Detect "any window is currently being dragged" via the
+		// live AppKit NSWindow.frame.origin, not ImGui's viewport.Pos
+		// (which lags 1-2 frames during a continuous drag because
+		// SDL_EVENT_WINDOW_MOVED + ImGui::UpdatePlatformWindows only
+		// sync the position on the next frame).
+		a.anyWindowMovingThisFrame = platform.CocoaAnyWindowMoved()
 		// Track which Window has keyboard/click focus across this
 		// frame. Input handling (keys, mouse-down, wheel, selection)
 		// is gated to a.active in frame() — otherwise typing would
@@ -793,18 +848,15 @@ func (a *App) Run() error {
 			// dying window's prior peer and the user has to click
 			// the survivor before keys route to it).
 			a.active = nil
-			for _, win := range a.windows {
-				if !win.pendingClose {
-					a.active = win
-					focused = win
-					if win.imViewport != nil {
-						if h := win.imViewport.PlatformHandle(); h != 0 {
-							platform.RaiseWindow(h)
-							platform.CocoaFocusWindow(h)
-							platform.ResyncModifiers()
-						}
+			if win := a.bestFocusReplacement(); win != nil {
+				a.active = win
+				focused = win
+				if win.imViewport != nil {
+					if h := win.imViewport.PlatformHandle(); h != 0 {
+						platform.RaiseWindow(h)
+						platform.CocoaFocusWindow(h)
+						platform.ResyncModifiers()
 					}
-					break
 				}
 			}
 		}
@@ -1237,28 +1289,156 @@ func (a *Window) frame() {
 		// as "fresh" because MouseClicked needs a transition. Injecting
 		// on every real OS transition guarantees ImGui sees the
 		// transition even if a real event also got through.
+		// macOS window-drag commit takes ~100-200ms. The delay
+		// only affects SDL-dropped clicks; SDL-delivered clicks
+		// skip the mirror entirely.
+		const mirrorDeferFrames = 15
+		// Cursor motion during defer means this is a drag gesture
+		// (window drag or selection drag). Both should abort the
+		// synthetic DOWN.
+		const mirrorAbortMotionPx = 6
+		dbg := os.Getenv("XEROTTY_DEBUG_MIRROR") != ""
+		imguiSeesDown := imgui.IsMouseDown(imgui.MouseButtonLeft)
+		pendingCursorMoved := func() (bool, int, int) {
+			gx, gy := sdlhack.GlobalMousePos()
+			dx := gx - a.app.mirrorPendingGlobalX
+			dy := gy - a.app.mirrorPendingGlobalY
+			return dx*dx+dy*dy >= mirrorAbortMotionPx*mirrorAbortMotionPx, dx, dy
+		}
+		abortPendingReason := func() string {
+			if a.app.anyWindowMovingThisFrame {
+				return "window moved"
+			}
+			if moved, dx, dy := pendingCursorMoved(); moved {
+				return fmt.Sprintf("cursor moved by %d,%d", dx, dy)
+			}
+			if platform.CocoaEventOnChrome() {
+				return "cursor on chrome"
+			}
+			if over, _ := a.app.mouseOverOwnedContentPos(); !over {
+				return "cursor left owned content"
+			}
+			return ""
+		}
 		switch {
 		case osDown && !a.app.prevOsLeftDown:
-			// OS-level press edge. Gate DOWN on "cursor inside one of
-			// our windows" so clicks on window decorations or other
-			// apps don't manufacture phantom terminal selections here.
-			over, inViewportPos := a.app.mouseOverOwnedContentPos()
-			if !inLiveResizeWatch() && over {
-				// If ImGui's MousePos is sentinel (no app focus),
-				// inject a synthetic position FIRST so the DOWN event
-				// hit-tests against a valid coord instead of -FLT_MAX
-				// (which lands on no widget and the click "disappears").
-				mp := imgui.MousePos()
-				const noMouseSentinel = -3.4e+37
-				if mp.X <= noMouseSentinel {
-					imgui.CurrentIO().AddMousePosEvent(inViewportPos.X, inViewportPos.Y)
+			// OS-level press edge. If ImGui already sees the button
+			// down, SDL delivered the click through the normal path
+			// (contentView) — the mirror has nothing to compensate
+			// for and any injection here would be a duplicate edge
+			// (ImGui's double-click detector then fires word-select,
+			// which the user sees as "click highlights stuff").
+			//
+			// Only defer-and-inject when SDL DIDN'T deliver — that's
+			// either a real-click-that-SDL-dropped (mirror's
+			// original purpose) or a window-drag gesture (which we
+			// detect via motion during the defer window and abort).
+			if imguiSeesDown {
+				if dbg {
+					fmt.Fprintf(os.Stderr, "[mirror] DOWN edge: SDL already delivered -> skip\n")
 				}
-				imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), true)
+				break
+			}
+			over, inViewportPos := a.app.mouseOverOwnedContentPos()
+			onChrome := platform.CocoaEventOnChrome()
+			if !inLiveResizeWatch() && over && !onChrome {
+				gx, gy := sdlhack.GlobalMousePos()
+				a.app.mirrorPendingDown = true
+				a.app.mirrorPendingPos = inViewportPos
+				a.app.mirrorPendingGlobalX = gx
+				a.app.mirrorPendingGlobalY = gy
+				a.app.mirrorPendingFramesLeft = mirrorDeferFrames
+				if dbg {
+					fmt.Fprintf(os.Stderr,
+						"[mirror] DOWN edge: SDL dropped, over=%v onChrome=%v -> PENDING (%d frames)\n",
+						over, onChrome, mirrorDeferFrames)
+				}
+			} else if dbg {
+				fmt.Fprintf(os.Stderr,
+					"[mirror] DOWN edge: SDL dropped + over=%v onChrome=%v inLR=%v -> skip\n",
+					over, onChrome, inLiveResizeWatch())
 			}
 		case !osDown && a.app.prevOsLeftDown:
-			// OS-level release edge. Always inject UP so any drag
-			// that ended outside our windows still clears ImGui state.
-			imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
+			// OS-level release edge.
+			if a.app.mirrorPendingDown {
+				// Fast release before the defer window expired —
+				// either a real-click-that-SDL-dropped (inject so
+				// terminal sees a click) or a window-drag tap (no
+				// inject; abort). Run the same abort checks here as
+				// the deferred path below; otherwise a quick release
+				// can inject DOWN+UP before the pending abort block
+				// gets a chance to see cursor/window movement.
+				if reason := abortPendingReason(); reason != "" {
+					if dbg {
+						fmt.Fprintf(os.Stderr, "[mirror] UP edge while pending: skip (%s)\n", reason)
+					}
+				} else if imguiSeesDown {
+					imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
+					if dbg {
+						fmt.Fprintf(os.Stderr, "[mirror] UP edge while pending: SDL caught DOWN, inject UP\n")
+					}
+				} else {
+					mp := imgui.MousePos()
+					const noMouseSentinel = -3.4e+37
+					if mp.X <= noMouseSentinel {
+						imgui.CurrentIO().AddMousePosEvent(a.app.mirrorPendingPos.X, a.app.mirrorPendingPos.Y)
+					}
+					imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), true)
+					imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
+					if dbg {
+						fmt.Fprintf(os.Stderr, "[mirror] UP edge while pending: INJECT DOWN+UP\n")
+					}
+				}
+				a.app.mirrorPendingDown = false
+			} else if imguiSeesDown {
+				// ImGui still thinks the button is down → SDL
+				// dropped the UP. Inject so the drag/click clears.
+				imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), false)
+				if dbg {
+					fmt.Fprintf(os.Stderr, "[mirror] UP edge: SDL dropped UP -> INJECT\n")
+				}
+			} else if dbg {
+				fmt.Fprintf(os.Stderr, "[mirror] UP edge: SDL already delivered -> skip\n")
+			}
+		}
+		// Process the deferred DOWN. Abort conditions:
+		//   1. Any window started moving → window-drag gesture.
+		//   2. Cursor moved ≥mirrorAbortMotionPx → drag gesture
+		//      (window drag manifests as cursor motion BEFORE the
+		//      NSWindow.frame.origin updates, so this catches it
+		//      earlier than the window-moved check).
+		//   3. Cursor is now on chrome or outside our owned content.
+		//   4. SDL caught up and delivered DOWN to ImGui → the
+		//      mirror is no longer needed; injecting now would
+		//      double-up the edge and trigger word-select via
+		//      ImGui's double-click detector.
+		if a.app.mirrorPendingDown {
+			mp := imgui.MousePos()
+			const noMouseSentinel = -3.4e+37
+
+			if reason := abortPendingReason(); reason != "" {
+				if dbg {
+					fmt.Fprintf(os.Stderr, "[mirror]   pending DOWN aborted (%s)\n", reason)
+				}
+				a.app.mirrorPendingDown = false
+			} else if imguiSeesDown {
+				if dbg {
+					fmt.Fprintf(os.Stderr, "[mirror]   pending DOWN aborted (SDL caught up)\n")
+				}
+				a.app.mirrorPendingDown = false
+			} else {
+				a.app.mirrorPendingFramesLeft--
+				if a.app.mirrorPendingFramesLeft <= 0 {
+					if mp.X <= noMouseSentinel {
+						imgui.CurrentIO().AddMousePosEvent(a.app.mirrorPendingPos.X, a.app.mirrorPendingPos.Y)
+					}
+					imgui.CurrentIO().AddMouseButtonEvent(int32(imgui.MouseButtonLeft), true)
+					a.app.mirrorPendingDown = false
+					if dbg {
+						fmt.Fprintf(os.Stderr, "[mirror]   pending DOWN: INJECT (timer expired)\n")
+					}
+				}
+			}
 		}
 		a.app.prevOsLeftDown = osDown
 	}

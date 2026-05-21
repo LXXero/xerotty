@@ -15,3 +15,26 @@ import "C"
 func CocoaFocusWindow(windowID uintptr) {
 	C.platform_cocoa_focus_window(C.ulong(windowID))
 }
+
+// CocoaWindowZRank returns the front-to-back order of a visible NSWindow:
+// 0 is frontmost. Returns -1 if the SDL/NSWindow cannot be found.
+func CocoaWindowZRank(windowID uintptr) int {
+	return int(C.platform_cocoa_window_z_rank(C.ulong(windowID)))
+}
+
+// CocoaEventOnChrome reports whether the most recent NSEvent
+// (NSApp.currentEvent) is a mouse event whose location is on window
+// chrome (title bar / resize edges) rather than inside the
+// contentView. Used by the mouse mirror to skip synthetic DOWN
+// injection during a title-bar drag.
+func CocoaEventOnChrome() bool {
+	return C.platform_cocoa_event_on_chrome() != 0
+}
+
+// CocoaAnyWindowMoved returns true if any of our visible NSWindows
+// has moved (frame.origin changed) since the last call. Reads the
+// live AppKit state directly, bypassing the ImGui-viewport.Pos
+// staleness during continuous drags.
+func CocoaAnyWindowMoved() bool {
+	return C.platform_cocoa_any_window_moved() != 0
+}
