@@ -447,6 +447,14 @@ func (a *App) spawnWindowImpl(adopt *terminal.Terminal) {
 	// SetWindowSize, etc.) — multi-viewport handles the platform
 	// window creation for us when the Begin/End wrapper runs.
 	w.ready = true
+	// Flag this Window for OS-focus override once its viewport exists.
+	// Without this, the first frame's `focused` calc (driven by ImGui's
+	// IsWindowFocused) returns the spawning Window because OS focus
+	// hasn't transitioned yet — clobbering our manual a.active=w
+	// assignment below and routing the next keybind to the wrong
+	// Window. The override is cleared once we've raised the new SDL
+	// window in wrappedFrame's post-loop block.
+	w.pendingFocus = true
 
 	a.windows = append(a.windows, w)
 	a.active = w
@@ -578,6 +586,10 @@ func (a *App) Run() error {
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
+		// (Modifier resync is in beforeRender — it has to run BEFORE
+		// imgui.NewFrame consumes the input queue, otherwise the
+		// re-asserted modifier state only takes effect next frame
+		// and the current frame's KEY_DOWN edge sees a stale view.)
 		// Track which Window has keyboard/click focus across this
 		// frame. Input handling (keys, mouse-down, wheel, selection)
 		// is gated to a.active in frame() — otherwise typing would
@@ -656,6 +668,15 @@ func (a *App) Run() error {
 			// tracks the active tab without invalidating the ImGui
 			// window's identity / saved state.
 			beginName := win.titleForWindow() + "###" + win.imguiName
+			// Belt-and-suspenders alongside the post-loop
+			// platform.RaiseWindow: if this Window was just spawned,
+			// ask ImGui to focus it during this Begin. ImGui's
+			// platform layer translates that into the OS focus call
+			// for the popped-out viewport, which on macOS pre-flights
+			// the makeKeyAndOrderFront: that RaiseWindow does later.
+			if win.pendingFocus {
+				imgui.SetNextWindowFocus()
+			}
 			shouldRenderFrame := imgui.BeginV(beginName, nil, flags)
 			// Pop the wrapper-only styles IMMEDIATELY after Begin so
 			// they only affect the wrapper window (its content rect
@@ -710,14 +731,79 @@ func (a *App) Run() error {
 		}
 		if focused != nil {
 			a.active = focused
-		} else if a.active != nil && a.active.pendingClose {
+		}
+		// Override the focus-from-ImGui result if a Window was just
+		// spawned. Two timing issues to handle here:
+		//
+		//   1. ImGui's UpdatePlatformWindows runs in platform_end_frame
+		//      (i.e. AFTER wrappedFrame). So on the FIRST frame after
+		//      spawnWindow, the new Window's imViewport exists but its
+		//      PlatformHandle is still 0 — the SDL_Window hasn't been
+		//      created yet. We can't raise a window that doesn't exist.
+		//      Wait for the next frame, when PlatformHandle is non-zero.
+		//   2. ImGui's IsWindowFocused trails the OS keyboard focus by
+		//      a frame or two on macOS. Without overriding here, the
+		//      spawning Window stays a.active and the next keybind
+		//      (Cmd+T immediately after Cmd+N) dispatches there
+		//      instead of the new Window.
+		//
+		// So we keep pendingFocus set until we can BOTH raise the new
+		// SDL_Window AND mark a.active. Clearing it only on successful
+		// raise also handles the "spawn but viewport never gets a
+		// handle" failure case gracefully.
+		for _, win := range a.windows {
+			if !win.pendingFocus {
+				continue
+			}
+			if win.imViewport == nil {
+				continue
+			}
+			handle := win.imViewport.PlatformHandle()
+			if handle == 0 {
+				// Viewport's SDL_Window not yet created — try next frame.
+				a.active = win
+				focused = win
+				continue
+			}
+			a.active = win
+			focused = win
+			// SDL_RaiseWindow alone leaves macOS with deferred
+			// makeKey: until the next event tick — i.e. the user has
+			// to move the mouse before keybinds route to the new
+			// Window. CocoaFocusWindow does NSApp.activate +
+			// NSWindow.makeKeyAndOrderFront: directly so firstResponder
+			// transitions synchronously, this frame.
+			platform.RaiseWindow(handle)
+			platform.CocoaFocusWindow(handle)
+			// macOS drops modifier KEY_UP events during NSWindow
+			// focus transitions, so a Cmd held through Cmd+N
+			// → Cmd+T leaves ImGui thinking Cmd was released —
+			// breaking the immediately-following Cmd+T keybind.
+			// Re-assert the actual OS modifier state.
+			platform.ResyncModifiers()
+			win.pendingFocus = false
+			break
+		}
+		if a.active != nil && a.active.pendingClose {
 			// Active Window is being closed this frame — pick
 			// another so input has somewhere to land for the
-			// rest of the frame body.
+			// rest of the frame body, and pull OS focus to it so
+			// keybinds in the remaining Window work immediately
+			// (without this, macOS leaves keyboard focus on the
+			// dying window's prior peer and the user has to click
+			// the survivor before keys route to it).
 			a.active = nil
 			for _, win := range a.windows {
 				if !win.pendingClose {
 					a.active = win
+					focused = win
+					if win.imViewport != nil {
+						if h := win.imViewport.PlatformHandle(); h != 0 {
+							platform.RaiseWindow(h)
+							platform.CocoaFocusWindow(h)
+							platform.ResyncModifiers()
+						}
+					}
 					break
 				}
 			}
@@ -931,6 +1017,17 @@ func (a *App) idleTimeout() int {
 // possible later) but they all share the new Font/FontBold and a
 // freshly-built glyph cache.
 func (a *App) beforeRender() {
+	// Resync modifier state every frame BEFORE imgui.NewFrame consumes
+	// the input queue. macOS drops phantom KEY_UPs for held modifiers
+	// during NSWindow focus transitions; SDL's modifier view inherits
+	// that lie. NSEvent.modifierFlags reads the IOHID hardware state,
+	// which stays correct across transitions. Done here (not in
+	// wrappedFrame) because AddKeyEvent queues for the NEXT NewFrame
+	// — calling it after NewFrame means the key edge for the current
+	// frame's KEY_DOWN still sees the stale modifier and the keybind
+	// match fails.
+	platform.ResyncModifiers()
+
 	if !a.pendingFontFace {
 		return
 	}

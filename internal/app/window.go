@@ -137,6 +137,13 @@ type Window struct {
 	pendingClose  bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
+	// pendingFocus is set by spawnWindow on freshly-created Windows.
+	// After the new viewport's SDL_Window exists (first frame), the
+	// main loop calls platform.RaiseWindow on it so macOS transitions
+	// keyboard focus to the new NSWindow immediately — without this
+	// the first keybind after Cmd+N (e.g. Cmd+T) routes to the
+	// spawning Window because the OS hasn't moved focus yet.
+	pendingFocus bool
 
 	// swallowOSCloseFrames suppresses PlatformRequestClose events for
 	// this many subsequent frames. macOS's NSWindow performClose:
