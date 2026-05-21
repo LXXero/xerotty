@@ -37,6 +37,15 @@ Older arc that's already merged: SDL2 → SDL3 + the new
 what was done and why. The platform layer is bypass-cimgui-go custom
 cgo glue around SDL3 + Dear ImGui's official SDL3 backend.
 
+On `spike/daemon` branch (in progress): Phase 0 of the daemon arc is
+done — `internal/protocol` (msgpack wire format, codegen via msgp),
+`internal/daemon` (xerottyd session+tab management), `cmd/xerottyd`
+(daemon binary, listens on unix socket), `internal/clientproto`
+(client side of the protocol). End-to-end integration test in
+`internal/daemon/integration_test.go` spawns the daemon, attaches,
+echoes through a PTY, asserts the cell grid round-trip. UI
+integration (`xerotty --connect`) is the next phase — not started.
+
 ## Code structure
 
 ```

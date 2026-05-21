@@ -6,13 +6,14 @@
 #   make install    — copy xerotty.app into /Applications (macOS)
 #   make clean      — remove built artifacts
 
-BINARY      := xerotty
-APP_NAME    := xerotty
-APP_BUNDLE  := $(APP_NAME).app
-BUNDLE_ID   := cc.xeron.xerotty
-VERSION     := 0.1.0
-BUILD_NUM   := 1
-GO          := go
+BINARY       := xerotty
+DAEMON       := xerottyd
+APP_NAME     := xerotty
+APP_BUNDLE   := $(APP_NAME).app
+BUNDLE_ID    := cc.xeron.xerotty
+VERSION      := 0.1.0
+BUILD_NUM    := 1
+GO           := go
 
 UNAME_S := $(shell uname -s)
 
@@ -32,6 +33,8 @@ generate:
 build: generate
 	$(GO) build -o $(BINARY) ./cmd/xerotty
 	@echo "built: $(CURDIR)/$(BINARY)"
+	$(GO) build -o $(DAEMON) ./cmd/xerottyd
+	@echo "built: $(CURDIR)/$(DAEMON)"
 
 # Assemble a macOS .app bundle. The Info.plist's CFBundleIdentifier is
 # what tells Cocoa to coalesce multiple running processes of the same
@@ -118,5 +121,5 @@ else
 endif
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) $(DAEMON)
 	rm -rf $(APP_BUNDLE)

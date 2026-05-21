@@ -3,12 +3,27 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Always run `go generate` first. Currently a no-op (no //go:generate
-# directives in the tree yet) but the daemon protocol work will add
-# tinylib/msgp codegen for the wire format — having it wired into the
-# canonical build script means schema-drift between Go structs and
-# generated encoders can never happen. Direct `go build` skips this;
-# always build via build.sh or `make` (which also runs it).
+# Always run `go generate` first so tinylib/msgp regenerates the
+# wire-format encoders in internal/protocol. Direct `go build` skips
+# this and produces a binary with stale encoders → cryptic decode
+# errors on the wire. Always build via build.sh or `make`.
+#
+# Ensure $(go env GOPATH)/bin is on PATH so `go generate` can find
+# the msgp binary (`go install github.com/tinylib/msgp` puts it
+# there). Idempotent if already on PATH.
+GOBIN="$(go env GOPATH)/bin"
+case ":$PATH:" in
+    *":$GOBIN:"*) ;;
+    *) export PATH="$GOBIN:$PATH" ;;
+esac
+
+# Install msgp if missing — first-clone friendly. Pinned to the
+# version go.mod tracks so the generator matches the runtime lib.
+if ! command -v msgp >/dev/null 2>&1; then
+    echo "build.sh: installing tinylib/msgp..."
+    go install github.com/tinylib/msgp
+fi
+
 go generate ./...
 
 case "$(uname -s)" in
@@ -30,5 +45,7 @@ Darwin)
     # taskbars and Alt-Tab pick that up.
     go build -o xerotty ./cmd/xerotty
     echo "built: $(pwd)/xerotty"
+    go build -o xerottyd ./cmd/xerottyd
+    echo "built: $(pwd)/xerottyd"
     ;;
 esac
