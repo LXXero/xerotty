@@ -392,6 +392,47 @@ static void xt_array_release(CFArrayRef arr) { if (arr) CFRelease(arr); }
 static CFStringRef xt_attr_name(void) { return kCTFontNameAttribute; }
 static CFStringRef xt_attr_family(void) { return kCTFontFamilyNameAttribute; }
 static CFStringRef xt_attr_style(void) { return kCTFontStyleNameAttribute; }
+
+// xt_ct_is_variable_path returns 1 if the font file at path has any
+// OpenType variation axes (fvar table), 0 otherwise. Mirrors the
+// FreeType FT_HAS_MULTIPLE_MASTERS check the Linux build does — used
+// at primary-font load time to skip VFs because ImGui's bundled stbtt
+// parser asserts on them and crashes the process. Variable fonts are
+// common on macOS (San Francisco / system UI fonts) so a user with
+// "use_system_font = true" or a hand-edited config path can easily
+// hit one.
+static int xt_ct_is_variable_path(const char *path) {
+    if (!path) return 0;
+    CFStringRef cf_path = CFStringCreateWithCString(
+        kCFAllocatorDefault, path, kCFStringEncodingUTF8);
+    if (!cf_path) return 0;
+    CFURLRef url = CFURLCreateWithFileSystemPath(
+        kCFAllocatorDefault, cf_path, kCFURLPOSIXPathStyle, false);
+    CFRelease(cf_path);
+    if (!url) return 0;
+
+    int variable = 0;
+    CFArrayRef descriptors = CTFontManagerCreateFontDescriptorsFromURL(url);
+    if (descriptors && CFArrayGetCount(descriptors) > 0) {
+        // .ttc files yield multiple descriptors (one per face). A VF
+        // anywhere in the collection means stbtt could trip when it
+        // walks tables, so flag the whole file as variable.
+        for (CFIndex i = 0; i < CFArrayGetCount(descriptors); i++) {
+            CTFontDescriptorRef desc =
+                (CTFontDescriptorRef)CFArrayGetValueAtIndex(descriptors, i);
+            CFArrayRef axes = (CFArrayRef)CTFontDescriptorCopyAttribute(
+                desc, kCTFontVariationAxesAttribute);
+            if (axes) {
+                if (CFArrayGetCount(axes) > 0) variable = 1;
+                CFRelease(axes);
+            }
+            if (variable) break;
+        }
+    }
+    if (descriptors) CFRelease(descriptors);
+    CFRelease(url);
+    return variable;
+}
 */
 import "C"
 
@@ -403,6 +444,11 @@ import (
 
 func init() {
 	Default = darwinSystem{}
+	IsVariableFont = func(path string) bool {
+		cpath := C.CString(path)
+		defer C.free(unsafe.Pointer(cpath))
+		return C.xt_ct_is_variable_path(cpath) != 0
+	}
 }
 
 type darwinSystem struct{}
