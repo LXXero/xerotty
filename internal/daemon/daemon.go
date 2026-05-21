@@ -113,6 +113,17 @@ func (d *Daemon) Stop() error {
 	return nil
 }
 
+// SessionByName returns the named session if it exists, or nil if
+// no session by that name has been created yet. Read-only — does
+// not auto-create like the unexported session() does. Used by the
+// MCP server which mustn't accidentally materialize sessions just
+// because an agent asked for state.
+func (d *Daemon) SessionByName(name string) *Session {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.sessions[name]
+}
+
 // session returns (and creates if missing) the named session.
 // Phase 0 only ever uses "default".
 func (d *Daemon) session(name string) *Session {

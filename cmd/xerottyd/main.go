@@ -26,17 +26,23 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/mcp"
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
 func main() {
 	var socketPath string
+	var mcpSocketPath string
+	var noMCP bool
 	var stdio bool
 	flag.StringVar(&socketPath, "socket", "", "unix socket path to listen on (default: $XDG_RUNTIME_DIR/xerottyd.sock)")
+	flag.StringVar(&mcpSocketPath, "mcp-socket", "", "MCP socket path for AI agents (default: alongside --socket with .mcp.sock suffix)")
+	flag.BoolVar(&noMCP, "no-mcp", false, "disable the MCP agent socket entirely")
 	flag.BoolVar(&stdio, "stdio", false, "serve one client on stdin/stdout (for SSH transport)")
 	flag.Parse()
 
@@ -74,12 +80,29 @@ func main() {
 
 	d := daemon.New(&cfg, socketPath)
 
+	var mcpSrv *mcp.Server
+	if !noMCP {
+		if mcpSocketPath == "" {
+			mcpSocketPath = defaultMCPSocketPath(socketPath)
+		}
+		mcpSrv = mcp.New(d, mcpSocketPath)
+		go func() {
+			fmt.Fprintf(os.Stderr, "xerottyd: MCP listening on %s\n", mcpSocketPath)
+			if err := mcpSrv.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "xerottyd: mcp: %v\n", err)
+			}
+		}()
+	}
+
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		fmt.Fprintln(os.Stderr, "xerottyd: shutting down")
+		if mcpSrv != nil {
+			_ = mcpSrv.Stop()
+		}
 		_ = d.Stop()
 	}()
 
@@ -103,4 +126,19 @@ func defaultSocketPath() string {
 		return filepath.Join(dir, "xerottyd.sock")
 	}
 	return filepath.Join(os.TempDir(), "xerottyd-"+strconv.Itoa(os.Getuid())+".sock")
+}
+
+// defaultMCPSocketPath derives the MCP socket path from the main
+// socket: same directory, "<name>.mcp.sock" or appended .mcp before
+// the existing .sock. Keeps both sockets discoverable from one
+// known path.
+func defaultMCPSocketPath(mainSocket string) string {
+	dir := filepath.Dir(mainSocket)
+	name := filepath.Base(mainSocket)
+	if strings.HasSuffix(name, ".sock") {
+		name = strings.TrimSuffix(name, ".sock") + ".mcp.sock"
+	} else {
+		name = name + ".mcp.sock"
+	}
+	return filepath.Join(dir, name)
 }

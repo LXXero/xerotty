@@ -38,6 +38,52 @@ type Session struct {
 	// attached client's ClipboardData frame). Daemon-side helpers
 	// read it via Clipboard()/SetClipboard().
 	clipboard string
+
+	// Queue of writes proposed by agents in "propose" mode. Drained
+	// by a future UI gate. Phase 4 has no consumer — the field
+	// exists so writes don't silently vanish.
+	proposed []ProposedAction
+}
+
+// ProposedAction is one queued write from an agent operating in
+// "propose" mode. The UI is expected to surface these to the user,
+// who approves or rejects each. Until a UI consumer ships, the
+// queue grows unbounded; Phase 4 punts on retention policy.
+type ProposedAction struct {
+	TabID  uint32
+	IsPaste bool   // true → Paste(), false → Write()
+	Bytes  []byte // raw for input, paste text encoded as bytes
+}
+
+// QueueProposedInput stores an input proposal from an agent.
+func (s *Session) QueueProposedInput(tabID uint32, bytes []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]byte, len(bytes))
+	copy(cp, bytes)
+	s.proposed = append(s.proposed, ProposedAction{
+		TabID: tabID, IsPaste: false, Bytes: cp,
+	})
+}
+
+// QueueProposedPaste stores a paste proposal from an agent.
+func (s *Session) QueueProposedPaste(tabID uint32, text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.proposed = append(s.proposed, ProposedAction{
+		TabID: tabID, IsPaste: true, Bytes: []byte(text),
+	})
+}
+
+// PendingProposals returns the current queue (snapshot). The UI
+// consumer is expected to call ApproveProposal or DropProposal per
+// item; this just returns what's queued.
+func (s *Session) PendingProposals() []ProposedAction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]ProposedAction, len(s.proposed))
+	copy(out, s.proposed)
+	return out
 }
 
 // Clipboard returns the most recent clipboard text recorded on this
