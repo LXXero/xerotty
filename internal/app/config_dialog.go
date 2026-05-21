@@ -111,9 +111,9 @@ type configDialog struct {
 	scrollbarThumbHex string
 
 	// Font
-	fontFamily  string
-	fontSize    float32
-	fontPath    string
+	fontFamily string
+	fontSize   float32
+	fontPath   string
 
 	// Font picker state (populated lazily on first open)
 	fontList       []renderer.FontEntry // discovered fonts for the picker
@@ -428,6 +428,17 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 func (a *Window) openPreferences() {
 	a.prefDialog.loadFrom(&a.app.cfg)
 	a.prefDialog.open = true
+	a.app.active = a
+}
+
+func (a *Window) restoreFocusAfterPreferencesClose() {
+	if a.pendingClose {
+		return
+	}
+	a.app.active = a
+	// Reuse the normal post-frame focus path so native focus moves back
+	// to the owning terminal window after the prefs viewport closes.
+	a.pendingFocus = true
 }
 
 // applyPreferences writes dialog state to config, applies runtime changes, saves to disk.
@@ -504,6 +515,7 @@ func (a *Window) renderPreferences() {
 	if !a.prefDialog.open {
 		return
 	}
+	wasOpen := a.prefDialog.open
 
 	// Center on the OWNING Window's viewport — not MainViewport, which
 	// is the hidden cimgui-go carrier and would put prefs at the
@@ -647,6 +659,9 @@ func (a *Window) renderPreferences() {
 		}
 	}
 	imgui.End()
+	if wasOpen && !a.prefDialog.open {
+		a.restoreFocusAfterPreferencesClose()
+	}
 }
 
 // --- Tab renderers ---

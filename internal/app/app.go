@@ -567,6 +567,11 @@ func (a *App) Run() error {
 	// just needs an explicit hide call now.
 	platform.HideMainWindow()
 	w.imguiName = "xerottywin0"
+	// The first visible terminal is also a multi-viewport pop-out, so it
+	// needs the same explicit native focus handoff as later Cmd+N windows.
+	// Otherwise macOS can leave keyboard focus on the hidden carrier until
+	// the user clicks the terminal once.
+	w.pendingFocus = true
 
 	// Set background color from theme (ABGR → RGBA for the GL clear).
 	bgR := float32((theme.Background>>0)&0xFF) / 255.0
@@ -724,11 +729,12 @@ func (a *App) Run() error {
 			// window's identity / saved state.
 			beginName := win.titleForWindow() + "###" + win.imguiName
 			// Belt-and-suspenders alongside the post-loop
-			// platform.RaiseWindow: if this Window was just spawned,
-			// ask ImGui to focus it during this Begin. ImGui's
-			// platform layer translates that into the OS focus call
-			// for the popped-out viewport, which on macOS pre-flights
-			// the makeKeyAndOrderFront: that RaiseWindow does later.
+			// platform.RaiseWindow: when focus has been requested for
+			// this Window, ask ImGui to focus it during this Begin.
+			// ImGui's platform layer translates that into the OS focus
+			// call for the popped-out viewport, which on macOS
+			// pre-flights the makeKeyAndOrderFront: that RaiseWindow
+			// does later.
 			if win.pendingFocus {
 				imgui.SetNextWindowFocus()
 			}
@@ -787,8 +793,10 @@ func (a *App) Run() error {
 		if focused != nil {
 			a.active = focused
 		}
-		// Override the focus-from-ImGui result if a Window was just
-		// spawned. Two timing issues to handle here:
+		// Override the focus-from-ImGui result if focus was explicitly
+		// requested for a Window (new Window spawn, or focus returning
+		// from an auxiliary viewport such as preferences). Two timing
+		// issues to handle here:
 		//
 		//   1. ImGui's UpdatePlatformWindows runs in platform_end_frame
 		//      (i.e. AFTER wrappedFrame). So on the FIRST frame after
@@ -1008,7 +1016,6 @@ func (w *Window) resizeTerminals() {
 		tab.Terminal.Resize(cols, rows)
 	}
 }
-
 
 // beforeRender runs before every NewFrame — both via cimgui-go's
 // SetBeforeRenderHook in the main loop and via the macOS live-resize
