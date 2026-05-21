@@ -1,9 +1,11 @@
-xerotty
-xerottyd
-xerotty-viewer
-xerotty.app
-xerotty-sdl3-spike
-iterm2-import
+# Built binaries at repo root — anchored so we don't accidentally
+# ignore `cmd/xerotty-viewer/`, themes named after these, etc.
+/xerotty
+/xerottyd
+/xerotty-viewer
+/xerotty.app
+/xerotty-sdl3-spike
+/iterm2-import
 imgui.ini
 
 # Icon build intermediates — checked-in artifacts are icon/xerotty.svg
