@@ -33,6 +33,28 @@ type Session struct {
 
 	// App-wide focused tab — independent of per-window focus.
 	focusedTabID uint32
+
+	// Most recent clipboard text seen on this session (from any
+	// attached client's ClipboardData frame). Daemon-side helpers
+	// read it via Clipboard()/SetClipboard().
+	clipboard string
+}
+
+// Clipboard returns the most recent clipboard text recorded on this
+// session.
+func (s *Session) Clipboard() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clipboard
+}
+
+// SetClipboard records new clipboard text for the session. Called
+// when a client pushes ClipboardData. Use to backfill OSC 52 reads
+// later.
+func (s *Session) SetClipboard(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clipboard = text
 }
 
 // Tab is one PTY-backed terminal inside a session. The wrapped

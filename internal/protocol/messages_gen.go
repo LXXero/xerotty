@@ -1573,6 +1573,167 @@ func (z ChildExit) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *ClipboardData) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "text":
+			z.Text, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Text")
+				return
+			}
+		case "mime":
+			z.MIME, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "MIME")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z ClipboardData) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.MIME == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "text"
+		err = en.Append(0xa4, 0x74, 0x65, 0x78, 0x74)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Text)
+		if err != nil {
+			err = msgp.WrapError(err, "Text")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "mime"
+			err = en.Append(0xa4, 0x6d, 0x69, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.MIME)
+			if err != nil {
+				err = msgp.WrapError(err, "MIME")
+				return
+			}
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z ClipboardData) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.MIME == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "text"
+		o = append(o, 0xa4, 0x74, 0x65, 0x78, 0x74)
+		o = msgp.AppendString(o, z.Text)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "mime"
+			o = append(o, 0xa4, 0x6d, 0x69, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.MIME)
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClipboardData) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "text":
+			z.Text, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Text")
+				return
+			}
+		case "mime":
+			z.MIME, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "MIME")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z ClipboardData) Msgsize() (s int) {
+	s = 1 + 5 + msgp.StringPrefixSize + len(z.Text) + 5 + msgp.StringPrefixSize + len(z.MIME)
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *Cursor) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field
@@ -2466,6 +2627,217 @@ func (z *InputBytes) UnmarshalMsg(bts []byte) (o []byte, err error) {
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *InputBytes) Msgsize() (s int) {
 	s = 1 + 3 + msgp.Uint32Size + 6 + msgp.BytesPrefixSize + len(z.Bytes)
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *InputImage) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, err = dc.ReadUint32()
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "mime":
+			z.MIME, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "MIME")
+				return
+			}
+		case "filename":
+			z.Filename, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Filename")
+				return
+			}
+		case "bytes":
+			z.Bytes, err = dc.ReadBytes(z.Bytes)
+			if err != nil {
+				err = msgp.WrapError(err, "Bytes")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *InputImage) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.Filename == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		// write "mime"
+		err = en.Append(0xa4, 0x6d, 0x69, 0x6d, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.MIME)
+		if err != nil {
+			err = msgp.WrapError(err, "MIME")
+			return
+		}
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// write "filename"
+			err = en.Append(0xa8, 0x66, 0x69, 0x6c, 0x65, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Filename)
+			if err != nil {
+				err = msgp.WrapError(err, "Filename")
+				return
+			}
+		}
+		// write "bytes"
+		err = en.Append(0xa5, 0x62, 0x79, 0x74, 0x65, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteBytes(z.Bytes)
+		if err != nil {
+			err = msgp.WrapError(err, "Bytes")
+			return
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *InputImage) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.Filename == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		// string "mime"
+		o = append(o, 0xa4, 0x6d, 0x69, 0x6d, 0x65)
+		o = msgp.AppendString(o, z.MIME)
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// string "filename"
+			o = append(o, 0xa8, 0x66, 0x69, 0x6c, 0x65, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Filename)
+		}
+		// string "bytes"
+		o = append(o, 0xa5, 0x62, 0x79, 0x74, 0x65, 0x73)
+		o = msgp.AppendBytes(o, z.Bytes)
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *InputImage) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "mime":
+			z.MIME, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "MIME")
+				return
+			}
+		case "filename":
+			z.Filename, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Filename")
+				return
+			}
+		case "bytes":
+			z.Bytes, bts, err = msgp.ReadBytesBytes(bts, z.Bytes)
+			if err != nil {
+				err = msgp.WrapError(err, "Bytes")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *InputImage) Msgsize() (s int) {
+	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.MIME) + 9 + msgp.StringPrefixSize + len(z.Filename) + 6 + msgp.BytesPrefixSize + len(z.Bytes)
 	return
 }
 

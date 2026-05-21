@@ -195,6 +195,27 @@ func (c *Client) SendPaste(id uint32, b []byte) error {
 	})
 }
 
+// SendImagePaste ships an image blob to a tab. The daemon writes it
+// to a temp file on the daemon-side filesystem and types the path
+// into the PTY — solves "paste a screenshot into remote Claude Code
+// over SSH" without any base64 / OSC sequence brittleness.
+//
+// MIME (e.g. "image/png") hints the file extension; filename hints
+// the temp-file prefix. Both are optional.
+func (c *Client) SendImagePaste(id uint32, mime, filename string, data []byte) error {
+	return c.send(protocol.MsgInputImage, &protocol.InputImage{
+		ID: id, MIME: mime, Filename: filename, Bytes: data,
+	})
+}
+
+// SendClipboardData pushes the client's current clipboard contents
+// to the daemon so OSC 52 reads on the daemon side can see them.
+func (c *Client) SendClipboardData(text string) error {
+	return c.send(protocol.MsgClipboardData, &protocol.ClipboardData{
+		Text: text,
+	})
+}
+
 // CellFull returns the channel of incoming full-grid frames.
 func (c *Client) CellFull() <-chan *protocol.CellFull { return c.cellFull }
 

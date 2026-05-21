@@ -40,6 +40,8 @@ const (
 	MsgResize            MsgType = 20 // client → server (per-tab cols/rows)
 	MsgInputBytes        MsgType = 21 // client → server: raw bytes for PTY
 	MsgInputPaste        MsgType = 22 // client → server: paste (may be longer)
+	MsgInputImage        MsgType = 23 // client → server: paste an image (binary blob)
+	MsgClipboardData     MsgType = 24 // either direction: clipboard contents
 
 	MsgCellFull          MsgType = 30 // server → client: full grid (initial / resync)
 	MsgCellDiff          MsgType = 31 // server → client: changed cells
@@ -230,6 +232,45 @@ type InputBytes struct {
 type InputPaste struct {
 	ID    uint32 `msg:"id"`
 	Bytes []byte `msg:"bytes"`
+}
+
+// InputImage carries a pasted image blob — bytes are the raw image
+// (PNG, JPEG, etc., MIME identifies which). Daemon writes the bytes
+// to a temp file on the daemon-side filesystem (so Claude Code or
+// any other PTY child can read it natively without base64 / OSC
+// shenanigans) and types the path into the PTY as if the user had
+// typed it. This is the original motivation for the daemon arc:
+// pasting screenshots into a remote Claude Code session "just
+// works" without the SSH escape-sequence brittleness that breaks
+// over flaky links.
+//
+// MIME helps the daemon pick a sensible file extension. Filename
+// (optional) is a UI hint — daemon may incorporate it into the
+// temp filename but appends a unique suffix to avoid collisions.
+type InputImage struct {
+	ID       uint32 `msg:"id"`
+	MIME     string `msg:"mime"`
+	Filename string `msg:"filename,omitempty"`
+	Bytes    []byte `msg:"bytes"`
+}
+
+// ClipboardData carries clipboard text. The direction tells the
+// receiver what to do with it:
+//
+//   - Client → Server: "this is what the user just put in their
+//     local clipboard." Daemon makes it available to PTY children
+//     via OSC 52 reads.
+//
+//   - Server → Client: "an app on the daemon side wrote to the
+//     clipboard via OSC 52 set." Client puts it on the local
+//     system clipboard.
+//
+// Phase 3 implements only the client→server direction; the
+// server→client OSC 52 set path lands when we wire up OSC 52
+// passthrough in the vt emulator (Phase 4+).
+type ClipboardData struct {
+	Text     string `msg:"text"`
+	MIME     string `msg:"mime,omitempty"` // default "text/plain"
 }
 
 // Cell is the wire representation of a single grid cell. Mirrors

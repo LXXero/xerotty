@@ -199,9 +199,19 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		if _, err := msg.UnmarshalMsg(body); err != nil {
 			return err
 		}
-		// Phase 0: treat paste as raw input. Bracketed-paste
-		// wrapping is a Phase 1 enhancement.
-		return c.handleInput(msg.ID, msg.Bytes)
+		return c.handlePaste(msg.ID, msg.Bytes)
+	case protocol.MsgInputImage:
+		var msg protocol.InputImage
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		return c.handleImagePaste(&msg)
+	case protocol.MsgClipboardData:
+		var msg protocol.ClipboardData
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		return c.handleClipboardData(&msg)
 	default:
 		return fmt.Errorf("unknown message type %v", t)
 	}
@@ -342,6 +352,136 @@ func (c *clientConn) handleInput(id uint32, b []byte) error {
 	}
 	_, err := t.Term.Write(b)
 	return err
+}
+
+// handlePaste routes the bytes through Terminal.Paste so the daemon
+// wraps the payload in CSI 200~ / 201~ when the foreground app has
+// enabled DECSET 2004 (bracketed paste). This is why InputPaste is
+// a separate message type from InputBytes — only the daemon knows
+// whether the tab is in bracketed-paste mode at this moment.
+func (c *clientConn) handlePaste(id uint32, b []byte) error {
+	if c.session == nil {
+		return nil
+	}
+	t := c.session.Tab(id)
+	if t == nil {
+		return nil
+	}
+	t.Term.Paste(string(b))
+	return nil
+}
+
+// handleImagePaste writes the image bytes to a daemon-side temp file
+// and types the path into the tab's PTY as if the user had typed it.
+// Solves the "paste a screenshot into remote claude code over SSH"
+// pain — the file lives on the daemon's machine where Claude Code
+// can read it natively without any base64/OSC52 dance.
+//
+// The path is typed via Paste (so bracketed-paste wrapping applies
+// if the app supports it), surrounded by spaces so it doesn't
+// concatenate with prior typed input. We don't quote the path
+// because the temp filename is constructed to contain only safe
+// characters.
+//
+// Filename hint from the client (if provided) becomes the prefix —
+// useful so the user sees a meaningful name in shell history. We
+// always append a 16-char random suffix + extension derived from
+// MIME to avoid collisions and give the file a recognizable type.
+//
+// Temp files persist until /tmp is cleaned by the OS or the user;
+// the daemon doesn't try to garbage-collect them (they may still be
+// open in editors / referenced by long-lived agent sessions).
+func (c *clientConn) handleImagePaste(msg *protocol.InputImage) error {
+	if c.session == nil {
+		return nil
+	}
+	t := c.session.Tab(msg.ID)
+	if t == nil {
+		return nil
+	}
+	ext := extForMIME(msg.MIME)
+	prefix := "xerotty-paste"
+	if hint := sanitizeFilename(msg.Filename); hint != "" {
+		prefix += "-" + hint
+	}
+	f, err := os.CreateTemp("", prefix+"-*"+ext)
+	if err != nil {
+		return c.writeFrame(protocol.MsgError, &protocol.Error{
+			Code: 10, Message: "image paste: temp file: " + err.Error(),
+		})
+	}
+	if _, err := f.Write(msg.Bytes); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return c.writeFrame(protocol.MsgError, &protocol.Error{
+			Code: 11, Message: "image paste: write: " + err.Error(),
+		})
+	}
+	if err := f.Close(); err != nil {
+		return c.writeFrame(protocol.MsgError, &protocol.Error{
+			Code: 12, Message: "image paste: close: " + err.Error(),
+		})
+	}
+	t.Term.Paste(" " + f.Name() + " ")
+	return nil
+}
+
+// handleClipboardData records the client's clipboard contents on the
+// session. Future PTY children reading via OSC 52 get this back.
+func (c *clientConn) handleClipboardData(msg *protocol.ClipboardData) error {
+	if c.session == nil {
+		return nil
+	}
+	c.session.SetClipboard(msg.Text)
+	return nil
+}
+
+// extForMIME maps common image MIME types to file extensions. Falls
+// back to ".bin" for anything unrecognized — tools can still open
+// the file, the extension is just a hint.
+func extForMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff":
+		return ".tiff"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".bin"
+	}
+}
+
+// sanitizeFilename keeps only path-safe ASCII so the temp-file name
+// doesn't accidentally introduce shell metacharacters when the PTY
+// child reads it back. We use this as a prefix; os.CreateTemp adds
+// its own random suffix so collision-safety isn't our problem.
+func sanitizeFilename(s string) string {
+	if s == "" {
+		return ""
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s) && len(out) < 32; i++ {
+		ch := s[i]
+		switch {
+		case ch >= 'a' && ch <= 'z',
+			ch >= 'A' && ch <= 'Z',
+			ch >= '0' && ch <= '9',
+			ch == '-' || ch == '_' || ch == '.':
+			out = append(out, ch)
+		default:
+			// Skip anything else — spaces, slashes, quotes, etc.
+		}
+	}
+	return string(out)
 }
 
 // subscribe spawns the per-tab publish goroutine.
