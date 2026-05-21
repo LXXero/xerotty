@@ -125,7 +125,49 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		if c.session != nil {
-			c.session.SetFocused(msg.ID)
+			c.session.SetFocusedTab(msg.ID)
+		}
+		return nil
+	case protocol.MsgWindowCreate:
+		var msg protocol.WindowCreate
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		return c.handleWindowCreate(&msg)
+	case protocol.MsgWindowClose:
+		var msg protocol.WindowClose
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			c.session.CloseWindow(msg.ID)
+		}
+		return nil
+	case protocol.MsgWindowMoveTab:
+		var msg protocol.WindowMoveTab
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			c.session.MoveTab(msg.TabID, msg.ToWindowID, int(msg.Index))
+		}
+		return nil
+	case protocol.MsgWindowGeometry:
+		var msg protocol.WindowGeometry
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			c.session.SetWindowGeometry(msg.ID, msg.PosX, msg.PosY, msg.Width, msg.Height)
+		}
+		return nil
+	case protocol.MsgWindowFocusTab:
+		var msg protocol.WindowFocusTab
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			c.session.SetWindowFocusedTab(msg.WindowID, msg.TabID)
 		}
 		return nil
 	case protocol.MsgResize:
@@ -161,11 +203,12 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	c.session = c.daemon.session(name)
 	tabs := c.session.Tabs()
 	if len(tabs) == 0 && msg.NewIfMissing {
-		t, err := c.session.NewTab(80, 24, "")
+		// Empty session — create default window + initial tab.
+		_, _, err := c.session.NewTab(0, 80, 24, "")
 		if err != nil {
 			return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
 		}
-		tabs = []*Tab{t}
+		tabs = c.session.Tabs()
 	}
 	tabInfos := make([]protocol.TabInfo, len(tabs))
 	for i, t := range tabs {
@@ -176,10 +219,24 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 			Rows:  uint16(t.Term.Height()),
 		}
 	}
+	windows := c.session.Windows()
+	windowInfos := make([]protocol.WindowInfo, len(windows))
+	for i, w := range windows {
+		windowInfos[i] = protocol.WindowInfo{
+			ID:           w.ID,
+			PosX:         w.PosX,
+			PosY:         w.PosY,
+			Width:        w.Width,
+			Height:       w.Height,
+			TabIDs:       w.TabIDs,
+			FocusedTabID: w.FocusedTabID,
+		}
+	}
 	if err := c.writeFrame(protocol.MsgAttached, &protocol.Attached{
-		SessionName: c.session.Name,
-		Tabs:        tabInfos,
-		FocusedID:   c.session.Focused(),
+		SessionName:  c.session.Name,
+		Windows:      windowInfos,
+		Tabs:         tabInfos,
+		FocusedTabID: c.session.FocusedTab(),
 	}); err != nil {
 		return err
 	}
@@ -204,7 +261,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if rows <= 0 {
 		rows = 24
 	}
-	t, err := c.session.NewTab(cols, rows, msg.Cwd)
+	t, w, err := c.session.NewTab(msg.WindowID, cols, rows, msg.Cwd)
 	if err != nil {
 		return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
 	}
@@ -215,11 +272,30 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 			Cols:  uint16(cols),
 			Rows:  uint16(rows),
 		},
+		WindowID: w.ID,
 	}); err != nil {
 		return err
 	}
 	c.subscribe(t)
 	return nil
+}
+
+func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
+	if c.session == nil {
+		return fmt.Errorf("WindowCreate before Attach")
+	}
+	w := c.session.NewWindow(msg.PosX, msg.PosY, msg.Width, msg.Height)
+	return c.writeFrame(protocol.MsgWindowCreated, &protocol.WindowCreated{
+		Info: protocol.WindowInfo{
+			ID:           w.ID,
+			PosX:         w.PosX,
+			PosY:         w.PosY,
+			Width:        w.Width,
+			Height:       w.Height,
+			TabIDs:       w.TabIDs,
+			FocusedTabID: w.FocusedTabID,
+		},
+	})
 }
 
 func (c *clientConn) handleTabClose(msg *protocol.TabClose) error {

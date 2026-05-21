@@ -35,9 +35,10 @@ type Client struct {
 	title      chan *protocol.Title
 	bell       chan *protocol.Bell
 	childExit  chan *protocol.ChildExit
-	tabCreated chan *protocol.TabCreated
-	attached   chan *protocol.Attached
-	errCh      chan *protocol.Error
+	tabCreated    chan *protocol.TabCreated
+	windowCreated chan *protocol.WindowCreated
+	attached      chan *protocol.Attached
+	errCh         chan *protocol.Error
 	closed     chan struct{}
 
 	// Closed once Run returns. Hand-rolled because we want
@@ -73,9 +74,10 @@ func wrap(conn net.Conn) *Client {
 		title:      make(chan *protocol.Title, 16),
 		bell:       make(chan *protocol.Bell, 16),
 		childExit:  make(chan *protocol.ChildExit, 16),
-		tabCreated: make(chan *protocol.TabCreated, 4),
-		attached:   make(chan *protocol.Attached, 1),
-		errCh:      make(chan *protocol.Error, 4),
+		tabCreated:    make(chan *protocol.TabCreated, 4),
+		windowCreated: make(chan *protocol.WindowCreated, 4),
+		attached:      make(chan *protocol.Attached, 1),
+		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
 }
@@ -118,12 +120,49 @@ func (c *Client) Detach() error {
 	return c.send(protocol.MsgDetach, &protocol.Detach{})
 }
 
-// SendTabCreate requests a new tab.
-func (c *Client) SendTabCreate(cols, rows uint16, cwd, command string) error {
+// SendTabCreate requests a new tab. windowID=0 means "session's
+// default window".
+func (c *Client) SendTabCreate(windowID uint32, cols, rows uint16, cwd, command string) error {
 	return c.send(protocol.MsgTabCreate, &protocol.TabCreate{
-		Cols: cols, Rows: rows, Cwd: cwd, Command: command,
+		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command,
 	})
 }
+
+// SendWindowCreate registers a new logical UI window in the session.
+func (c *Client) SendWindowCreate(posX, posY, width, height int32) error {
+	return c.send(protocol.MsgWindowCreate, &protocol.WindowCreate{
+		PosX: posX, PosY: posY, Width: width, Height: height,
+	})
+}
+
+// SendWindowClose tears down a logical UI window. Tabs reassigned.
+func (c *Client) SendWindowClose(id uint32) error {
+	return c.send(protocol.MsgWindowClose, &protocol.WindowClose{ID: id})
+}
+
+// SendWindowMoveTab moves a tab between windows.
+func (c *Client) SendWindowMoveTab(tabID, toWindowID uint32, index int32) error {
+	return c.send(protocol.MsgWindowMoveTab, &protocol.WindowMoveTab{
+		TabID: tabID, ToWindowID: toWindowID, Index: index,
+	})
+}
+
+// SendWindowGeometry pushes a UI window's new pos/size to the daemon.
+func (c *Client) SendWindowGeometry(id uint32, posX, posY, width, height int32) error {
+	return c.send(protocol.MsgWindowGeometry, &protocol.WindowGeometry{
+		ID: id, PosX: posX, PosY: posY, Width: width, Height: height,
+	})
+}
+
+// SendWindowFocusTab reports per-window focus changes.
+func (c *Client) SendWindowFocusTab(windowID, tabID uint32) error {
+	return c.send(protocol.MsgWindowFocusTab, &protocol.WindowFocusTab{
+		WindowID: windowID, TabID: tabID,
+	})
+}
+
+// WindowCreated returns the channel of WindowCreated confirmations.
+func (c *Client) WindowCreated() <-chan *protocol.WindowCreated { return c.windowCreated }
 
 // SendTabClose requests a tab close.
 func (c *Client) SendTabClose(id uint32) error {
@@ -275,6 +314,12 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		c.tabCreated <- msg
+	case protocol.MsgWindowCreated:
+		msg := &protocol.WindowCreated{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		c.windowCreated <- msg
 	case protocol.MsgAttached:
 		msg := &protocol.Attached{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

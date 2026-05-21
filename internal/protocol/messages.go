@@ -30,6 +30,13 @@ const (
 	MsgTabFocus          MsgType = 12 // client → server
 	MsgTabCreated        MsgType = 13 // server → client (echo + assigned ID)
 
+	MsgWindowCreate      MsgType = 14 // client → server: new UI window
+	MsgWindowClose       MsgType = 15 // client → server: tear down a window
+	MsgWindowCreated     MsgType = 16 // server → client (echo + assigned ID)
+	MsgWindowMoveTab     MsgType = 17 // client → server: drag tab between windows
+	MsgWindowGeometry    MsgType = 18 // client → server: window pos/size moved
+	MsgWindowFocusTab    MsgType = 19 // client → server: focused tab within window changed
+
 	MsgResize            MsgType = 20 // client → server (per-tab cols/rows)
 	MsgInputBytes        MsgType = 21 // client → server: raw bytes for PTY
 	MsgInputPaste        MsgType = 22 // client → server: paste (may be longer)
@@ -67,13 +74,31 @@ type Attach struct {
 	NewIfMissing   bool   `msg:"new_if_missing"`
 }
 
-// Attached reports back the state at attach time: tab list with
-// current dimensions and titles so the client can paint the tab bar.
-// The client follows up by requesting CellFull for the focused tab.
+// Attached reports back the state at attach time: window+tab layout
+// so any client can reconstruct the user's intended UI shape no
+// matter which machine they attached from. Tabs is the flat list of
+// every tab in the session (each tab also appears in exactly one
+// Window's TabIDs list).
 type Attached struct {
-	SessionName string    `msg:"session_name"`
-	Tabs        []TabInfo `msg:"tabs"`
-	FocusedID   uint32    `msg:"focused_id"`
+	SessionName string       `msg:"session_name"`
+	Windows     []WindowInfo `msg:"windows"`
+	Tabs        []TabInfo    `msg:"tabs"`
+	FocusedTabID uint32      `msg:"focused_tab_id"` // app-wide focused tab
+}
+
+// WindowInfo describes a top-level UI window — a grouping of tabs.
+// PosX/PosY/Width/Height are hints the UI uses on restore; under
+// Wayland the compositor may ignore them but the UI still tries.
+// TabIDs is the tab-bar order (left-to-right). FocusedTabID is the
+// tab that's currently in front within this window.
+type WindowInfo struct {
+	ID           uint32  `msg:"id"`
+	PosX         int32   `msg:"pos_x"`
+	PosY         int32   `msg:"pos_y"`
+	Width        int32   `msg:"width"`
+	Height       int32   `msg:"height"`
+	TabIDs       []uint32 `msg:"tab_ids"`
+	FocusedTabID uint32  `msg:"focused_tab_id"`
 }
 
 // TabInfo is a slim summary of a tab sent at attach time. Full cell
@@ -97,12 +122,14 @@ type Error struct {
 }
 
 // TabCreate asks the daemon to spawn a new tab in the attached
-// session. Cwd/Command optional.
+// session. WindowID picks which window the tab joins (0 means "the
+// session's default/first window"). Cwd/Command optional.
 type TabCreate struct {
-	Cols    uint16 `msg:"cols"`
-	Rows    uint16 `msg:"rows"`
-	Cwd     string `msg:"cwd,omitempty"`
-	Command string `msg:"command,omitempty"`
+	WindowID uint32 `msg:"window_id,omitempty"`
+	Cols     uint16 `msg:"cols"`
+	Rows     uint16 `msg:"rows"`
+	Cwd      string `msg:"cwd,omitempty"`
+	Command  string `msg:"command,omitempty"`
 }
 
 // TabClose asks the daemon to close a tab. Daemon kills the child
@@ -118,10 +145,66 @@ type TabFocus struct {
 	ID uint32 `msg:"id"`
 }
 
+// TabCreate (revised) — now optionally attaches the new tab to a
+// specific window. Empty WindowID means "default window" / "session's
+// only window".
+type TabCreatedInfo TabInfo
+
 // TabCreated confirms a newly-spawned tab's assigned ID + initial
-// dimensions.
+// dimensions, and which window it landed in.
 type TabCreated struct {
-	Info TabInfo `msg:"info"`
+	Info     TabInfo `msg:"info"`
+	WindowID uint32  `msg:"window_id"`
+}
+
+// WindowCreate asks the daemon to register a new logical UI window
+// in the session. The window has no tabs yet — the UI follows up
+// with TabCreate (or MoveTab) to populate it.
+type WindowCreate struct {
+	PosX   int32 `msg:"pos_x,omitempty"`
+	PosY   int32 `msg:"pos_y,omitempty"`
+	Width  int32 `msg:"width,omitempty"`
+	Height int32 `msg:"height,omitempty"`
+}
+
+// WindowCreated confirms a new window's assigned ID.
+type WindowCreated struct {
+	Info WindowInfo `msg:"info"`
+}
+
+// WindowClose tears down a window. Tabs in the window get reassigned
+// to another window in the session (the first one); if it was the
+// last window, the tabs are moved into a freshly-created default
+// window so they stay accessible from a future attach.
+type WindowClose struct {
+	ID uint32 `msg:"id"`
+}
+
+// WindowMoveTab moves a tab from one window to another. Index is
+// the position within the destination window's tab bar (left-to-
+// right). Negative or out-of-range index appends.
+type WindowMoveTab struct {
+	TabID         uint32 `msg:"tab_id"`
+	ToWindowID    uint32 `msg:"to_window_id"`
+	Index         int32  `msg:"index"`
+}
+
+// WindowGeometry reports a UI window's new position/size. The
+// daemon stores this so a roaming UI can re-open the window in
+// the same place.
+type WindowGeometry struct {
+	ID     uint32 `msg:"id"`
+	PosX   int32  `msg:"pos_x"`
+	PosY   int32  `msg:"pos_y"`
+	Width  int32  `msg:"width"`
+	Height int32  `msg:"height"`
+}
+
+// WindowFocusTab reports which tab is in front within a given
+// window. Per-window focus (TabFocus is app-wide).
+type WindowFocusTab struct {
+	WindowID uint32 `msg:"window_id"`
+	TabID    uint32 `msg:"tab_id"`
 }
 
 // Resize tells the daemon the user resized the tab's grid. Daemon
