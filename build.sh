@@ -47,5 +47,7 @@ Darwin)
     echo "built: $(pwd)/xerotty"
     go build -o xerottyd ./cmd/xerottyd
     echo "built: $(pwd)/xerottyd"
+    go build -o xerotty-viewer ./cmd/xerotty-viewer
+    echo "built: $(pwd)/xerotty-viewer"
     ;;
 esac

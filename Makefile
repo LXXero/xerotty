@@ -8,6 +8,7 @@
 
 BINARY       := xerotty
 DAEMON       := xerottyd
+VIEWER       := xerotty-viewer
 APP_NAME     := xerotty
 APP_BUNDLE   := $(APP_NAME).app
 BUNDLE_ID    := cc.xeron.xerotty
@@ -35,6 +36,8 @@ build: generate
 	@echo "built: $(CURDIR)/$(BINARY)"
 	$(GO) build -o $(DAEMON) ./cmd/xerottyd
 	@echo "built: $(CURDIR)/$(DAEMON)"
+	$(GO) build -o $(VIEWER) ./cmd/xerotty-viewer
+	@echo "built: $(CURDIR)/$(VIEWER)"
 
 # Assemble a macOS .app bundle. The Info.plist's CFBundleIdentifier is
 # what tells Cocoa to coalesce multiple running processes of the same
@@ -121,5 +124,5 @@ else
 endif
 
 clean:
-	rm -f $(BINARY) $(DAEMON)
+	rm -f $(BINARY) $(DAEMON) $(VIEWER)
 	rm -rf $(APP_BUNDLE)
