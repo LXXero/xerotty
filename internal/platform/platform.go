@@ -119,6 +119,23 @@ func Quit() { C.platform_request_quit() }
 // become the user-visible OS windows.
 func HideMainWindow() { C.platform_hide_main_window() }
 
+// ResyncModifiers reads the OS-level modifier state and re-asserts
+// it into ImGui's IO as AddKeyEvent for ImGuiMod_*. Used after a
+// window-focus transition (spawn or close) where macOS drops
+// modifier state mid-flight — e.g. holding Cmd through Cmd+N → Cmd+T
+// leaves ImGui thinking Cmd was released, so the Cmd+T keybind
+// fails to match. Idempotent; safe to call every transition.
+func ResyncModifiers() { C.platform_resync_modifiers() }
+
+// RaiseWindow raises + key-focuses the SDL_Window with the given ID.
+// Called after spawnWindow so the new viewport NSWindow grabs OS
+// keyboard focus immediately — otherwise the first frame's keybinds
+// (e.g. Cmd+T right after Cmd+N) route to the spawning window because
+// macOS hasn't transitioned focus yet.
+func RaiseWindow(windowID uintptr) {
+	C.platform_raise_window(C.ulong(windowID))
+}
+
 // MouseFocusWindowID returns the SDL_WindowID of the window the OS
 // cursor is currently over, or 0 if it's not over any of our windows.
 // Reliable on every backend (X11, XWayland, native Wayland, Cocoa)

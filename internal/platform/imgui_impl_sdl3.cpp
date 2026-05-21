@@ -431,9 +431,19 @@ bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event)
             ImGuiViewport* viewport = ImGui_ImplSDL3_GetViewportForWindowID(event->key.windowID);
             if (viewport == nullptr)
                 return false;
-            //IMGUI_DEBUG_LOG("SDL_EVENT_KEY_%s : key=0x%08X ('%s'), scancode=%d ('%s'), mod=%X, windowID=%d, viewport=%08X\n",
-            //    (event->type == SDL_EVENT_KEY_DOWN) ? "DOWN" : "UP  ", event->key.key, SDL_GetKeyName(event->key.key), event->key.scancode, SDL_GetScancodeName(event->key.scancode), event->key.mod, event->key.windowID, viewport ? viewport->ID : 0);
+            // xerotty patch: on macOS, event->key.mod is a lie during
+            // NSWindow focus transitions — AppKit reports mod=0x0 on
+            // key events delivered to the focus-gaining window even
+            // though modifiers are physically held. Trickle-fast-inputs
+            // then defers our IOHID-based resync to next frame and the
+            // current frame's KEY_DOWN edge sees stale modifier state,
+            // breaking held-Cmd → Cmd+T sequences. Skip
+            // UpdateKeyModifiers here on darwin and let the per-frame
+            // beforeRender resync (driven by NSEvent.modifierFlags) be
+            // the single source of truth for modifier state.
+#ifndef __APPLE__
             ImGui_ImplSDL3_UpdateKeyModifiers((SDL_Keymod)event->key.mod);
+#endif
             ImGuiKey key = ImGui_ImplSDL3_KeyEventToImGuiKey(event->key.key, event->key.scancode);
             io.AddKeyEvent(key, (event->type == SDL_EVENT_KEY_DOWN));
             io.SetKeyEventNativeData(key, (int)event->key.key, (int)event->key.scancode, (int)event->key.scancode); // To support legacy indexing (<1.87 user code). Legacy backend uses SDLK_*** as indices to IsKeyXXX() functions.

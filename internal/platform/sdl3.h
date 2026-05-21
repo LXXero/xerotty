@@ -73,6 +73,33 @@ unsigned long platform_mouse_focus_window_id(void);
 unsigned long long platform_create_texture(const unsigned char* pixels, int width, int height);
 void               platform_delete_texture(unsigned long long tex_id);
 
+// platform_resync_modifiers reads the OS-level modifier state (Cmd /
+// Shift / Ctrl / Alt) and feeds it back into ImGui's IO as
+// AddKeyEvent for ImGuiMod_*. Used after a window-focus transition
+// where macOS drops modifier state mid-flight — e.g. holding Cmd
+// while a new window pops via Cmd+N leaves ImGui thinking Cmd is
+// no longer down, so the immediately-following Cmd+T doesn't match
+// its keybind. This re-asserts the truth so the next keypress
+// dispatches correctly.
+void platform_resync_modifiers(void);
+
+// platform_raise_window raises + activates + key-focuses the SDL_Window
+// with the given ID. Used after spawnWindow so the freshly-created
+// viewport NSWindow immediately becomes the OS-focused window —
+// without this, macOS leaves keyboard focus on the spawning window
+// until the user clicks the new one, so keybinds like Cmd+T received
+// in the first frame after Cmd+N route to the wrong window.
+void platform_raise_window(unsigned long window_id);
+
+// platform_set_window_icon attaches an RGBA8 pixel buffer to the
+// SDL_Window with the given ID via SDL_SetWindowIcon. The pixels are
+// row-major, top-to-bottom, with no padding (pitch = width * 4). On
+// Linux the WM uses this for taskbar / Alt-Tab / window-list display;
+// on macOS the bundle's .icns wins for the Dock but per-window
+// rendering may still pick it up. No-op if window_id is unknown.
+void platform_set_window_icon(unsigned long window_id,
+                              const unsigned char* rgba, int width, int height);
+
 // platform_post_wake pushes a user-defined SDL event into the queue.
 // Safe to call from any Go goroutine (SDL_PushEvent is thread-safe).
 // Used by the PTY reader to break the main loop out of

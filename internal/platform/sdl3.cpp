@@ -33,6 +33,10 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef __APPLE__
+#include "cocoa_focus.h"
+#endif
+
 // Globals visible to popup_imgui.cpp — kept at file scope (no anonymous
 // namespace) so the popup translation unit can `extern` them. Other
 // platform files shouldn't touch these directly; popup_imgui needs the
@@ -524,6 +528,61 @@ extern "C" void platform_set_fullscreen(unsigned long window_id, int enable) {
 
 extern "C" void platform_hide_main_window(void) {
     if (g_window) SDL_HideWindow(g_window);
+}
+
+extern "C" void platform_raise_window(unsigned long window_id) {
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return;
+    SDL_RaiseWindow(w);
+}
+
+extern "C" void platform_resync_modifiers(void) {
+    // On macOS, SDL_GetModState mirrors the per-window NSEvent
+    // modifier stream — which AppKit corrupts during window-focus
+    // transitions by firing a phantom KEY_UP for held modifiers to
+    // the focus-losing window without ever sending the
+    // corresponding KEY_DOWN to the focus-gaining one. The result:
+    // a user holding Cmd through Cmd+N sees `mod=0x0` on the very
+    // next KEY_DOWN(T), and SDL_GetModState reports Cmd-up even
+    // though the key is physically held. Read the truth from
+    // NSEvent.modifierFlags (IOHID-level hardware state) instead.
+    //
+    // Other platforms don't have this quirk; SDL_GetModState is
+    // accurate there.
+#ifdef __APPLE__
+    unsigned int mods = platform_cocoa_modifier_flags();
+    bool shift = (mods & 0x01) != 0;
+    bool ctrl  = (mods & 0x02) != 0;
+    bool alt   = (mods & 0x04) != 0;
+    bool super_= (mods & 0x08) != 0;
+#else
+    SDL_Keymod mods = SDL_GetModState();
+    bool shift = (mods & SDL_KMOD_SHIFT) != 0;
+    bool ctrl  = (mods & SDL_KMOD_CTRL)  != 0;
+    bool alt   = (mods & SDL_KMOD_ALT)   != 0;
+    bool super_= (mods & SDL_KMOD_GUI)   != 0;
+#endif
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddKeyEvent(ImGuiMod_Shift, shift);
+    io.AddKeyEvent(ImGuiMod_Ctrl,  ctrl);
+    io.AddKeyEvent(ImGuiMod_Alt,   alt);
+    io.AddKeyEvent(ImGuiMod_Super, super_);
+}
+
+extern "C" void platform_set_window_icon(unsigned long window_id,
+                                         const unsigned char* rgba,
+                                         int width, int height) {
+    if (!rgba || width <= 0 || height <= 0) return;
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return;
+    // SDL3: SDL_CreateSurfaceFrom takes a pixel pointer + format. RGBA32
+    // is platform-endian-aware. Pitch = width * 4 (tight packing).
+    SDL_Surface* surf = SDL_CreateSurfaceFrom(
+        width, height, SDL_PIXELFORMAT_RGBA32,
+        (void*)rgba, width * 4);
+    if (!surf) return;
+    SDL_SetWindowIcon(w, surf);
+    SDL_DestroySurface(surf);
 }
 
 extern "C" unsigned long platform_mouse_focus_window_id(void) {
