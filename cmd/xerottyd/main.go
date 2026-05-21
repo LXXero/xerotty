@@ -30,6 +30,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/protocol"
 )
 
 func main() {
@@ -46,12 +47,25 @@ func main() {
 	}
 
 	if stdio {
-		// Phase 0 stub for the SSH transport. Real implementation
-		// will hand the daemon's serveConn a net.Conn-like adapter
-		// wrapping os.Stdin / os.Stdout. Not part of the Phase 0
-		// acceptance criteria — local unix socket is.
-		fmt.Fprintf(os.Stderr, "xerottyd: --stdio not yet implemented (Phase 2)\n")
-		os.Exit(1)
+		// Stdio mode: this process serves exactly one client over its
+		// own stdin/stdout. Typical caller is `ssh host xerottyd
+		// --stdio` from a client wanting a remote daemon — the SSH
+		// pipe IS the transport, no listener, no socket file.
+		//
+		// We DO still construct a Daemon (the session machinery is
+		// shared with the socket path), but skip Run() — Run wants to
+		// bind a listener which we don't need. ServeConn does the
+		// per-connection work directly.
+		//
+		// stderr stays available for logs; the protocol owns stdin
+		// and stdout exclusively. Don't print to stdout under any
+		// circumstance in stdio mode.
+		d := daemon.New(&cfg, "")
+		conn := protocol.NewStdioConn(os.Stdin, os.Stdout)
+		fmt.Fprintln(os.Stderr, "xerottyd: serving one client on stdio")
+		d.ServeConn(conn)
+		fmt.Fprintln(os.Stderr, "xerottyd: stdio client disconnected")
+		return
 	}
 
 	if socketPath == "" {

@@ -85,6 +85,20 @@ func (d *Daemon) Run() error {
 	}
 }
 
+// ServeConn handles one preexisting connection on this daemon. Used
+// by --stdio mode where the transport is stdin/stdout rather than a
+// unix socket: the caller wraps those as a net.Conn (see
+// protocol.StdioConn) and hands it here. Blocks until the client
+// disconnects.
+//
+// Sessions and tabs live on the Daemon regardless of how the conn
+// got here, so all the session-management invariants from Run() still
+// apply — multiple ServeConn calls from different transports can
+// coexist on the same daemon.
+func (d *Daemon) ServeConn(conn net.Conn) {
+	d.serveConn(conn)
+}
+
 // Stop closes the listener and removes the socket file. Active
 // client connections continue until their peers close them; tabs
 // continue running because they're owned by the session, not the

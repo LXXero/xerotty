@@ -16,9 +16,15 @@
 //
 //	xerotty-viewer                        # connect to default socket
 //	xerotty-viewer --socket /path/sock     # explicit socket
+//	xerotty-viewer --ssh user@host         # spawn `ssh user@host xerottyd --stdio`
+//	xerotty-viewer --ssh host --remote-cmd "/opt/x/xerottyd --stdio"
 //
 // Default socket path mirrors xerottyd's: $XDG_RUNTIME_DIR/
 // xerottyd.sock, falling back to /tmp/xerottyd-$UID.sock.
+//
+// SSH mode delegates to ssh(1) — auth, ports, identity files,
+// ~/.ssh/config all work the way they normally do. Add ssh args
+// before the dest via --ssh-args="-i ~/.ssh/key -p 2222".
 //
 // Press Ctrl-q to quit (the viewer; the daemon-side session keeps
 // running). Press Ctrl-\ for SIGQUIT if Ctrl-q gets eaten.
@@ -43,12 +49,14 @@ import (
 
 func main() {
 	var socketPath string
+	var sshDest string
+	var sshArgs string
+	var remoteCmd string
 	flag.StringVar(&socketPath, "socket", "", "unix socket path of the daemon (default: $XDG_RUNTIME_DIR/xerottyd.sock)")
+	flag.StringVar(&sshDest, "ssh", "", "spawn `ssh <dest> xerottyd --stdio` instead of using a local socket")
+	flag.StringVar(&sshArgs, "ssh-args", "", "extra args to pass before the SSH destination (e.g. \"-i ~/.ssh/key -p 2222\")")
+	flag.StringVar(&remoteCmd, "remote-cmd", "", "remote command for --ssh mode (default: \"xerottyd --stdio\")")
 	flag.Parse()
-
-	if socketPath == "" {
-		socketPath = defaultSocketPath()
-	}
 
 	// Switch stdin into raw mode so keystrokes hit us byte-by-byte
 	// without the line discipline cooking them. Restore on exit.
@@ -59,10 +67,26 @@ func main() {
 	}
 	defer restoreTerm(int(os.Stdin.Fd()), oldState)
 
-	c, err := clientproto.Dial(socketPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty-viewer: dial %s: %v\n", socketPath, err)
-		os.Exit(1)
+	var c *clientproto.Client
+	if sshDest != "" {
+		// Tokenize sshArgs on whitespace. Shell-quoting is the
+		// user's problem; if they need quoted args they can use
+		// SSH config aliases instead.
+		extra := strings.Fields(sshArgs)
+		c, err = clientproto.DialSSH(sshDest, remoteCmd, extra)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty-viewer: dial ssh %s: %v\n", sshDest, err)
+			os.Exit(1)
+		}
+	} else {
+		if socketPath == "" {
+			socketPath = defaultSocketPath()
+		}
+		c, err = clientproto.Dial(socketPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty-viewer: dial %s: %v\n", socketPath, err)
+			os.Exit(1)
+		}
 	}
 	defer c.Close()
 
