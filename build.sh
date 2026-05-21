@@ -19,9 +19,7 @@ Darwin)
     # Linux / other: bare binary. The Linux build embeds
     # icon/xerotty-256.png via icon/embed.go and applies it to each
     # SDL_Window at startup (see internal/app/icon_linux.go) — WM
-    # taskbars and Alt-Tab pick that up. A proper .desktop file for
-    # app-launcher menu integration (rofi / GNOME / KDE) is still
-    # TODO.
+    # taskbars and Alt-Tab pick that up.
     go build -o xerotty ./cmd/xerotty
     echo "built: $(pwd)/xerotty"
     ;;

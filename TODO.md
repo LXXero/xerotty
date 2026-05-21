@@ -46,10 +46,8 @@
 
 ## Open
 
-### High priority
-- [ ] **image paste / Kitty graphics protocol** — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
-
 ### Low priority / later
+- [ ] image paste / Kitty graphics protocol — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
 - [ ] Tmux helpers (SPEC §6.13) — explicitly last per original plan
 - [ ] iTerm2-style "smart selection" — URL / path / IP / git-hash auto-detect on quad-click or modifier-drag
 

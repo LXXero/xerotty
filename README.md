@@ -28,7 +28,7 @@ Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize
 
 ### Terminal
 - Tabs (rename, close, drag-to-reorder, on-exit policy: close / hold / hold_on_error)
-- Configurable scrollback (memory / disk / unlimited), search (Ctrl+F), Shift+Home / Shift+End
+- Configurable scrollback (memory / unlimited), search (Ctrl+F), Shift+Home / Shift+End
 - Unsafe-paste detection (multiline / `sudo` / `rm -rf` / `curl | sh` patterns) with a yes/no confirm dialog
 - Process-aware tab title from terminal escape sequences (OSC 0/1/2)
 - Fullscreen (F11), runtime theme switching, font zoom (Ctrl+= / Ctrl+- / Ctrl+0)
