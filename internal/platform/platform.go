@@ -127,6 +127,21 @@ func HideMainWindow() { C.platform_hide_main_window() }
 // fails to match. Idempotent; safe to call every transition.
 func ResyncModifiers() { C.platform_resync_modifiers() }
 
+// SetWindowIcon attaches an RGBA8 pixel buffer to the SDL_Window
+// with the given ID. The pixels are row-major, top-to-bottom, with
+// no padding (pitch = width * 4). On Linux the WM uses this for
+// taskbar / Alt-Tab / window-list display. On macOS the bundle's
+// .icns wins for the Dock, but the per-window NSWindow icon can
+// still be set this way for completeness. No-op if windowID is
+// unknown or pixels is empty.
+func SetWindowIcon(windowID uintptr, pixels []byte, width, height int) {
+	if len(pixels) == 0 || width <= 0 || height <= 0 {
+		return
+	}
+	C.platform_set_window_icon(C.ulong(windowID),
+		(*C.uchar)(unsafe.Pointer(&pixels[0])), C.int(width), C.int(height))
+}
+
 // RaiseWindow raises + key-focuses the SDL_Window with the given ID.
 // Called after spawnWindow so the new viewport NSWindow grabs OS
 // keyboard focus immediately — otherwise the first frame's keybinds

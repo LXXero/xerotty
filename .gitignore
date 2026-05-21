@@ -5,6 +5,9 @@ iterm2-import
 imgui.ini
 
 # Icon build intermediates — checked-in artifacts are icon/xerotty.svg
-# (source) + icon/xerotty.icns (built via `make icns`).
+# (source), icon/xerotty.icns (macOS bundle, built via `make icns`),
+# and icon/xerotty-256.png (Linux runtime icon, embedded via go:embed
+# in internal/app/icon_linux.go).
 icon/xerotty.iconset/
 icon/xerotty-*.png
+!icon/xerotty-256.png

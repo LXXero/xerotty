@@ -154,6 +154,13 @@ type Window struct {
 	resizeIncrementSetCellW  int
 	resizeIncrementSetCellH  int
 
+	// iconApplied flips true after the embedded app icon has been
+	// pushed to this Window's SDL_Window via SDL_SetWindowIcon.
+	// One-shot — same retry-until-handle-valid pattern as the resize
+	// increments above. No-op on macOS (bundle's .icns wins for the
+	// Dock; per-window SDL icon isn't useful there).
+	iconApplied bool
+
 	// swallowOSCloseFrames suppresses PlatformRequestClose events for
 	// this many subsequent frames. macOS's NSWindow performClose:
 	// default-binds to Cmd+W, so when our close_tab keybind handles

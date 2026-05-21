@@ -1931,6 +1931,18 @@ func (a *Window) frame() {
 			}
 		}
 	}
+
+	// Apply the embedded app icon to this Window's native SDL_Window
+	// once it exists. Linux WM uses it for taskbar / Alt-Tab; macOS
+	// reads from the .icns in the bundle (this is a no-op there).
+	// Same retry-until-handle-valid story as SetResizeIncrements
+	// above — first frame has no handle yet, subsequent frames do.
+	if !a.iconApplied {
+		if h := a.sdlWindowHandle(); h != 0 {
+			applyWindowIcon(h)
+			a.iconApplied = true
+		}
+	}
 }
 
 func (w *Window) isSearching() bool {
