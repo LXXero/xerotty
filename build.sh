@@ -3,6 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Always run `go generate` first. Currently a no-op (no //go:generate
+# directives in the tree yet) but the daemon protocol work will add
+# tinylib/msgp codegen for the wire format — having it wired into the
+# canonical build script means schema-drift between Go structs and
+# generated encoders can never happen. Direct `go build` skips this;
+# always build via build.sh or `make` (which also runs it).
+go generate ./...
+
 case "$(uname -s)" in
 Darwin)
     # macOS: assemble the .app bundle so the user gets proper Dock-icon

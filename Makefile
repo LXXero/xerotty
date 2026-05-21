@@ -16,11 +16,20 @@ GO          := go
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: all build app install clean
+.PHONY: all build generate app install clean
 
 all: build
 
-build:
+# `generate` runs `go generate ./...` before any build. Currently a
+# no-op but the daemon protocol work will add tinylib/msgp codegen
+# directives for the wire format. Wiring it into the canonical build
+# target means schema-drift between Go structs and generated encoders
+# can never happen. Direct `go build` skips this; always build via
+# `make` or `build.sh` (which calls into this).
+generate:
+	$(GO) generate ./...
+
+build: generate
 	$(GO) build -o $(BINARY) ./cmd/xerotty
 	@echo "built: $(CURDIR)/$(BINARY)"
 

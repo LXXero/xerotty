@@ -2141,7 +2141,15 @@ See SPEC.md for the full specification.
 
 ## Build
 
-    go build -o xerotty ./cmd/xerotty
+Always build via `./build.sh` or `make` — both run `go generate ./...`
+first so the daemon-protocol codegen (tinylib/msgp encoders) stays
+in sync. Direct `go build ./cmd/xerotty` skips codegen and produces
+a binary with stale wire encoders.
+
+    ./build.sh
+
+On macOS this assembles `xerotty.app/`. On Linux it produces the
+bare `./xerotty` binary.
 
 ## Run
 
