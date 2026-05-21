@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-void platform_set_resize_increments(unsigned long window_id, int inc_w, int inc_h);
+int platform_set_resize_increments(unsigned long window_id, int inc_w, int inc_h);
 
 #ifdef __cplusplus
 }

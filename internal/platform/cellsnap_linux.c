@@ -13,28 +13,28 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 
-void platform_set_resize_increments(unsigned long window_id, int inc_w, int inc_h) {
+int platform_set_resize_increments(unsigned long window_id, int inc_w, int inc_h) {
     if (inc_w < 1) inc_w = 1;
     if (inc_h < 1) inc_h = 1;
 
     SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
-    if (!w) return;
+    if (!w) return 0;
 
     // Only X11 supports it; Wayland's xdg_shell has no equivalent.
     const char* drv = SDL_GetCurrentVideoDriver();
-    if (!drv || strcmp(drv, "x11") != 0) return;
+    if (!drv || strcmp(drv, "x11") != 0) return 1;
 
     SDL_PropertiesID props = SDL_GetWindowProperties(w);
     Display* dpy = (Display*)SDL_GetPointerProperty(
         props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
     Window xwin = (Window)SDL_GetNumberProperty(
         props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
-    if (!dpy || !xwin) return;
+    if (!dpy || !xwin) return 0;
 
     // Preserve whatever hints SDL/the WM has already set, just add
     // (or replace) resize_inc.
     XSizeHints* hints = XAllocSizeHints();
-    if (!hints) return;
+    if (!hints) return 0;
     long supplied = 0;
     XGetWMNormalHints(dpy, xwin, hints, &supplied);
     hints->flags |= PResizeInc;
@@ -43,4 +43,5 @@ void platform_set_resize_increments(unsigned long window_id, int inc_w, int inc_
     XSetWMNormalHints(dpy, xwin, hints);
     XFree(hints);
     XFlush(dpy);
+    return 1;
 }

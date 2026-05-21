@@ -95,9 +95,9 @@ type Window struct {
 	// Updated as the user drags past tab boundaries; the tab bar
 	// renderer swaps slots live so the user sees the reorder happen
 	// as they drag. Reset to -1 on mouse release.
-	tabDragIdx        int
-	tabDragStartX     float32 // mouse X at the moment tabDragIdx was set
-	tabDragStartY     float32 // mouse Y at the moment tabDragIdx was set
+	tabDragIdx    int
+	tabDragStartX float32 // mouse X at the moment tabDragIdx was set
+	tabDragStartY float32 // mouse Y at the moment tabDragIdx was set
 
 	contextMenuOpen        bool
 	contextMenuX           float32
@@ -145,6 +145,16 @@ type Window struct {
 	// spawning Window because the OS hasn't moved focus yet.
 	pendingFocus bool
 
+	// resizeIncrementSet* tracks which native window + cell dimensions
+	// we've already pushed to NSWindow.setContentResizeIncrements via
+	// platform.SetResizeIncrements. Early frames can see either no
+	// handle or the hidden carrier/main viewport before ImGui creates
+	// this Window's popped-out SDL_Window, so the handle is part of the
+	// cache key.
+	resizeIncrementSetWindow uintptr
+	resizeIncrementSetCellW  int
+	resizeIncrementSetCellH  int
+
 	// swallowOSCloseFrames suppresses PlatformRequestClose events for
 	// this many subsequent frames. macOS's NSWindow performClose:
 	// default-binds to Cmd+W, so when our close_tab keybind handles
@@ -157,8 +167,8 @@ type Window struct {
 	// Initial position for the first BeginV call. spawnWindow sets this
 	// to the parent's current OS-window position plus a cascade offset
 	// so new windows don't stack exactly on top of their parent.
-	initialPosX float32
-	initialPosY float32
+	initialPosX   float32
+	initialPosY   float32
 	hasInitialPos bool
 
 	// Actual top-left of the wrapper's content region in absolute

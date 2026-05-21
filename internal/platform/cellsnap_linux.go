@@ -15,12 +15,13 @@ import "C"
 //
 // Linux behavior split by SDL video driver:
 //   - x11:     XSetWMNormalHints with PResizeInc (works on real Xorg
-//              and on most XWayland-style compositors).
+//     and on most XWayland-style compositors).
 //   - wayland: NO-OP. Wayland has no protocol for resize increments
-//              by design; compositor owns sizing. Software-side
-//              cell-snap in the renderer covers this case.
+//     by design; compositor owns sizing. Software-side
+//     cell-snap in the renderer covers this case.
 //
 // windowID is the SDL_WindowID stored in ImGuiViewport.PlatformHandle.
-func SetResizeIncrements(windowID uintptr, incW, incH int) {
-	C.platform_set_resize_increments(C.ulong(windowID), C.int(incW), C.int(incH))
+// Returns false if the native window is not ready yet.
+func SetResizeIncrements(windowID uintptr, incW, incH int) bool {
+	return C.platform_set_resize_increments(C.ulong(windowID), C.int(incW), C.int(incH)) != 0
 }

@@ -14,6 +14,7 @@ import "C"
 // Same idea as XSetWMNormalHints+PResizeInc on X11.
 //
 // windowID is the SDL_WindowID stored in ImGuiViewport.PlatformHandle.
-func SetResizeIncrements(windowID uintptr, incW, incH int) {
-	C.platform_set_resize_increments(C.ulong(windowID), C.int(incW), C.int(incH))
+// Returns false if the native window is not ready yet.
+func SetResizeIncrements(windowID uintptr, incW, incH int) bool {
+	return C.platform_set_resize_increments(C.ulong(windowID), C.int(incW), C.int(incH)) != 0
 }

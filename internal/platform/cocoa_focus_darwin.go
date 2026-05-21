@@ -22,6 +22,12 @@ func CocoaWindowZRank(windowID uintptr) int {
 	return int(C.platform_cocoa_window_z_rank(C.ulong(windowID)))
 }
 
+// CocoaWindowInLiveResize reports whether the SDL_Window's backing
+// NSWindow is inside AppKit's live-resize tracking loop.
+func CocoaWindowInLiveResize(windowID uintptr) bool {
+	return C.platform_cocoa_window_in_live_resize(C.ulong(windowID)) != 0
+}
+
 // CocoaEventOnChrome reports whether the most recent NSEvent
 // (NSApp.currentEvent) is a mouse event whose location is on window
 // chrome (title bar / resize edges) rather than inside the

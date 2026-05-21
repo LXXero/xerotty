@@ -103,6 +103,16 @@ int platform_cocoa_window_z_rank(unsigned long window_id) {
     return -1;
 }
 
+int platform_cocoa_window_in_live_resize(unsigned long window_id) {
+    SDL_Window* sdlwin = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!sdlwin) return 0;
+    SDL_PropertiesID props = SDL_GetWindowProperties(sdlwin);
+    NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+        props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!nswin) return 0;
+    return [nswin inLiveResize] ? 1 : 0;
+}
+
 int platform_cocoa_any_window_moved(void) {
     static NSMutableDictionary<NSNumber*, NSValue*>* lastOrigins = nil;
     if (!lastOrigins) lastOrigins = [[NSMutableDictionary alloc] init];

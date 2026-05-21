@@ -26,6 +26,10 @@ void platform_cocoa_focus_window(unsigned long window_id);
 // frontmost. Returns -1 if the SDL/NSWindow cannot be found.
 int platform_cocoa_window_z_rank(unsigned long window_id);
 
+// platform_cocoa_window_in_live_resize returns 1 while the SDL_Window's
+// backing NSWindow is inside AppKit's live-resize tracking loop.
+int platform_cocoa_window_in_live_resize(unsigned long window_id);
+
 // platform_cocoa_modifier_flags returns the current modifier-key
 // state from NSEvent.modifierFlags. Reports the PHYSICAL state of
 // the modifier keys at the keyboard, not the per-window event

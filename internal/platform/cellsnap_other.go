@@ -6,4 +6,4 @@ package platform
 // equivalent of XSetWMNormalHints / setContentResizeIncrements.
 // The renderer's software-side cell-grid math handles partial cells
 // regardless.
-func SetResizeIncrements(windowID uintptr, incW, incH int) {}
+func SetResizeIncrements(windowID uintptr, incW, incH int) bool { return true }

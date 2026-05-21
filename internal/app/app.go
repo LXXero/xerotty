@@ -1481,8 +1481,10 @@ func (a *Window) frame() {
 		a.app.baseCellH = metrics.Height
 		a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 		a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
-		// Tell the WM to snap drag-resize to whole-cell increments.
-		platform.SetResizeIncrements(a.sdlWindowHandle(), int(a.cellW), int(a.cellH))
+		// (Resize-increment push happens lower, at the end of
+		// frame() — by then the SDL_Window handle is valid on
+		// repeat frames; this first-frame call would otherwise
+		// hit SDL_GetWindowFromID(0) and no-op.)
 
 		// Re-fit the window to the configured columns/rows now that we have
 		// real cell metrics. The initial CreateWindow used estimated metrics,
@@ -1545,7 +1547,9 @@ func (a *Window) frame() {
 			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 			a.renderer.FontSize = a.fontSize
 			a.resizeTerminals()
-			platform.SetResizeIncrements(a.sdlWindowHandle(), int(a.cellW), int(a.cellH))
+			// (Resize-increment refresh handled at end of frame() —
+			// same retry-until-handle-valid path used by first-frame
+			// init.)
 		}
 	}
 
@@ -1954,6 +1958,27 @@ func (a *Window) frame() {
 
 	// Resize overlay
 	a.renderResizeOverlay()
+
+	// Push cell-width resize increments to the OS window each time
+	// the cell dimensions change (font zoom, metric refresh) AND
+	// once at startup when this Window's real popped-out SDL_Window
+	// replaces the hidden carrier/main viewport handle. Retry when
+	// either the handle or the cell size changes, but only cache the
+	// state after the native call succeeds.
+	cellW := int(a.cellW)
+	cellH := int(a.cellH)
+	if cellW > 0 && cellH > 0 {
+		if h := a.sdlWindowHandle(); h != 0 &&
+			(h != a.resizeIncrementSetWindow ||
+				cellW != a.resizeIncrementSetCellW ||
+				cellH != a.resizeIncrementSetCellH) {
+			if platform.SetResizeIncrements(h, cellW, cellH) {
+				a.resizeIncrementSetWindow = h
+				a.resizeIncrementSetCellW = cellW
+				a.resizeIncrementSetCellH = cellH
+			}
+		}
+	}
 }
 
 func (w *Window) isSearching() bool {
