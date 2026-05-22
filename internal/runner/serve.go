@@ -43,7 +43,9 @@ func Serve(args []string) int {
 	fs.StringVar(&socketPath, "socket", "", "unix socket path (default: $XDG_RUNTIME_DIR/xerottyd.sock)")
 	fs.StringVar(&mcpSocketPath, "mcp-socket", "", "MCP socket path for AI agents (default: alongside --socket)")
 	fs.BoolVar(&noMCP, "no-mcp", false, "disable the MCP agent socket entirely")
-	fs.BoolVar(&stdio, "stdio", false, "serve one client on stdin/stdout (for SSH transport)")
+	fs.BoolVar(&stdio, "stdio", false, "bridge stdin/stdout to the persistent daemon socket (for SSH transport). Auto-spawns a daemon if none is running.")
+	var stdioEphemeral bool
+	fs.BoolVar(&stdioEphemeral, "stdio-ephemeral", false, "old --stdio behavior: serve one client on stdin/stdout from an in-process daemon that dies with the connection. Loses tabs on disconnect.")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -54,17 +56,31 @@ func Serve(args []string) int {
 		return 1
 	}
 
-	if stdio {
-		// Stdio mode: this process serves exactly one client over
-		// its own stdin/stdout. Typical caller is
-		// `ssh host xerotty serve --stdio`. No listener, no socket
-		// file. stderr stays available for logs.
+	if stdioEphemeral {
+		// Old behavior: serve one client out of an in-process
+		// daemon that dies with the connection. Tabs do NOT
+		// survive disconnect. Useful for one-off scripted runs
+		// where persistence is undesirable.
 		d := daemon.New(&cfg, "")
 		conn := protocol.NewStdioConn(os.Stdin, os.Stdout)
-		fmt.Fprintln(os.Stderr, "xerotty serve: stdio mode, one client")
+		fmt.Fprintln(os.Stderr, "xerotty serve: ephemeral stdio mode, one client")
 		d.ServeConn(conn)
 		fmt.Fprintln(os.Stderr, "xerotty serve: stdio client disconnected")
 		return 0
+	}
+
+	if stdio {
+		// Bridge mode: connect to (or auto-spawn) a persistent
+		// daemon on the local box, then proxy bytes between our
+		// stdin/stdout and the daemon's unix socket. This is what
+		// `ssh host xerotty serve --stdio` should do: when you
+		// reconnect later your tabs are still there because the
+		// remote-side daemon outlives the SSH connection.
+		target := socketPath
+		if target == "" {
+			target = defaultSocketPath()
+		}
+		return runStdioBridge(target)
 	}
 
 	if socketPath == "" {

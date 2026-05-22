@@ -161,6 +161,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return nil
 	}
 	switch req.Method {
+	// Native methods — kept for simple `nc -U` debugging without
+	// the MCP handshake/wrapping ceremony.
 	case "tabs/list":
 		return c.handleTabsList(req)
 	case "tab/screen":
@@ -177,6 +179,21 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleAgentClients(req)
 	case "server/info":
 		return c.handleServerInfo(req)
+
+	// Standard MCP methods — what Claude Code / Xyphia / other
+	// MCP-aware clients speak. tools/call dispatches to the same
+	// native handlers above.
+	case "initialize":
+		return c.handleMCPInitialize(req)
+	case "tools/list":
+		return c.handleMCPToolsList(req)
+	case "tools/call":
+		return c.handleMCPToolsCall(req)
+	case "notifications/initialized":
+		// Notification — no response needed. Some clients send
+		// this after initialize as part of the handshake.
+		return nil
+
 	default:
 		return methodNotFound(req.ID, req.Method)
 	}

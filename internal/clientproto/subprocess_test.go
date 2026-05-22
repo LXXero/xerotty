@@ -1,6 +1,7 @@
 package clientproto_test
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,11 +40,28 @@ func TestSubprocessDial(t *testing.T) {
 		t.Fatalf("chdir %s: %v", root, err)
 	}
 
-	c, err := clientproto.DialCommand("go", "run", "./cmd/xerotty", "serve", "--stdio")
+	// Isolated socket path so we don't bridge into / auto-spawn
+	// into an already-running daemon in the dev environment. The
+	// --stdio mode now bridges to (or auto-spawns) a persistent
+	// daemon at the given --socket path; pointing it at a fresh
+	// tempdir keeps the test hermetic.
+	tmpSock := filepath.Join(t.TempDir(), "xerottyd.sock")
+	c, err := clientproto.DialCommand("go", "run", "./cmd/xerotty", "serve", "--stdio", "--socket", tmpSock)
 	if err != nil {
 		t.Fatalf("dial subprocess: %v", err)
 	}
 	defer c.Close()
+	t.Cleanup(func() {
+		// The bridge subprocess auto-spawned a detached daemon at
+		// tmpSock that outlives our test. Kill it via pkill — the
+		// daemon's argv contains the unique tmpSock path so the
+		// match is unambiguous. Without this, the daemon lingers
+		// + the `go run` reaper keeps the test process from
+		// exiting cleanly.
+		_ = net.Dial // keep import live in case future cleanup uses it
+		killCmd := exec.Command("pkill", "-f", "xerotty serve --socket "+tmpSock)
+		_ = killCmd.Run()
+	})
 
 	if _, err := c.Hello("subprocess-test"); err != nil {
 		t.Fatalf("hello: %v", err)
