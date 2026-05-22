@@ -258,7 +258,7 @@ func (v *connectClient) moveCursor(row, col uint16) {
 // sequence that produces the same visual on a host terminal that
 // understands xterm-256color + (where supported) 24-bit truecolor.
 func sgrForStyle(style uint32, fgRGB, bgRGB uint32) string {
-	attrs, _, fgIdx, fgIsRGB, bgIdx, bgIsRGB := protocol.UnpackStyle(style)
+	attrs, _, fgSet, fgIdx, fgIsRGB, bgSet, bgIdx, bgIsRGB := protocol.UnpackStyle(style)
 	parts := []string{"0"}
 	if attrs&protocol.AttrBold != 0 {
 		parts = append(parts, "1")
@@ -281,17 +281,23 @@ func sgrForStyle(style uint32, fgRGB, bgRGB uint32) string {
 	if attrs&protocol.AttrBlink != 0 {
 		parts = append(parts, "5")
 	}
-	if fgIsRGB {
-		r, g, b := uint8(fgRGB>>16), uint8(fgRGB>>8), uint8(fgRGB)
-		parts = append(parts, "38;2;"+strconv.Itoa(int(r))+";"+strconv.Itoa(int(g))+";"+strconv.Itoa(int(b)))
-	} else if fgIdx != 0 {
-		parts = append(parts, "38;5;"+strconv.Itoa(int(fgIdx)))
+	if fgSet {
+		if fgIsRGB {
+			r, g, b := uint8(fgRGB>>16), uint8(fgRGB>>8), uint8(fgRGB)
+			parts = append(parts, "38;2;"+strconv.Itoa(int(r))+";"+strconv.Itoa(int(g))+";"+strconv.Itoa(int(b)))
+		} else {
+			// Includes idx 0 (ANSI black). fgSet is what
+			// distinguishes that from "no color".
+			parts = append(parts, "38;5;"+strconv.Itoa(int(fgIdx)))
+		}
 	}
-	if bgIsRGB {
-		r, g, b := uint8(bgRGB>>16), uint8(bgRGB>>8), uint8(bgRGB)
-		parts = append(parts, "48;2;"+strconv.Itoa(int(r))+";"+strconv.Itoa(int(g))+";"+strconv.Itoa(int(b)))
-	} else if bgIdx != 0 {
-		parts = append(parts, "48;5;"+strconv.Itoa(int(bgIdx)))
+	if bgSet {
+		if bgIsRGB {
+			r, g, b := uint8(bgRGB>>16), uint8(bgRGB>>8), uint8(bgRGB)
+			parts = append(parts, "48;2;"+strconv.Itoa(int(r))+";"+strconv.Itoa(int(g))+";"+strconv.Itoa(int(b)))
+		} else {
+			parts = append(parts, "48;5;"+strconv.Itoa(int(bgIdx)))
+		}
 	}
 	return "\x1b[" + strings.Join(parts, ";") + "m"
 }

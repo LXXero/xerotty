@@ -23,12 +23,12 @@ func cellFromUV(c *uv.Cell) protocol.Cell {
 	}
 	attrs := attrsFromStyle(&c.Style)
 	underline := underlineFromStyle(&c.Style)
-	fgIdx, fgRGB, fg := colorFromStyle(c.Style.Fg)
-	bgIdx, bgRGB, bg := colorFromStyle(c.Style.Bg)
+	fgSet, fgIdx, fgRGB, fg := colorFromStyle(c.Style.Fg)
+	bgSet, bgIdx, bgRGB, bg := colorFromStyle(c.Style.Bg)
 	out := protocol.Cell{
 		Content: content,
 		Width:   uint8(c.Width),
-		Style:   protocol.PackStyle(attrs, underline, fgIdx, fgRGB, bgIdx, bgRGB),
+		Style:   protocol.PackStyle(attrs, underline, fgSet, fgIdx, fgRGB, bgSet, bgIdx, bgRGB),
 	}
 	if fgRGB {
 		out.FgRGB = fg
@@ -83,28 +83,30 @@ func underlineFromStyle(s *uv.Style) uint8 {
 }
 
 // colorFromStyle classifies a color.Color from ultraviolet.Style as
-// (palette-idx, RGB-flag, RGB-value). Palette index covers the
-// standard xterm 256-color palette; anything that doesn't pattern-
-// match the ansi color enums gets RGB-encoded.
-func colorFromStyle(col color.Color) (idx uint16, isRGB bool, rgb uint32) {
+// (set-flag, palette-idx, RGB-flag, RGB-value). Palette index covers
+// the standard xterm 256-color palette; anything that doesn't
+// pattern-match the ansi color enums gets RGB-encoded. The set-flag
+// distinguishes nil (no color) from palette index 0 (ANSI black) so
+// SGR black doesn't decode as "use default color."
+func colorFromStyle(col color.Color) (set bool, idx uint16, isRGB bool, rgb uint32) {
 	if col == nil {
-		return 0, false, 0
+		return false, 0, false, 0
 	}
 	switch v := col.(type) {
 	case ansi.BasicColor:
-		return uint16(v), false, 0
+		return true, uint16(v), false, 0
 	case ansi.IndexedColor: // ansi.ExtendedColor is a type alias for this
-		return uint16(v), false, 0
+		return true, uint16(v), false, 0
 	case ansi.TrueColor:
 		// 0xRRGGBB packing
 		r, g, b, _ := v.RGBA()
 		rgb = (uint32(r>>8) << 16) | (uint32(g>>8) << 8) | uint32(b>>8)
-		return 0, true, rgb
+		return true, 0, true, rgb
 	default:
 		// Unknown color flavor — fall back to RGB extracted from
 		// the standard color interface.
 		r, g, b, _ := col.RGBA()
 		rgb = (uint32(r>>8) << 16) | (uint32(g>>8) << 8) | uint32(b>>8)
-		return 0, true, rgb
+		return true, 0, true, rgb
 	}
 }

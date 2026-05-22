@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/menu"
 	"github.com/LXXero/xerotty/internal/platform"
+	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
@@ -57,6 +58,14 @@ type App struct {
 	// for every Window so all new tabs route through the daemon.
 	daemonHub        *daemonsource.Hub
 	tabSourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
+
+	// daemonAdoptQueue holds tab IDs the daemon reported at Attach
+	// time that haven't been wired into a GUI window yet. The first
+	// Window opened in daemon mode drains this list (Adopting each
+	// tab) instead of spawning a fresh tab — that's how reattach
+	// restores the previous session. Subsequent windows go through
+	// the normal NewTab path.
+	daemonAdoptQueue []daemonTabSnapshot
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -143,6 +152,15 @@ func New(cfg config.Config) *App {
 	return a
 }
 
+// daemonTabSnapshot is one tab the daemon reported at attach time —
+// queued for adoption by the next GUI window that opens.
+type daemonTabSnapshot struct {
+	ID    uint32
+	Title string
+	Cols  uint16
+	Rows  uint16
+}
+
 // initDaemonSource ensures a local xerotty daemon is running,
 // connects to it, attaches, and wires the resulting Hub into App so
 // tabs.Manager.NewTab routes through it. Errors here are non-fatal
@@ -164,13 +182,23 @@ func (a *App) initDaemonSource() error {
 		_ = cli.Close()
 		return fmt.Errorf("attach: %w", err)
 	}
-	// Drain the Attached frame so it doesn't sit blocking the
-	// client's channel forever.
+	// Capture the Attached frame so the next Window opened can
+	// adopt any pre-existing daemon tabs (the persistence story:
+	// reopen xerotty, see your shells exactly as you left them).
+	var attached *protocol.Attached
 	select {
-	case <-cli.Attached():
+	case attached = <-cli.Attached():
 	case <-time.After(2 * time.Second):
 		_ = cli.Close()
 		return fmt.Errorf("attach: no response from daemon")
+	}
+	for _, ti := range attached.Tabs {
+		a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonTabSnapshot{
+			ID:    ti.ID,
+			Title: ti.Title,
+			Cols:  ti.Cols,
+			Rows:  ti.Rows,
+		})
 	}
 	hub := daemonsource.NewHub(cli)
 	// Mirror the GUI's scrollback config so daemon-backed tabs
@@ -203,10 +231,15 @@ func (a *App) reapClosedWindows() {
 			survivors = append(survivors, w)
 			continue
 		}
-		// Tear down the Window's terminals and renderer.
+		// Tear down the Window's terminals and renderer. Use
+		// Detach (not Close) so daemon-backed tabs survive — the
+		// user closing a GUI window means "stop showing me", not
+		// "kill the shell". For in-process PTY tabs Detach is
+		// equivalent to Close anyway (PTY can't outlive the
+		// process).
 		if w.tabs != nil {
 			for _, tab := range w.tabs.Tabs {
-				tab.Terminal.Close()
+				tab.Terminal.Detach()
 			}
 		}
 		if w.renderer != nil && w.renderer.Glyphs != nil {
@@ -546,6 +579,23 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			adopt.Resize(cols, rows)
 		}
 		w.tabs.AdoptTab(adopt)
+	} else if len(a.daemonAdoptQueue) > 0 && a.daemonHub != nil {
+		// First Window in daemon mode with pre-existing daemon tabs
+		// — adopt them all instead of spawning a fresh one. This is
+		// what makes "reopen xerotty, see your shells" work.
+		for _, snap := range a.daemonAdoptQueue {
+			src := a.daemonHub.Adopt(snap.ID, int(snap.Cols), int(snap.Rows))
+			tab := w.tabs.AdoptTab(src)
+			if snap.Title != "" {
+				tab.Title = snap.Title
+			}
+			// Resize the adopted tab to this Window's grid so the
+			// PTY winsize + emulator match what we'll render.
+			if cols > 1 && rows > 1 {
+				src.Resize(cols, rows)
+			}
+		}
+		a.daemonAdoptQueue = nil
 	} else {
 		var cwd string
 		if a.cfg.Tabs.InheritCWD && parent != nil {
@@ -963,13 +1013,16 @@ func (a *App) Run() error {
 	}
 	platform.Shutdown()
 
-	// Cleanup: close all tabs in every Window before exiting.
+	// Cleanup: detach from all tabs in every Window before exiting.
+	// Daemon-backed tabs survive (the daemon process keeps the
+	// shells alive); in-process PTY tabs get torn down (Detach is
+	// Close for them).
 	for _, win := range a.windows {
 		if win.tabs == nil {
 			continue
 		}
 		for _, tab := range win.tabs.Tabs {
-			tab.Terminal.Close()
+			tab.Terminal.Detach()
 		}
 	}
 

@@ -65,34 +65,46 @@ func TestFrameTooLarge(t *testing.T) {
 }
 
 // TestStylePackRoundTrip checks the Style bit-packing helpers cover
-// every field independently.
+// every field independently, including the fgSet/bgSet flags that
+// distinguish "no color" from "ANSI black (palette idx 0)".
 func TestStylePackRoundTrip(t *testing.T) {
 	cases := []struct {
 		name      string
 		attrs     uint32
 		underline uint8
+		fgSet     bool
 		fgIdx     uint16
 		fgRGB     bool
+		bgSet     bool
 		bgIdx     uint16
 		bgRGB     bool
 	}{
-		{"plain", 0, UnderlineNone, 7, false, 0, false},
-		{"bold-italic", AttrBold | AttrItalic, UnderlineNone, 9, false, 4, false},
-		{"underline-curly", 0, UnderlineCurly, 15, false, 0, false},
-		{"fg-rgb", 0, UnderlineNone, 0, true, 8, false},
-		{"bg-rgb", 0, UnderlineNone, 12, false, 0, true},
-		{"both-rgb", AttrReverse, UnderlineDashed, 0, true, 0, true},
-		{"max-palette-indices", AttrFaint, UnderlineDouble, 511, false, 511, false},
+		{"plain-default-colors", 0, UnderlineNone, false, 0, false, false, 0, false},
+		{"fg-palette-7", 0, UnderlineNone, true, 7, false, false, 0, false},
+		{"fg-ansi-black-palette-0", 0, UnderlineNone, true, 0, false, false, 0, false},
+		{"bg-ansi-black-palette-0", 0, UnderlineNone, false, 0, false, true, 0, false},
+		{"bold-italic", AttrBold | AttrItalic, UnderlineNone, true, 9, false, true, 4, false},
+		{"underline-curly", 0, UnderlineCurly, true, 15, false, false, 0, false},
+		{"fg-rgb", 0, UnderlineNone, true, 0, true, false, 0, false},
+		{"bg-rgb", 0, UnderlineNone, true, 12, false, true, 0, true},
+		{"both-rgb", AttrReverse, UnderlineDashed, true, 0, true, true, 0, true},
+		{"max-palette-indices", AttrFaint, UnderlineDouble, true, 511, false, true, 511, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			packed := PackStyle(c.attrs, c.underline, c.fgIdx, c.fgRGB, c.bgIdx, c.bgRGB)
-			a, u, fi, fr, bi, br := UnpackStyle(packed)
+			packed := PackStyle(c.attrs, c.underline, c.fgSet, c.fgIdx, c.fgRGB, c.bgSet, c.bgIdx, c.bgRGB)
+			a, u, fs, fi, fr, bs, bi, br := UnpackStyle(packed)
 			if a != c.attrs {
 				t.Errorf("attrs: got %x want %x", a, c.attrs)
 			}
 			if u != c.underline {
 				t.Errorf("underline: got %d want %d", u, c.underline)
+			}
+			if fs != c.fgSet {
+				t.Errorf("fgSet: got %v want %v", fs, c.fgSet)
+			}
+			if bs != c.bgSet {
+				t.Errorf("bgSet: got %v want %v", bs, c.bgSet)
 			}
 			if fr != c.fgRGB {
 				t.Errorf("fgRGB: got %v want %v", fr, c.fgRGB)
@@ -100,10 +112,10 @@ func TestStylePackRoundTrip(t *testing.T) {
 			if br != c.bgRGB {
 				t.Errorf("bgRGB: got %v want %v", br, c.bgRGB)
 			}
-			if !c.fgRGB && fi != c.fgIdx {
+			if c.fgSet && !c.fgRGB && fi != c.fgIdx {
 				t.Errorf("fgIdx: got %d want %d", fi, c.fgIdx)
 			}
-			if !c.bgRGB && bi != c.bgIdx {
+			if c.bgSet && !c.bgRGB && bi != c.bgIdx {
 				t.Errorf("bgIdx: got %d want %d", bi, c.bgIdx)
 			}
 		})

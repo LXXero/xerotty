@@ -7,7 +7,12 @@ package protocol
 // any of the message structs below. Minor field additions are NOT
 // breaking — msgpack lets newer servers send fields older clients
 // ignore.
-const ProtocolVersion uint16 = 1
+// ProtocolVersion bumped to 2 when Style packing grew the fgSet /
+// bgSet flag bits to distinguish "no color" from "ANSI black
+// (palette idx 0)". Same wire layout otherwise; old clients would
+// misinterpret bits 30/31 as "reserved zero" and render black as
+// default. Spike branch, no compat shims.
+const ProtocolVersion uint16 = 2
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -374,6 +379,11 @@ type TabState struct {
 	CWD                   string `msg:"cwd,omitempty"`
 	ForegroundProcessName string `msg:"fg_proc,omitempty"`
 	AppCursorMode         bool   `msg:"app_cursor"`
+	// Title is the OSC 0/2 title the foreground app set. Pushed
+	// here (rather than a separate MsgTitle stream) because it
+	// already shares the "slow-changing per-tab metadata" cadence
+	// with cwd/fg_proc/app_cursor. Empty = no title set yet.
+	Title string `msg:"title,omitempty"`
 }
 
 // ClearScrollback asks the daemon to drop the tab's scrollback ring.

@@ -81,6 +81,7 @@ type tabSub struct {
 	lastCWD       string
 	lastFg        string
 	lastAppCursor bool
+	lastTitle     string
 }
 
 func (c *clientConn) handshake() error {
@@ -520,11 +521,22 @@ func sanitizeFilename(s string) string {
 	return string(out)
 }
 
+// initialBackfillRows is how many recent scrollback rows the daemon
+// ships at subscribe time so reattach restores history. Trade-off:
+//   - Too low: reopened windows feel like they "forgot" recent
+//     output.
+//   - Too high: the initial dump pegs the wire for a few seconds
+//     on large sessions.
+// 5000 rows ≈ ~200 viewport-fulls of 25-line screens; covers most
+// "what was I just looking at?" cases without flooding.
+const initialBackfillRows = 5000
+
 // subscribe spawns the per-tab publish goroutine. Seeds
-// lastScrollbackLen with the tab's current scrollback at
-// subscription time so we naturally skip pre-attach history (would
-// otherwise dump megabytes of scrollback in the initial frame).
-// Post-attach growth gets streamed normally.
+// lastScrollbackLen so the daemon ships at most initialBackfillRows
+// of pre-attach history (chunked by sendNewScrollback's batch cap),
+// then streams post-attach growth normally. Older-than-backfill
+// history stays on the daemon for future scrollback-request
+// protocol additions but isn't proactively shipped.
 func (c *clientConn) subscribe(t *Tab) {
 	c.subsMu.Lock()
 	if c.subs == nil {
@@ -534,9 +546,14 @@ func (c *clientConn) subscribe(t *Tab) {
 		c.subsMu.Unlock()
 		return
 	}
+	sbLen := t.Term.ScrollbackLen()
+	backfillFrom := sbLen - initialBackfillRows
+	if backfillFrom < 0 {
+		backfillFrom = 0
+	}
 	sub := &tabSub{
 		cancel:            make(chan struct{}),
-		lastScrollbackLen: t.Term.ScrollbackLen(),
+		lastScrollbackLen: backfillFrom,
 	}
 	c.subs[t.ID] = sub
 	c.subsMu.Unlock()
@@ -619,18 +636,21 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	cwd := t.Term.GetCWD()
 	fg := t.Term.ForegroundProcessName()
 	appCursor := t.Term.AppCursorMode()
-	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor {
+	title := t.Title
+	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor && title == sub.lastTitle {
 		return
 	}
 	sub.lastCWD = cwd
 	sub.lastFg = fg
 	sub.lastAppCursor = appCursor
+	sub.lastTitle = title
 	sub.stateInit = true
 	_ = c.writeFrame(protocol.MsgTabState, &protocol.TabState{
 		ID:                    t.ID,
 		CWD:                   cwd,
 		ForegroundProcessName: fg,
 		AppCursorMode:         appCursor,
+		Title:                 title,
 	})
 }
 

@@ -62,6 +62,10 @@ type Source struct {
 	scrollback    [][]uv.Cell
 	scrollbackCap int
 
+	// lastTitle suppresses redundant SetOnTitle callbacks when the
+	// daemon re-ships the same title on each TabState tick.
+	lastTitle string
+
 	// Lifecycle.
 	dataCh   chan struct{}
 	closed   atomic.Bool
@@ -177,6 +181,20 @@ func (s *Source) Close() {
 	s.signalDirty()
 }
 
+// Detach drops this client's hold on the tab without killing the
+// daemon-side session. Unlike Close, no MsgTabClose is sent — the
+// daemon keeps the PTY running so a future Hub.Adopt (or a
+// different client) can pick it back up. This is what GUI
+// window-close + app-shutdown call so reopening xerotty finds the
+// same tabs waiting.
+func (s *Source) Detach() {
+	if !s.closed.CompareAndSwap(false, true) {
+		return
+	}
+	s.hub.unregister(s.tabID)
+	s.signalDirty()
+}
+
 func (s *Source) IsClosed() bool { return s.closed.Load() || s.exited.Load() }
 
 func (s *Source) ChildExitCode() int { return int(s.exitCode.Load()) }
@@ -283,8 +301,22 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 	s.mu.Lock()
 	s.cwd = f.CWD
 	s.fgName = f.ForegroundProcessName
+	cb := s.onTitle
+	lastTitle := s.lastTitle
 	s.mu.Unlock()
 	s.appCursor.Store(f.AppCursorMode)
+	// Title changes fire SetOnTitle callbacks the same way the
+	// MsgTitle path does for in-process tabs (tabs.NewTab installs
+	// a callback that updates tab.Title). Only fire on actual
+	// change to avoid spamming the callback every state tick.
+	if f.Title != "" && f.Title != lastTitle && cb != nil {
+		cb(f.Title)
+	}
+	if f.Title != lastTitle {
+		s.mu.Lock()
+		s.lastTitle = f.Title
+		s.mu.Unlock()
+	}
 }
 
 // applyScrollbackAppend appends new rows to the client-side
@@ -325,20 +357,26 @@ func (s *Source) signalDirty() {
 // up with uv.Attr* bit positions (both packs in the same order, see
 // protocol.PackStyle).
 func uvCellFromProto(p protocol.Cell) uv.Cell {
-	attrs, ulStyle, fgIdx, fgIsRGB, bgIdx, bgIsRGB := protocol.UnpackStyle(p.Style)
+	attrs, ulStyle, fgSet, fgIdx, fgIsRGB, bgSet, bgIdx, bgIsRGB := protocol.UnpackStyle(p.Style)
 	style := uv.Style{
 		Attrs:     uint8(attrs),
 		Underline: uv.Underline(ulStyle),
 	}
-	if fgIsRGB {
-		style.Fg = rgbColor(p.FgRGB)
-	} else if fgIdx != 0 {
-		style.Fg = ansi.ExtendedColor(fgIdx)
+	if fgSet {
+		if fgIsRGB {
+			style.Fg = rgbColor(p.FgRGB)
+		} else {
+			// Includes palette index 0 (ANSI black). The fgSet
+			// bit is what distinguishes that from "no color".
+			style.Fg = ansi.ExtendedColor(fgIdx)
+		}
 	}
-	if bgIsRGB {
-		style.Bg = rgbColor(p.BgRGB)
-	} else if bgIdx != 0 {
-		style.Bg = ansi.ExtendedColor(bgIdx)
+	if bgSet {
+		if bgIsRGB {
+			style.Bg = rgbColor(p.BgRGB)
+		} else {
+			style.Bg = ansi.ExtendedColor(bgIdx)
+		}
 	}
 	c := uv.Cell{
 		Content: p.Content,

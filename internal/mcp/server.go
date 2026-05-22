@@ -238,13 +238,20 @@ func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
-	cols := t.Term.Width()
-	rows := t.Term.Height()
+	// Atomic snapshot under publishMu so the agent doesn't get a
+	// mid-scroll smear when reading during heavy PTY output (same
+	// reason the wire-publish path uses SnapshotViewport).
+	grid := t.Term.SnapshotViewport()
+	rows := len(grid)
+	cols := 0
+	if rows > 0 {
+		cols = len(grid[0])
+	}
 	lines := make([]string, rows)
 	for r := 0; r < rows; r++ {
 		var sb strings.Builder
 		for col := 0; col < cols; col++ {
-			cell := t.Term.CellAt(col, r)
+			cell := &grid[r][col]
 			if cell.Content == "" {
 				sb.WriteByte(' ')
 				continue

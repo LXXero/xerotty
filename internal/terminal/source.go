@@ -40,7 +40,18 @@ type Source interface {
 	Resize(cols, rows int)
 
 	// Close kills the child + releases resources. Idempotent.
+	// Use for "user explicitly closed this tab" — caller's intent
+	// is to end the session, not just to stop viewing it.
 	Close()
+
+	// Detach releases this client's view of the tab WITHOUT killing
+	// the underlying session. For PTYSource (no daemon) this is
+	// equivalent to Close (PTY can't outlive the process); for
+	// DaemonSource it unregisters from the hub but keeps the
+	// daemon-side tab alive so a future Adopt or attach can pick
+	// it back up. Use for "GUI window/app closing" so reopening
+	// xerotty finds the same tabs waiting.
+	Detach()
 
 	// IsClosed reports whether the child process has exited (or the
 	// remote tab has been torn down).

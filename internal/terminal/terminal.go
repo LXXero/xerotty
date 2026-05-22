@@ -446,6 +446,11 @@ func (t *Terminal) ChildExitCode() int { return t.ExitCode }
 // public DataCh field for Source-interface use.
 func (t *Terminal) DataChan() <-chan struct{} { return t.DataCh }
 
+// Detach is equivalent to Close for in-process PTYs (the child
+// can't outlive xerotty). Daemon-backed sources override this with
+// a "let the daemon keep the session alive" semantic.
+func (t *Terminal) Detach() { t.Close() }
+
 // SetOnTitle registers a callback fired on OSC 0/2 title changes.
 // Pass nil to clear. Holds t.mu so callers swapping the callback
 // from a different goroutine don't race the readPTY goroutine that
