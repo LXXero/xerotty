@@ -231,7 +231,16 @@ func (s *Session) CloseWindow(id uint32) {
 //
 // Returns the new tab and the window it joined.
 func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
-	term, err := terminal.New(s.cfg, cols, rows, cwd)
+	// Daemon-hosted variant forces unlimited+disk scrollback mode
+	// on the server side regardless of cfg.Scrollback.Mode. Why:
+	// memory mode's bounded ring rotates without notification, so
+	// the daemon can't reliably ship scrollback rows to clients in
+	// order (they go out of sync the moment the ring fills). Disk
+	// mode keeps absolute scrollback indices stable. The user's
+	// "memory mode" preference still applies as a client-side
+	// display cap (daemonsource.Hub.SetScrollbackCap). Server
+	// hoards; client decides how much to mirror.
+	term, err := terminal.NewDaemonHosted(s.cfg, cols, rows, cwd)
 	if err != nil {
 		return nil, nil, err
 	}

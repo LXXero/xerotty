@@ -73,6 +73,23 @@ type Terminal struct {
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
+// NewDaemonHosted is New with the scrollback config forcibly set
+// to "unlimited" mode. Used by the daemon (cmd/xerotty serve →
+// internal/daemon.Session.NewTab) so its in-memory scrollback ring
+// never rotates and absolute scrollback indices stay stable for
+// shipping to wire clients. The user's "memory" preference becomes
+// a client-side display cap (daemonsource.Hub.SetScrollbackCap)
+// rather than a server-side ring cap; the daemon's job is to
+// retain everything until the client decides what to mirror.
+//
+// Disk usage lives under /tmp via internal/terminal.DiskScrollback
+// and is cleaned up on Terminal.Close.
+func NewDaemonHosted(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
+	override := *cfg
+	override.Scrollback.Mode = "unlimited"
+	return New(&override, cols, rows, cwd)
+}
+
 func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd)
 	if err != nil {
