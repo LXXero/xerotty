@@ -331,6 +331,36 @@ func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
 }
 
+// Source interface shims. These exist so *Terminal satisfies
+// terminal.Source without renaming the exported Emu / ExitCode /
+// DataCh fields (which a lot of internal code reads directly).
+//
+// Method names deliberately differ from the field names to dodge
+// the field-vs-method conflict Go would otherwise flag.
+
+// Emulator returns the underlying vt.SafeEmulator. Same value as the
+// public Emu field; method form is what terminal.Source requires.
+func (t *Terminal) Emulator() *vt.SafeEmulator { return t.Emu }
+
+// ChildExitCode returns the child process's exit code (-1 if still
+// running / unknown). Method form of the public ExitCode field for
+// Source-interface use.
+func (t *Terminal) ChildExitCode() int { return t.ExitCode }
+
+// DataChan returns the dirty-tab signal channel. Method form of the
+// public DataCh field for Source-interface use.
+func (t *Terminal) DataChan() <-chan struct{} { return t.DataCh }
+
+// SetOnTitle registers a callback fired on OSC 0/2 title changes.
+// Pass nil to clear. Holds t.mu so callers swapping the callback
+// from a different goroutine don't race the readPTY goroutine that
+// invokes it.
+func (t *Terminal) SetOnTitle(fn func(string)) {
+	t.mu.Lock()
+	t.OnTitle = fn
+	t.mu.Unlock()
+}
+
 // IsClosed reports whether this Terminal is no longer usable — either
 // because Close() ran or because the child process exited on its own.
 // Used by tabs.CheckClosed to mark a tab as "Closed" in the UI so the

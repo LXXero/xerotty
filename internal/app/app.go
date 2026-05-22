@@ -106,7 +106,7 @@ type App struct {
 // implicit pointer grab can keep it stuck on the source Window, so a
 // Wayland data-device drop target or geometry hit-test wins first.
 type tabDrag struct {
-	Term               *terminal.Terminal
+	Term               terminal.Source
 	Label              string  // for floating-preview rendering
 	From               *Window // window the tab originated in; used to reject stale source focus
 	LastFocus          uintptr // SDL_WindowID last seen under the cursor during the drag
@@ -349,7 +349,7 @@ func (a *App) startMouseMirrorWakePoller() func() {
 // its first tab adopts the given already-running Terminal instead
 // of starting a fresh shell. Used by cross-Window tab drag when the
 // user drops the floating tab outside any existing Window.
-func (a *App) spawnWindowAdopting(term *terminal.Terminal) {
+func (a *App) spawnWindowAdopting(term terminal.Source) {
 	a.spawnWindowImpl(term)
 }
 
@@ -363,7 +363,7 @@ func (a *App) spawnWindow() {
 	a.spawnWindowImpl(nil)
 }
 
-func (a *App) spawnWindowImpl(adopt *terminal.Terminal) {
+func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	if len(a.windows) == 0 {
 		return // can't spawn before Run() has set up the main Window
 	}
@@ -1619,7 +1619,7 @@ func (a *Window) frame() {
 				if s, ok := a.scroll[tab.ID]; ok {
 					scrollOff = s.Offset
 				}
-				a.hoveredLink = detectLinkAt(tab.Terminal.Emu, col, row, scrollOff)
+				a.hoveredLink = detectLinkAt(tab.Terminal.Emulator(), col, row, scrollOff)
 
 				// Ctrl+click opens link
 				if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
@@ -1671,7 +1671,7 @@ func (a *Window) frame() {
 		case "hold":
 			// Keep tab open — user can close manually
 		case "hold_on_error":
-			if tab.Terminal.ExitCode == 0 {
+			if tab.Terminal.ChildExitCode() == 0 {
 				a.tabs.CloseTab(i)
 			}
 			// Non-zero exit: keep tab open so user can see output
@@ -1797,7 +1797,7 @@ func (a *Window) frame() {
 					showCursor = int(imgui.Time()/rate)%2 == 0
 				}
 				if showCursor {
-					pos := tab.Terminal.Emu.CursorPosition()
+					pos := tab.Terminal.Emulator().CursorPosition()
 					a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
 						a.app.cfg.Appearance.CursorStyle, drawList)
 				}
@@ -1809,7 +1809,7 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
 				_, visRows := a.gridSize()
 				savedIdx := s.MatchIdx
-				s.Search(tab.Terminal.Emu, visRows)
+				s.Search(tab.Terminal.Emulator(), visRows)
 				if savedIdx < len(s.Matches) {
 					s.MatchIdx = savedIdx
 				}
@@ -2276,8 +2276,8 @@ func (w *Window) dispatchAction(action string) {
 		w.updateFontMetrics()
 	case "select_all":
 		if tab := w.tabs.Active(); tab != nil {
-			cols := tab.Terminal.Emu.Width()
-			rows := tab.Terminal.Emu.Height()
+			cols := tab.Terminal.Emulator().Width()
+			rows := tab.Terminal.Emulator().Height()
 			w.sel.startCol = 0
 			w.sel.startRow = 0
 			w.sel.endCol = cols - 1
@@ -2287,7 +2287,7 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "clear_scrollback":
 		if tab := w.tabs.Active(); tab != nil {
-			tab.Terminal.Emu.ClearScrollback()
+			tab.Terminal.Emulator().ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
@@ -2296,7 +2296,7 @@ func (w *Window) dispatchAction(action string) {
 		if tab := w.tabs.Active(); tab != nil {
 			// Send RIS (Reset to Initial State) escape sequence
 			tab.Terminal.Write([]byte("\x1bc"))
-			tab.Terminal.Emu.ClearScrollback()
+			tab.Terminal.Emulator().ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
@@ -2915,7 +2915,7 @@ func (w *Window) renderSearchOverlay() {
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
 		w.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
-			s.Search(tab.Terminal.Emu, rows)
+			s.Search(tab.Terminal.Emulator(), rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 		// Counter: render into a fixed-width Dummy slot via drawList
@@ -2979,7 +2979,7 @@ func (w *Window) renderSearchOverlay() {
 		imgui.SameLineV(0, 8)
 		optChanged = imgui.Checkbox("WRAP", &s.WrapAround) || optChanged
 		if optChanged && s.Query != "" {
-			s.Search(tab.Terminal.Emu, rows)
+			s.Search(tab.Terminal.Emulator(), rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 	}
@@ -3442,11 +3442,11 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		cell := cellAtViewport(tab.Terminal.Emu, col, row, scrollOff)
+		cell := cellAtViewport(tab.Terminal.Emulator(), col, row, scrollOff)
 		if cell != nil && isSelWordChar(cell.Content) {
-			w.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectWord(tab.Terminal.Emulator(), col, row, scrollOff)
 		} else {
-			w.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectSpace(tab.Terminal.Emulator(), col, row, scrollOff)
 		}
 		if w.sel.active {
 			// iTerm2-style: hold-and-drag after a double-click extends
@@ -3454,7 +3454,7 @@ func (w *Window) handleMouseSelection() {
 			// anchor. Release without movement just keeps the word
 			// selection.
 			w.sel.dragging = true
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 		w.lastDblClickTime = imgui.Time()
 		w.lastDblClickRow = row
@@ -3466,11 +3466,11 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
+			w.sel.selectLine(tab.Terminal.Emulator(), row, scrollOff)
 			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
 				w.sel.dragging = true
-				w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+				w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 			}
 			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
@@ -3486,7 +3486,7 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		w.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
+		w.sel.extendDrag(row, col, tab.Terminal.Emulator(), scrollOff)
 	}
 
 	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
@@ -3498,7 +3498,7 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 	}
 
@@ -3550,7 +3550,7 @@ func (w *Window) selectedText() string {
 	if s, ok := w.scroll[tab.ID]; ok {
 		scrollOff = s.Offset
 	}
-	return w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
+	return w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
 }
 
 func getCWD(term interface{}) string {

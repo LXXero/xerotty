@@ -17,9 +17,13 @@ import (
 // shows what's actually running — matching iTerm2/Terminal.app
 // behaviour for apps that don't emit OSC themselves.
 type Tab struct {
-	ID       int
-	Title    string // OSC-set title; empty until the shell/app emits one
-	Terminal *terminal.Terminal
+	ID    int
+	Title string // OSC-set title; empty until the shell/app emits one
+	// Terminal is the abstraction over the tab's PTY+grid. Default
+	// impl is *terminal.Terminal (in-process PTY); when the daemon
+	// arc is wired up this is a daemon-backed source instead. The
+	// GUI only ever talks through this interface.
+	Terminal terminal.Source
 	Dirty    bool
 	Closed   bool
 
@@ -88,13 +92,13 @@ func (m *Manager) RemoveTab(idx int) *Tab {
 	return tab
 }
 
-// AdoptTab takes ownership of an already-running Terminal,
-// wrapping it in a new Tab entry at the end of this manager's
-// list and switching focus to it. The Terminal's existing PTY +
+// AdoptTab takes ownership of an already-running Source, wrapping
+// it in a new Tab entry at the end of this manager's list and
+// switching focus to it. The Source's existing PTY/connection +
 // goroutines keep running; only the tab-list ownership changes.
 // Used by drag-between-windows after the source Manager
 // RemoveTab'd the entry.
-func (m *Manager) AdoptTab(term *terminal.Terminal) *Tab {
+func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	tab := &Tab{
 		ID:       m.NextID,
 		Terminal: term,
@@ -153,9 +157,9 @@ func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
 		// to the foreground process name (or "shell" if even that
 		// lookup fails) until the app emits an OSC 0/2 title.
 	}
-	term.OnTitle = func(title string) {
+	term.SetOnTitle(func(title string) {
 		tab.Title = title
-	}
+	})
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
 	m.ActiveIdx = len(m.Tabs) - 1
@@ -230,7 +234,7 @@ func (m *Manager) Count() int {
 func (m *Manager) DrainData() {
 	for _, tab := range m.Tabs {
 		select {
-		case <-tab.Terminal.DataCh:
+		case <-tab.Terminal.DataChan():
 			tab.Dirty = true
 		default:
 		}
