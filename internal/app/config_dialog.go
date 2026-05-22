@@ -36,6 +36,7 @@ var (
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
+	prefTabSources   = []string{"pty", "daemon"}
 	prefColorModes   = []string{"theme", "custom"}
 	prefBSModes      = []string{"ascii_del", "ascii_bs"}
 	prefDelModes     = []string{"vt_sequence", "ascii_del"}
@@ -123,11 +124,13 @@ type configDialog struct {
 	fontSizeCustom bool // size combo set to "Custom..." → show numeric input
 
 	// Shell & Tabs
-	shell        string
-	term         string
-	childExitIdx int32
-	inheritCWD   bool
-	closeBtnIdx  int32
+	shell         string
+	term          string
+	childExitIdx  int32
+	inheritCWD    bool
+	closeBtnIdx   int32
+	tabSourceIdx  int32
+	daemonSocket  string
 
 	// Scrollback
 	sbLines   int32
@@ -277,6 +280,12 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.childExitIdx = prefIndexOf(prefChildExits, cfg.Tabs.OnChildExit)
 	d.inheritCWD = cfg.Tabs.InheritCWD
 	d.closeBtnIdx = prefIndexOf(prefCloseBtnPos, cfg.Tabs.CloseButtonPosition)
+	d.tabSourceIdx = prefIndexOf(prefTabSources, cfg.Tabs.Source)
+	if d.tabSourceIdx < 0 {
+		// Empty/unknown → "pty" default.
+		d.tabSourceIdx = 0
+	}
+	d.daemonSocket = cfg.Tabs.DaemonSocket
 
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
@@ -363,6 +372,10 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Tabs.OnChildExit = prefChildExits[d.childExitIdx]
 	}
 	cfg.Tabs.InheritCWD = d.inheritCWD
+	if int(d.tabSourceIdx) < len(prefTabSources) {
+		cfg.Tabs.Source = prefTabSources[d.tabSourceIdx]
+	}
+	cfg.Tabs.DaemonSocket = d.daemonSocket
 	if int(d.closeBtnIdx) < len(prefCloseBtnPos) {
 		cfg.Tabs.CloseButtonPosition = prefCloseBtnPos[d.closeBtnIdx]
 	}
@@ -445,8 +458,30 @@ func (a *Window) restoreFocusAfterPreferencesClose() {
 func (a *Window) applyPreferences() {
 	prevFamily := a.app.cfg.Font.Family
 	prevPath := a.app.cfg.Font.Path
+	prevSource := a.app.cfg.Tabs.Source
 
 	a.prefDialog.applyTo(&a.app.cfg)
+
+	// Tab source mode flip. Only honor pty → daemon switches that
+	// previously had no hub (auto-spawn the daemon now). Going
+	// daemon → pty just nulls out the factory; the running hub +
+	// any daemon-backed tabs keep going (no point tearing them
+	// down — the user can close them when they're done). Tabs
+	// opened after the toggle land in the new source.
+	if a.app.cfg.Tabs.Source != prevSource {
+		if a.app.cfg.Tabs.Source == "daemon" && a.app.daemonHub == nil {
+			if err := a.app.initDaemonSource(); err != nil {
+				fmt.Fprintf(os.Stderr, "xerotty: prefs flipped to daemon mode but auto-spawn failed: %v\n", err)
+			}
+		}
+		// Reapply the factory to every Window so the next NewTab
+		// honors the new mode. Nil factory = PTY fallback.
+		for _, win := range a.app.windows {
+			if win.tabs != nil {
+				win.tabs.SourceFactory = a.app.tabSourceFactory
+			}
+		}
+	}
 
 	// Apply theme change. The cimgui-go backend is shared across all
 	// Windows (multi-viewport pop-out reuses the carrier's GL context),
@@ -992,6 +1027,21 @@ func (a *Window) renderPrefShellTabs() {
 	imgui.Text("Close Button Position")
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##closebtn", &d.closeBtnIdx, prefCloseBtnPos, int32(len(prefCloseBtnPos)))
+
+	imgui.Separator()
+
+	imgui.Text("Tab Source")
+	imgui.SetNextItemWidth(w)
+	imgui.ComboStrarr("##tabsource", &d.tabSourceIdx, prefTabSources, int32(len(prefTabSources)))
+	imgui.TextDisabled("pty: in-process. daemon: routes through xerotty serve")
+	imgui.TextDisabled("(auto-spawns one if no daemon is running). Takes effect on")
+	imgui.TextDisabled("the next tab — existing tabs stay on their current source.")
+
+	if d.tabSourceIdx == 1 {
+		imgui.Text("Daemon Socket (empty = $XDG_RUNTIME_DIR/xerottyd.sock)")
+		imgui.SetNextItemWidth(w)
+		imgui.InputTextWithHint("##daemonsock", "/run/user/1000/xerottyd.sock", &d.daemonSocket, 0, nil)
+	}
 }
 
 func (a *Window) renderPrefScrollback() {
