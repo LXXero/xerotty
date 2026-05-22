@@ -61,6 +61,13 @@ type Manager struct {
 	ActiveIdx int
 	NextID    int
 	cfg       *config.Config
+
+	// SourceFactory builds a terminal.Source for a new tab. When
+	// nil (the default), NewTab spawns an in-process *terminal.Terminal.
+	// The GUI sets this to a daemon-backed factory when the user
+	// configured tab_source = "daemon" so all new tabs go through
+	// the daemon connection instead.
+	SourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
 }
 
 // NewManager creates a new tab manager.
@@ -144,8 +151,17 @@ func (m *Manager) MoveTab(from, to int) {
 // directory for the shell; pass "" to inherit xerotty's CWD. Callers
 // thread the parent tab's CWD when cfg.Tabs.InheritCWD is set so
 // "New Tab" opens in the same directory the user was already in.
+//
+// If m.SourceFactory is set (daemon-backed mode) the new tab's
+// source comes from there instead of an in-process PTY.
 func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
-	term, err := terminal.New(m.cfg, cols, rows, cwd)
+	var term terminal.Source
+	var err error
+	if m.SourceFactory != nil {
+		term, err = m.SourceFactory(cols, rows, cwd)
+	} else {
+		term, err = terminal.New(m.cfg, cols, rows, cwd)
+	}
 	if err != nil {
 		return nil, err
 	}

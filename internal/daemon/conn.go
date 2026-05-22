@@ -63,6 +63,17 @@ type tabSub struct {
 	lastGrid [][]protocol.Cell
 	lastCols uint16
 	lastRows uint16
+
+	// Per-sub cache of the last TabState we sent. Suppresses
+	// re-sends when nothing changed since the previous tick.
+	// stateInit goes true after the first push so an all-empty
+	// initial state still emits a frame (the client needs the
+	// app-cursor=false baseline even when CWD is "" because the
+	// PTY hasn't said pwd yet).
+	stateInit     bool
+	lastCWD       string
+	lastFg        string
+	lastAppCursor bool
 }
 
 func (c *clientConn) handshake() error {
@@ -222,6 +233,17 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		return c.handleClipboardData(&msg)
+	case protocol.MsgClearScrollback:
+		var msg protocol.ClearScrollback
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			if t := c.session.Tab(msg.ID); t != nil {
+				t.Term.Emu.ClearScrollback()
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown message type %v", t)
 	}
@@ -541,8 +563,18 @@ func (c *clientConn) stopAllSubs() {
 // Doesn't run a high-rate cursor-blink timer — UIs handle blink
 // locally. The select timeout is just a cancel-responsiveness floor.
 func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
-	// Initial full paint + cursor.
+	// Initial full paint + cursor + state push so the client has
+	// CWD / foreground proc / app-cursor mode before its first
+	// render.
 	c.sendCellsAndCursor(t, sub)
+	c.sendTabState(t, sub)
+
+	// Slow tick for state. CWD + foreground change rarely (cd, a
+	// program starts); DECCKM (sub.lastAppCursor) is push-on-change
+	// from the emulator callback already — this tick is the
+	// fallback in case we miss an edge.
+	stateTick := time.NewTicker(750 * time.Millisecond)
+	defer stateTick.Stop()
 
 	for {
 		select {
@@ -550,10 +582,35 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			return
 		case <-t.Term.DataCh:
 			c.sendCellsAndCursor(t, sub)
+		case <-stateTick.C:
+			c.sendTabState(t, sub)
 		case <-time.After(500 * time.Millisecond):
 			// Keeps us responsive to cancel. No-op otherwise.
 		}
 	}
+}
+
+// sendTabState pushes the current per-tab metadata (cwd, fg proc,
+// app cursor) IF anything changed since last push. Comparing
+// against the per-sub cache avoids spamming the wire when nothing
+// moved.
+func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
+	cwd := t.Term.GetCWD()
+	fg := t.Term.ForegroundProcessName()
+	appCursor := t.Term.AppCursorMode()
+	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor {
+		return
+	}
+	sub.lastCWD = cwd
+	sub.lastFg = fg
+	sub.lastAppCursor = appCursor
+	sub.stateInit = true
+	_ = c.writeFrame(protocol.MsgTabState, &protocol.TabState{
+		ID:                    t.ID,
+		CWD:                   cwd,
+		ForegroundProcessName: fg,
+		AppCursorMode:         appCursor,
+	})
 }
 
 // sendCellsAndCursor publishes whatever changed since the last

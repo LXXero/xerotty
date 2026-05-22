@@ -49,6 +49,9 @@ const (
 	MsgTitle             MsgType = 33 // server → client: tab title (from OSC)
 	MsgBell              MsgType = 34 // server → client
 	MsgChildExit         MsgType = 35 // server → client: PTY child exited
+	MsgTabState          MsgType = 36 // server → client: cwd, foreground proc, app cursor
+
+	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -350,4 +353,31 @@ type Bell struct {
 type ChildExit struct {
 	ID       uint32 `msg:"id"`
 	ExitCode int32  `msg:"exit_code"`
+}
+
+// TabState carries slow-changing per-tab metadata: the foreground
+// process's working directory, its command name (for tab-title
+// fallback), and DECCKM (app cursor mode, for keyboard translation).
+// Daemon pushes proactively rather than answering per-request:
+//
+//   - once at attach time (so the client has values immediately)
+//   - whenever DECCKM toggles (response is immediate; keyboards
+//     need this to be correct)
+//   - on a slow timer when the foreground process changes (so the
+//     title bar updates within a beat of `vim` starting)
+//
+// Push-not-pull avoids the per-frame round-trip the GUI would
+// otherwise need for every renderable change.
+type TabState struct {
+	ID                    uint32 `msg:"id"`
+	CWD                   string `msg:"cwd,omitempty"`
+	ForegroundProcessName string `msg:"fg_proc,omitempty"`
+	AppCursorMode         bool   `msg:"app_cursor"`
+}
+
+// ClearScrollback asks the daemon to drop the tab's scrollback ring.
+// Issued by Ctrl+L's "hard clear" path. The daemon clears the
+// emulator's scrollback in addition to any disk-backed extension.
+type ClearScrollback struct {
+	ID uint32 `msg:"id"`
 }

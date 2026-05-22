@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/fontsys"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
@@ -49,6 +50,13 @@ type App struct {
 	baseCellW       float32 // cell width at base font size
 	baseCellH       float32 // cell height at base font size
 	pendingFontFace bool    // rebuild font atlas at start of next frame
+
+	// Daemon-source plumbing — only populated when cfg.Tabs.Source
+	// == "daemon". hub owns the connection + frame router;
+	// tabSourceFactory is what tabs.Manager.SourceFactory points at
+	// for every Window so all new tabs route through the daemon.
+	daemonHub        *daemonsource.Hub
+	tabSourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -121,10 +129,55 @@ type tabDrag struct {
 // initialized.
 func New(cfg config.Config) *App {
 	a := &App{cfg: cfg}
+	if cfg.Tabs.Source == "daemon" {
+		if err := a.initDaemonSource(); err != nil {
+			// Don't fail GUI startup — fall back to in-process
+			// PTY tabs and surface the error on stderr so the
+			// user knows daemon mode is degraded.
+			fmt.Fprintf(os.Stderr, "xerotty: daemon mode requested but unavailable, falling back to in-process PTY: %v\n", err)
+		}
+	}
 	w := newWindow(a)
 	a.windows = append(a.windows, w)
 	a.active = w
 	return a
+}
+
+// initDaemonSource ensures a local xerotty daemon is running,
+// connects to it, attaches, and wires the resulting Hub into App so
+// tabs.Manager.NewTab routes through it. Errors here are non-fatal
+// — caller logs + falls back to PTY tabs.
+func (a *App) initDaemonSource() error {
+	cli, err := daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket)
+	if err != nil {
+		return err
+	}
+	if _, err := cli.Hello("xerotty-gui"); err != nil {
+		_ = cli.Close()
+		return fmt.Errorf("hello: %w", err)
+	}
+	go cli.Run()
+	// Attach with NewIfMissing=false: the GUI doesn't want an
+	// auto-tab from the daemon's default-tab-on-empty path; we'll
+	// create tabs ourselves via NewTab when the user asks.
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return fmt.Errorf("attach: %w", err)
+	}
+	// Drain the Attached frame so it doesn't sit blocking the
+	// client's channel forever.
+	select {
+	case <-cli.Attached():
+	case <-time.After(2 * time.Second):
+		_ = cli.Close()
+		return fmt.Errorf("attach: no response from daemon")
+	}
+	hub := daemonsource.NewHub(cli)
+	a.daemonHub = hub
+	a.tabSourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
+		return hub.NewTab(cols, rows, cwd)
+	}
+	return nil
 }
 
 // reapClosedWindows removes Windows the user closed this frame. All
@@ -471,6 +524,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	// tab's CWD — Cmd+N from inside ~/src/foo gives a new Window also
 	// in ~/src/foo, matching iTerm/Terminal.app's behavior.
 	w.tabs = tabs.NewManager(&a.cfg)
+	w.tabs.SourceFactory = a.tabSourceFactory
 	cols, rows := w.gridSize()
 	if adopt != nil {
 		// Adopt the already-running Terminal from a cross-Window
@@ -616,6 +670,7 @@ func (a *App) Run() error {
 
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
 	w.tabs = tabs.NewManager(&a.cfg)
+	w.tabs.SourceFactory = a.tabSourceFactory
 
 	// macOS-only: hook an SDL event watch so a real frame still renders
 	// while AppKit's live-resize tracking mode holds the run loop.

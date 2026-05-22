@@ -38,6 +38,7 @@ type Client struct {
 	tabCreated    chan *protocol.TabCreated
 	windowCreated chan *protocol.WindowCreated
 	attached      chan *protocol.Attached
+	tabState      chan *protocol.TabState
 	errCh         chan *protocol.Error
 	closed     chan struct{}
 
@@ -77,6 +78,7 @@ func wrap(conn net.Conn) *Client {
 		tabCreated:    make(chan *protocol.TabCreated, 4),
 		windowCreated: make(chan *protocol.WindowCreated, 4),
 		attached:      make(chan *protocol.Attached, 1),
+		tabState:      make(chan *protocol.TabState, 32),
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
@@ -243,6 +245,16 @@ func (c *Client) TabCreated() <-chan *protocol.TabCreated { return c.tabCreated 
 // Attach call).
 func (c *Client) Attached() <-chan *protocol.Attached { return c.attached }
 
+// TabState returns the channel of slow-changing per-tab metadata
+// pushes (cwd, foreground proc, app cursor mode). Daemon emits at
+// attach + on change + on a slow tick.
+func (c *Client) TabState() <-chan *protocol.TabState { return c.tabState }
+
+// SendClearScrollback asks the daemon to drop a tab's scrollback.
+func (c *Client) SendClearScrollback(id uint32) error {
+	return c.send(protocol.MsgClearScrollback, &protocol.ClearScrollback{ID: id})
+}
+
 // Errors returns the channel of server-side protocol errors.
 func (c *Client) Errors() <-chan *protocol.Error { return c.errCh }
 
@@ -347,6 +359,18 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		c.attached <- msg
+	case protocol.MsgTabState:
+		msg := &protocol.TabState{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		// Non-blocking — if no one's draining we drop. State pushes
+		// are idempotent (always the current value, not deltas) so
+		// losing one is fine; the next one re-syncs.
+		select {
+		case c.tabState <- msg:
+		default:
+		}
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

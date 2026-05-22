@@ -126,6 +126,21 @@ type TabConfig struct {
 	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
 	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
 	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
+
+	// Source picks where new tabs get their PTY:
+	//   "pty"    (default) — in-process PTY, no daemon needed.
+	//   "daemon" — talk to an xerotty daemon (xerotty serve). If
+	//              one isn't running on the local socket, xerotty
+	//              forks one in the background at GUI startup
+	//              ("auto-spawn"). Lets tabs survive the GUI
+	//              crashing and lets you reattach from another
+	//              machine via xerotty connect --ssh.
+	Source string `toml:"source"`
+
+	// DaemonSocket overrides the unix-socket path xerotty connects
+	// to when Source == "daemon". Empty = default
+	// $XDG_RUNTIME_DIR/xerottyd.sock.
+	DaemonSocket string `toml:"daemon_socket"`
 }
 
 // WindowConfig controls initial window state.

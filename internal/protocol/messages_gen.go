@@ -1573,6 +1573,109 @@ func (z ChildExit) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *ClearScrollback) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, err = dc.ReadUint32()
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z ClearScrollback) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 1
+	// write "id"
+	err = en.Append(0x81, 0xa2, 0x69, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteUint32(z.ID)
+	if err != nil {
+		err = msgp.WrapError(err, "ID")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z ClearScrollback) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 1
+	// string "id"
+	o = append(o, 0x81, 0xa2, 0x69, 0x64)
+	o = msgp.AppendUint32(o, z.ID)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClearScrollback) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z ClearScrollback) Msgsize() (s int) {
+	s = 1 + 3 + msgp.Uint32Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *ClipboardData) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field
@@ -4183,6 +4286,229 @@ func (z *TabInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabInfo) Msgsize() (s int) {
 	s = 1 + 3 + msgp.Uint32Size + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, err = dc.ReadUint32()
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "cwd":
+			z.CWD, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "CWD")
+				return
+			}
+		case "fg_proc":
+			z.ForegroundProcessName, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "ForegroundProcessName")
+				return
+			}
+		case "app_cursor":
+			z.AppCursorMode, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "AppCursorMode")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.CWD == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	if z.ForegroundProcessName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "cwd"
+			err = en.Append(0xa3, 0x63, 0x77, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.CWD)
+			if err != nil {
+				err = msgp.WrapError(err, "CWD")
+				return
+			}
+		}
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// write "fg_proc"
+			err = en.Append(0xa7, 0x66, 0x67, 0x5f, 0x70, 0x72, 0x6f, 0x63)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.ForegroundProcessName)
+			if err != nil {
+				err = msgp.WrapError(err, "ForegroundProcessName")
+				return
+			}
+		}
+		// write "app_cursor"
+		err = en.Append(0xaa, 0x61, 0x70, 0x70, 0x5f, 0x63, 0x75, 0x72, 0x73, 0x6f, 0x72)
+		if err != nil {
+			return
+		}
+		err = en.WriteBool(z.AppCursorMode)
+		if err != nil {
+			err = msgp.WrapError(err, "AppCursorMode")
+			return
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.CWD == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	if z.ForegroundProcessName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "cwd"
+			o = append(o, 0xa3, 0x63, 0x77, 0x64)
+			o = msgp.AppendString(o, z.CWD)
+		}
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// string "fg_proc"
+			o = append(o, 0xa7, 0x66, 0x67, 0x5f, 0x70, 0x72, 0x6f, 0x63)
+			o = msgp.AppendString(o, z.ForegroundProcessName)
+		}
+		// string "app_cursor"
+		o = append(o, 0xaa, 0x61, 0x70, 0x70, 0x5f, 0x63, 0x75, 0x72, 0x73, 0x6f, 0x72)
+		o = msgp.AppendBool(o, z.AppCursorMode)
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "cwd":
+			z.CWD, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "CWD")
+				return
+			}
+		case "fg_proc":
+			z.ForegroundProcessName, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ForegroundProcessName")
+				return
+			}
+		case "app_cursor":
+			z.AppCursorMode, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "AppCursorMode")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *TabState) Msgsize() (s int) {
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize
 	return
 }
 
