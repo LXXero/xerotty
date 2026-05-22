@@ -31,6 +31,13 @@ type Terminal struct {
 	cmd      *exec.Cmd
 	DataCh   chan struct{} // signals new data for rendering (buffered, cap 1)
 	OnTitle  func(string)  // called when OSC 0/2 sets window title
+
+	// OnChildExit fires from the waitChild goroutine the instant
+	// the PTY child reaps. Caller gets the exit code; the daemon
+	// uses this to ship a MsgChildExit to attached wire clients,
+	// the GUI uses it to drive the on-child-exit policy. Set via
+	// SetOnChildExit so the callback swap is mutex-guarded.
+	OnChildExit func(int)
 	cols        int
 	rows        int
 	closed      bool // Close() has run and released resources
@@ -361,6 +368,21 @@ func (t *Terminal) SetOnTitle(fn func(string)) {
 	t.mu.Unlock()
 }
 
+// SetOnChildExit registers a callback fired the instant the PTY
+// child exits. May fire immediately if the child has already
+// exited by the time this is called (rare but possible — e.g. a
+// shell that crashes during init). Pass nil to clear.
+func (t *Terminal) SetOnChildExit(fn func(int)) {
+	t.mu.Lock()
+	t.OnChildExit = fn
+	alreadyExited := t.childExited
+	code := t.ExitCode
+	t.mu.Unlock()
+	if alreadyExited && fn != nil {
+		fn(code)
+	}
+}
+
 // IsClosed reports whether this Terminal is no longer usable — either
 // because Close() ran or because the child process exited on its own.
 // Used by tabs.CheckClosed to mark a tab as "Closed" in the UI so the
@@ -376,10 +398,17 @@ func (t *Terminal) IsClosed() bool {
 // cleanup once — otherwise the PTY fd, done channel, and any other
 // per-tab resources would leak whenever a tab exits naturally before the
 // user closes it explicitly.
+//
+// Fires t.OnChildExit (under the mutex, after state is set) so any
+// observer — the daemon's publishLoop, the GUI's tab manager, etc.
+// — gets notified synchronously with the state transition. Without
+// this, attached clients in daemon mode never learn the shell died
+// and the tab hangs forever (no DataCh signal because the PTY
+// reader has nothing to read; no MsgChildExit because nobody sent
+// it).
 func (t *Terminal) waitChild() {
 	err := t.cmd.Wait()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if err == nil {
 		t.ExitCode = 0
 	} else if exitErr, ok := err.(*exec.ExitError); ok {
@@ -388,6 +417,12 @@ func (t *Terminal) waitChild() {
 		t.ExitCode = 1
 	}
 	t.childExited = true
+	cb := t.OnChildExit
+	code := t.ExitCode
+	t.mu.Unlock()
+	if cb != nil {
+		cb(code)
+	}
 }
 
 // readPTY reads from the PTY and writes to the SafeEmulator.

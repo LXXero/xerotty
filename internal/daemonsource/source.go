@@ -50,6 +50,18 @@ type Source struct {
 	fgName   string
 	appCursor atomic.Bool
 
+	// Client-side scrollback ring, fed by MsgScrollbackAppend. Each
+	// entry is one row of cells. Oldest at index 0, newest at the
+	// tail. ScrollbackLen + ScrollbackCellAt read from this; the
+	// GUI's renderer + selection + search all walk it transparently
+	// through the Source.ScrollbackCellAt method.
+	//
+	// Capped at scrollbackCap to bound memory — daemon may have
+	// disk-backed unlimited scrollback, but the client only mirrors
+	// the recent tail. Older rows are dropped on overflow (FIFO).
+	scrollback    [][]uv.Cell
+	scrollbackCap int
+
 	// Lifecycle.
 	dataCh   chan struct{}
 	closed   atomic.Bool
@@ -61,12 +73,13 @@ type Source struct {
 // or Hub.NewTab so the source gets registered in the routing table.
 func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 	s := &Source{
-		hub:    h,
-		tabID:  tabID,
-		emu:    vt.NewSafeEmulator(cols, rows),
-		cols:   cols,
-		rows:   rows,
-		dataCh: make(chan struct{}, 1),
+		hub:           h,
+		tabID:         tabID,
+		emu:           vt.NewSafeEmulator(cols, rows),
+		cols:          cols,
+		rows:          rows,
+		dataCh:        make(chan struct{}, 1),
+		scrollbackCap: 10000, // bounded; matches typical "lots of history" config
 	}
 	s.exitCode.Store(-1)
 	return s
@@ -98,12 +111,32 @@ func (s *Source) CellAt(col, row int) *uv.Cell {
 	return s.emu.CellAt(col, row)
 }
 
-// ScrollbackCellAt: daemon-backed tabs don't ship scrollback over
-// the wire in this phase. Return nil for any row — the renderer
-// treats nil cells as empty.
-func (s *Source) ScrollbackCellAt(col, row int) *uv.Cell { return nil }
+// ScrollbackCellAt reads a cell from the client-side scrollback
+// mirror at logical row (0 = oldest) and column. Returns nil for
+// out-of-range coords; renderer treats nil as empty.
+func (s *Source) ScrollbackCellAt(col, row int) *uv.Cell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if row < 0 || row >= len(s.scrollback) {
+		return nil
+	}
+	rowSlice := s.scrollback[row]
+	if col < 0 || col >= len(rowSlice) {
+		return nil
+	}
+	c := rowSlice[col]
+	return &c
+}
 
-func (s *Source) ScrollbackLen() int { return 0 }
+// ScrollbackLen returns how many rows of scrollback the client has
+// mirrored. May be less than the daemon's actual scrollback length:
+// pre-attach rows aren't back-filled in this phase, and the local
+// ring drops oldest rows on overflow.
+func (s *Source) ScrollbackLen() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.scrollback)
+}
 
 func (s *Source) Write(p []byte) (int, error) {
 	if s.closed.Load() {
@@ -249,6 +282,26 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 	s.fgName = f.ForegroundProcessName
 	s.mu.Unlock()
 	s.appCursor.Store(f.AppCursorMode)
+}
+
+// applyScrollbackAppend appends new rows to the client-side
+// scrollback ring. Drops oldest rows when the ring would overflow
+// scrollbackCap so total memory stays bounded — daemon may have a
+// disk-backed unlimited buffer, but the client only mirrors the
+// recent tail.
+func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, row := range f.Rows {
+		uvRow := make([]uv.Cell, len(row))
+		for i, c := range row {
+			uvRow[i] = uvCellFromProto(c)
+		}
+		s.scrollback = append(s.scrollback, uvRow)
+	}
+	if over := len(s.scrollback) - s.scrollbackCap; over > 0 {
+		s.scrollback = s.scrollback[over:]
+	}
 }
 
 // signalDirty wakes whoever's reading DataChan. Buffered cap=1 +

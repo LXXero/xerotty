@@ -118,6 +118,14 @@ type Tab struct {
 	// their last-published serial to decide whether to send a fresh
 	// frame.
 	dirty atomic.Uint64
+
+	// Exited is closed once the PTY child reaps. Subscribers (each
+	// attached client's publishLoop) select on it to know when to
+	// ship MsgChildExit + tear down the per-(client, tab) state.
+	// ExitCode is set BEFORE Exited closes so racing reads see the
+	// right value. Single-shot — Tab is never reused after exit.
+	Exited   chan struct{}
+	ExitCode int32
 }
 
 // Window is a logical UI window — a grouping of tabs. The daemon
@@ -226,14 +234,26 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := &Tab{
-		ID:   s.nextTabID,
-		Term: term,
+		ID:     s.nextTabID,
+		Term:   term,
+		Exited: make(chan struct{}),
 	}
 	s.nextTabID++
 	s.tabs[t.ID] = t
 	term.OnTitle = func(title string) {
 		t.Title = title
 	}
+	// Latch the exit code + close Exited so per-(client, tab)
+	// publishLoops can ship MsgChildExit. SetOnChildExit fires
+	// immediately if the shell somehow already exited (rare).
+	term.SetOnChildExit(func(code int) {
+		// Guard against double-close in case OnChildExit fires
+		// twice somehow (Terminal contract says no, but a recover
+		// here is cheap insurance).
+		defer func() { _ = recover() }()
+		atomic.StoreInt32(&t.ExitCode, int32(code))
+		close(t.Exited)
+	})
 
 	var w *Window
 	if windowID != 0 {

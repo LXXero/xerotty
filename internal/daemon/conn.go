@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -63,6 +64,12 @@ type tabSub struct {
 	lastGrid [][]protocol.Cell
 	lastCols uint16
 	lastRows uint16
+
+	// lastScrollbackLen is the highest absolute scrollback index we
+	// shipped to this client. When the daemon's scrollback grows
+	// past this, the new rows (lastScrollbackLen .. current) get
+	// shipped as MsgScrollbackAppend.
+	lastScrollbackLen int
 
 	// Per-sub cache of the last TabState we sent. Suppresses
 	// re-sends when nothing changed since the previous tick.
@@ -516,7 +523,11 @@ func sanitizeFilename(s string) string {
 	return string(out)
 }
 
-// subscribe spawns the per-tab publish goroutine.
+// subscribe spawns the per-tab publish goroutine. Seeds
+// lastScrollbackLen with the tab's current scrollback at
+// subscription time so we naturally skip pre-attach history (would
+// otherwise dump megabytes of scrollback in the initial frame).
+// Post-attach growth gets streamed normally.
 func (c *clientConn) subscribe(t *Tab) {
 	c.subsMu.Lock()
 	if c.subs == nil {
@@ -526,7 +537,10 @@ func (c *clientConn) subscribe(t *Tab) {
 		c.subsMu.Unlock()
 		return
 	}
-	sub := &tabSub{cancel: make(chan struct{})}
+	sub := &tabSub{
+		cancel:            make(chan struct{}),
+		lastScrollbackLen: t.Term.ScrollbackLen(),
+	}
 	c.subs[t.ID] = sub
 	c.subsMu.Unlock()
 
@@ -584,6 +598,16 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			c.sendCellsAndCursor(t, sub)
 		case <-stateTick.C:
 			c.sendTabState(t, sub)
+		case <-t.Exited:
+			// Child reaped. Flush any final cell state first (the
+			// shell's "logout"/"exit" line is interesting!), then
+			// ship MsgChildExit and tear this subscription down.
+			c.sendCellsAndCursor(t, sub)
+			_ = c.writeFrame(protocol.MsgChildExit, &protocol.ChildExit{
+				ID:       t.ID,
+				ExitCode: atomic.LoadInt32(&t.ExitCode),
+			})
+			return
 		case <-time.After(500 * time.Millisecond):
 			// Keeps us responsive to cancel. No-op otherwise.
 		}
@@ -653,6 +677,37 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 	}
 
 	c.sendCursor(t)
+	c.sendNewScrollback(t, sub)
+}
+
+// sendNewScrollback ships any rows that rolled off the top of the
+// viewport since the last publish. Reads through t.Term.ScrollbackLen
+// / ScrollbackCellAt which transparently handle the disk-backed
+// "unlimited" mode — so the wire format is mode-agnostic.
+//
+// subscribe() seeded sub.lastScrollbackLen with the snapshot at
+// attach time, so this naturally streams only post-attach growth.
+// Pre-attach back-fill is a separate (future) request/response.
+func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
+	cur := t.Term.ScrollbackLen()
+	if cur <= sub.lastScrollbackLen {
+		return
+	}
+	cols := t.Term.Width()
+	rows := make([][]protocol.Cell, 0, cur-sub.lastScrollbackLen)
+	for r := sub.lastScrollbackLen; r < cur; r++ {
+		row := make([]protocol.Cell, cols)
+		for col := 0; col < cols; col++ {
+			row[col] = cellFromUV(t.Term.ScrollbackCellAt(col, r))
+		}
+		rows = append(rows, row)
+	}
+	_ = c.writeFrame(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
+		ID:      t.ID,
+		BaseIdx: uint32(sub.lastScrollbackLen),
+		Rows:    rows,
+	})
+	sub.lastScrollbackLen = cur
 }
 
 // computeCellDiff produces a CellDiff containing only cells that

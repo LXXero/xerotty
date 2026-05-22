@@ -143,6 +143,17 @@ func (v *connectClient) run() error {
 			v.curCol = cur.Col
 			v.mu.Unlock()
 			v.moveCursor(cur.Row, cur.Col)
+		case ce := <-v.c.ChildExit():
+			// Shell exited inside the daemon-side tab. Mirror what
+			// a normal terminal does: paint a final summary, drop
+			// the line, and exit the viewer. Daemon-side session
+			// stays alive (the tab is just dead inside it) so
+			// reattaching later still finds the daemon up.
+			if ce.ID == v.tabID {
+				fmt.Fprintf(os.Stdout, "\r\n[exit %d]\r\n", ce.ExitCode)
+				_ = v.c.Detach()
+				return nil
+			}
 		case <-v.c.Closed():
 			fmt.Fprint(os.Stdout, "\r\n[disconnected]\r\n")
 			return v.c.ExitErr()

@@ -50,6 +50,7 @@ const (
 	MsgBell              MsgType = 34 // server → client
 	MsgChildExit         MsgType = 35 // server → client: PTY child exited
 	MsgTabState          MsgType = 36 // server → client: cwd, foreground proc, app cursor
+	MsgScrollbackAppend  MsgType = 37 // server → client: new scrollback rows
 
 	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
 )
@@ -380,4 +381,24 @@ type TabState struct {
 // emulator's scrollback in addition to any disk-backed extension.
 type ClearScrollback struct {
 	ID uint32 `msg:"id"`
+}
+
+// ScrollbackAppend ships rows that just rolled off the top of the
+// visible viewport into the daemon's scrollback ring. Client appends
+// to its own scrollback buffer so scrolling up shows history.
+//
+// BaseIdx is the absolute scrollback row index of the first row in
+// Rows (0 = oldest line ever scrolled). Lets the client detect
+// gaps (e.g. after a reattach where the daemon's scrollback already
+// has rows the client never saw) and either request a backfill or
+// just skip ahead.
+//
+// Rows are oldest-first (Rows[0] is older than Rows[1]). Daemons
+// can batch — sending several rows in one frame is allowed when
+// multiple lines scroll off in quick succession (e.g. `find /`
+// output).
+type ScrollbackAppend struct {
+	ID      uint32   `msg:"id"`
+	BaseIdx uint32   `msg:"base_idx"`
+	Rows    [][]Cell `msg:"rows"`
 }

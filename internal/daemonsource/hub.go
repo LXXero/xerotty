@@ -68,6 +68,7 @@ const (
 	pendingBell
 	pendingChildExit
 	pendingTabState
+	pendingScrollbackAppend
 )
 
 // pendingCap limits per-tab buffering. 64 covers the typical initial
@@ -129,6 +130,8 @@ func (h *Hub) register(s *Source) {
 			s.applyChildExit(pf.raw.(*protocol.ChildExit))
 		case pendingTabState:
 			s.applyTabState(pf.raw.(*protocol.TabState))
+		case pendingScrollbackAppend:
+			s.applyScrollbackAppend(pf.raw.(*protocol.ScrollbackAppend))
 		}
 	}
 }
@@ -254,6 +257,12 @@ func (h *Hub) router() {
 				s.applyTabState(f)
 			} else {
 				h.stash(f.ID, pendingTabState, f)
+			}
+		case f := <-cli.ScrollbackAppend():
+			if s := h.lookup(f.ID); s != nil {
+				s.applyScrollbackAppend(f)
+			} else {
+				h.stash(f.ID, pendingScrollbackAppend, f)
 			}
 		case err := <-cli.Errors():
 			// Protocol errors aren't tied to a tab. Log to stderr

@@ -39,6 +39,7 @@ type Client struct {
 	windowCreated chan *protocol.WindowCreated
 	attached      chan *protocol.Attached
 	tabState      chan *protocol.TabState
+	scrollback    chan *protocol.ScrollbackAppend
 	errCh         chan *protocol.Error
 	closed     chan struct{}
 
@@ -79,6 +80,7 @@ func wrap(conn net.Conn) *Client {
 		windowCreated: make(chan *protocol.WindowCreated, 4),
 		attached:      make(chan *protocol.Attached, 1),
 		tabState:      make(chan *protocol.TabState, 32),
+		scrollback:    make(chan *protocol.ScrollbackAppend, 32),
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
@@ -250,6 +252,11 @@ func (c *Client) Attached() <-chan *protocol.Attached { return c.attached }
 // attach + on change + on a slow tick.
 func (c *Client) TabState() <-chan *protocol.TabState { return c.tabState }
 
+// ScrollbackAppend returns the channel of scrollback-row pushes.
+// Daemon emits a batch each time the visible viewport rolls up
+// (new output pushes lines off the top).
+func (c *Client) ScrollbackAppend() <-chan *protocol.ScrollbackAppend { return c.scrollback }
+
 // SendClearScrollback asks the daemon to drop a tab's scrollback.
 func (c *Client) SendClearScrollback(id uint32) error {
 	return c.send(protocol.MsgClearScrollback, &protocol.ClearScrollback{ID: id})
@@ -371,6 +378,15 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		case c.tabState <- msg:
 		default:
 		}
+	case protocol.MsgScrollbackAppend:
+		msg := &protocol.ScrollbackAppend{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		// Block here — scrollback rows are NOT idempotent, dropping
+		// one creates a permanent gap in the user's history. Better
+		// to back-pressure the daemon's send loop than to lose data.
+		c.scrollback <- msg
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
