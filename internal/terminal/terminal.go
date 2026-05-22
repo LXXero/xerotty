@@ -47,6 +47,18 @@ type Terminal struct {
 	closeOnce   sync.Once
 	done        chan struct{}
 
+	// publishMu serializes the emulator's "ingest a chunk of PTY
+	// output" (readPTY → t.Emu.Write) with bulk snapshots of the
+	// grid + scrollback (SnapshotViewport / SnapshotScrollbackRange,
+	// used by the daemon to build CellFull / CellDiff frames). The
+	// SafeEmulator's own RLock is per-cell — without this outer
+	// coordination, the daemon would read row 0 → Emu scrolls →
+	// daemon reads row 1 from the now-shifted grid, producing the
+	// "live cells scrambled with stale cells" pattern (see the
+	// `1, 6573, 3, 4, 5` bug). Held briefly per PTY write batch
+	// and per snapshot; nothing nested under it.
+	publishMu sync.Mutex
+
 	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
 	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
 	// less, vim insert-mode movement) recognize them. Flipped on the PTY
@@ -355,6 +367,65 @@ func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
 }
 
+// SnapshotViewport returns a consistent snapshot of the visible
+// grid (current cols × rows). Held under publishMu so no PTY write
+// can scroll the emulator mid-snapshot. Returned cells are values
+// (not pointers); safe to retain.
+//
+// Used by the daemon to build CellFull / CellDiff frames where a
+// torn mid-scroll read would otherwise ship garbage.
+func (t *Terminal) SnapshotViewport() [][]uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	cols := t.Emu.Width()
+	rows := t.Emu.Height()
+	out := make([][]uv.Cell, rows)
+	for r := 0; r < rows; r++ {
+		row := make([]uv.Cell, cols)
+		for col := 0; col < cols; col++ {
+			c := t.Emu.CellAt(col, r)
+			if c != nil {
+				row[col] = *c
+			}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// SnapshotScrollbackRange returns rows [from, to) from the
+// scrollback as a consistent snapshot under publishMu. Returns at
+// most (to - from) rows; may return fewer if the range extends past
+// the actual scrollback length. row indices are absolute (0 =
+// oldest); ScrollbackCellAt handles the disk + in-memory split.
+func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	sbLen := t.ScrollbackLen()
+	if to > sbLen {
+		to = sbLen
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to <= from {
+		return nil
+	}
+	cols := t.Emu.Width()
+	out := make([][]uv.Cell, 0, to-from)
+	for r := from; r < to; r++ {
+		row := make([]uv.Cell, cols)
+		for col := 0; col < cols; col++ {
+			c := t.ScrollbackCellAt(col, r)
+			if c != nil {
+				row[col] = *c
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // Source interface shims. These exist so *Terminal satisfies
 // terminal.Source without renaming the exported Emu / ExitCode /
 // DataCh fields (which a lot of internal code reads directly).
@@ -462,11 +533,17 @@ func (t *Terminal) readPTY() {
 			oscBuf = newOSCBuf
 			inOSC = newInOSC
 			if len(cleaned) > 0 {
+				// publishMu serializes this write with daemon-side
+				// bulk snapshots so they see a consistent grid +
+				// scrollback rather than a half-shifted mid-write
+				// state.
+				t.publishMu.Lock()
 				t.Emu.Write(cleaned)
 				// Mirror new scrollback lines to disk in unlimited
 				// mode. No-op otherwise. Runs on this goroutine so
 				// the mirror always sees writes in PTY-arrival order.
 				t.mirrorScrollback()
+				t.publishMu.Unlock()
 			}
 			select {
 			case t.DataCh <- struct{}{}:

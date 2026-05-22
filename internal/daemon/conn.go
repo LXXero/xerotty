@@ -638,15 +638,20 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 // publish for this (client, tab) pair: either a CellFull (resync /
 // first frame) or a CellDiff. Then a Cursor frame.
 func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
-	cols := uint16(t.Term.Width())
-	rows := uint16(t.Term.Height())
-
-	// Build current grid snapshot.
+	// Atomic snapshot under publishMu so we don't smear cells
+	// across a mid-write scroll (the `1, 6573, 3, 4, 5` bug).
+	uvGrid := t.Term.SnapshotViewport()
+	rows := uint16(len(uvGrid))
+	var cols uint16
+	if rows > 0 {
+		cols = uint16(len(uvGrid[0]))
+	}
 	grid := make([][]protocol.Cell, rows)
 	for r := uint16(0); r < rows; r++ {
 		row := make([]protocol.Cell, cols)
 		for col := uint16(0); col < cols; col++ {
-			row[col] = cellFromUV(t.Term.CellAt(int(col), int(r)))
+			cell := uvGrid[r][col]
+			row[col] = cellFromUV(&cell)
 		}
 		grid[r] = row
 	}
@@ -714,12 +719,17 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	if end-sub.lastScrollbackLen > scrollbackBatchMax {
 		end = sub.lastScrollbackLen + scrollbackBatchMax
 	}
-	cols := t.Term.Width()
-	rows := make([][]protocol.Cell, 0, end-sub.lastScrollbackLen)
-	for r := sub.lastScrollbackLen; r < end; r++ {
-		row := make([]protocol.Cell, cols)
-		for col := 0; col < cols; col++ {
-			row[col] = cellFromUV(t.Term.ScrollbackCellAt(col, r))
+	// Atomic snapshot of the requested range under publishMu so the
+	// rows can't shift mid-iteration. (Even in unlimited+disk mode
+	// the disk evict-from-memory step happens under publishMu, so
+	// here we get a coherent view.)
+	uvRows := t.Term.SnapshotScrollbackRange(sub.lastScrollbackLen, end)
+	rows := make([][]protocol.Cell, 0, len(uvRows))
+	for _, uvRow := range uvRows {
+		row := make([]protocol.Cell, len(uvRow))
+		for col := range uvRow {
+			cell := uvRow[col]
+			row[col] = cellFromUV(&cell)
 		}
 		rows = append(rows, row)
 	}
