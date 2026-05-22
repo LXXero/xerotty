@@ -262,15 +262,12 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 		name = "default"
 	}
 	c.session = c.daemon.session(name)
-	tabs := c.session.Tabs()
-	if len(tabs) == 0 && msg.NewIfMissing {
-		// Empty session — create default window + initial tab.
-		_, _, err := c.session.NewTab(0, 80, 24, "")
-		if err != nil {
+	if msg.NewIfMissing {
+		if _, err := c.session.EnsureInitialTab(80, 24, ""); err != nil {
 			return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
 		}
-		tabs = c.session.Tabs()
 	}
+	tabs := c.session.Tabs()
 	tabInfos := make([]protocol.TabInfo, len(tabs))
 	for i, t := range tabs {
 		tabInfos[i] = protocol.TabInfo{
@@ -680,10 +677,30 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 	c.sendNewScrollback(t, sub)
 }
 
-// sendNewScrollback ships any rows that rolled off the top of the
-// viewport since the last publish. Reads through t.Term.ScrollbackLen
-// / ScrollbackCellAt which transparently handle the disk-backed
-// "unlimited" mode — so the wire format is mode-agnostic.
+// scrollbackBatchMax caps how many rows go into a single
+// MsgScrollbackAppend frame. A burst like `seq 80000` would
+// otherwise produce a multi-megabyte frame that blocks the
+// publishLoop for seconds while the client decodes it; chunking
+// to 256 rows keeps each frame in the ~20KB range so the GUI
+// stays responsive and the rest of the burst streams through
+// later publish cycles.
+//
+// Lower = smoother but more frame overhead. 256 was chosen
+// empirically — fits in one or two typical socket-send syscalls
+// at 80-col grids.
+const scrollbackBatchMax = 256
+
+// sendNewScrollback ships rows that rolled off the top of the
+// viewport since the last publish. Reads through
+// t.Term.ScrollbackLen / ScrollbackCellAt which transparently
+// handle the disk-backed "unlimited" mode — so the wire format
+// is mode-agnostic.
+//
+// Caps each frame at scrollbackBatchMax rows. If more accumulated,
+// the rest streams on the next publishLoop tick — DataCh is
+// signaled again as the PTY produces more output, or the 500ms
+// fallback fires, so the queue drains within a few cycles even
+// when the user just walked away from a `seq 80000` burst.
 //
 // subscribe() seeded sub.lastScrollbackLen with the snapshot at
 // attach time, so this naturally streams only post-attach growth.
@@ -693,9 +710,13 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	if cur <= sub.lastScrollbackLen {
 		return
 	}
+	end := cur
+	if end-sub.lastScrollbackLen > scrollbackBatchMax {
+		end = sub.lastScrollbackLen + scrollbackBatchMax
+	}
 	cols := t.Term.Width()
-	rows := make([][]protocol.Cell, 0, cur-sub.lastScrollbackLen)
-	for r := sub.lastScrollbackLen; r < cur; r++ {
+	rows := make([][]protocol.Cell, 0, end-sub.lastScrollbackLen)
+	for r := sub.lastScrollbackLen; r < end; r++ {
 		row := make([]protocol.Cell, cols)
 		for col := 0; col < cols; col++ {
 			row[col] = cellFromUV(t.Term.ScrollbackCellAt(col, r))
@@ -707,7 +728,17 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 		BaseIdx: uint32(sub.lastScrollbackLen),
 		Rows:    rows,
 	})
-	sub.lastScrollbackLen = cur
+	sub.lastScrollbackLen = end
+	// More to ship? Bump DataCh so the next iteration of
+	// publishLoop kicks in immediately rather than waiting for the
+	// 500ms fallback. Non-blocking — channel is cap=1 and the
+	// publishLoop is what drains it.
+	if end < cur {
+		select {
+		case t.Term.DataCh <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // computeCellDiff produces a CellDiff containing only cells that

@@ -31,6 +31,12 @@ import (
 type Hub struct {
 	c *clientproto.Client
 
+	// scrollbackCap is the per-Source scrollback ring cap. Read by
+	// newSource. 0 = use the daemonsource default (10000). Set via
+	// SetScrollbackCap before creating sources; runtime changes
+	// only affect future Source instances.
+	scrollbackCap int
+
 	mu      sync.RWMutex
 	sources map[uint32]*Source
 
@@ -96,6 +102,16 @@ func NewHub(c *clientproto.Client) *Hub {
 // Stop signals the router goroutine to exit. The underlying
 // clientproto.Client is not closed — callers own its lifecycle.
 func (h *Hub) Stop() { close(h.stopCh) }
+
+// SetScrollbackCap controls how many rows of scrollback each new
+// Source will mirror locally. Higher = more memory, more user
+// history. 0 means "use the default" (10000). Sources created
+// before this call keep their existing cap.
+func (h *Hub) SetScrollbackCap(rows int) {
+	h.mu.Lock()
+	h.scrollbackCap = rows
+	h.mu.Unlock()
+}
 
 // Client returns the underlying clientproto.Client. Useful for
 // pushing one-off frames (e.g. clipboard sync) that aren't per-tab.

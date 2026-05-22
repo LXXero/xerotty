@@ -79,7 +79,10 @@ func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 		cols:          cols,
 		rows:          rows,
 		dataCh:        make(chan struct{}, 1),
-		scrollbackCap: 10000, // bounded; matches typical "lots of history" config
+		scrollbackCap: h.scrollbackCap,
+	}
+	if s.scrollbackCap == 0 {
+		s.scrollbackCap = 10000
 	}
 	s.exitCode.Store(-1)
 	return s

@@ -173,6 +173,18 @@ func (a *App) initDaemonSource() error {
 		return fmt.Errorf("attach: no response from daemon")
 	}
 	hub := daemonsource.NewHub(cli)
+	// Mirror the GUI's scrollback config so daemon-backed tabs
+	// have the same history depth as in-process ones. "unlimited"
+	// mode → use a large fixed cap (the client still bounds memory
+	// — daemon-side has the disk-backed real unlimited; client
+	// just keeps the recent tail).
+	cap := a.cfg.Scrollback.Lines
+	if a.cfg.Scrollback.Mode == "unlimited" {
+		cap = 1_000_000
+	}
+	if cap > 0 {
+		hub.SetScrollbackCap(cap)
+	}
 	a.daemonHub = hub
 	a.tabSourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
 		return hub.NewTab(cols, rows, cwd)

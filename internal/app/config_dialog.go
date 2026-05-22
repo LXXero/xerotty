@@ -1059,6 +1059,12 @@ func (a *Window) renderPrefScrollback() {
 		imgui.Text("Lines")
 		imgui.SetNextItemWidth(w)
 		imgui.InputInt("##sblines", &d.sbLines)
+		imgui.TextDisabled("Output past Lines is dropped (oldest first). For huge")
+		imgui.TextDisabled("bursts (seq 80000, find / etc.) pick \"unlimited\" so")
+		imgui.TextDisabled("history doesn't get truncated.")
+	} else {
+		imgui.TextDisabled("Unlimited mode spills to disk via /tmp. Daemon-mode")
+		imgui.TextDisabled("tabs honor this too — full history reaches the GUI.")
 	}
 
 	imgui.Separator()

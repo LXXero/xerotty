@@ -43,6 +43,10 @@ type Session struct {
 	// by a future UI gate. Phase 4 has no consumer — the field
 	// exists so writes don't silently vanish.
 	proposed []ProposedAction
+
+	// initMu serializes EnsureInitialTab so two concurrent
+	// NewIfMissing attaches don't each spawn a tab.
+	initMu sync.Mutex
 }
 
 // ProposedAction is one queued write from an agent operating in
@@ -275,6 +279,32 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 		s.focusedTabID = t.ID
 	}
 	return t, w, nil
+}
+
+// EnsureInitialTab atomically guarantees the session has at least
+// one tab + window. Returns true if it created one, false if a tab
+// already existed. Used by handleAttach to avoid the TOCTOU race
+// where two clients with NewIfMissing each see an empty session
+// and both spawn a tab.
+//
+// initMu serializes concurrent EnsureInitialTab callers around the
+// check-and-spawn so only the first creates a tab. After all tabs
+// close, the next EnsureInitialTab caller (post-CloseTab) will
+// correctly spawn again — initMu just serializes; it doesn't
+// "remember" prior spawns.
+func (s *Session) EnsureInitialTab(cols, rows int, cwd string) (bool, error) {
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	s.mu.Lock()
+	already := len(s.tabs) > 0
+	s.mu.Unlock()
+	if already {
+		return false, nil
+	}
+	if _, _, err := s.NewTab(0, cols, rows, cwd); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Tab returns the tab with the given ID, or nil if not found.
