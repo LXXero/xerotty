@@ -23,7 +23,8 @@ type Config struct {
 	Links      LinksConfig      `toml:"links"`
 	Clipboard  ClipboardConfig  `toml:"clipboard"`
 	Env        map[string]string `toml:"env"`
-	Tabs       TabConfig  `toml:"tabs"`
+	Tabs       TabConfig    `toml:"tabs"`
+	Hosts      []RemoteHost `toml:"hosts"`
 	Window     WindowConfig `toml:"window"`
 }
 
@@ -122,6 +123,20 @@ type UnsafePasteConfig struct {
 }
 
 // TabConfig controls tab behavior.
+// RemoteHost is one entry in the user's host registry. Tabs can be
+// opened against a named host via the menu action "new_tab_remote:<name>"
+// or by setting cfg.Tabs.Source = "daemon:<name>". xerotty connects
+// to that host via SSH and routes the tab's PTY through the remote
+// daemon. The connection is persistent (auto-spawned remote daemon
+// stays up across SSH disconnects) so tab survival works
+// cross-machine.
+type RemoteHost struct {
+	Name      string   `toml:"name"`       // referenced by menu actions / cfg.Tabs.Source
+	SSHDest   string   `toml:"ssh_dest"`   // anything ssh(1) accepts: "user@host", "host", an alias
+	SSHArgs   []string `toml:"ssh_args"`   // optional extra args before <dest>: -i, -p, ...
+	RemoteCmd string   `toml:"remote_cmd"` // override; default "xerotty serve --stdio"
+}
+
 type TabConfig struct {
 	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
 	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD

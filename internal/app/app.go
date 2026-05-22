@@ -4,6 +4,7 @@ package app
 import (
 	"fmt"
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/fontsys"
@@ -24,6 +25,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -67,6 +69,14 @@ type App struct {
 	// right server-side window. Empty queue → new GUI windows
 	// spawn fresh daemon windows via SendWindowCreate.
 	daemonAdoptQueue []daemonWindowSnapshot
+
+	// remoteHubs is the lazy-built per-host registry of SSH-backed
+	// daemon hubs. Keyed by RemoteHost.Name. Populated on the
+	// first menu action / tab creation that targets a named host;
+	// reused for subsequent tabs to that same host so a single SSH
+	// connection serves many tabs.
+	remoteHubsMu sync.Mutex
+	remoteHubs   map[string]*daemonsource.Hub
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -151,6 +161,80 @@ func New(cfg config.Config) *App {
 	a.windows = append(a.windows, w)
 	a.active = w
 	return a
+}
+
+// openRemoteTab spawns a new tab whose source is a daemon on a
+// named remote host (from cfg.Hosts). Routes through the host's
+// lazy Hub so multiple remote tabs on the same host share one SSH
+// connection.
+func (w *Window) openRemoteTab(hostName string) error {
+	hub, err := w.app.remoteHubFor(hostName)
+	if err != nil {
+		return err
+	}
+	cols, rows := w.gridSize()
+	src, err := hub.NewTab(cols, rows, "")
+	if err != nil {
+		return fmt.Errorf("hub.NewTab on %s: %w", hostName, err)
+	}
+	tab := w.tabs.AdoptTab(src)
+	tab.Host = hostName
+	w.tabSwitchReq = tab.ID
+	return nil
+}
+
+// remoteHubFor returns the daemonsource.Hub for the named host,
+// lazily building it (SSH-dial + hello + attach) on first request.
+// Subsequent calls reuse the same Hub so one SSH connection serves
+// many tabs on that host. Returns an error if the named host isn't
+// in cfg.Hosts or the SSH connection fails.
+func (a *App) remoteHubFor(name string) (*daemonsource.Hub, error) {
+	a.remoteHubsMu.Lock()
+	if h, ok := a.remoteHubs[name]; ok {
+		a.remoteHubsMu.Unlock()
+		return h, nil
+	}
+	a.remoteHubsMu.Unlock()
+
+	var host *config.RemoteHost
+	for i := range a.cfg.Hosts {
+		if a.cfg.Hosts[i].Name == name {
+			host = &a.cfg.Hosts[i]
+			break
+		}
+	}
+	if host == nil {
+		return nil, fmt.Errorf("remote host %q not in cfg.Hosts", name)
+	}
+
+	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
+	if err != nil {
+		return nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
+	}
+	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
+		_ = cli.Close()
+		return nil, fmt.Errorf("hello to %s: %w", name, err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return nil, fmt.Errorf("attach to %s: %w", name, err)
+	}
+	select {
+	case <-cli.Attached():
+	case <-time.After(5 * time.Second):
+		_ = cli.Close()
+		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
+	}
+	hub := daemonsource.NewHub(cli)
+
+	a.remoteHubsMu.Lock()
+	if a.remoteHubs == nil {
+		a.remoteHubs = make(map[string]*daemonsource.Hub)
+	}
+	a.remoteHubs[name] = hub
+	a.remoteHubsMu.Unlock()
+	return hub, nil
 }
 
 // daemonTabSnapshot is one tab the daemon reported at attach time —
@@ -2399,6 +2483,18 @@ func encodeRune(buf []byte, r rune) int {
 }
 
 func (w *Window) dispatchAction(action string) {
+	// Action namespace "new_tab_remote:<host>" opens a tab against
+	// the named host from cfg.Hosts. The host's Hub is lazily
+	// created on first use; subsequent tabs to the same host share
+	// the SSH connection. Failures log + drop — the user keeps a
+	// working local terminal.
+	if strings.HasPrefix(action, "new_tab_remote:") {
+		host := action[len("new_tab_remote:"):]
+		if err := w.openRemoteTab(host); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: new_tab_remote %s: %v\n", host, err)
+		}
+		return
+	}
 	switch action {
 	case "new_tab":
 		cols, rows := w.gridSize()

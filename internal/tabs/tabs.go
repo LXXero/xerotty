@@ -19,6 +19,11 @@ import (
 type Tab struct {
 	ID    int
 	Title string // OSC-set title; empty until the shell/app emits one
+	// Host is the named remote host this tab's PTY lives on (from
+	// cfg.Hosts). Empty for local tabs (in-process PTY or local
+	// daemon). The GUI uses this to render a host badge in the
+	// tab title so users know which machine each tab is on.
+	Host string
 	// Terminal is the abstraction over the tab's PTY+grid. Default
 	// impl is *terminal.Terminal (in-process PTY); when the daemon
 	// arc is wired up this is a daemon-backed source instead. The
@@ -41,7 +46,18 @@ const foregroundCacheTTL = 500 * time.Millisecond
 // foreground process name from the PTY (e.g. "vim", "top"), with a
 // "shell" fallback when neither is available. Cached to throttle the
 // foreground lookup (forks `ps` on macOS, cheap on Linux).
+//
+// Remote tabs (t.Host != "") get a "host: " prefix so the user can
+// tell at a glance which machine the tab lives on.
 func (t *Tab) DisplayTitle() string {
+	base := t.titleBase()
+	if t.Host != "" {
+		return t.Host + ": " + base
+	}
+	return base
+}
+
+func (t *Tab) titleBase() string {
 	if t.Title != "" {
 		return t.Title
 	}
