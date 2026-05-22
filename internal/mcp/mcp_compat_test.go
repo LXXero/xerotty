@@ -76,8 +76,8 @@ func TestMCPStandardProtocol(t *testing.T) {
 	if err := json.Unmarshal(initRes, &initOut); err != nil {
 		t.Fatalf("initialize result decode: %v", err)
 	}
-	if initOut.ServerInfo.Name != "xerottyd" {
-		t.Errorf("server name: got %q want xerottyd", initOut.ServerInfo.Name)
+	if initOut.ServerInfo.Name != "xerotty" {
+		t.Errorf("server name: got %q want xerotty", initOut.ServerInfo.Name)
 	}
 	if _, ok := initOut.Capabilities["tools"]; !ok {
 		t.Errorf("server didn't advertise tools capability")

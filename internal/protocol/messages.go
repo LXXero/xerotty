@@ -56,6 +56,7 @@ const (
 	MsgChildExit         MsgType = 35 // server → client: PTY child exited
 	MsgTabState          MsgType = 36 // server → client: cwd, foreground proc, app cursor
 	MsgScrollbackAppend  MsgType = 37 // server → client: new scrollback rows
+	MsgScrollbackCleared MsgType = 38 // server → client: scrollback was cleared (broadcast to all attached)
 
 	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
 )
@@ -390,6 +391,16 @@ type TabState struct {
 // Issued by Ctrl+L's "hard clear" path. The daemon clears the
 // emulator's scrollback in addition to any disk-backed extension.
 type ClearScrollback struct {
+	ID uint32 `msg:"id"`
+}
+
+// ScrollbackCleared notifies a client that the tab's scrollback was
+// dropped (either by this client, another attached client, or the
+// daemon itself). Receivers should drop their local scrollback
+// mirror so the GUI doesn't keep showing stale history. The
+// scrollback append index resets to 0 on the daemon side, so the
+// next ScrollbackAppend will start from 0 too.
+type ScrollbackCleared struct {
 	ID uint32 `msg:"id"`
 }
 

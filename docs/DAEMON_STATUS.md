@@ -1,4 +1,19 @@
-# xerottyd Phase 0 status
+# Daemon status (historical Phase 0 doc — see HEAD note below)
+
+> **HEAD UPDATE**: This doc was written when the daemon was a
+> separate `./xerottyd` binary. That layout was collapsed shortly
+> after — there's only ONE binary now (`./xerotty`) with
+> subcommands:
+>
+> - `xerotty`            — GUI (default)
+> - `xerotty serve`      — daemon (was `xerottyd`)
+> - `xerotty connect`    — CLI thin client
+>
+> Everything in this doc that says "xerottyd binary" actually
+> means "xerotty serve". Socket FILENAMES still use the
+> `xerottyd.sock` name (so existing scripts that hardcode the
+> path keep working) but no separate executable exists. Don't
+> split the binary back out.
 
 What's working on `spike/daemon` as of commit `3a44d7e`. What's
 next. Read this when picking the work back up.
@@ -10,8 +25,8 @@ git checkout spike/daemon
 ./build.sh
 ```
 
-Produces both `./xerotty` (unchanged UI) and `./xerottyd` (new
-daemon).
+Produces `./xerotty`. `xerotty serve` is the daemon mode;
+`xerotty connect` is the CLI thin client. No separate binaries.
 
 **End-to-end integration test** (the actual proof Phase 0 works):
 

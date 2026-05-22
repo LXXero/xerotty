@@ -40,6 +40,7 @@ type Client struct {
 	attached      chan *protocol.Attached
 	tabState      chan *protocol.TabState
 	scrollback    chan *protocol.ScrollbackAppend
+	sbCleared     chan *protocol.ScrollbackCleared
 	errCh         chan *protocol.Error
 	closed     chan struct{}
 
@@ -81,6 +82,7 @@ func wrap(conn net.Conn) *Client {
 		attached:      make(chan *protocol.Attached, 1),
 		tabState:      make(chan *protocol.TabState, 32),
 		scrollback:    make(chan *protocol.ScrollbackAppend, 32),
+		sbCleared:     make(chan *protocol.ScrollbackCleared, 8),
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
@@ -257,6 +259,11 @@ func (c *Client) TabState() <-chan *protocol.TabState { return c.tabState }
 // (new output pushes lines off the top).
 func (c *Client) ScrollbackAppend() <-chan *protocol.ScrollbackAppend { return c.scrollback }
 
+// ScrollbackCleared returns the channel of "scrollback was dropped"
+// notifications. Broadcast to every client attached to the tab so
+// concurrent viewers all drop their local mirrors in sync.
+func (c *Client) ScrollbackCleared() <-chan *protocol.ScrollbackCleared { return c.sbCleared }
+
 // SendClearScrollback asks the daemon to drop a tab's scrollback.
 func (c *Client) SendClearScrollback(id uint32) error {
 	return c.send(protocol.MsgClearScrollback, &protocol.ClearScrollback{ID: id})
@@ -387,6 +394,12 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		// one creates a permanent gap in the user's history. Better
 		// to back-pressure the daemon's send loop than to lose data.
 		c.scrollback <- msg
+	case protocol.MsgScrollbackCleared:
+		msg := &protocol.ScrollbackCleared{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		c.sbCleared <- msg
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

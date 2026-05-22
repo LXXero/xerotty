@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	vt "github.com/charmbracelet/x/vt"
 
+	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/terminal"
@@ -91,6 +92,18 @@ func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 	s.exitCode.Store(-1)
 	return s
 }
+
+// TabID returns the daemon-side tab ID this Source is bound to.
+// Used by the GUI to ship focus updates (SendTabFocus /
+// SendWindowFocusTab) since the local tabs.Tab.ID is the GUI's
+// Manager-assigned local index, not the wire-protocol ID.
+func (s *Source) TabID() uint32 { return s.tabID }
+
+// HubClient returns the underlying clientproto.Client for sending
+// per-tab focus / geometry messages that aren't on the Source's
+// own API. Mostly an escape hatch — most callers should use the
+// per-tab methods (Write, Paste, Resize, etc.).
+func (s *Source) HubClient() *clientproto.Client { return s.hub.c }
 
 // --- terminal.Source implementation ---
 
@@ -343,6 +356,17 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 		s.lastTitle = f.Title
 		s.mu.Unlock()
 	}
+}
+
+// applyScrollbackCleared drops the local scrollback mirror in
+// response to a daemon broadcast. Fires for ALL attached clients
+// on the tab, not just the one that issued the clear — that's the
+// whole point of the broadcast (concurrent viewers stay in sync).
+func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
+	s.mu.Lock()
+	s.scrollback = nil
+	s.mu.Unlock()
+	s.signalDirty()
 }
 
 // applyScrollbackAppend appends new rows to the client-side

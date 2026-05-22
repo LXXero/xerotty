@@ -475,10 +475,12 @@ func (a *Window) applyPreferences() {
 			}
 		}
 		// Reapply the factory to every Window so the next NewTab
-		// honors the new mode. Nil factory = PTY fallback.
+		// honors the new mode. installSourceFactory closes over
+		// the Window's own daemonWindowID — important so multi-
+		// window setups route correctly post-flip.
 		for _, win := range a.app.windows {
 			if win.tabs != nil {
-				win.tabs.SourceFactory = a.app.tabSourceFactory
+				a.app.installSourceFactory(win)
 			}
 		}
 	}

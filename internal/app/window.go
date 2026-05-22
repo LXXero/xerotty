@@ -31,6 +31,14 @@ type Window struct {
 	// or non-daemon mode.
 	daemonWindowID uint32
 
+	// lastSentFocusTabID is the most recent tab ID we shipped to
+	// the daemon via SendTabFocus / SendWindowFocusTab. Per-frame
+	// focus check compares against w.tabs.Active().ID and fires
+	// only on change so we don't spam the wire with redundant
+	// focus messages.
+	lastSentFocusTabID uint32
+
+
 	// (Old: per-Window cimgui-go backend handle. Removed during the
 	// SDL3 platform migration — the platform layer owns lifecycle
 	// process-wide; per-Window state is just OS-window metadata

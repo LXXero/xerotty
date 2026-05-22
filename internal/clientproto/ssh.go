@@ -12,21 +12,26 @@ import (
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
-// DialSSH spawns an SSH command that runs xerottyd --stdio on the
-// remote side and wraps the resulting stdin+stdout pipes as a Client.
-// The remote daemon's stderr is forwarded to the parent's stderr so
-// auth prompts, "xerottyd: serving one client on stdio", etc. show
-// up where the user can see them.
+// DialSSH spawns an SSH command that runs `xerotty serve --stdio`
+// on the remote side and wraps the resulting stdin+stdout pipes
+// as a Client. The remote daemon's stderr is forwarded to the
+// parent's stderr so auth prompts + daemon log lines show up
+// where the user can see them.
+//
+// xerotty is a single binary; `xerotty serve` is the daemon mode
+// (no separate xerottyd executable). On the remote box you need
+// the same `xerotty` binary on PATH (or pass a full path via
+// daemonCmd).
 //
 // `sshDest` is whatever you'd pass to plain `ssh` — "user@host",
 // "host", or a Host alias from ~/.ssh/config. Forwarding +
 // auth + key selection are all delegated to ssh(1) — we don't
 // reimplement any of that.
 //
-// `daemonCmd` is the remote command line that produces xerottyd over
-// stdio. Default if empty: "xerottyd --stdio". Use the full form when
-// you need to point to a specific path, e.g. "/opt/xerotty/bin/
-// xerottyd --stdio".
+// `daemonCmd` is the remote command line that speaks the wire
+// protocol over stdio. Default if empty: "xerotty serve --stdio".
+// Use the full form when you need to point to a specific path,
+// e.g. "/opt/xerotty/bin/xerotty serve --stdio".
 //
 // `extraSSHArgs` are inserted before `sshDest` for things like
 // `-i identity` or `-p port`.

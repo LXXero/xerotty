@@ -143,6 +143,13 @@ func (d *DiskScrollback) Clear() error {
 		return err
 	}
 	d.offsets = d.offsets[:0]
+	// Reset d.size too — Append() uses it as the next write
+	// offset. Forgetting this leaves d.size pointing past the
+	// (now-empty) file end so the next Append writes at the
+	// stale offset, creating a sparse file with garbage between
+	// 0 and the old size + offsets[] pointing past EOF until the
+	// file refills.
+	d.size = 0
 	return nil
 }
 

@@ -75,6 +75,7 @@ const (
 	pendingChildExit
 	pendingTabState
 	pendingScrollbackAppend
+	pendingScrollbackCleared
 )
 
 // pendingCap limits per-tab buffering. 64 covers the typical initial
@@ -148,6 +149,8 @@ func (h *Hub) register(s *Source) {
 			s.applyTabState(pf.raw.(*protocol.TabState))
 		case pendingScrollbackAppend:
 			s.applyScrollbackAppend(pf.raw.(*protocol.ScrollbackAppend))
+		case pendingScrollbackCleared:
+			s.applyScrollbackCleared(pf.raw.(*protocol.ScrollbackCleared))
 		}
 	}
 }
@@ -187,14 +190,29 @@ func (h *Hub) SetDefaultWindowID(id uint32) {
 	h.mu.Unlock()
 }
 
-// NewTab requests a fresh tab on the daemon and returns a Source
-// bound to it. cols/rows are the initial grid dims; cwd is the
-// shell's starting directory ("" = daemon's CWD).
+// NewTab requests a fresh tab on the daemon's default window (set
+// via SetDefaultWindowID, 0 = daemon's own default). Convenience
+// wrapper around NewTabIn. Avoid in multi-window setups where each
+// GUI window needs its own daemon window — use NewTabIn there so
+// concurrent window-A and window-B tab creates don't race for the
+// global default.
 func (h *Hub) NewTab(cols, rows int, cwd string) (*Source, error) {
 	h.mu.RLock()
 	winID := h.defaultWindowID
 	h.mu.RUnlock()
-	if err := h.c.SendTabCreate(winID, uint16(cols), uint16(rows), cwd, ""); err != nil {
+	return h.NewTabIn(winID, cols, rows, cwd)
+}
+
+// NewTabIn requests a fresh tab on the named daemon window. Each
+// GUI Window's tabs.Manager.SourceFactory closes over its own
+// daemonWindowID and calls this — that way "new tab in window A"
+// is always routed to daemon window A regardless of what some
+// other GUI window most recently did.
+//
+// windowID = 0 means "daemon's default window" (typically the
+// first window the daemon created).
+func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, error) {
+	if err := h.c.SendTabCreate(windowID, uint16(cols), uint16(rows), cwd, ""); err != nil {
 		return nil, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
 	}
 	// TabCreated should arrive on the client's channel; wait for it.
@@ -279,6 +297,12 @@ func (h *Hub) router() {
 				s.applyScrollbackAppend(f)
 			} else {
 				h.stash(f.ID, pendingScrollbackAppend, f)
+			}
+		case f := <-cli.ScrollbackCleared():
+			if s := h.lookup(f.ID); s != nil {
+				s.applyScrollbackCleared(f)
+			} else {
+				h.stash(f.ID, pendingScrollbackCleared, f)
 			}
 		case err := <-cli.Errors():
 			// Protocol errors aren't tied to a tab. Log to stderr

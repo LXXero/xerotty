@@ -167,6 +167,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleTabsList(req)
 	case "tab/screen":
 		return c.handleTabScreen(req)
+	case "tab/scrollback":
+		return c.handleTabScrollback(req)
 	case "tab/input":
 		return c.handleTabInput(req)
 	case "tab/paste":
@@ -278,6 +280,64 @@ func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 		lines[r] = strings.TrimRight(sb.String(), " ")
 	}
 	return ok(req.ID, screenResult{Cols: uint16(cols), Rows: uint16(rows), Lines: lines})
+}
+
+// handleTabScrollback reads a slice of scrollback rows for a tab.
+// Defaults to the most recent 200 rows; caller can pass {from, to}
+// for an absolute range (0 = oldest scrollback row). Returns
+// strings with trailing whitespace trimmed.
+//
+// Atomic snapshot under publishMu — same reason tab/screen uses
+// SnapshotViewport, just for the scrollback half.
+func (c *agentConn) handleTabScrollback(req *rpcRequest) *rpcResponse {
+	var p struct {
+		TabID uint32 `json:"tab_id"`
+		From  *int   `json:"from,omitempty"`
+		To    *int   `json:"to,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	t := sess.Tab(p.TabID)
+	if t == nil {
+		return rpcErr(req.ID, -32004, "tab not found", nil)
+	}
+	sbLen := t.Term.ScrollbackLen()
+	from := sbLen - 200
+	to := sbLen
+	if p.From != nil {
+		from = *p.From
+	}
+	if p.To != nil {
+		to = *p.To
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to > sbLen {
+		to = sbLen
+	}
+	if to <= from {
+		return ok(req.ID, scrollbackResult{From: from, To: from, Total: sbLen, Lines: []string{}})
+	}
+	rows := t.Term.SnapshotScrollbackRange(from, to)
+	lines := make([]string, len(rows))
+	for i, row := range rows {
+		var sb strings.Builder
+		for _, cell := range row {
+			if cell.Content == "" {
+				sb.WriteByte(' ')
+				continue
+			}
+			sb.WriteString(cell.Content)
+		}
+		lines[i] = strings.TrimRight(sb.String(), " ")
+	}
+	return ok(req.ID, scrollbackResult{From: from, To: to, Total: sbLen, Lines: lines})
 }
 
 func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {

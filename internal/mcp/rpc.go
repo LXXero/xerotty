@@ -71,3 +71,13 @@ type screenResult struct {
 	Rows  uint16   `json:"rows"`
 	Lines []string `json:"lines"`
 }
+
+// scrollbackResult is the result of tab/scrollback. Total is the
+// daemon-side total scrollback length so the caller can see how
+// many more rows of history exist beyond the slice returned.
+type scrollbackResult struct {
+	From  int      `json:"from"`
+	To    int      `json:"to"`
+	Total int      `json:"total"`
+	Lines []string `json:"lines"`
+}

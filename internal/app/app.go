@@ -55,11 +55,11 @@ type App struct {
 	pendingFontFace bool    // rebuild font atlas at start of next frame
 
 	// Daemon-source plumbing — only populated when cfg.Tabs.Source
-	// == "daemon". hub owns the connection + frame router;
-	// tabSourceFactory is what tabs.Manager.SourceFactory points at
-	// for every Window so all new tabs route through the daemon.
-	daemonHub        *daemonsource.Hub
-	tabSourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
+	// == "daemon". hub owns the connection + frame router; each
+	// Window builds its own tabs.Manager.SourceFactory via
+	// installSourceFactory so multi-window setups route NewTab
+	// calls to the right daemon window.
+	daemonHub *daemonsource.Hub
 
 	// daemonAdoptQueue holds windows + their tabs the daemon
 	// reported at Attach time, in the order they came back. Each
@@ -76,7 +76,7 @@ type App struct {
 	// reused for subsequent tabs to that same host so a single SSH
 	// connection serves many tabs.
 	remoteHubsMu sync.Mutex
-	remoteHubs   map[string]*daemonsource.Hub
+	remoteHubs   map[string]*remoteHubEntry
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -163,19 +163,28 @@ func New(cfg config.Config) *App {
 	return a
 }
 
-// openRemoteTab spawns a new tab whose source is a daemon on a
-// named remote host (from cfg.Hosts). Routes through the host's
-// lazy Hub so multiple remote tabs on the same host share one SSH
-// connection.
+// remoteHubEntry pairs a per-host Hub with any tabs the remote
+// daemon reported at attach time but the GUI hasn't adopted yet.
+// reattachQueue is drained by attach_remote:<host> actions; once
+// empty, all that host's existing tabs are visible locally.
+type remoteHubEntry struct {
+	hub           *daemonsource.Hub
+	reattachQueue []daemonTabSnapshot
+}
+
+// openRemoteTab spawns a NEW tab whose source is a daemon on a
+// named remote host (from cfg.Hosts). For "show me what's already
+// running over there" use openRemoteReattach instead. Both share
+// the per-host Hub so they use one SSH connection.
 func (w *Window) openRemoteTab(hostName string) error {
-	hub, err := w.app.remoteHubFor(hostName)
+	entry, err := w.app.remoteHubFor(hostName)
 	if err != nil {
 		return err
 	}
 	cols, rows := w.gridSize()
-	src, err := hub.NewTab(cols, rows, "")
+	src, err := entry.hub.NewTabIn(0, cols, rows, "")
 	if err != nil {
-		return fmt.Errorf("hub.NewTab on %s: %w", hostName, err)
+		return fmt.Errorf("hub.NewTabIn on %s: %w", hostName, err)
 	}
 	tab := w.tabs.AdoptTab(src)
 	tab.Host = hostName
@@ -183,16 +192,60 @@ func (w *Window) openRemoteTab(hostName string) error {
 	return nil
 }
 
-// remoteHubFor returns the daemonsource.Hub for the named host,
+// openRemoteReattach drains any UNADOPTED tabs the remote daemon
+// reported at attach time into this Window. Each call adopts ALL
+// currently pending tabs (not just one) — the typical UX is "open
+// host kh" → see every shell you had open there. Subsequent calls
+// are no-ops until the connection re-establishes (e.g. remote
+// daemon restarted with new tabs).
+func (w *Window) openRemoteReattach(hostName string) error {
+	entry, err := w.app.remoteHubFor(hostName)
+	if err != nil {
+		return err
+	}
+	cols, rows := w.gridSize()
+
+	w.app.remoteHubsMu.Lock()
+	pending := entry.reattachQueue
+	entry.reattachQueue = nil
+	w.app.remoteHubsMu.Unlock()
+
+	if len(pending) == 0 {
+		// Nothing pending — fall through to creating a fresh tab
+		// so the user gets SOMETHING (better than a no-op when
+		// they explicitly asked to "open host X").
+		return w.openRemoteTab(hostName)
+	}
+	for _, ts := range pending {
+		src := entry.hub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
+		tab := w.tabs.AdoptTab(src)
+		tab.Host = hostName
+		if ts.Title != "" {
+			tab.Title = ts.Title
+		}
+		if cols > 1 && rows > 1 {
+			src.Resize(cols, rows)
+		}
+	}
+	if last := w.tabs.Active(); last != nil {
+		w.tabSwitchReq = last.ID
+	}
+	return nil
+}
+
+// remoteHubFor returns the registry entry for the named host,
 // lazily building it (SSH-dial + hello + attach) on first request.
 // Subsequent calls reuse the same Hub so one SSH connection serves
 // many tabs on that host. Returns an error if the named host isn't
 // in cfg.Hosts or the SSH connection fails.
-func (a *App) remoteHubFor(name string) (*daemonsource.Hub, error) {
+//
+// The Attached frame is captured into the entry's reattachQueue so
+// openRemoteReattach can later adopt any pre-existing remote tabs.
+func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 	a.remoteHubsMu.Lock()
-	if h, ok := a.remoteHubs[name]; ok {
+	if e, ok := a.remoteHubs[name]; ok {
 		a.remoteHubsMu.Unlock()
-		return h, nil
+		return e, nil
 	}
 	a.remoteHubsMu.Unlock()
 
@@ -220,21 +273,32 @@ func (a *App) remoteHubFor(name string) (*daemonsource.Hub, error) {
 		_ = cli.Close()
 		return nil, fmt.Errorf("attach to %s: %w", name, err)
 	}
+	var attached *protocol.Attached
 	select {
-	case <-cli.Attached():
+	case attached = <-cli.Attached():
 	case <-time.After(5 * time.Second):
 		_ = cli.Close()
 		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
 	}
 	hub := daemonsource.NewHub(cli)
 
+	entry := &remoteHubEntry{hub: hub}
+	for _, ti := range attached.Tabs {
+		entry.reattachQueue = append(entry.reattachQueue, daemonTabSnapshot{
+			ID:    ti.ID,
+			Title: ti.Title,
+			Cols:  ti.Cols,
+			Rows:  ti.Rows,
+		})
+	}
+
 	a.remoteHubsMu.Lock()
 	if a.remoteHubs == nil {
-		a.remoteHubs = make(map[string]*daemonsource.Hub)
+		a.remoteHubs = make(map[string]*remoteHubEntry)
 	}
-	a.remoteHubs[name] = hub
+	a.remoteHubs[name] = entry
 	a.remoteHubsMu.Unlock()
-	return hub, nil
+	return entry, nil
 }
 
 // daemonTabSnapshot is one tab the daemon reported at attach time —
@@ -248,14 +312,18 @@ type daemonTabSnapshot struct {
 
 // daemonWindowSnapshot pairs a daemon-side window ID + geometry hint
 // with the tabs that live in it. Drained one-per-GUI-Window during
-// the reattach restore path.
+// the reattach restore path. FocusedTabID is the daemon's record of
+// which tab was front; the GUI honors it during adoption so reattach
+// puts focus where the user left it, not on whatever happens to be
+// last in the slice.
 type daemonWindowSnapshot struct {
-	WindowID uint32
-	PosX     int32
-	PosY     int32
-	Width    int32
-	Height   int32
-	Tabs     []daemonTabSnapshot
+	WindowID     uint32
+	PosX         int32
+	PosY         int32
+	Width        int32
+	Height       int32
+	Tabs         []daemonTabSnapshot
+	FocusedTabID uint32
 }
 
 // initDaemonSource ensures a local xerotty daemon is running,
@@ -303,11 +371,12 @@ func (a *App) initDaemonSource() error {
 	}
 	for _, wi := range attached.Windows {
 		snap := daemonWindowSnapshot{
-			WindowID: wi.ID,
-			PosX:     wi.PosX,
-			PosY:     wi.PosY,
-			Width:    wi.Width,
-			Height:   wi.Height,
+			WindowID:     wi.ID,
+			PosX:         wi.PosX,
+			PosY:         wi.PosY,
+			Width:        wi.Width,
+			Height:       wi.Height,
+			FocusedTabID: wi.FocusedTabID,
 		}
 		for _, tid := range wi.TabIDs {
 			if t, ok := tabByID[tid]; ok {
@@ -344,10 +413,33 @@ func (a *App) initDaemonSource() error {
 		hub.SetScrollbackCap(cap)
 	}
 	a.daemonHub = hub
-	a.tabSourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
-		return hub.NewTab(cols, rows, cwd)
-	}
+	// NOTE: tabSourceFactory is set per-Window by
+	// installSourceFactory() so multi-window setups don't all
+	// share Hub.defaultWindowID. App-level default is nil;
+	// installSourceFactory falls back to terminal.New if no
+	// daemon-window association exists yet.
 	return nil
+}
+
+// installSourceFactory builds the tabs.Manager.SourceFactory for a
+// Window. In daemon mode the closure captures the Window's
+// daemonWindowID so every NewTab call targets the correct daemon
+// window regardless of what other Windows did. Falls back to the
+// in-process PTY path when daemon mode isn't active OR the Window
+// hasn't acquired a daemon window yet.
+func (a *App) installSourceFactory(w *Window) {
+	if a.daemonHub == nil {
+		w.tabs.SourceFactory = nil // tabs.NewTab uses terminal.New
+		return
+	}
+	hub := a.daemonHub
+	w.tabs.SourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
+		// Snapshot the WindowID at call time, not closure-create
+		// time, so re-installs after daemonWindowID changes pick
+		// up the new value. 0 → daemon's default window (matches
+		// pre-multi-window behavior).
+		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd)
+	}
 }
 
 // reapClosedWindows removes Windows the user closed this frame. All
@@ -699,7 +791,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	// tab's CWD — Cmd+N from inside ~/src/foo gives a new Window also
 	// in ~/src/foo, matching iTerm/Terminal.app's behavior.
 	w.tabs = tabs.NewManager(&a.cfg)
-	w.tabs.SourceFactory = a.tabSourceFactory
+	a.installSourceFactory(w)
 	cols, rows := w.gridSize()
 
 	// Daemon-side window association. Three cases:
@@ -723,8 +815,10 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		snap := a.daemonAdoptQueue[0]
 		a.daemonAdoptQueue = a.daemonAdoptQueue[1:]
 		w.daemonWindowID = snap.WindowID
+		a.installSourceFactory(w)
 		a.daemonHub.SetDefaultWindowID(snap.WindowID)
-		for _, ts := range snap.Tabs {
+		var focusIdx = -1
+		for i, ts := range snap.Tabs {
 			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
 			tab := w.tabs.AdoptTab(src)
 			if ts.Title != "" {
@@ -733,6 +827,17 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			if cols > 1 && rows > 1 {
 				src.Resize(cols, rows)
 			}
+			if ts.ID == snap.FocusedTabID {
+				focusIdx = i
+			}
+		}
+		// Honor the daemon's record of which tab was front, not
+		// the AdoptTab default of "last one wins". Reattach
+		// shouldn't surprise the user with a different focus
+		// than they left.
+		if focusIdx >= 0 && focusIdx < len(w.tabs.Tabs) {
+			w.tabs.ActiveIdx = focusIdx
+			w.tabSwitchReq = w.tabs.Tabs[focusIdx].ID
 		}
 		// Push current GUI geometry so a future reattach restores
 		// to the same on-screen position.
@@ -894,7 +999,7 @@ func (a *App) Run() error {
 
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
 	w.tabs = tabs.NewManager(&a.cfg)
-	w.tabs.SourceFactory = a.tabSourceFactory
+	a.installSourceFactory(w)
 
 	// macOS-only: hook an SDL event watch so a real frame still renders
 	// while AppKit's live-resize tracking mode holds the run loop.
@@ -1500,7 +1605,44 @@ func (w *Window) containsMousePos(mp imgui.Vec2) bool {
 		mp.Y < w.contentOriginY+float32(w.height)
 }
 
+// syncDaemonFocus checks if the active tab changed since last
+// frame and, if so, broadcasts it to the daemon via SendTabFocus
+// + SendWindowFocusTab. The daemon stores per-window FocusedTabID
+// so a future reattach can land the user on the same tab they
+// left. No-op outside daemon mode or for non-daemon tabs.
+//
+// Cheap per-frame: one type-assert + a uint32 compare. Only sends
+// when the focus changes so the wire stays quiet during normal
+// tab use.
+func (a *Window) syncDaemonFocus() {
+	if a.app.daemonHub == nil {
+		return
+	}
+	tab := a.tabs.Active()
+	var cur uint32
+	if tab != nil && tab.Terminal != nil {
+		// Only daemon-backed sources have a daemon tab ID. PTY
+		// tabs don't (and shouldn't generate focus messages).
+		if ds, ok := tab.Terminal.(*daemonsource.Source); ok {
+			cur = ds.TabID()
+		}
+	}
+	if cur == a.lastSentFocusTabID {
+		return
+	}
+	a.lastSentFocusTabID = cur
+	if cur != 0 {
+		cli := a.app.daemonHub.Client()
+		_ = cli.SendTabFocus(cur)
+		if a.daemonWindowID != 0 {
+			_ = cli.SendWindowFocusTab(a.daemonWindowID, cur)
+		}
+	}
+}
+
 func (a *Window) frame() {
+	a.syncDaemonFocus()
+
 	// macOS: after the first click that shifts the Cocoa first-responder,
 	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
 	// presses nor releases reach the SDL event queue, so ImGui sees no
@@ -1764,14 +1906,23 @@ func (a *Window) frame() {
 			snap := a.app.daemonAdoptQueue[0]
 			a.app.daemonAdoptQueue = a.app.daemonAdoptQueue[1:]
 			a.daemonWindowID = snap.WindowID
+			a.app.installSourceFactory(a)
 			a.app.daemonHub.SetDefaultWindowID(snap.WindowID)
-			for _, ts := range snap.Tabs {
+			var focusIdx = -1
+			for i, ts := range snap.Tabs {
 				src := a.app.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
 				tab := a.tabs.AdoptTab(src)
 				if ts.Title != "" {
 					tab.Title = ts.Title
 				}
 				src.Resize(cfgCols, cfgRows)
+				if ts.ID == snap.FocusedTabID {
+					focusIdx = i
+				}
+			}
+			if focusIdx >= 0 && focusIdx < len(a.tabs.Tabs) {
+				a.tabs.ActiveIdx = focusIdx
+				a.tabSwitchReq = a.tabs.Tabs[focusIdx].ID
 			}
 		} else if a.app.daemonHub != nil {
 			// Daemon mode, no existing tabs — mint a fresh daemon
@@ -2483,15 +2634,22 @@ func encodeRune(buf []byte, r rune) int {
 }
 
 func (w *Window) dispatchAction(action string) {
-	// Action namespace "new_tab_remote:<host>" opens a tab against
-	// the named host from cfg.Hosts. The host's Hub is lazily
-	// created on first use; subsequent tabs to the same host share
-	// the SSH connection. Failures log + drop — the user keeps a
-	// working local terminal.
+	// Action namespace "new_tab_remote:<host>" opens a NEW tab on
+	// the named host. "attach_remote:<host>" adopts every existing
+	// remote tab into this window — for the "show me what I had
+	// open on kh" UX. Both share the per-host Hub (one SSH
+	// connection serves all tabs). Failures log + drop.
 	if strings.HasPrefix(action, "new_tab_remote:") {
 		host := action[len("new_tab_remote:"):]
 		if err := w.openRemoteTab(host); err != nil {
 			fmt.Fprintf(os.Stderr, "xerotty: new_tab_remote %s: %v\n", host, err)
+		}
+		return
+	}
+	if strings.HasPrefix(action, "attach_remote:") {
+		host := action[len("attach_remote:"):]
+		if err := w.openRemoteReattach(host); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: attach_remote %s: %v\n", host, err)
 		}
 		return
 	}
@@ -2551,6 +2709,20 @@ func (w *Window) dispatchAction(action string) {
 			input.ClipboardWrite(text)
 		}
 	case "paste":
+		// Image-first: a screenshot copied via Cmd+Shift+4 etc.
+		// goes to the daemon as raw bytes (which writes it to a
+		// temp file the PTY child can read by path). Falls back
+		// to text paste when the clipboard has no image. Lets
+		// "paste a screenshot into Claude Code over SSH" Just
+		// Work without OSC52 / base64 brittleness.
+		if mime, data, err := input.ClipboardReadImage(); err == nil && len(data) > 0 {
+			if tab := w.tabs.Active(); tab != nil && tab.Terminal != nil {
+				if err := tab.Terminal.PasteImage(mime, "", data); err != nil {
+					fmt.Fprintf(os.Stderr, "xerotty: image paste: %v\n", err)
+				}
+				return
+			}
+		}
 		text, err := input.ClipboardRead()
 		if err == nil && text != "" {
 			w.pasteText(text)

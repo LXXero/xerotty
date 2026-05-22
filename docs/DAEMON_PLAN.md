@@ -1,7 +1,25 @@
-# xerottyd: daemon + thin UI + MCP
+# xerotty daemon + thin UI + MCP
 
-The next major architectural arc. Split xerotty into a **headless daemon**
-(`xerottyd`) that owns terminal sessions, and a **thin UI client**
+> **HEAD UPDATE**: This plan originally proposed a separate
+> `xerottyd` binary for the daemon role. That was collapsed
+> early into the implementation — there's only ONE binary
+> (`xerotty`) with subcommands:
+>
+> - `xerotty`            — GUI (default), can attach to local
+>                          or remote daemons
+> - `xerotty serve`      — daemon mode (what this doc calls
+>                          "xerottyd"); owns PTYs + wire socket
+>                          + MCP socket
+> - `xerotty connect`    — CLI thin client
+>
+> Socket FILENAMES still use the `xerottyd.sock` /
+> `xerottyd.mcp.sock` names for path stability, but the binary
+> itself is just `xerotty`. Anywhere this doc says "the
+> xerottyd binary", read "xerotty serve". Do NOT split it back
+> into a second binary.
+
+The major architectural arc. Split xerotty into a **headless daemon**
+(`xerotty serve`) that owns terminal sessions, and a **thin UI client**
 (`xerotty`) that attaches to one or more daemons over a structured
 protocol. The daemon also exposes an **MCP socket** so AI agents
 (Claude Code, Xyphia, custom orchestrators) can read/write sessions

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/protocol"
 )
 
 // Daemon is the headless terminal session host. One Daemon owns
@@ -58,6 +59,31 @@ func (d *Daemon) AttachedClients() []AttachedClient {
 		out = append(out, ac)
 	}
 	return out
+}
+
+// broadcastScrollbackCleared notifies every attached client with a
+// subscription on tabID that scrollback was cleared. Resets each
+// sub's lastScrollbackLen so the next publish doesn't think the
+// daemon's scrollback shrank (which would silently skip new
+// growth until it climbed back past the old length). Ships
+// MsgScrollbackCleared so client-side scrollback mirrors drop too.
+func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		c.subsMu.Lock()
+		sub, ok := c.subs[tabID]
+		c.subsMu.Unlock()
+		if !ok {
+			continue
+		}
+		sub.lastScrollbackLen = 0
+		_ = c.writeFrame(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: tabID})
+	}
 }
 
 func (d *Daemon) registerClient(c *clientConn) {

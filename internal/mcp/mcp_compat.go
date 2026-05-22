@@ -30,7 +30,7 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 			"tools": map[string]any{},
 		},
 		"serverInfo": map[string]any{
-			"name":    "xerottyd",
+			"name":    "xerotty",
 			"version": "0.1.0",
 		},
 	})
@@ -56,6 +56,19 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 				"type": "object",
 				"properties": map[string]any{
 					"tab_id": map[string]any{"type": "integer", "description": "ID from list_tabs"},
+				},
+				"required": []string{"tab_id"},
+			},
+		},
+		{
+			"name":        "get_scrollback",
+			"description": "Read scrollback history (rows that scrolled off the viewport) as plain text. Defaults to the most recent 200 rows; pass {from, to} for an absolute range (0 = oldest). Result includes the total scrollback length so the agent can paginate.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tab_id": map[string]any{"type": "integer"},
+					"from":   map[string]any{"type": "integer", "description": "Absolute scrollback row index (0 = oldest). Omit for default tail."},
+					"to":     map[string]any{"type": "integer", "description": "Exclusive upper bound. Omit for default tail."},
 				},
 				"required": []string{"tab_id"},
 			},
@@ -151,6 +164,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleTabsList(inner)
 	case "get_screen":
 		resp = c.handleTabScreen(inner)
+	case "get_scrollback":
+		resp = c.handleTabScrollback(inner)
 	case "send_input":
 		resp = c.handleTabInput(inner)
 	case "send_paste":
