@@ -248,7 +248,14 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		}
 		if c.session != nil {
 			if t := c.session.Tab(msg.ID); t != nil {
-				t.Term.Emu.ClearScrollback()
+				// Use Terminal.ClearScrollback so the disk-backed
+				// scrollback (unlimited mode) gets cleared too,
+				// not just the emu's in-memory ring. Also bumps
+				// each subscriber's lastScrollbackLen via the
+				// publish path so they don't try to ship stale
+				// rows the next cycle.
+				t.Term.ClearScrollback()
+				c.resyncScrollbackAfterClear(t)
 			}
 		}
 		return nil
@@ -714,6 +721,19 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 // empirically — fits in one or two typical socket-send syscalls
 // at 80-col grids.
 const scrollbackBatchMax = 256
+
+// resyncScrollbackAfterClear updates all subs' lastScrollbackLen
+// to 0 after a clear, otherwise the next publish would notice that
+// the daemon's scrollback shrunk from N to 0 and silently skip
+// new growth until N rows scrolled back in.
+func (c *clientConn) resyncScrollbackAfterClear(t *Tab) {
+	c.subsMu.Lock()
+	sub := c.subs[t.ID]
+	c.subsMu.Unlock()
+	if sub != nil {
+		sub.lastScrollbackLen = 0
+	}
+}
 
 // sendNewScrollback ships rows that rolled off the top of the
 // viewport since the last publish. Reads through

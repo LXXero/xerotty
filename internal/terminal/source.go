@@ -109,6 +109,24 @@ type Source interface {
 	// backed sources may translate this into a config push over the
 	// wire; PTY-backed sources reconfigure their own ring.
 	SetScrollbackFromConfig(cfg *config.Config)
+
+	// ClearScrollback drops the tab's scrollback history. For PTY-
+	// backed sources it clears the emulator's ring + any disk-backed
+	// scrollback. For DaemonSource it ships MsgClearScrollback to
+	// the daemon AND drops the local shadow ring so the GUI sees
+	// the result immediately instead of waiting for a round-trip.
+	ClearScrollback()
+
+	// PasteImage delivers a clipboard image to the tab. DaemonSource
+	// ships MsgInputImage so the daemon writes the bytes to a
+	// daemon-side temp file and types the path into the PTY (works
+	// over SSH without escape-sequence pain). PTYSource writes the
+	// bytes to a local temp file and pastes the resulting path so
+	// the behavior is consistent across modes.
+	//
+	// mime is the canonical MIME type (e.g. "image/png"). filename
+	// is a hint for the temp prefix; sanitized by the receiver.
+	PasteImage(mime, filename string, data []byte) error
 }
 
 // Compile-time assertion that *Terminal satisfies Source. If you

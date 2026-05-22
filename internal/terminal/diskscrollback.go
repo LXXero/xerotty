@@ -127,6 +127,25 @@ func (d *DiskScrollback) Len() int {
 	return len(d.offsets)
 }
 
+// Clear drops all stored lines. Truncates the backing file in place
+// (cheaper than close + reopen — keeps the temp inode alive).
+// Thread-safe.
+func (d *DiskScrollback) Clear() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || d.f == nil {
+		return nil
+	}
+	if err := d.f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := d.f.Seek(0, 0); err != nil {
+		return err
+	}
+	d.offsets = d.offsets[:0]
+	return nil
+}
+
 // Close releases the file handle. Safe to call from any goroutine.
 // The temp file's already unlinked, so close finishes the cleanup.
 func (d *DiskScrollback) Close() error {

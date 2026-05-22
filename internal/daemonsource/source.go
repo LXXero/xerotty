@@ -226,6 +226,32 @@ func (s *Source) SetOnTitle(fn func(string)) {
 // scrollback settings yet. Future protocol addition.
 func (s *Source) SetScrollbackFromConfig(*config.Config) {}
 
+// ClearScrollback drops the local scrollback ring AND tells the
+// daemon to clear its scrollback too. Doing both means the GUI
+// sees an empty scrollback area immediately (no wait for the
+// round-trip + next publish) and a future reattach won't pull
+// the same history back via backfill.
+func (s *Source) ClearScrollback() {
+	s.mu.Lock()
+	s.scrollback = nil
+	s.mu.Unlock()
+	_ = s.hub.c.SendClearScrollback(s.tabID)
+	s.signalDirty()
+}
+
+// PasteImage ships the image bytes to the daemon, which writes
+// them to a daemon-side temp file and types the path into the
+// PTY. That's the whole point of the daemon arc for image paste —
+// the file lives on the daemon's machine so Claude Code (or
+// whatever's running over SSH on the remote box) can open it
+// natively without base64/OSC52.
+func (s *Source) PasteImage(mime, filename string, data []byte) error {
+	if s.closed.Load() {
+		return nil
+	}
+	return s.hub.c.SendImagePaste(s.tabID, mime, filename, data)
+}
+
 // --- Frame application (called by Hub.router) ---
 
 func (s *Source) applyCellFull(f *protocol.CellFull) {

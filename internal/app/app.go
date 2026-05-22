@@ -59,13 +59,14 @@ type App struct {
 	daemonHub        *daemonsource.Hub
 	tabSourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
 
-	// daemonAdoptQueue holds tab IDs the daemon reported at Attach
-	// time that haven't been wired into a GUI window yet. The first
-	// Window opened in daemon mode drains this list (Adopting each
-	// tab) instead of spawning a fresh tab — that's how reattach
-	// restores the previous session. Subsequent windows go through
-	// the normal NewTab path.
-	daemonAdoptQueue []daemonTabSnapshot
+	// daemonAdoptQueue holds windows + their tabs the daemon
+	// reported at Attach time, in the order they came back. Each
+	// GUI Window that opens in daemon mode drains one entry —
+	// adopting its tabs AND remembering its daemon-window ID so
+	// future tab creates / geometry / focus updates target the
+	// right server-side window. Empty queue → new GUI windows
+	// spawn fresh daemon windows via SendWindowCreate.
+	daemonAdoptQueue []daemonWindowSnapshot
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -161,6 +162,18 @@ type daemonTabSnapshot struct {
 	Rows  uint16
 }
 
+// daemonWindowSnapshot pairs a daemon-side window ID + geometry hint
+// with the tabs that live in it. Drained one-per-GUI-Window during
+// the reattach restore path.
+type daemonWindowSnapshot struct {
+	WindowID uint32
+	PosX     int32
+	PosY     int32
+	Width    int32
+	Height   int32
+	Tabs     []daemonTabSnapshot
+}
+
 // initDaemonSource ensures a local xerotty daemon is running,
 // connects to it, attaches, and wires the resulting Hub into App so
 // tabs.Manager.NewTab routes through it. Errors here are non-fatal
@@ -192,12 +205,45 @@ func (a *App) initDaemonSource() error {
 		_ = cli.Close()
 		return fmt.Errorf("attach: no response from daemon")
 	}
+	// Group tabs by their daemon-side window so the GUI can spawn
+	// one Window per daemon Window on reattach. tabs.Tab info is
+	// keyed by ID; window info has TabIDs ordering.
+	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
 	for _, ti := range attached.Tabs {
-		a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonTabSnapshot{
+		tabByID[ti.ID] = daemonTabSnapshot{
 			ID:    ti.ID,
 			Title: ti.Title,
 			Cols:  ti.Cols,
 			Rows:  ti.Rows,
+		}
+	}
+	for _, wi := range attached.Windows {
+		snap := daemonWindowSnapshot{
+			WindowID: wi.ID,
+			PosX:     wi.PosX,
+			PosY:     wi.PosY,
+			Width:    wi.Width,
+			Height:   wi.Height,
+		}
+		for _, tid := range wi.TabIDs {
+			if t, ok := tabByID[tid]; ok {
+				snap.Tabs = append(snap.Tabs, t)
+				delete(tabByID, tid)
+			}
+		}
+		if len(snap.Tabs) > 0 {
+			a.daemonAdoptQueue = append(a.daemonAdoptQueue, snap)
+		}
+	}
+	// Sweep any orphan tabs (in tabByID but not in any window's
+	// TabIDs) into a synthetic window snapshot so they aren't lost.
+	if len(tabByID) > 0 {
+		var orphans []daemonTabSnapshot
+		for _, t := range tabByID {
+			orphans = append(orphans, t)
+		}
+		a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonWindowSnapshot{
+			Tabs: orphans,
 		})
 	}
 	hub := daemonsource.NewHub(cli)
@@ -571,31 +617,63 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	w.tabs = tabs.NewManager(&a.cfg)
 	w.tabs.SourceFactory = a.tabSourceFactory
 	cols, rows := w.gridSize()
+
+	// Daemon-side window association. Three cases:
+	//   1. adopt != nil   — cross-Window tab drag, no fresh daemon
+	//                       window needed; the dragged source keeps
+	//                       its existing daemon-window membership
+	//                       (TODO: emit SendWindowMoveTab here when
+	//                       the source is daemon-backed).
+	//   2. adoptQueue !=  — reattach restore: pop the next daemon
+	//      empty (daemon)   window snapshot, claim its ID, adopt
+	//                       its tabs.
+	//   3. fresh daemon   — SendWindowCreate to mint a new daemon
+	//      window mode      window; Hub.SetDefaultWindowID makes
+	//                       NewTab put new tabs there.
 	if adopt != nil {
-		// Adopt the already-running Terminal from a cross-Window
-		// tab drag. Resize it to this Window's grid so its PTY +
-		// vt emulator match what the new Window's renderer expects.
 		if cols > 1 && rows > 1 {
 			adopt.Resize(cols, rows)
 		}
 		w.tabs.AdoptTab(adopt)
 	} else if len(a.daemonAdoptQueue) > 0 && a.daemonHub != nil {
-		// First Window in daemon mode with pre-existing daemon tabs
-		// — adopt them all instead of spawning a fresh one. This is
-		// what makes "reopen xerotty, see your shells" work.
-		for _, snap := range a.daemonAdoptQueue {
-			src := a.daemonHub.Adopt(snap.ID, int(snap.Cols), int(snap.Rows))
+		snap := a.daemonAdoptQueue[0]
+		a.daemonAdoptQueue = a.daemonAdoptQueue[1:]
+		w.daemonWindowID = snap.WindowID
+		a.daemonHub.SetDefaultWindowID(snap.WindowID)
+		for _, ts := range snap.Tabs {
+			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
 			tab := w.tabs.AdoptTab(src)
-			if snap.Title != "" {
-				tab.Title = snap.Title
+			if ts.Title != "" {
+				tab.Title = ts.Title
 			}
-			// Resize the adopted tab to this Window's grid so the
-			// PTY winsize + emulator match what we'll render.
 			if cols > 1 && rows > 1 {
 				src.Resize(cols, rows)
 			}
 		}
-		a.daemonAdoptQueue = nil
+		// Push current GUI geometry so a future reattach restores
+		// to the same on-screen position.
+		_ = a.daemonHub.Client().SendWindowGeometry(snap.WindowID, 0, 0, int32(w.width), int32(w.height))
+	} else if a.daemonHub != nil {
+		// Fresh daemon window for this GUI window.
+		if err := a.daemonHub.Client().SendWindowCreate(0, 0, int32(w.width), int32(w.height)); err == nil {
+			select {
+			case wc := <-a.daemonHub.Client().WindowCreated():
+				w.daemonWindowID = wc.Info.ID
+				a.daemonHub.SetDefaultWindowID(w.daemonWindowID)
+			case <-time.After(2 * time.Second):
+				// Daemon didn't respond; new tabs will land in
+				// daemon's default window. Non-fatal.
+			}
+		}
+		var cwd string
+		if a.cfg.Tabs.InheritCWD && parent != nil {
+			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
+				cwd = parentTab.Terminal.GetCWD()
+			}
+		}
+		if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
+			return
+		}
 	} else {
 		var cwd string
 		if a.cfg.Tabs.InheritCWD && parent != nil {
@@ -1592,9 +1670,51 @@ func (a *Window) frame() {
 
 		// First-frame startup tab — no parent to inherit CWD from;
 		// the shell uses xerotty's own CWD (launcher / cwd-at-launch).
-		if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
-			platform.Quit()
-			return
+		//
+		// In daemon mode, drain the adoptQueue first. The first
+		// entry's tabs become this Window's tabs (restoring the
+		// previous session). Any extra entries in the queue get
+		// spawned as additional Windows by App after this returns
+		// so the multi-window layout survives reattach.
+		if a.app.daemonHub != nil && len(a.app.daemonAdoptQueue) > 0 {
+			snap := a.app.daemonAdoptQueue[0]
+			a.app.daemonAdoptQueue = a.app.daemonAdoptQueue[1:]
+			a.daemonWindowID = snap.WindowID
+			a.app.daemonHub.SetDefaultWindowID(snap.WindowID)
+			for _, ts := range snap.Tabs {
+				src := a.app.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
+				tab := a.tabs.AdoptTab(src)
+				if ts.Title != "" {
+					tab.Title = ts.Title
+				}
+				src.Resize(cfgCols, cfgRows)
+			}
+		} else if a.app.daemonHub != nil {
+			// Daemon mode, no existing tabs — mint a fresh daemon
+			// window for this first GUI window.
+			if err := a.app.daemonHub.Client().SendWindowCreate(0, 0, int32(a.width), int32(a.height)); err == nil {
+				select {
+				case wc := <-a.app.daemonHub.Client().WindowCreated():
+					a.daemonWindowID = wc.Info.ID
+					a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
+				case <-time.After(2 * time.Second):
+				}
+			}
+			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+				platform.Quit()
+				return
+			}
+		} else {
+			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+				platform.Quit()
+				return
+			}
+		}
+		// More daemon windows in the queue → spawn extra GUI
+		// windows for them. spawnWindow uses spawnWindowImpl which
+		// drains adoptQueue further.
+		for len(a.app.daemonAdoptQueue) > 0 {
+			a.app.spawnWindow()
 		}
 		return
 	}
@@ -2407,7 +2527,7 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "clear_scrollback":
 		if tab := w.tabs.Active(); tab != nil {
-			tab.Terminal.Emulator().ClearScrollback()
+			tab.Terminal.ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
@@ -2416,7 +2536,7 @@ func (w *Window) dispatchAction(action string) {
 		if tab := w.tabs.Active(); tab != nil {
 			// Send RIS (Reset to Initial State) escape sequence
 			tab.Terminal.Write([]byte("\x1bc"))
-			tab.Terminal.Emulator().ClearScrollback()
+			tab.Terminal.ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}

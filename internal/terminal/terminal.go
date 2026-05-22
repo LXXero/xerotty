@@ -451,6 +451,100 @@ func (t *Terminal) DataChan() <-chan struct{} { return t.DataCh }
 // a "let the daemon keep the session alive" semantic.
 func (t *Terminal) Detach() { t.Close() }
 
+// PasteImage writes the image bytes to a local temp file and
+// types the path into the PTY (via Paste, so bracketed-paste mode
+// applies if the foreground app enabled it). Matches what the
+// daemon does for MsgInputImage so PTY-backed and daemon-backed
+// tabs behave the same to user-facing apps like Claude Code.
+//
+// mime selects the file extension; filename is a sanitized prefix.
+// Empty filename → "xerotty-paste".
+func (t *Terminal) PasteImage(mime, filename string, data []byte) error {
+	prefix := "xerotty-paste"
+	if hint := sanitizeForFile(filename); hint != "" {
+		prefix += "-" + hint
+	}
+	f, err := os.CreateTemp("", prefix+"-*"+extForImageMIME(mime))
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	t.Paste(" " + f.Name() + " ")
+	return nil
+}
+
+// extForImageMIME mirrors the daemon's mime→ext logic so PTY-mode
+// temp files have recognizable extensions.
+func extForImageMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff":
+		return ".tiff"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".bin"
+	}
+}
+
+// sanitizeForFile keeps only [A-Za-z0-9_.-] so the prefix can't
+// inject shell metacharacters when the PTY child reads the path.
+func sanitizeForFile(s string) string {
+	if s == "" {
+		return ""
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s) && len(out) < 32; i++ {
+		ch := s[i]
+		switch {
+		case ch >= 'a' && ch <= 'z',
+			ch >= 'A' && ch <= 'Z',
+			ch >= '0' && ch <= '9',
+			ch == '-' || ch == '_' || ch == '.':
+			out = append(out, ch)
+		}
+	}
+	return string(out)
+}
+
+// ClearScrollback drops both the emulator's in-memory scrollback
+// ring AND any disk-backed extension. Wraps the operation in
+// publishMu so a daemon-side bulk snapshot can't read a partially-
+// cleared state. Safe to call from any goroutine.
+func (t *Terminal) ClearScrollback() {
+	t.publishMu.Lock()
+	t.Emu.ClearScrollback()
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+	if disk != nil {
+		_ = disk.Clear()
+	}
+	t.publishMu.Unlock()
+	// Wake any DataChan waiter so the GUI repaints the now-empty
+	// scrollback region.
+	select {
+	case t.DataCh <- struct{}{}:
+	default:
+	}
+}
+
 // SetOnTitle registers a callback fired on OSC 0/2 title changes.
 // Pass nil to clear. Holds t.mu so callers swapping the callback
 // from a different goroutine don't race the readPTY goroutine that

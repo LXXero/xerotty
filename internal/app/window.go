@@ -24,6 +24,13 @@ type Window struct {
 	// theme, base font metrics, font-reload flags). Set in newWindow.
 	app *App
 
+	// daemonWindowID is the server-side window ID this GUI window
+	// corresponds to in daemon mode. Set in spawnWindowImpl when
+	// adopting an existing daemon window (reattach) or after
+	// SendWindowCreate returns a fresh one. 0 = not yet associated
+	// or non-daemon mode.
+	daemonWindowID uint32
+
 	// (Old: per-Window cimgui-go backend handle. Removed during the
 	// SDL3 platform migration — the platform layer owns lifecycle
 	// process-wide; per-Window state is just OS-window metadata
