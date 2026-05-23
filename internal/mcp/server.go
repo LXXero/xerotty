@@ -173,6 +173,12 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleTabInput(req)
 	case "tab/paste":
 		return c.handleTabPaste(req)
+	case "tab/create":
+		return c.handleTabCreate(req)
+	case "tab/close":
+		return c.handleTabClose(req)
+	case "tab/resize":
+		return c.handleTabResize(req)
 	case "tab/clipboard":
 		return c.handleClipboard(req)
 	case "agent/mode":
@@ -199,6 +205,87 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 	default:
 		return methodNotFound(req.ID, req.Method)
 	}
+}
+
+func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		WindowID uint32 `json:"window_id,omitempty"`
+		Cols     int    `json:"cols,omitempty"`
+		Rows     int    `json:"rows,omitempty"`
+		Cwd      string `json:"cwd,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return invalidParams(req.ID, err.Error())
+		}
+	}
+	if p.Cols == 0 {
+		p.Cols = 80
+	}
+	if p.Rows == 0 {
+		p.Rows = 24
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	t, _, err := sess.NewTab(p.WindowID, p.Cols, p.Rows, p.Cwd)
+	if err != nil {
+		return rpcErr(req.ID, -32000, "new tab: "+err.Error(), nil)
+	}
+	return ok(req.ID, map[string]any{
+		"tab_id": t.ID,
+		"cols":   p.Cols,
+		"rows":   p.Rows,
+	})
+}
+
+func (c *agentConn) handleTabClose(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		TabID uint32 `json:"tab_id"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	sess.CloseTab(p.TabID)
+	return ok(req.ID, map[string]bool{"ok": true})
+}
+
+func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		TabID uint32 `json:"tab_id"`
+		Cols  int    `json:"cols"`
+		Rows  int    `json:"rows"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	if p.Cols < 1 || p.Rows < 1 {
+		return invalidParams(req.ID, "cols/rows must be >= 1")
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	t := sess.Tab(p.TabID)
+	if t == nil {
+		return rpcErr(req.ID, -32004, "tab not found", nil)
+	}
+	t.Term.Resize(p.Cols, p.Rows)
+	return ok(req.ID, map[string]bool{"ok": true})
 }
 
 func (c *agentConn) handleAgentClients(req *rpcRequest) *rpcResponse {
@@ -232,7 +319,7 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 	for _, t := range tabs {
 		out = append(out, tabSummary{
 			ID:       t.ID,
-			Title:    t.Title,
+			Title:    t.Title(),
 			Cols:     uint16(t.Term.Width()),
 			Rows:     uint16(t.Term.Height()),
 			WindowID: windowOf[t.ID],

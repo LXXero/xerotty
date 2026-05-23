@@ -119,8 +119,14 @@ func (m *Manager) RemoveTab(idx int) *Tab {
 // it in a new Tab entry at the end of this manager's list and
 // switching focus to it. The Source's existing PTY/connection +
 // goroutines keep running; only the tab-list ownership changes.
+//
+// Re-installs the OSC-title callback so the new Tab's Title field
+// keeps updating. Without this, adopted tabs (cross-window drag,
+// daemon reattach, remote tab reattach) lose title updates — the
+// old callback still points at the previous (now-dead) tab struct.
+//
 // Used by drag-between-windows after the source Manager
-// RemoveTab'd the entry.
+// RemoveTab'd the entry, and by daemon-source reattach paths.
 func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	tab := &Tab{
 		ID:       m.NextID,
@@ -129,6 +135,9 @@ func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
 	m.ActiveIdx = len(m.Tabs) - 1
+	term.SetOnTitle(func(title string) {
+		tab.Title = title
+	})
 	return tab
 }
 

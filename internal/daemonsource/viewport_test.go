@@ -72,20 +72,18 @@ func TestViewportConsistencyUnderBurst(t *testing.T) {
 		}
 	}
 
-	// Now check the visible viewport: every cell read should be
-	// part of a coherent grid. Pull numeric rows and assert
-	// monotonicity in row order.
-	emu := src.Emulator()
-	rows := emu.Height()
-	cols := emu.Width()
+	// Now check the visible viewport via SnapshotViewport — same
+	// atomic-snapshot guarantee the wire-publish path uses. Going
+	// through src.Emulator().CellAt returns live pointers that
+	// race the router goroutine (race detector confirms).
+	grid := src.SnapshotViewport()
 	var lastN int = -1
 	regressions := 0
 	checked := 0
-	for r := 0; r < rows; r++ {
+	for r, row := range grid {
 		var sb strings.Builder
-		for c := 0; c < cols; c++ {
-			cell := emu.CellAt(c, r)
-			if cell == nil || cell.Content == "" {
+		for _, cell := range row {
+			if cell.Content == "" {
 				continue
 			}
 			sb.WriteString(cell.Content)

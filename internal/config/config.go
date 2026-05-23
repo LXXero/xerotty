@@ -411,6 +411,12 @@ func defaultMenuLinux() MenuConfig {
 		Items: []MenuItem{
 			{Label: "New Tab", Action: "new_tab", Shortcut: "Ctrl+Shift+T"},
 			{Label: "New Window", Action: "new_window", Shortcut: "Ctrl+Shift+N"},
+			// "_remote_hosts" is a placeholder action expanded at
+			// render time into a "Remote" submenu with per-host
+			// new-tab / reattach items, one pair per [[hosts]]
+			// entry. Collapses to nothing when no hosts are
+			// configured.
+			{Action: "_remote_hosts"},
 			{Action: "separator"},
 			{Label: "Copy", Action: "copy", Shortcut: "Ctrl+Shift+C", Enabled: "has_selection"},
 			{Label: "Paste", Action: "paste", Shortcut: "Ctrl+Shift+V"},
@@ -433,6 +439,10 @@ func defaultMenuDarwin() MenuConfig {
 		Items: []MenuItem{
 			{Label: "New Tab", Action: "new_tab", Shortcut: "Cmd+T"},
 			{Label: "New Window", Action: "new_window", Shortcut: "Cmd+N"},
+			// _remote_hosts expands to per-host new/reattach
+			// entries at render time (see app.expandMenu).
+			// Collapses when cfg.Hosts is empty.
+			{Action: "_remote_hosts"},
 			{Action: "separator"},
 			{Label: "Copy", Action: "copy", Shortcut: "Cmd+C", Enabled: "has_selection"},
 			{Label: "Paste", Action: "paste", Shortcut: "Cmd+V"},

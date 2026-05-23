@@ -124,8 +124,16 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 
 	emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
-			if t.OnTitle != nil {
-				t.OnTitle(title)
+			// Snapshot OnTitle under t.mu so this read doesn't
+			// race a concurrent SetOnTitle. The callback itself
+			// is invoked OUTSIDE the lock so application code in
+			// the callback can't deadlock on Terminal methods
+			// that also take t.mu.
+			t.mu.Lock()
+			cb := t.OnTitle
+			t.mu.Unlock()
+			if cb != nil {
+				cb(title)
 			}
 		},
 		EnableMode: func(mode ansi.Mode) {
@@ -733,8 +741,14 @@ func (t *Terminal) dispatchOSC(body []byte) {
 	data := body[semi+1:]
 	switch cmd {
 	case "0", "1", "2":
-		if t.OnTitle != nil {
-			t.OnTitle(string(data))
+		// Snapshot under lock — SetOnTitle can race this read
+		// otherwise. Invoke outside the lock so callbacks that
+		// touch Terminal methods don't deadlock.
+		t.mu.Lock()
+		cb := t.OnTitle
+		t.mu.Unlock()
+		if cb != nil {
+			cb(string(data))
 		}
 	}
 }

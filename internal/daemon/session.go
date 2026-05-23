@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -47,6 +48,23 @@ type Session struct {
 	// initMu serializes EnsureInitialTab so two concurrent
 	// NewIfMissing attaches don't each spawn a tab.
 	initMu sync.Mutex
+}
+
+// Title returns the OSC-set title for this tab. Safe to call
+// concurrently with the OnTitle callback that sets it.
+func (t *Tab) Title() string {
+	t.titleMu.RLock()
+	defer t.titleMu.RUnlock()
+	return t.title
+}
+
+// SetTitle updates the tab title. Called by the OnTitle callback
+// installed in NewTab. Exposed for tests; production code uses
+// the callback.
+func (t *Tab) SetTitle(s string) {
+	t.titleMu.Lock()
+	t.title = s
+	t.titleMu.Unlock()
 }
 
 // ProposedAction is one queued write from an agent operating in
@@ -111,8 +129,12 @@ func (s *Session) SetClipboard(text string) {
 // *terminal.Terminal already owns the PTY, the SafeEmulator, and
 // the reader goroutines. We just track its identity in the session.
 type Tab struct {
-	ID    uint32
-	Title string
+	ID uint32
+	// title is set from the OnTitle callback (PTY reader goroutine)
+	// and read from publishLoop (separate goroutine). Guard with
+	// titleMu — straight string field had a -race-flagged race.
+	titleMu sync.RWMutex
+	title   string
 
 	Term *terminal.Terminal
 
@@ -253,9 +275,9 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	}
 	s.nextTabID++
 	s.tabs[t.ID] = t
-	term.OnTitle = func(title string) {
-		t.Title = title
-	}
+	term.SetOnTitle(func(title string) {
+		t.SetTitle(title)
+	})
 	// Latch the exit code + close Exited so per-(client, tab)
 	// publishLoops can ship MsgChildExit. SetOnChildExit fires
 	// immediately if the shell somehow already exited (rare).
@@ -323,14 +345,38 @@ func (s *Session) Tab(id uint32) *Tab {
 	return s.tabs[id]
 }
 
-// Tabs returns a snapshot slice of all tabs. Caller may iterate
-// without holding the session mutex.
+// Tabs returns a snapshot slice of all tabs in window-order:
+// iterate s.windows in their stable creation order, then
+// w.TabIDs left-to-right. Anything not in a window (shouldn't
+// happen — every tab is in a window — but defensive) gets
+// appended by ID at the end. Deterministic so map iteration
+// randomness never bleeds into client-visible ordering.
 func (s *Session) Tabs() []*Tab {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]*Tab, 0, len(s.tabs))
-	for _, t := range s.tabs {
-		out = append(out, t)
+	seen := make(map[uint32]bool, len(s.tabs))
+	for _, w := range s.windows {
+		for _, id := range w.TabIDs {
+			if t, ok := s.tabs[id]; ok && !seen[id] {
+				out = append(out, t)
+				seen[id] = true
+			}
+		}
+	}
+	// Defensive sweep — any orphan tabs (in s.tabs but not in any
+	// window's TabIDs) sorted by ID for stability.
+	if len(out) < len(s.tabs) {
+		var orphanIDs []uint32
+		for id := range s.tabs {
+			if !seen[id] {
+				orphanIDs = append(orphanIDs, id)
+			}
+		}
+		sort.Slice(orphanIDs, func(i, j int) bool { return orphanIDs[i] < orphanIDs[j] })
+		for _, id := range orphanIDs {
+			out = append(out, s.tabs[id])
+		}
 	}
 	return out
 }

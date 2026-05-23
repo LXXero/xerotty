@@ -16,8 +16,12 @@ import (
 //
 // Length is the size of the (type + body) tail, not including the
 // length prefix itself. Cap'd at maxFrameSize to bound memory use
-// for the cell-grid messages on absurd terminal sizes.
-const maxFrameSize = 16 * 1024 * 1024 // 16 MiB — comfortable upper bound
+// — covers cell grids on absurd terminal sizes AND image-paste
+// blobs (4K screenshots routinely run 8-20 MiB as PNG). Bumped
+// from 16 MiB after image paste started failing for large
+// screenshots; future versions should chunk InputImage across
+// multiple frames so this cap can come back down.
+const maxFrameSize = 64 * 1024 * 1024 // 64 MiB
 
 // ErrFrameTooLarge is returned when a peer sends a frame whose length
 // prefix exceeds maxFrameSize. The connection should be closed when

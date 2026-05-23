@@ -5,6 +5,7 @@ import (
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // Window owns the per-OS-window state. One Window = one SDL_Window =
@@ -37,6 +38,15 @@ type Window struct {
 	// only on change so we don't spam the wire with redundant
 	// focus messages.
 	lastSentFocusTabID uint32
+
+	// pendingDaemonMove holds a Source that landed via cross-
+	// window drag (spawnWindowImpl with adopt!=nil) before this
+	// Window had a daemonWindowID. Once the window registers with
+	// its daemon (next frame after SendWindowCreate completes),
+	// syncDaemonFocus / frame fire the deferred MoveTab so the
+	// daemon's layout matches the GUI's. Cleared after fire.
+	pendingDaemonMove terminal.Source
+
 
 
 	// (Old: per-Window cimgui-go backend handle. Removed during the

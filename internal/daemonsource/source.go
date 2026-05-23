@@ -131,6 +131,52 @@ func (s *Source) CellAt(col, row int) *uv.Cell {
 	return s.emu.CellAt(col, row)
 }
 
+// SnapshotViewport returns a consistent copy of the shadow
+// emulator's current viewport. Holds s.mu for the duration so
+// concurrent applyCellFull/applyCellDiff can't write into the
+// cells we're copying out.
+func (s *Source) SnapshotViewport() [][]uv.Cell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cols := s.cols
+	rows := s.rows
+	out := make([][]uv.Cell, rows)
+	for r := 0; r < rows; r++ {
+		row := make([]uv.Cell, cols)
+		for c := 0; c < cols; c++ {
+			cell := s.emu.CellAt(c, r)
+			if cell != nil {
+				row[c] = *cell
+			}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// SnapshotScrollbackRange returns rows [from, to) from the local
+// scrollback mirror as a consistent copy.
+func (s *Source) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if from < 0 {
+		from = 0
+	}
+	if to > len(s.scrollback) {
+		to = len(s.scrollback)
+	}
+	if to <= from {
+		return nil
+	}
+	out := make([][]uv.Cell, 0, to-from)
+	for r := from; r < to; r++ {
+		row := make([]uv.Cell, len(s.scrollback[r]))
+		copy(row, s.scrollback[r])
+		out = append(out, row)
+	}
+	return out
+}
+
 // ScrollbackCellAt reads a cell from the client-side scrollback
 // mirror at logical row (0 = oldest) and column. Returns nil for
 // out-of-range coords; renderer treats nil as empty.

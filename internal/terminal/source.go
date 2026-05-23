@@ -98,10 +98,28 @@ type Source interface {
 	// emulator + the disk-scrollback ring); DaemonSource implements
 	// them against the shadow emulator + scrollback view kept in
 	// sync by the wire protocol.
+	//
+	// CellAt / ScrollbackCellAt may return pointers into live
+	// emulator memory — fine for the GUI's per-frame renderer
+	// (tearing during heavy output is imperceptible at 60fps) but
+	// NOT safe for concurrent readers that race with the writer
+	// goroutine. Callers needing a consistent snapshot should use
+	// SnapshotViewport / SnapshotScrollbackRange instead.
 	Width() int
 	Height() int
 	CellAt(col, row int) *uv.Cell
 	ScrollbackCellAt(col, row int) *uv.Cell
+
+	// SnapshotViewport returns a consistent copy of the visible
+	// grid (cells are values, not pointers). Safe to read fields
+	// after the call returns. Used by daemon publish path, MCP
+	// screen reads, and any test that walks cells while the
+	// emulator is being written.
+	SnapshotViewport() [][]uv.Cell
+
+	// SnapshotScrollbackRange returns rows [from, to) as a
+	// consistent copy. Indices are absolute (0 = oldest).
+	SnapshotScrollbackRange(from, to int) [][]uv.Cell
 
 	// SetScrollbackFromConfig re-applies scrollback settings (mode,
 	// line limit) without restarting the source. Called from the

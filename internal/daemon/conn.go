@@ -283,7 +283,7 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	for i, t := range tabs {
 		tabInfos[i] = protocol.TabInfo{
 			ID:    t.ID,
-			Title: t.Title,
+			Title: t.Title(),
 			Cols:  uint16(t.Term.Width()),
 			Rows:  uint16(t.Term.Height()),
 		}
@@ -337,7 +337,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if err := c.writeFrame(protocol.MsgTabCreated, &protocol.TabCreated{
 		Info: protocol.TabInfo{
 			ID:    t.ID,
-			Title: t.Title,
+			Title: t.Title(),
 			Cols:  uint16(cols),
 			Rows:  uint16(rows),
 		},
@@ -646,7 +646,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	cwd := t.Term.GetCWD()
 	fg := t.Term.ForegroundProcessName()
 	appCursor := t.Term.AppCursorMode()
-	title := t.Title
+	title := t.Title()
 	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor && title == sub.lastTitle {
 		return
 	}

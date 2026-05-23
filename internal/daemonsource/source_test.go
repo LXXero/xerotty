@@ -112,15 +112,16 @@ func TestSourceTabState(t *testing.T) {
 	t.Fatalf("never got a non-empty CWD via TabState (daemon should push at attach)")
 }
 
+// emulatorContains walks a SnapshotViewport (not the live emu) so
+// the test doesn't race the router goroutine writing into the
+// shadow. Going through emu.CellAt directly returns live pointers
+// that the router can mutate between dereferences.
 func emulatorContains(s *daemonsource.Source, needle string) bool {
-	emu := s.Emulator()
-	rows := emu.Height()
-	cols := emu.Width()
-	for r := 0; r < rows; r++ {
+	grid := s.SnapshotViewport()
+	for _, row := range grid {
 		var sb strings.Builder
-		for c := 0; c < cols; c++ {
-			cell := emu.CellAt(c, r)
-			if cell == nil || cell.Content == "" {
+		for _, cell := range row {
+			if cell.Content == "" {
 				sb.WriteByte(' ')
 				continue
 			}
@@ -134,14 +135,11 @@ func emulatorContains(s *daemonsource.Source, needle string) bool {
 }
 
 func emulatorDump(s *daemonsource.Source) string {
-	emu := s.Emulator()
+	grid := s.SnapshotViewport()
 	var sb strings.Builder
-	rows := emu.Height()
-	cols := emu.Width()
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			cell := emu.CellAt(c, r)
-			if cell == nil || cell.Content == "" {
+	for _, row := range grid {
+		for _, cell := range row {
+			if cell.Content == "" {
 				sb.WriteByte(' ')
 				continue
 			}

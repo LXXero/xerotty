@@ -98,6 +98,43 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 			},
 		},
 		{
+			"name":        "create_tab",
+			"description": "Spawn a new tab on the daemon. Defaults to 80x24, the daemon's default window, and the daemon's CWD. Returns the new tab_id. Blocked in observe mode.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"window_id": map[string]any{"type": "integer", "description": "Daemon window to put the tab in. 0 or omitted = default window."},
+					"cols":      map[string]any{"type": "integer"},
+					"rows":      map[string]any{"type": "integer"},
+					"cwd":       map[string]any{"type": "string", "description": "Starting directory for the shell."},
+				},
+			},
+		},
+		{
+			"name":        "close_tab",
+			"description": "Close a tab, killing its PTY child. Blocked in observe mode.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tab_id": map[string]any{"type": "integer"},
+				},
+				"required": []string{"tab_id"},
+			},
+		},
+		{
+			"name":        "resize_tab",
+			"description": "Resize a tab's grid. Daemon updates the PTY winsize so foreground apps (vim, less, etc.) reflow. Blocked in observe mode.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tab_id": map[string]any{"type": "integer"},
+					"cols":   map[string]any{"type": "integer"},
+					"rows":   map[string]any{"type": "integer"},
+				},
+				"required": []string{"tab_id", "cols", "rows"},
+			},
+		},
+		{
 			"name":        "get_clipboard",
 			"description": "Get the session's most recently observed clipboard text.",
 			"inputSchema": map[string]any{
@@ -170,6 +207,12 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleTabInput(inner)
 	case "send_paste":
 		resp = c.handleTabPaste(inner)
+	case "create_tab":
+		resp = c.handleTabCreate(inner)
+	case "close_tab":
+		resp = c.handleTabClose(inner)
+	case "resize_tab":
+		resp = c.handleTabResize(inner)
 	case "get_clipboard":
 		resp = c.handleClipboard(inner)
 	case "set_agent_mode":

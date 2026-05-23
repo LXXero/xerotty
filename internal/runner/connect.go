@@ -92,6 +92,42 @@ func Connect(args []string) int {
 	return 0
 }
 
+// pickInitialTab selects which tab from the Attached frame the
+// viewer should land on. Priority:
+//  1. attached.FocusedTabID — the session's app-wide focused tab.
+//  2. First window's FocusedTabID if any window has one.
+//  3. First window's first TabIDs entry.
+//  4. attached.Tabs[0] as last resort.
+//
+// Without this, the viewer's choice is whatever order
+// Session.Tabs() returned — now deterministic but still
+// arbitrary if the user has 7 tabs and just wants to land on the
+// active one.
+func pickInitialTab(a *protocol.Attached) protocol.TabInfo {
+	byID := make(map[uint32]protocol.TabInfo, len(a.Tabs))
+	for _, ti := range a.Tabs {
+		byID[ti.ID] = ti
+	}
+	if a.FocusedTabID != 0 {
+		if ti, ok := byID[a.FocusedTabID]; ok {
+			return ti
+		}
+	}
+	for _, w := range a.Windows {
+		if w.FocusedTabID != 0 {
+			if ti, ok := byID[w.FocusedTabID]; ok {
+				return ti
+			}
+		}
+		for _, id := range w.TabIDs {
+			if ti, ok := byID[id]; ok {
+				return ti
+			}
+		}
+	}
+	return a.Tabs[0]
+}
+
 type connectClient struct {
 	c *clientproto.Client
 
@@ -113,7 +149,11 @@ func (v *connectClient) run() error {
 	if len(attached.Tabs) == 0 {
 		return fmt.Errorf("daemon attached with zero tabs")
 	}
-	t := attached.Tabs[0]
+	// Prefer the session's focused tab so reconnecting drops you
+	// back on what you were looking at, not whichever tab the
+	// daemon's map iterator surfaced first. Falls back to the
+	// first window's first tab, then the first reported tab.
+	t := pickInitialTab(attached)
 	v.mu.Lock()
 	v.tabID = t.ID
 	v.cols = t.Cols
