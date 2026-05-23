@@ -93,6 +93,12 @@ type Source interface {
 	// Pass nil to clear.
 	SetOnTitle(fn func(string))
 
+	// SetOnBell registers a callback fired when the terminal bell
+	// (BEL = 0x07) is received. Pass nil to clear. Implementations
+	// route to local audio/visual hooks; GUIs typically flash the
+	// tab.
+	SetOnBell(fn func())
+
 	// Renderer-side view: subset of EmulatorView the renderer uses.
 	// *Terminal already exposes these (they pass through to the
 	// emulator + the disk-scrollback ring); DaemonSource implements

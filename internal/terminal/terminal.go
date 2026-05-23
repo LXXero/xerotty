@@ -38,6 +38,19 @@ type Terminal struct {
 	// the GUI uses it to drive the on-child-exit policy. Set via
 	// SetOnChildExit so the callback swap is mutex-guarded.
 	OnChildExit func(int)
+
+	// OnBell fires when the terminal bell (BEL = 0x07) is
+	// received. Daemon ships MsgBell on this. Set via SetOnBell.
+	OnBell func()
+
+	// cursorVisible / cursorStyle / cursorBlink track DECTCEM +
+	// DECSCUSR via the vt emulator's callbacks so the daemon's
+	// MsgCursor frames can carry the real values (style 0..6,
+	// visibility, blink). Without these the daemon hard-coded
+	// visible=true, style=0=block.
+	cursorVisible atomic.Bool
+	cursorStyle   atomic.Uint32 // packed: bit0..7=style enum, bit8=blink
+
 	cols        int
 	rows        int
 	closed      bool // Close() has run and released resources
@@ -122,6 +135,11 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 	}
 	t.applyScrollbackConfig(cfg)
 
+	// Default cursor state — visible block. vt's callbacks will
+	// update these as the emulator parses DECTCEM / DECSCUSR.
+	t.cursorVisible.Store(true)
+	t.cursorStyle.Store(packCursorStyle(0, true)) // style 0 = block, blink
+
 	emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
 			// Snapshot OnTitle under t.mu so this read doesn't
@@ -135,6 +153,20 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 			if cb != nil {
 				cb(title)
 			}
+		},
+		Bell: func() {
+			t.mu.Lock()
+			cb := t.OnBell
+			t.mu.Unlock()
+			if cb != nil {
+				cb()
+			}
+		},
+		CursorVisibility: func(visible bool) {
+			t.cursorVisible.Store(visible)
+		},
+		CursorStyle: func(style vt.CursorStyle, blink bool) {
+			t.cursorStyle.Store(packCursorStyle(uint8(style), blink))
 		},
 		EnableMode: func(mode ansi.Mode) {
 			switch mode {
@@ -560,6 +592,38 @@ func (t *Terminal) ClearScrollback() {
 func (t *Terminal) SetOnTitle(fn func(string)) {
 	t.mu.Lock()
 	t.OnTitle = fn
+	t.mu.Unlock()
+}
+
+// packCursorStyle / unpackCursorStyle pack a (style, blink) pair
+// into a single uint32 so atomic Load/Store can carry both.
+// Style enum lives in the low 8 bits, blink in bit 8.
+func packCursorStyle(style uint8, blink bool) uint32 {
+	v := uint32(style)
+	if blink {
+		v |= 1 << 8
+	}
+	return v
+}
+
+// CursorStyle returns the current cursor style + blink state.
+// Updated by the vt CursorStyle callback from DECSCUSR.
+func (t *Terminal) CursorStyle() (style uint8, blink bool) {
+	v := t.cursorStyle.Load()
+	return uint8(v & 0xFF), (v>>8)&1 != 0
+}
+
+// CursorVisible reports whether the cursor is currently visible.
+// Updated by the vt CursorVisibility callback from DECTCEM.
+func (t *Terminal) CursorVisible() bool {
+	return t.cursorVisible.Load()
+}
+
+// SetOnBell registers a callback fired on terminal bell. Daemon
+// uses this to ship MsgBell to attached clients.
+func (t *Terminal) SetOnBell(fn func()) {
+	t.mu.Lock()
+	t.OnBell = fn
 	t.mu.Unlock()
 }
 

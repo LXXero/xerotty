@@ -195,19 +195,27 @@ falls back to a raw SSH host string.
 
 ## Headless installs
 
-`xerottyd` is its own binary in `cmd/xerottyd/`. No GUI deps — links
-neither SDL3 nor ImGui nor cairo. Just PTY + protocol + msgpack +
-optional MCP server.
+> **HEAD UPDATE**: The "separate xerottyd binary" plan was
+> collapsed early. There's ONE binary now (`xerotty`) with
+> subcommands; `xerotty serve` is the daemon mode. The cmd/
+> xerottyd dir no longer exists. The headless-server install
+> still works — just install `xerotty` and run it as
+> `xerotty serve`. The binary DOES link SDL3/ImGui (which is
+> wasteful on headless boxes); we accept that cost for the
+> simpler one-binary distribution. A future build tag could
+> strip the GUI deps if it becomes a problem.
 
 Distribution model:
-- **dev/desktop machine**: install both `xerotty` and `xerottyd`
-  (single repo, two build artifacts). User runs `xerotty`; daemon
-  auto-spawns when needed; no other config required.
-- **headless server**: install only `xerottyd`. Run via systemd user
-  unit. No SDL3 install needed on the server. UI clients attach over
-  SSH; AI agents connect to MCP via SSH-forwarded socket.
-- **container**: `xerottyd` in a minimal image (statically linked or
-  with just libc + pty). Mount the socket out for the host to attach.
+- **dev/desktop machine**: install `xerotty`. User runs `xerotty`;
+  daemon auto-spawns via `xerotty serve` when needed; no other
+  config required.
+- **headless server**: install `xerotty`, run as
+  `xerotty serve` (or via a systemd user unit running the same).
+  UI clients attach over SSH via `xerotty connect --ssh host` or
+  by adding the host to `[[hosts]]` in the GUI's config. AI
+  agents connect to MCP via SSH-forwarded socket.
+- **container**: `xerotty` in a minimal image. Mount the socket
+  out for the host to attach.
 
 **MCP clients** are equal-tier to UI clients. They speak a separate
 JSON-RPC protocol on a separate socket, but they're driving the same
@@ -245,10 +253,14 @@ pocket.
 
 **Transport options**:
 - Local: unix socket at `$XDG_RUNTIME_DIR/xerottyd.sock` (or
-  `~/.cache/xerotty/sock` macOS).
-- Remote: SSH-stdio. UI runs `ssh host xerottyd --stdio`; the daemon
-  on the remote speaks the protocol on its stdin/stdout. No TCP
-  listener, no separate auth, leverages `~/.ssh/config`.
+  `~/.cache/xerotty/sock` macOS). Socket filename is still
+  `xerottyd.sock` for path stability across the binary
+  collapse — the daemon binary itself is just `xerotty serve`.
+- Remote: SSH-stdio. UI runs
+  `ssh host xerotty serve --stdio` (which bridges to a
+  persistent remote daemon — see internal/runner/stdio_bridge.go
+  for the auto-spawn-and-bridge logic). No TCP listener, no
+  separate auth, leverages `~/.ssh/config`.
 - (Future) Remote over TCP+TLS for low-overhead persistent connections
   on trusted networks.
 
@@ -341,33 +353,41 @@ hole.)
 Each phase is a separately useful checkpoint. Don't move on until
 the current phase works end-to-end.
 
-### Phase 0 — protocol skeleton, local only
-- New `cmd/xerottyd` and `internal/daemon` package.
-- New `internal/protocol` package: message struct definitions with
+### Phase 0 — protocol skeleton, local only [SHIPPED]
+- `internal/runner/serve.go` (invoked as `xerotty serve`) and
+  `internal/daemon` package.
+- `internal/protocol` package: message struct definitions with
   `//go:generate msgp` directives. Frame codec is length-prefixed
   msgpack via tinylib/msgp generated encoders.
 - daemon listens on unix socket, accepts attach.
-- Refactor `internal/terminal` so PTY ownership can live in the daemon
-  (it mostly already can — minimal changes).
-- xerotty UI grows a `--connect unix:///path/sock` flag that talks the
-  protocol instead of using `internal/terminal` directly.
-- Acceptance: `xerottyd` running locally, `xerotty --connect ...`
-  shows a working shell tab, input + output works end-to-end.
+- `internal/terminal` refactored so PTY ownership lives in the
+  daemon (the in-process GUI uses the same code path through
+  `terminal.Source`).
+- xerotty UI flips between in-process and daemon-backed tabs via
+  `cfg.Tabs.Source = "daemon"` / `"daemon:<name>"`.
+- Acceptance: `xerotty serve` running locally, `xerotty connect`
+  shows a working shell tab.
 
-### Phase 1 — multi-tab + detach/reattach
+### Phase 1 — multi-tab + detach/reattach [SHIPPED]
 - Daemon manages tab list as protocol-addressable IDs.
-- UI can `tab_create` / `tab_close` / `tab_focus`.
+- UI can tab create / close / focus / move.
 - Detaching UI doesn't kill daemon-side tabs.
-- Reattaching gets a full `cell_full` frame for sync, then incremental.
-- Acceptance: open 3 tabs, close UI, reopen UI, all 3 still running
-  with their state intact.
+- Reattaching gets a full cell frame + partial scrollback
+  backfill.
+- Acceptance: open 3 tabs, close UI, reopen UI, all 3 still
+  running with their state intact.
 
-### Phase 2 — SSH remote
-- xerotty UI `--connect ssh://host` runs `ssh host xerottyd --stdio`.
-- daemon's `--stdio` mode skips the unix listener and speaks protocol
-  on stdin/stdout.
-- Acceptance: run xerottyd on a remote box, attach from laptop, work
-  in a shell as if local. Test image/clipboard paste (next phase).
+### Phase 2 — SSH remote [SHIPPED]
+- `xerotty connect --ssh host` runs `ssh host xerotty serve
+  --stdio`, which BRIDGES to a persistent remote daemon
+  (auto-spawning one if absent). SSH session ending doesn't
+  kill remote tabs.
+- daemon's `--stdio` flag now means "bridge stdio to the
+  persistent daemon socket"; the old "ephemeral in-process
+  daemon" mode is `--stdio-ephemeral` for scripted one-offs.
+- Acceptance: run `xerotty serve` on a remote box (or let SSH
+  bridge auto-spawn it), attach from laptop, work in a shell
+  as if local. Disconnect, reattach later, tabs still there.
 
 ### Phase 3 — structured paste + clipboard sync
 - UI sends `input_paste_image` as binary frame.

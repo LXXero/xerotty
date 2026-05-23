@@ -36,7 +36,11 @@ var (
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
-	prefTabSources   = []string{"pty", "daemon"}
+	// prefTabSourcesBase is the always-available subset. Remote
+	// host entries get appended at prefs-open time via
+	// buildTabSourceOptions; the resulting per-dialog slice lives
+	// on configDialog.tabSourceOpts.
+	prefTabSourcesBase = []string{"pty", "daemon"}
 	prefColorModes   = []string{"theme", "custom"}
 	prefBSModes      = []string{"ascii_del", "ascii_bs"}
 	prefDelModes     = []string{"vt_sequence", "ascii_del"}
@@ -59,10 +63,17 @@ var prefMenuActions = []string{
 	"select_all", "clear_scrollback", "reset_terminal",
 	"rename_tab", "preferences",
 	"font_size_up", "font_size_down", "font_size_reset",
+	// _remote_hosts is a magic action: at render time
+	// app.expandMenu replaces it with a "Remote" submenu
+	// listing per-host new/reattach items, one pair per
+	// [[hosts]] entry. Listed here so the menu editor can
+	// re-insert it after the user removes it.
+	"_remote_hosts",
 }
 
 var prefMenuLabels = map[string]string{
 	"separator":        "---",
+	"_remote_hosts":    "Remote (expands per host)",
 	"new_tab":          "New Tab",
 	"close_tab":        "Close Tab",
 	"new_window":       "New Window",
@@ -130,6 +141,7 @@ type configDialog struct {
 	inheritCWD    bool
 	closeBtnIdx   int32
 	tabSourceIdx  int32
+	tabSourceOpts []string // built on prefs-open: base + per-host
 	daemonSocket  string
 
 	// Scrollback
@@ -280,10 +292,27 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.childExitIdx = prefIndexOf(prefChildExits, cfg.Tabs.OnChildExit)
 	d.inheritCWD = cfg.Tabs.InheritCWD
 	d.closeBtnIdx = prefIndexOf(prefCloseBtnPos, cfg.Tabs.CloseButtonPosition)
-	d.tabSourceIdx = prefIndexOf(prefTabSources, cfg.Tabs.Source)
+	// Build the source-mode option list dynamically: base
+	// options (pty, daemon) + one "daemon:<name>" per cfg.Hosts
+	// entry. Without this, setting Tabs.Source = "daemon:kh"
+	// would fall to index 0 (pty) on prefs-open and get
+	// clobbered back to "pty" on save.
+	d.tabSourceOpts = append([]string{}, prefTabSourcesBase...)
+	for _, h := range cfg.Hosts {
+		d.tabSourceOpts = append(d.tabSourceOpts, "daemon:"+h.Name)
+	}
+	d.tabSourceIdx = prefIndexOf(d.tabSourceOpts, cfg.Tabs.Source)
 	if d.tabSourceIdx < 0 {
-		// Empty/unknown → "pty" default.
-		d.tabSourceIdx = 0
+		// Source references a host not currently in cfg.Hosts —
+		// add it temporarily so the user can see + keep their
+		// configured value instead of having it silently
+		// downgraded.
+		if cfg.Tabs.Source != "" {
+			d.tabSourceOpts = append(d.tabSourceOpts, cfg.Tabs.Source)
+			d.tabSourceIdx = int32(len(d.tabSourceOpts) - 1)
+		} else {
+			d.tabSourceIdx = 0
+		}
 	}
 	d.daemonSocket = cfg.Tabs.DaemonSocket
 
@@ -372,8 +401,8 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Tabs.OnChildExit = prefChildExits[d.childExitIdx]
 	}
 	cfg.Tabs.InheritCWD = d.inheritCWD
-	if int(d.tabSourceIdx) < len(prefTabSources) {
-		cfg.Tabs.Source = prefTabSources[d.tabSourceIdx]
+	if int(d.tabSourceIdx) < len(d.tabSourceOpts) {
+		cfg.Tabs.Source = d.tabSourceOpts[d.tabSourceIdx]
 	}
 	cfg.Tabs.DaemonSocket = d.daemonSocket
 	if int(d.closeBtnIdx) < len(prefCloseBtnPos) {
@@ -1034,7 +1063,7 @@ func (a *Window) renderPrefShellTabs() {
 
 	imgui.Text("Tab Source")
 	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##tabsource", &d.tabSourceIdx, prefTabSources, int32(len(prefTabSources)))
+	imgui.ComboStrarr("##tabsource", &d.tabSourceIdx, d.tabSourceOpts, int32(len(d.tabSourceOpts)))
 	imgui.TextDisabled("pty: in-process. daemon: routes through xerotty serve")
 	imgui.TextDisabled("(auto-spawns one if no daemon is running). Takes effect on")
 	imgui.TextDisabled("the next tab — existing tabs stay on their current source.")

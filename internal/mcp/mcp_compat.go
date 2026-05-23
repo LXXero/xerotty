@@ -122,6 +122,33 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 			},
 		},
 		{
+			"name":        "list_proposals",
+			"description": "List writes queued by agents in propose mode. Each entry has {index, tab_id, kind:\"input\"|\"paste\", payload}. The queue is bounded; older entries get dropped on overflow.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
+		{
+			"name":        "approve_proposal",
+			"description": "Apply the proposal at the given index to its target tab. Index comes from list_proposals. Indices shift after each approve/drop — re-list before each operation.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"index": map[string]any{"type": "integer"},
+				},
+				"required": []string{"index"},
+			},
+		},
+		{
+			"name":        "drop_proposal",
+			"description": "Discard the proposal at the given index without applying.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"index": map[string]any{"type": "integer"},
+				},
+				"required": []string{"index"},
+			},
+		},
+		{
 			"name":        "resize_tab",
 			"description": "Resize a tab's grid. Daemon updates the PTY winsize so foreground apps (vim, less, etc.) reflow. Blocked in observe mode.",
 			"inputSchema": map[string]any{
@@ -213,6 +240,12 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleTabClose(inner)
 	case "resize_tab":
 		resp = c.handleTabResize(inner)
+	case "list_proposals":
+		resp = c.handleProposalsList(inner)
+	case "approve_proposal":
+		resp = c.handleProposalsApprove(inner)
+	case "drop_proposal":
+		resp = c.handleProposalsDrop(inner)
 	case "get_clipboard":
 		resp = c.handleClipboard(inner)
 	case "set_agent_mode":

@@ -20,6 +20,12 @@ type Session struct {
 
 	cfg *config.Config
 
+	// daemon is a back-reference for fan-out operations that need
+	// to enumerate attached clients (bell + scrollback cleared
+	// broadcasts). Set in newSession; nil-safe — Session methods
+	// that need it guard.
+	daemon *Daemon
+
 	mu       sync.Mutex
 	nextTabID uint32
 	nextWinID uint32
@@ -77,8 +83,16 @@ type ProposedAction struct {
 	Bytes  []byte // raw for input, paste text encoded as bytes
 }
 
+// proposedCap bounds Session.proposed so a noisy agent can't
+// exhaust memory in propose mode. Drops oldest on overflow — the
+// alternative (blocking the agent's RPC) would hang propose-mode
+// callers indefinitely when no consumer drains the queue.
+const proposedCap = 256
+
 // QueueProposedInput stores an input proposal from an agent.
-func (s *Session) QueueProposedInput(tabID uint32, bytes []byte) {
+// Returns the queue index of the newly-queued item so the caller
+// can correlate later approve/drop.
+func (s *Session) QueueProposedInput(tabID uint32, bytes []byte) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := make([]byte, len(bytes))
@@ -86,15 +100,64 @@ func (s *Session) QueueProposedInput(tabID uint32, bytes []byte) {
 	s.proposed = append(s.proposed, ProposedAction{
 		TabID: tabID, IsPaste: false, Bytes: cp,
 	})
+	s.trimProposedLocked()
+	return len(s.proposed) - 1
 }
 
 // QueueProposedPaste stores a paste proposal from an agent.
-func (s *Session) QueueProposedPaste(tabID uint32, text string) {
+func (s *Session) QueueProposedPaste(tabID uint32, text string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.proposed = append(s.proposed, ProposedAction{
 		TabID: tabID, IsPaste: true, Bytes: []byte(text),
 	})
+	s.trimProposedLocked()
+	return len(s.proposed) - 1
+}
+
+func (s *Session) trimProposedLocked() {
+	if len(s.proposed) > proposedCap {
+		s.proposed = s.proposed[len(s.proposed)-proposedCap:]
+	}
+}
+
+// ApproveProposal pops the proposal at idx and applies it to its
+// target tab. Returns (true, applied-action, nil) on success.
+// (false, _, nil) when idx is out of range. (true, _, err) when
+// the apply itself failed (e.g. tab closed between queue + drain).
+func (s *Session) ApproveProposal(idx int) (bool, ProposedAction, error) {
+	s.mu.Lock()
+	if idx < 0 || idx >= len(s.proposed) {
+		s.mu.Unlock()
+		return false, ProposedAction{}, nil
+	}
+	act := s.proposed[idx]
+	s.proposed = append(s.proposed[:idx], s.proposed[idx+1:]...)
+	t, ok := s.tabs[act.TabID]
+	s.mu.Unlock()
+	if !ok {
+		return true, act, nil // tab gone — drop silently
+	}
+	if act.IsPaste {
+		t.Term.Paste(string(act.Bytes))
+	} else {
+		if _, err := t.Term.Write(act.Bytes); err != nil {
+			return true, act, err
+		}
+	}
+	return true, act, nil
+}
+
+// DropProposal removes the proposal at idx without applying. Used
+// by reject paths.
+func (s *Session) DropProposal(idx int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx < 0 || idx >= len(s.proposed) {
+		return false
+	}
+	s.proposed = append(s.proposed[:idx], s.proposed[idx+1:]...)
+	return true
 }
 
 // PendingProposals returns the current queue (snapshot). The UI
@@ -168,10 +231,11 @@ type Window struct {
 	FocusedTabID uint32   // which tab is in front within this window
 }
 
-func newSession(name string, cfg *config.Config) *Session {
+func newSession(name string, cfg *config.Config, d *Daemon) *Session {
 	return &Session{
 		Name:      name,
 		cfg:       cfg,
+		daemon:    d,
 		nextTabID: 1,
 		nextWinID: 1,
 		tabs:      make(map[uint32]*Tab),
@@ -278,6 +342,16 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	term.SetOnTitle(func(title string) {
 		t.SetTitle(title)
 	})
+	// Bell fan-out — when the PTY child emits BEL, broadcast
+	// MsgBell to every client attached to this tab. Without this
+	// the wire-protocol message type exists but never fires; GUIs
+	// and CLIs in daemon mode never hear the bell. Routed through
+	// the Daemon back-ref since clients live there, not on Session.
+	if s.daemon != nil {
+		term.SetOnBell(func() {
+			s.daemon.broadcastBell(t.ID)
+		})
+	}
 	// Latch the exit code + close Exited so per-(client, tab)
 	// publishLoops can ship MsgChildExit. SetOnChildExit fires
 	// immediately if the shell somehow already exited (rare).

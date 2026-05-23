@@ -287,12 +287,68 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 	return out
 }
 
+// windowIDForHub returns this Window's daemon-window ID on the
+// given hub, lazily creating a daemon window via SendWindowCreate
+// if no association exists yet. Returns 0 + false on failure
+// (hub closed, no response within timeout). Callers use 0 as
+// "use the daemon's default window" so a partial-failure mode is
+// graceful.
+//
+// Solves the cross-hub ID confusion: when a window contains tabs
+// from multiple daemons, focus/reorder operations need to send
+// the WINDOW ID FOR THAT TAB'S DAEMON, not the primary one.
+func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
+	if hub == nil {
+		return 0
+	}
+	w.daemonWindowIDsMu.Lock()
+	if id, ok := w.daemonWindowIDs[hub]; ok {
+		w.daemonWindowIDsMu.Unlock()
+		return id
+	}
+	// Local-daemon primary path: if the hub is the app's
+	// daemonHub AND we already know a daemonWindowID, reuse it.
+	if hub == w.app.daemonHub && w.daemonWindowID != 0 {
+		if w.daemonWindowIDs == nil {
+			w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+		}
+		w.daemonWindowIDs[hub] = w.daemonWindowID
+		w.daemonWindowIDsMu.Unlock()
+		return w.daemonWindowID
+	}
+	w.daemonWindowIDsMu.Unlock()
+
+	// Otherwise mint a fresh daemon window on this hub.
+	if err := hub.Client().SendWindowCreate(0, 0, int32(w.width), int32(w.height)); err != nil {
+		return 0
+	}
+	var id uint32
+	select {
+	case wc := <-hub.Client().WindowCreated():
+		id = wc.Info.ID
+	case <-time.After(2 * time.Second):
+		return 0
+	}
+	w.daemonWindowIDsMu.Lock()
+	if w.daemonWindowIDs == nil {
+		w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+	}
+	w.daemonWindowIDs[hub] = id
+	w.daemonWindowIDsMu.Unlock()
+	return id
+}
+
 // sendDaemonMoveTab persists a tab move to the owning daemon.
 // Same-window reorder OR cross-window drag — both go through the
 // same MsgWindowMoveTab carrying (TabID, ToWindowID, Index).
-// No-op when the tab isn't daemon-backed or when window IDs are
-// not yet established (still in startup).
-func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, toWindowID uint32, idx int32) {
+// No-op when the tab isn't daemon-backed.
+//
+// The destination window ID is looked up PER-HUB via
+// windowIDForHub so a remote tab's reorder always goes to the
+// remote daemon with the remote-side window ID — never the local
+// daemon's window ID (which would refer to a different window
+// or be invalid).
+func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, _ /*ignored*/ uint32, idx int32) {
 	if tab == nil || tab.Terminal == nil {
 		return
 	}
@@ -300,14 +356,15 @@ func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, toWindowID uint32, idx int32) 
 	if !ok {
 		return
 	}
-	if toWindowID == 0 {
-		// Don't have a window association for this GUI window
-		// yet (haven't created/adopted a daemon window). The
-		// reorder will be lost on reattach but the local UI is
-		// still correct.
+	hub := w.app.findHubForClient(ds.HubClient())
+	if hub == nil {
 		return
 	}
-	_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), toWindowID, idx)
+	id := w.windowIDForHub(hub)
+	if id == 0 {
+		return
+	}
+	_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), id, idx)
 }
 
 // openRemoteTab spawns a NEW tab whose source is a daemon on a
@@ -644,23 +701,54 @@ func (a *App) initDaemonSource() error {
 }
 
 // installSourceFactory builds the tabs.Manager.SourceFactory for a
-// Window. In daemon mode the closure captures the Window's
-// daemonWindowID so every NewTab call targets the correct daemon
-// window regardless of what other Windows did. Falls back to the
-// in-process PTY path when daemon mode isn't active OR the Window
-// hasn't acquired a daemon window yet.
+// Window. In daemon mode the closure does NOT capture a hub
+// pointer — it calls a.activeDaemonHub() per invocation so a
+// re-dialed hub (after SSH drop on a remote-default setup, or
+// auto-spawn restart locally) reaches new tabs without needing
+// every Window's factory to be re-installed.
+//
+// Falls back to in-process PTY when daemon mode isn't active OR
+// activeDaemonHub returns nil (unrecoverable connection loss).
 func (a *App) installSourceFactory(w *Window) {
 	if a.daemonHub == nil {
 		w.tabs.SourceFactory = nil // tabs.NewTab uses terminal.New
 		return
 	}
-	hub := a.daemonHub
 	w.tabs.SourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
+		hub := a.activeDaemonHub()
+		if hub == nil {
+			return nil, fmt.Errorf("daemon hub unavailable")
+		}
 		// Snapshot the WindowID at call time, not closure-create
 		// time, so re-installs after daemonWindowID changes pick
-		// up the new value. 0 → daemon's default window (matches
-		// pre-multi-window behavior).
+		// up the new value. 0 → daemon's default window.
 		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd)
+	}
+}
+
+// activeDaemonHub returns a.daemonHub if its underlying client is
+// still alive. If dead, re-runs the appropriate init path
+// (local or remote-default) to replace the hub, then returns the
+// new one. Returns nil on permanent failure.
+func (a *App) activeDaemonHub() *daemonsource.Hub {
+	if a.daemonHub == nil {
+		return nil
+	}
+	select {
+	case <-a.daemonHub.Client().Closed():
+		// Hub is dead — re-init based on the configured source
+		// string. Local daemon mode auto-respawns; remote mode
+		// re-dials via SSH.
+		a.daemonHub = nil
+		src := a.cfg.Tabs.Source
+		if src == "daemon" {
+			_ = a.initDaemonSource()
+		} else if strings.HasPrefix(src, "daemon:") {
+			_ = a.initRemoteDefaultSource(strings.TrimPrefix(src, "daemon:"))
+		}
+		return a.daemonHub
+	default:
+		return a.daemonHub
 	}
 }
 
@@ -1855,15 +1943,24 @@ func (w *Window) containsMousePos(mp imgui.Vec2) bool {
 // when the focus changes so the wire stays quiet during normal
 // tab use.
 func (a *Window) syncDaemonFocus() {
-	// Drain any deferred cross-window-drag move first. Once the
-	// new GUI window's daemonWindowID is non-zero (post-
-	// SendWindowCreate), tell the daemon the tab moved here.
-	if a.pendingDaemonMove != nil && a.daemonWindowID != 0 {
+	// Drain any deferred cross-window-drag move. Once the
+	// destination window has a daemon-window ID on the dragged
+	// tab's HUB (lazily minted by windowIDForHub), tell that
+	// daemon the tab moved here.
+	if a.pendingDaemonMove != nil {
 		if ds, ok := a.pendingDaemonMove.(*daemonsource.Source); ok {
-			// Index -1 → daemon appends to the destination window.
-			_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), a.daemonWindowID, -1)
+			if hub := a.app.findHubForClient(ds.HubClient()); hub != nil {
+				if id := a.windowIDForHub(hub); id != 0 {
+					_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), id, -1)
+					a.pendingDaemonMove = nil
+				}
+			} else {
+				// Non-daemon tab — nothing to persist.
+				a.pendingDaemonMove = nil
+			}
+		} else {
+			a.pendingDaemonMove = nil
 		}
-		a.pendingDaemonMove = nil
 	}
 	tab := a.tabs.Active()
 	var cur uint32
@@ -1885,14 +1982,36 @@ func (a *Window) syncDaemonFocus() {
 	}
 	cli := ds.HubClient()
 	_ = cli.SendTabFocus(cur)
-	// Window-focus only applies when this GUI window IS the one
-	// associated with the daemon hosting the tab (i.e. the local
-	// daemon path). For remote tabs, the GUI window didn't
-	// register itself with the remote daemon's window registry,
-	// so skip.
-	if a.app.daemonHub != nil && ds.HubClient() == a.app.daemonHub.Client() && a.daemonWindowID != 0 {
-		_ = cli.SendWindowFocusTab(a.daemonWindowID, cur)
+	// Window-focus needs the daemon-window ID FOR THAT TAB'S
+	// HUB. windowIDForHub does the per-hub lookup (lazily
+	// minting a remote-side daemon window on first use). Without
+	// the per-hub map, a remote tab's focus would send the
+	// local-daemon's window ID to the remote daemon —
+	// mismatched ID spaces.
+	hub := a.app.findHubForClient(cli)
+	if hub != nil {
+		if id := a.windowIDForHub(hub); id != 0 {
+			_ = cli.SendWindowFocusTab(id, cur)
+		}
 	}
+}
+
+// findHubForClient maps a clientproto.Client back to its
+// daemonsource.Hub by walking the registry (local + remote).
+// Used for "I have a Source's Client; which hub does it belong
+// to?" lookups during cross-hub focus + move operations.
+func (a *App) findHubForClient(cli *clientproto.Client) *daemonsource.Hub {
+	if a.daemonHub != nil && a.daemonHub.Client() == cli {
+		return a.daemonHub
+	}
+	a.remoteHubsMu.Lock()
+	defer a.remoteHubsMu.Unlock()
+	for _, e := range a.remoteHubs {
+		if e.hub.Client() == cli {
+			return e.hub
+		}
+	}
+	return nil
 }
 
 func (a *Window) frame() {
@@ -4311,6 +4430,11 @@ func (w *Window) writeSelection(text string) {
 	input.PrimaryWrite(text)
 	if w.app.cfg.Clipboard.CopyOnSelect {
 		input.ClipboardWrite(text)
+		// Daemons need to know about copy-on-select too so MCP
+		// get_clipboard / future PTY OSC52 reads see the
+		// freshly-selected text. Without this, copy-on-select
+		// users had a clipboard divergence between OS and daemon.
+		w.app.broadcastClipboard(text)
 	}
 }
 

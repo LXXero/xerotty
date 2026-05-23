@@ -179,6 +179,12 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleTabClose(req)
 	case "tab/resize":
 		return c.handleTabResize(req)
+	case "proposals/list":
+		return c.handleProposalsList(req)
+	case "proposals/approve":
+		return c.handleProposalsApprove(req)
+	case "proposals/drop":
+		return c.handleProposalsDrop(req)
 	case "tab/clipboard":
 		return c.handleClipboard(req)
 	case "agent/mode":
@@ -286,6 +292,72 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 	}
 	t.Term.Resize(p.Cols, p.Rows)
 	return ok(req.ID, map[string]bool{"ok": true})
+}
+
+func (c *agentConn) handleProposalsList(req *rpcRequest) *rpcResponse {
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return ok(req.ID, []map[string]any{})
+	}
+	pending := sess.PendingProposals()
+	out := make([]map[string]any, len(pending))
+	for i, p := range pending {
+		kind := "input"
+		if p.IsPaste {
+			kind = "paste"
+		}
+		out[i] = map[string]any{
+			"index":   i,
+			"tab_id":  p.TabID,
+			"kind":    kind,
+			"payload": string(p.Bytes),
+		}
+	}
+	return ok(req.ID, out)
+}
+
+func (c *agentConn) handleProposalsApprove(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	found, _, err := sess.ApproveProposal(p.Index)
+	if !found {
+		return rpcErr(req.ID, -32004, "no proposal at index", nil)
+	}
+	if err != nil {
+		return rpcErr(req.ID, -32000, "apply: "+err.Error(), nil)
+	}
+	return ok(req.ID, map[string]bool{"approved": true})
+}
+
+func (c *agentConn) handleProposalsDrop(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		Index int `json:"index"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	if !sess.DropProposal(p.Index) {
+		return rpcErr(req.ID, -32004, "no proposal at index", nil)
+	}
+	return ok(req.ID, map[string]bool{"dropped": true})
 }
 
 func (c *agentConn) handleAgentClients(req *rpcRequest) *rpcResponse {

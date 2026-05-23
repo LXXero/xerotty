@@ -61,6 +61,28 @@ func (d *Daemon) AttachedClients() []AttachedClient {
 	return out
 }
 
+// broadcastBell ships MsgBell to every client with a subscription
+// for tabID. Wire-protocol BEL fan-out — each attached client's
+// GUI (or CLI viewer) decides what to do with it (audio, visual
+// flash, count in tab title, etc.).
+func (d *Daemon) broadcastBell(tabID uint32) {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		c.subsMu.Lock()
+		_, ok := c.subs[tabID]
+		c.subsMu.Unlock()
+		if !ok {
+			continue
+		}
+		_ = c.writeFrame(protocol.MsgBell, &protocol.Bell{ID: tabID})
+	}
+}
+
 // broadcastScrollbackCleared notifies every attached client with a
 // subscription on tabID that scrollback was cleared. Resets each
 // sub's lastScrollbackLen so the next publish doesn't think the
@@ -208,7 +230,7 @@ func (d *Daemon) session(name string) *Session {
 	if s, ok := d.sessions[name]; ok {
 		return s
 	}
-	s := newSession(name, d.cfg)
+	s := newSession(name, d.cfg, d)
 	d.sessions[name] = s
 	return s
 }

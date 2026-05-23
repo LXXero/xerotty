@@ -67,6 +67,10 @@ type Source struct {
 	// daemon re-ships the same title on each TabState tick.
 	lastTitle string
 
+	// onBell is the GUI's bell callback. Fires from applyBell on
+	// every MsgBell frame.
+	onBell func()
+
 	// Lifecycle.
 	dataCh   chan struct{}
 	closed   atomic.Bool
@@ -371,9 +375,22 @@ func (s *Source) applyTitle(f *protocol.Title) {
 }
 
 func (s *Source) applyBell(*protocol.Bell) {
-	// TODO: route bell into the GUI's bell handler (sound/visual).
-	// For now, silently consume — the GUI's bell wiring isn't
-	// abstracted yet.
+	s.mu.Lock()
+	cb := s.onBell
+	s.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+}
+
+// SetOnBell registers a callback fired on every MsgBell frame.
+// Daemon broadcasts MsgBell when its PTY child emits BEL; this
+// is how that signal reaches a GUI tab so it can flash / play a
+// sound / increment a bell counter.
+func (s *Source) SetOnBell(fn func()) {
+	s.mu.Lock()
+	s.onBell = fn
+	s.mu.Unlock()
 }
 
 func (s *Source) applyChildExit(f *protocol.ChildExit) {

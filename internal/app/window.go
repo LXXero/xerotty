@@ -1,7 +1,10 @@
 package app
 
 import (
+	"sync"
+
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
@@ -26,11 +29,22 @@ type Window struct {
 	app *App
 
 	// daemonWindowID is the server-side window ID this GUI window
-	// corresponds to in daemon mode. Set in spawnWindowImpl when
-	// adopting an existing daemon window (reattach) or after
-	// SendWindowCreate returns a fresh one. 0 = not yet associated
-	// or non-daemon mode.
+	// corresponds to on the LOCAL/default daemon. Kept for
+	// backwards compatibility with code that already knows it
+	// only cares about the primary daemon (installSourceFactory,
+	// adoption paths). For mixed local+remote tabs the per-hub
+	// view lives in daemonWindowIDs below.
 	daemonWindowID uint32
+
+	// daemonWindowIDs maps each daemon hub this GUI window has
+	// ever touched to the server-side window ID created on that
+	// hub. Lets focus/reorder/move operations send the RIGHT
+	// window ID to the RIGHT hub — without this map, a remote
+	// tab's reorder used to send the local-daemon's window ID to
+	// the remote daemon (mismatched ID spaces). Lazily populated
+	// as needed by windowIDFor.
+	daemonWindowIDsMu sync.Mutex
+	daemonWindowIDs   map[*daemonsource.Hub]uint32
 
 	// lastSentFocusTabID is the most recent tab ID we shipped to
 	// the daemon via SendTabFocus / SendWindowFocusTab. Per-frame

@@ -43,8 +43,8 @@ up in the cell grid the daemon ships back. Passes in ~50ms.
 see it clean up its socket.
 
 ```sh
-./xerottyd
-# stderr: xerottyd: listening on /run/user/1000/xerottyd.sock
+./xerotty serve
+# stderr: xerotty serve: listening on /run/user/1000/xerottyd.sock
 # stdout: /run/user/1000/xerottyd.sock
 ls -la /run/user/1000/xerottyd.sock   # 0600 unix socket
 # Ctrl+C
@@ -80,10 +80,11 @@ ls /run/user/1000/xerottyd.sock        # gone
 - `cell_convert.go` — `ultraviolet.Cell` → `protocol.Cell`
   including the palette/RGB color classification.
 
-### `cmd/xerottyd/`
-- Entry point. `--socket /path` flag, defaults to
-  `$XDG_RUNTIME_DIR/xerottyd.sock`. Stdio mode flag exists but
-  refuses to run (Phase 2 SSH transport will implement it).
+### `internal/runner/serve.go` (was `cmd/xerottyd`)
+- Daemon entry point, invoked as `xerotty serve`. `--socket
+  /path` flag, defaults to `$XDG_RUNTIME_DIR/xerottyd.sock`.
+  `--stdio` bridges to the persistent local daemon; the old
+  ephemeral in-process behavior is `--stdio-ephemeral`.
 
 ### `internal/clientproto/`
 - `Client` wrapping a single daemon connection. Hello, Attach,
