@@ -67,6 +67,83 @@ func (d *Daemon) AttachedClients() []AttachedClient {
 	return out
 }
 
+// broadcastProposals ships the current propose-mode queue to every
+// connected wire client so their approval gates stay in sync.
+// Called after a proposal is queued (by an MCP agent) or resolved.
+func (d *Daemon) broadcastProposals() {
+	sess := d.SessionByName("default")
+	if sess == nil {
+		return
+	}
+	pending := sess.PendingProposals()
+	infos := make([]protocol.ProposalInfo, len(pending))
+	for i, p := range pending {
+		kind := "input"
+		if p.IsPaste {
+			kind = "paste"
+		}
+		infos[i] = protocol.ProposalInfo{
+			Index:   uint32(i),
+			TabID:   p.TabID,
+			Kind:    kind,
+			Preview: previewBytes(p.Bytes),
+		}
+	}
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		_ = c.writeFrame(protocol.MsgProposalsChanged, &protocol.ProposalsChanged{Proposals: infos})
+	}
+}
+
+// previewBytes renders queued payload bytes display-safe: control
+// chars become caret/symbol notation, truncated to 60 runes so a
+// pasted screenful doesn't blow up the banner.
+func previewBytes(b []byte) string {
+	const max = 60
+	var sb []rune
+	for _, r := range string(b) {
+		switch {
+		case r == '\r':
+			sb = append(sb, '⏎')
+		case r == '\n':
+			sb = append(sb, '⏎')
+		case r == '\t':
+			sb = append(sb, '⇥')
+		case r < 0x20:
+			sb = append(sb, '^', rune('@'+r))
+		default:
+			sb = append(sb, r)
+		}
+		if len(sb) >= max {
+			sb = append(sb, '…')
+			break
+		}
+	}
+	return string(sb)
+}
+
+// broadcastClipboardSet ships MsgClipboardSet to every connected
+// client so each writes the text to its local OS clipboard. Fired
+// when a PTY app issues OSC 52 set. Clipboard is session-global,
+// so this isn't scoped to a tab subscription — every attached
+// client gets it.
+func (d *Daemon) broadcastClipboardSet(text string) {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		_ = c.writeFrame(protocol.MsgClipboardSet, &protocol.ClipboardSet{Text: text})
+	}
+}
+
 // broadcastBell ships MsgBell to every client with a subscription
 // for tabID. Wire-protocol BEL fan-out — each attached client's
 // GUI (or CLI viewer) decides what to do with it (audio, visual

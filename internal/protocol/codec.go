@@ -15,13 +15,16 @@ import (
 //   [u32 length BE][u8 type][msgpack body...]
 //
 // Length is the size of the (type + body) tail, not including the
-// length prefix itself. Cap'd at maxFrameSize to bound memory use
-// — covers cell grids on absurd terminal sizes AND image-paste
-// blobs (4K screenshots routinely run 8-20 MiB as PNG). Bumped
-// from 16 MiB after image paste started failing for large
-// screenshots; future versions should chunk InputImage across
-// multiple frames so this cap can come back down.
-const maxFrameSize = 64 * 1024 * 1024 // 64 MiB
+// length prefix itself. Cap'd at maxFrameSize to bound memory use.
+// Image paste is chunked (MsgInputImageChunk, ImageChunkSize per
+// frame) so even multi-megabyte screenshots fit comfortably under
+// this — no single frame needs to carry a whole image.
+const maxFrameSize = 16 * 1024 * 1024 // 16 MiB
+
+// ImageChunkSize is the per-frame payload size for chunked image
+// paste. 1 MiB keeps each frame well under maxFrameSize while
+// keeping the chunk count low for typical screenshots.
+const ImageChunkSize = 1 * 1024 * 1024 // 1 MiB
 
 // ErrFrameTooLarge is returned when a peer sends a frame whose length
 // prefix exceeds maxFrameSize. The connection should be closed when

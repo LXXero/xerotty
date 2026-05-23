@@ -45,8 +45,10 @@ const (
 	MsgResize            MsgType = 20 // client → server (per-tab cols/rows)
 	MsgInputBytes        MsgType = 21 // client → server: raw bytes for PTY
 	MsgInputPaste        MsgType = 22 // client → server: paste (may be longer)
-	MsgInputImage        MsgType = 23 // client → server: paste an image (binary blob)
-	MsgClipboardData     MsgType = 24 // either direction: clipboard contents
+	MsgInputImage        MsgType = 23 // client → server: paste an image (binary blob, single frame)
+	MsgClipboardData     MsgType = 24 // client → server: client's clipboard text (for OSC52 reads)
+	MsgInputImageChunk   MsgType = 25 // client → server: one chunk of a chunked image paste
+	MsgClipboardSet      MsgType = 26 // server → client: app set the clipboard via OSC 52
 
 	MsgCellFull          MsgType = 30 // server → client: full grid (initial / resync)
 	MsgCellDiff          MsgType = 31 // server → client: changed cells
@@ -57,8 +59,10 @@ const (
 	MsgTabState          MsgType = 36 // server → client: cwd, foreground proc, app cursor
 	MsgScrollbackAppend  MsgType = 37 // server → client: new scrollback rows
 	MsgScrollbackCleared MsgType = 38 // server → client: scrollback was cleared (broadcast to all attached)
+	MsgProposalsChanged  MsgType = 39 // server → client: full list of pending propose-mode writes
 
 	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
+	MsgProposalResolve   MsgType = 41 // client → server: approve/drop a pending proposal
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -268,6 +272,62 @@ type InputImage struct {
 	MIME     string `msg:"mime"`
 	Filename string `msg:"filename,omitempty"`
 	Bytes    []byte `msg:"bytes"`
+}
+
+// InputImageChunk carries one slice of a chunked image paste. Big
+// screenshots (4K PNGs run 8-20 MiB) would otherwise need a single
+// huge frame; chunking lets the frame-size cap stay small. Chunks
+// for one image arrive in order on the same connection. The daemon
+// accumulates Data per (connection, tab) and, on the chunk with
+// Final=true, writes the assembled bytes to a temp file + types the
+// path (same as InputImage's single-frame path).
+//
+// MIME + Filename only need to be set on the first chunk (Seq 0);
+// the daemon captures them then. Seq is for sanity/ordering checks.
+type InputImageChunk struct {
+	ID       uint32 `msg:"id"`
+	MIME     string `msg:"mime,omitempty"`
+	Filename string `msg:"filename,omitempty"`
+	Seq      uint32 `msg:"seq"`
+	Final    bool   `msg:"final"`
+	Data     []byte `msg:"data"`
+}
+
+// ProposalInfo summarizes one queued propose-mode write for the
+// GUI's approval gate. Preview is a truncated, display-safe
+// rendering of the payload (control chars escaped) so the banner
+// can show "ls -la⏎" without dumping raw bytes.
+type ProposalInfo struct {
+	Index   uint32 `msg:"index"`
+	TabID   uint32 `msg:"tab_id"`
+	Kind    string `msg:"kind"` // "input" | "paste"
+	Preview string `msg:"preview"`
+}
+
+// ProposalsChanged is pushed server→client whenever the propose-
+// mode queue changes (an MCP agent queued a write, or one got
+// approved/dropped). Carries the FULL current list — clients
+// replace their local view wholesale, sidestepping index-shift
+// bookkeeping. Sent to every attached wire client (the GUI shows
+// an approval banner).
+type ProposalsChanged struct {
+	Proposals []ProposalInfo `msg:"proposals"`
+}
+
+// ProposalResolve is sent client→server when the user approves or
+// drops a pending proposal from the GUI gate. Approve=true applies
+// it to the target tab; false discards it. Index is from the most
+// recent ProposalsChanged.
+type ProposalResolve struct {
+	Index   uint32 `msg:"index"`
+	Approve bool   `msg:"approve"`
+}
+
+// ClipboardSet is pushed server→client when a PTY app sets the
+// system clipboard via OSC 52. The client writes Text to the local
+// OS clipboard so copy-in-remote-app → paste-in-local-app works.
+type ClipboardSet struct {
+	Text string `msg:"text"`
 }
 
 // ClipboardData carries clipboard text. The direction tells the

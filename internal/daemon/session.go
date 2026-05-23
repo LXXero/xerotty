@@ -94,25 +94,37 @@ const proposedCap = 256
 // can correlate later approve/drop.
 func (s *Session) QueueProposedInput(tabID uint32, bytes []byte) int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	cp := make([]byte, len(bytes))
 	copy(cp, bytes)
 	s.proposed = append(s.proposed, ProposedAction{
 		TabID: tabID, IsPaste: false, Bytes: cp,
 	})
 	s.trimProposedLocked()
-	return len(s.proposed) - 1
+	idx := len(s.proposed) - 1
+	s.mu.Unlock()
+	s.notifyProposals()
+	return idx
 }
 
 // QueueProposedPaste stores a paste proposal from an agent.
 func (s *Session) QueueProposedPaste(tabID uint32, text string) int {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.proposed = append(s.proposed, ProposedAction{
 		TabID: tabID, IsPaste: true, Bytes: []byte(text),
 	})
 	s.trimProposedLocked()
-	return len(s.proposed) - 1
+	idx := len(s.proposed) - 1
+	s.mu.Unlock()
+	s.notifyProposals()
+	return idx
+}
+
+// notifyProposals tells the daemon to broadcast the current queue
+// to wire clients (GUI approval gate). nil-safe.
+func (s *Session) notifyProposals() {
+	if s.daemon != nil {
+		s.daemon.broadcastProposals()
+	}
 }
 
 func (s *Session) trimProposedLocked() {
@@ -142,9 +154,11 @@ func (s *Session) ApproveProposal(idx int) (bool, ProposedAction, error) {
 		t.Term.Paste(string(act.Bytes))
 	} else {
 		if _, err := t.Term.Write(act.Bytes); err != nil {
+			s.notifyProposals()
 			return true, act, err
 		}
 	}
+	s.notifyProposals()
 	return true, act, nil
 }
 
@@ -152,11 +166,13 @@ func (s *Session) ApproveProposal(idx int) (bool, ProposedAction, error) {
 // by reject paths.
 func (s *Session) DropProposal(idx int) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if idx < 0 || idx >= len(s.proposed) {
+		s.mu.Unlock()
 		return false
 	}
 	s.proposed = append(s.proposed[:idx], s.proposed[idx+1:]...)
+	s.mu.Unlock()
+	s.notifyProposals()
 	return true
 }
 
@@ -350,6 +366,18 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	if s.daemon != nil {
 		term.SetOnBell(func() {
 			s.daemon.broadcastBell(t.ID)
+		})
+		// OSC 52: a PTY app writing the clipboard stores it on
+		// the session + broadcasts to attached clients (which
+		// write their local OS clipboards). A GET ("?") is
+		// answered from the session clipboard, which clients
+		// populate via SendClipboardData on copy.
+		term.SetOnClipboardSet(func(text string) {
+			s.SetClipboard(text)
+			s.daemon.broadcastClipboardSet(text)
+		})
+		term.SetClipboardProvider(func() string {
+			return s.Clipboard()
 		})
 	}
 	// Latch the exit code + close Exited so per-(client, tab)

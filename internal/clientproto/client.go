@@ -41,6 +41,8 @@ type Client struct {
 	tabState      chan *protocol.TabState
 	scrollback    chan *protocol.ScrollbackAppend
 	sbCleared     chan *protocol.ScrollbackCleared
+	clipboardSet  chan *protocol.ClipboardSet
+	proposals     chan *protocol.ProposalsChanged
 	errCh         chan *protocol.Error
 	closed     chan struct{}
 
@@ -83,6 +85,8 @@ func wrap(conn net.Conn) *Client {
 		tabState:      make(chan *protocol.TabState, 32),
 		scrollback:    make(chan *protocol.ScrollbackAppend, 32),
 		sbCleared:     make(chan *protocol.ScrollbackCleared, 8),
+		clipboardSet:  make(chan *protocol.ClipboardSet, 8),
+		proposals:     make(chan *protocol.ProposalsChanged, 8),
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
@@ -208,10 +212,43 @@ func (c *Client) SendPaste(id uint32, b []byte) error {
 //
 // MIME (e.g. "image/png") hints the file extension; filename hints
 // the temp-file prefix. Both are optional.
+//
+// Always chunked (MsgInputImageChunk) so big screenshots don't
+// need a giant single frame. Small images still go in one chunk
+// with Final=true. Chunks are sent in order on this connection;
+// the daemon reassembles them.
 func (c *Client) SendImagePaste(id uint32, mime, filename string, data []byte) error {
-	return c.send(protocol.MsgInputImage, &protocol.InputImage{
-		ID: id, MIME: mime, Filename: filename, Bytes: data,
-	})
+	chunk := protocol.ImageChunkSize
+	if len(data) == 0 {
+		// Empty image — single final chunk so the daemon still
+		// gets MIME/filename and can no-op cleanly.
+		return c.send(protocol.MsgInputImageChunk, &protocol.InputImageChunk{
+			ID: id, MIME: mime, Filename: filename, Seq: 0, Final: true,
+		})
+	}
+	var seq uint32
+	for off := 0; off < len(data); off += chunk {
+		end := off + chunk
+		if end > len(data) {
+			end = len(data)
+		}
+		msg := &protocol.InputImageChunk{
+			ID:    id,
+			Seq:   seq,
+			Final: end >= len(data),
+			Data:  data[off:end],
+		}
+		if seq == 0 {
+			// MIME/filename only on the first chunk.
+			msg.MIME = mime
+			msg.Filename = filename
+		}
+		if err := c.send(protocol.MsgInputImageChunk, msg); err != nil {
+			return err
+		}
+		seq++
+	}
+	return nil
 }
 
 // SendClipboardData pushes the client's current clipboard contents
@@ -263,6 +300,23 @@ func (c *Client) ScrollbackAppend() <-chan *protocol.ScrollbackAppend { return c
 // notifications. Broadcast to every client attached to the tab so
 // concurrent viewers all drop their local mirrors in sync.
 func (c *Client) ScrollbackCleared() <-chan *protocol.ScrollbackCleared { return c.sbCleared }
+
+// ClipboardSet returns the channel of server→client clipboard
+// writes (a PTY app issued OSC 52 set). The client puts Text on
+// the local OS clipboard.
+func (c *Client) ClipboardSet() <-chan *protocol.ClipboardSet { return c.clipboardSet }
+
+// ProposalsChanged returns the channel of propose-mode queue
+// updates. The GUI renders an approval gate from the latest list.
+func (c *Client) ProposalsChanged() <-chan *protocol.ProposalsChanged { return c.proposals }
+
+// SendProposalResolve approves (apply) or drops (discard) a
+// pending propose-mode proposal by index.
+func (c *Client) SendProposalResolve(index uint32, approve bool) error {
+	return c.send(protocol.MsgProposalResolve, &protocol.ProposalResolve{
+		Index: index, Approve: approve,
+	})
+}
 
 // SendClearScrollback asks the daemon to drop a tab's scrollback.
 func (c *Client) SendClearScrollback(id uint32) error {
@@ -400,6 +454,24 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		c.sbCleared <- msg
+	case protocol.MsgClipboardSet:
+		msg := &protocol.ClipboardSet{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		select {
+		case c.clipboardSet <- msg:
+		default: // drop if no consumer — clipboard sync is best-effort
+		}
+	case protocol.MsgProposalsChanged:
+		msg := &protocol.ProposalsChanged{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		select {
+		case c.proposals <- msg:
+		default:
+		}
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

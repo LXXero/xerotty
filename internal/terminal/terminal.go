@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
@@ -42,6 +43,19 @@ type Terminal struct {
 	// OnBell fires when the terminal bell (BEL = 0x07) is
 	// received. Daemon ships MsgBell on this. Set via SetOnBell.
 	OnBell func()
+
+	// OnClipboardSet fires when a PTY app issues OSC 52 set
+	// (writes the clipboard). Arg is the decoded text. PTY mode
+	// writes it to the local OS clipboard; daemon mode ships
+	// MsgClipboardSet to attached clients. Set via SetOnClipboardSet.
+	OnClipboardSet func(string)
+
+	// ClipboardProvider returns the current clipboard text for OSC
+	// 52 GET (the "?" query) — a PTY app asking "what's on the
+	// clipboard?". The response is written back to the PTY as an
+	// OSC 52 reply. nil → GET queries are answered with empty.
+	// Set via SetClipboardProvider.
+	ClipboardProvider func() string
 
 	// cursorVisible / cursorStyle / cursorBlink track DECTCEM +
 	// DECSCUSR via the vt emulator's callbacks so the daemon's
@@ -643,6 +657,22 @@ func (t *Terminal) SetOnBell(fn func()) {
 	t.mu.Unlock()
 }
 
+// SetOnClipboardSet registers a callback fired when a PTY app
+// writes the clipboard via OSC 52. Arg is the decoded text.
+func (t *Terminal) SetOnClipboardSet(fn func(string)) {
+	t.mu.Lock()
+	t.OnClipboardSet = fn
+	t.mu.Unlock()
+}
+
+// SetClipboardProvider registers a function returning the current
+// clipboard text, used to answer OSC 52 GET queries.
+func (t *Terminal) SetClipboardProvider(fn func() string) {
+	t.mu.Lock()
+	t.ClipboardProvider = fn
+	t.mu.Unlock()
+}
+
 // SetOnChildExit registers a callback fired the instant the PTY
 // child exits. May fire immediately if the child has already
 // exited by the time this is called (rare but possible — e.g. a
@@ -830,6 +860,65 @@ func (t *Terminal) dispatchOSC(body []byte) {
 		if cb != nil {
 			cb(string(data))
 		}
+	case "52":
+		t.dispatchOSC52(data)
+	}
+}
+
+// dispatchOSC52 handles OSC 52 (clipboard) bodies. After the "52;"
+// prefix the body is "<selection>;<payload>":
+//   - payload "?"  → GET: the app wants the current clipboard. We
+//     reply by writing an OSC 52 set back to the PTY carrying the
+//     base64 of ClipboardProvider()'s text.
+//   - payload b64  → SET: decode + fire OnClipboardSet so the
+//     clipboard gets written (local OS clipboard in PTY mode, or
+//     shipped to clients in daemon mode).
+//
+// We ignore the selection field (c/p/s/...) and treat everything
+// as the clipboard — matches what most terminals practically do.
+func (t *Terminal) dispatchOSC52(data []byte) {
+	semi := -1
+	for i, b := range data {
+		if b == ';' {
+			semi = i
+			break
+		}
+	}
+	if semi < 0 {
+		return
+	}
+	payload := string(data[semi+1:])
+
+	if payload == "?" {
+		// GET — reply with current clipboard as OSC 52 set.
+		t.mu.Lock()
+		provider := t.ClipboardProvider
+		t.mu.Unlock()
+		var cur string
+		if provider != nil {
+			cur = provider()
+		}
+		enc := base64.StdEncoding.EncodeToString([]byte(cur))
+		// ESC ] 52 ; c ; <b64> BEL
+		_, _ = t.ptmx.WriteString("\x1b]52;c;" + enc + "\x07")
+		return
+	}
+
+	// SET — decode base64. Tolerate missing padding (some apps
+	// emit unpadded). Empty/garbage decodes are ignored.
+	dec, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		if d2, e2 := base64.RawStdEncoding.DecodeString(payload); e2 == nil {
+			dec = d2
+		} else {
+			return
+		}
+	}
+	t.mu.Lock()
+	cb := t.OnClipboardSet
+	t.mu.Unlock()
+	if cb != nil {
+		cb(string(dec))
 	}
 }
 

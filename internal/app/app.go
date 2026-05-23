@@ -8,6 +8,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/guimcp"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/menu"
@@ -21,6 +22,7 @@ import (
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -83,6 +85,18 @@ type App struct {
 	// the caller will adopt tabs into the window itself (remote
 	// reattach). Reset to false right after.
 	suppressInitialTab bool
+
+	// pendingProposals is the propose-mode queue the local daemon
+	// last reported. Rendered as an approval banner. Guarded by
+	// proposalsMu (set from the hub router goroutine, read from
+	// the render thread).
+	proposalsMu      sync.Mutex
+	pendingProposals []protocol.ProposalInfo
+
+	// guiMCP is the GUI's aggregating MCP server (one socket
+	// covering every daemon hub). Started lazily the first time a
+	// daemon hub comes up. nil in PTY mode.
+	guiMCP *guimcp.Server
 
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
@@ -564,6 +578,7 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
 	}
 	hub := daemonsource.NewHub(cli)
+	a.wireHubCallbacks(hub)
 
 	entry := &remoteHubEntry{hub: hub}
 	// Group tabs by their daemon-side window so reattach preserves
@@ -727,6 +742,7 @@ func (a *App) initDaemonSource() error {
 	if cap > 0 {
 		hub.SetScrollbackCap(cap)
 	}
+	a.wireHubCallbacks(hub)
 	a.daemonHub = hub
 	// NOTE: tabSourceFactory is set per-Window by
 	// installSourceFactory() so multi-window setups don't all
@@ -734,6 +750,114 @@ func (a *App) initDaemonSource() error {
 	// installSourceFactory falls back to terminal.New if no
 	// daemon-window association exists yet.
 	return nil
+}
+
+// --- guimcp.Backend implementation ---
+//
+// The GUI runs an aggregating MCP server (internal/guimcp) so an
+// agent gets ONE socket covering every daemon the GUI talks to.
+// These two methods are how that server enumerates + resolves
+// tabs across the local hub + every remote hub.
+
+// hubsByName returns the daemon hubs the GUI is connected to,
+// keyed by host namespace ("local" for the local/default daemon,
+// the cfg.Hosts name for remotes).
+func (a *App) hubsByName() map[string]*daemonsource.Hub {
+	out := map[string]*daemonsource.Hub{}
+	if a.daemonHub != nil {
+		out["local"] = a.daemonHub
+	}
+	a.remoteHubsMu.Lock()
+	for name, e := range a.remoteHubs {
+		out[name] = e.hub
+	}
+	a.remoteHubsMu.Unlock()
+	return out
+}
+
+// ListTabs implements guimcp.Backend: every tab across every hub
+// with namespaced IDs.
+func (a *App) ListTabs() []guimcp.TabRef {
+	var refs []guimcp.TabRef
+	for name, hub := range a.hubsByName() {
+		for _, src := range hub.Sources() {
+			refs = append(refs, guimcp.TabRef{
+				NSID:  guimcp.MakeNSID(name, src.TabID()),
+				Host:  name,
+				Title: src.Title(),
+				Cols:  src.Width(),
+				Rows:  src.Height(),
+			})
+		}
+	}
+	return refs
+}
+
+// SourceFor implements guimcp.Backend: resolve "<host>:<tabid>"
+// to the Source on that host's hub.
+func (a *App) SourceFor(nsID string) (*daemonsource.Source, bool) {
+	host, idStr, ok := strings.Cut(nsID, ":")
+	if !ok {
+		return nil, false
+	}
+	id64, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		return nil, false
+	}
+	hub, ok := a.hubsByName()[host]
+	if !ok {
+		return nil, false
+	}
+	for _, src := range hub.Sources() {
+		if src.TabID() == uint32(id64) {
+			return src, true
+		}
+	}
+	return nil, false
+}
+
+// wireHubCallbacks installs the hub-level (session-global)
+// callbacks: OSC 52 clipboard writes → local OS clipboard, and
+// propose-mode queue updates → the approval banner. Called for
+// every hub (local + remote).
+func (a *App) wireHubCallbacks(hub *daemonsource.Hub) {
+	hub.SetClipboardSetCallback(func(text string) {
+		_ = input.ClipboardWrite(text)
+	})
+	hub.SetProposalsCallback(func(infos []protocol.ProposalInfo) {
+		a.proposalsMu.Lock()
+		a.pendingProposals = infos
+		a.proposalsMu.Unlock()
+	})
+	a.ensureGUIMCP()
+}
+
+// ensureGUIMCP starts the GUI's aggregating MCP server once, the
+// first time any daemon hub connects. Socket lives alongside the
+// daemon sockets with a .gui.mcp.sock suffix. Best-effort: a
+// failure (e.g. socket in use by another xerotty) just logs.
+func (a *App) ensureGUIMCP() {
+	if a.guiMCP != nil {
+		return
+	}
+	sock := guiMCPSocketPath()
+	srv := guimcp.New(a, sock)
+	a.guiMCP = srv
+	go func() {
+		fmt.Fprintf(os.Stderr, "xerotty: aggregating MCP on %s\n", sock)
+		if err := srv.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: guimcp: %v\n", err)
+		}
+	}()
+}
+
+// guiMCPSocketPath picks the aggregating MCP socket path:
+// $XDG_RUNTIME_DIR/xerotty-gui.mcp.sock (or /tmp fallback).
+func guiMCPSocketPath() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "xerotty-gui.mcp.sock")
+	}
+	return filepath.Join(os.TempDir(), "xerotty-gui-"+strconv.Itoa(os.Getuid())+".mcp.sock")
 }
 
 // installSourceFactory builds the tabs.Manager.SourceFactory for a
@@ -746,6 +870,18 @@ func (a *App) initDaemonSource() error {
 // Falls back to in-process PTY when daemon mode isn't active OR
 // activeDaemonHub returns nil (unrecoverable connection loss).
 func (a *App) installSourceFactory(w *Window) {
+	// OSC 52 clipboard hooks — injected so tabs.Manager can wire
+	// them onto each source without the tabs package importing the
+	// SDL-backed clipboard. Set on every manager regardless of
+	// source mode (PTY tabs handle OSC 52 locally; daemon tabs
+	// route through their hub).
+	w.tabs.ClipboardSetFn = func(text string) {
+		_ = input.ClipboardWrite(text)
+	}
+	w.tabs.ClipboardGetFn = func() string {
+		s, _ := input.ClipboardRead()
+		return s
+	}
 	if a.daemonHub == nil {
 		w.tabs.SourceFactory = nil // tabs.NewTab uses terminal.New
 		return
@@ -2742,6 +2878,10 @@ func (a *Window) frame() {
 	// on top of them when they share the wrapper's drawlist.
 	a.renderTabBar()
 
+	// Propose-mode approval gate (daemon mode only; no-op when
+	// the queue is empty).
+	a.renderProposalGate()
+
 	// Search overlay
 	a.renderSearchOverlay()
 
@@ -3402,6 +3542,52 @@ func (w *Window) updateFontMetrics() {
 	w.resizeOverlayText = fmt.Sprintf("%d%%", percent)
 	w.resizeTime = imgui.Time()
 	w.resizeOverlay = true
+}
+
+// renderProposalGate draws the propose-mode approval banner: a
+// small overlay window listing each pending agent-proposed write
+// with Approve / Drop buttons. Only the active Window renders it
+// (the queue is session-global, one daemon). No-op when empty or
+// not in daemon mode.
+//
+// Approve/Drop send a ProposalResolve over the daemon connection;
+// the daemon applies/discards and broadcasts the updated queue,
+// which refreshes a.pendingProposals via the hub callback.
+func (w *Window) renderProposalGate() {
+	if w.app.daemonHub == nil || w.app.active != w {
+		return
+	}
+	w.app.proposalsMu.Lock()
+	props := w.app.pendingProposals
+	w.app.proposalsMu.Unlock()
+	if len(props) == 0 {
+		return
+	}
+
+	imgui.SetNextWindowBgAlpha(0.92)
+	flags := imgui.WindowFlags(imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoFocusOnAppearing)
+	if !imgui.BeginV("Agent proposals"+w.imguiSuffix(), nil, flags) {
+		imgui.End()
+		return
+	}
+	imgui.Text("AI agent wants to run (propose mode):")
+	imgui.Separator()
+	for _, p := range props {
+		kind := p.Kind
+		imgui.TextUnformatted(fmt.Sprintf("tab %d [%s]: %s", p.TabID, kind, p.Preview))
+		imgui.SameLine()
+		if imgui.Button(fmt.Sprintf("Approve##p%d%s", p.Index, w.imguiSuffix())) {
+			_ = w.app.daemonHub.ResolveProposal(p.Index, true)
+		}
+		imgui.SameLine()
+		if imgui.Button(fmt.Sprintf("Drop##p%d%s", p.Index, w.imguiSuffix())) {
+			_ = w.app.daemonHub.ResolveProposal(p.Index, false)
+		}
+	}
+	imgui.End()
 }
 
 func (w *Window) renderTabBar() {

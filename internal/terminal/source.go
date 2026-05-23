@@ -99,6 +99,19 @@ type Source interface {
 	// tab.
 	SetOnBell(fn func())
 
+	// SetOnClipboardSet registers a callback fired when a PTY app
+	// writes the system clipboard via OSC 52. Arg is the decoded
+	// text — the GUI writes it to the local OS clipboard. For PTY
+	// sources this fires on the local emulator's OSC 52; for
+	// daemon sources it fires when the daemon ships MsgClipboardSet.
+	SetOnClipboardSet(fn func(string))
+
+	// SetClipboardProvider registers a function returning the
+	// current clipboard text, used to answer OSC 52 GET ("?")
+	// queries from PTY apps. PTY sources call it locally; daemon
+	// sources answer GET server-side (no-op here).
+	SetClipboardProvider(fn func() string)
+
 	// CursorVisible reports whether the terminal cursor should be
 	// drawn (DECTCEM). The GUI hides the cursor when this is false
 	// (e.g. full-screen apps that hide it).

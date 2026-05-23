@@ -40,6 +40,17 @@ type Hub struct {
 	mu      sync.RWMutex
 	sources map[uint32]*Source
 
+	// onClipboardSet fires when the daemon ships MsgClipboardSet
+	// (a remote PTY app wrote the clipboard). Clipboard is
+	// session-global so this is a hub-level callback, not per-tab.
+	// The GUI sets it to write the local OS clipboard.
+	onClipboardSet func(string)
+
+	// onProposals fires when the daemon ships MsgProposalsChanged
+	// (propose-mode queue updated). Hub-level (session-global).
+	// The GUI renders an approval gate from the list.
+	onProposals func([]protocol.ProposalInfo)
+
 	// pending buffers frames addressed to a tab ID we haven't yet
 	// registered a Source for. Without this we'd race the daemon's
 	// initial CellFull / TabState emission against our own
@@ -103,6 +114,44 @@ func NewHub(c *clientproto.Client) *Hub {
 // Stop signals the router goroutine to exit. The underlying
 // clientproto.Client is not closed — callers own its lifecycle.
 func (h *Hub) Stop() { close(h.stopCh) }
+
+// SetClipboardSetCallback registers the hub-level handler fired
+// when the daemon ships MsgClipboardSet (a remote app wrote the
+// clipboard via OSC 52). The GUI uses it to write the local OS
+// clipboard. Last writer wins; all sources on the hub share it.
+func (h *Hub) SetClipboardSetCallback(fn func(string)) {
+	h.mu.Lock()
+	h.onClipboardSet = fn
+	h.mu.Unlock()
+}
+
+// SetProposalsCallback registers the hub-level handler fired when
+// the daemon ships the propose-mode queue. The GUI renders its
+// approval banner from the list.
+func (h *Hub) SetProposalsCallback(fn func([]protocol.ProposalInfo)) {
+	h.mu.Lock()
+	h.onProposals = fn
+	h.mu.Unlock()
+}
+
+// ResolveProposal approves/drops a pending proposal by index over
+// this hub's connection.
+func (h *Hub) ResolveProposal(index uint32, approve bool) error {
+	return h.c.SendProposalResolve(index, approve)
+}
+
+// Sources returns a snapshot of all currently-registered Sources
+// on this hub. Used by the GUI's aggregating MCP server to
+// enumerate tabs across every daemon it's connected to.
+func (h *Hub) Sources() []*Source {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]*Source, 0, len(h.sources))
+	for _, s := range h.sources {
+		out = append(out, s)
+	}
+	return out
+}
 
 // SetScrollbackCap controls how many rows of scrollback each new
 // Source will mirror locally. Higher = more memory, more user
@@ -303,6 +352,23 @@ func (h *Hub) router() {
 				s.applyScrollbackCleared(f)
 			} else {
 				h.stash(f.ID, pendingScrollbackCleared, f)
+			}
+		case cs := <-cli.ClipboardSet():
+			// Session-global clipboard write from a remote app's
+			// OSC 52 set — fire the hub-level handler (writes the
+			// local OS clipboard).
+			h.mu.RLock()
+			cb := h.onClipboardSet
+			h.mu.RUnlock()
+			if cb != nil {
+				cb(cs.Text)
+			}
+		case pc := <-cli.ProposalsChanged():
+			h.mu.RLock()
+			cb := h.onProposals
+			h.mu.RUnlock()
+			if cb != nil {
+				cb(pc.Proposals)
 			}
 		case err := <-cli.Errors():
 			// Protocol errors aren't tied to a tab. Log to stderr

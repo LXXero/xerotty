@@ -122,6 +122,14 @@ type Manager struct {
 	// configured tab_source = "daemon" so all new tabs go through
 	// the daemon connection instead.
 	SourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
+
+	// ClipboardSetFn / ClipboardGetFn inject OS-clipboard access
+	// into each new/adopted tab's source for OSC 52. The tabs
+	// package can't import the SDL-backed clipboard directly
+	// (cgo), so the app sets these. nil → OSC 52 clipboard sync
+	// is disabled for that direction.
+	ClipboardSetFn func(string)
+	ClipboardGetFn func() string
 }
 
 // NewManager creates a new tab manager.
@@ -179,7 +187,20 @@ func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	term.SetOnBell(func() {
 		tab.SetBellPending(true)
 	})
+	m.installClipboardHooks(term)
 	return tab
+}
+
+// installClipboardHooks wires the source's OSC 52 clipboard
+// callbacks to the manager's injected OS-clipboard funcs (set by
+// the app). No-op when the app didn't provide them.
+func (m *Manager) installClipboardHooks(term terminal.Source) {
+	if m.ClipboardSetFn != nil {
+		term.SetOnClipboardSet(m.ClipboardSetFn)
+	}
+	if m.ClipboardGetFn != nil {
+		term.SetClipboardProvider(m.ClipboardGetFn)
+	}
 }
 
 // MoveTab reorders the tabs slice: removes the tab currently at
@@ -245,6 +266,7 @@ func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
 	term.SetOnBell(func() {
 		tab.SetBellPending(true)
 	})
+	m.installClipboardHooks(term)
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
 	m.ActiveIdx = len(m.Tabs) - 1

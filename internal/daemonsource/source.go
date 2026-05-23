@@ -105,6 +105,15 @@ func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 	return s
 }
 
+// Title returns the last OSC-set title the daemon reported for
+// this tab (via TabState). Empty if none yet. Used by the GUI's
+// aggregating MCP server's list_tabs.
+func (s *Source) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastTitle
+}
+
 // TabID returns the daemon-side tab ID this Source is bound to.
 // Used by the GUI to ship focus updates (SendTabFocus /
 // SendWindowFocusTab) since the local tabs.Tab.ID is the GUI's
@@ -423,6 +432,21 @@ func (s *Source) SetOnBell(fn func()) {
 	s.onBell = fn
 	s.mu.Unlock()
 }
+
+// SetOnClipboardSet routes to the hub-level clipboard-set handler:
+// MsgClipboardSet is session-global (no tab ID), so it's handled
+// once per hub rather than per source. Every daemon-backed tab
+// installing the same writeLocalClipboard callback is harmless
+// (last writer wins, same value).
+func (s *Source) SetOnClipboardSet(fn func(string)) {
+	s.hub.SetClipboardSetCallback(fn)
+}
+
+// SetClipboardProvider is a no-op for daemon sources: OSC 52 GET
+// queries are answered server-side from the session clipboard
+// (populated by SendClipboardData on copy), so the client doesn't
+// provide anything.
+func (s *Source) SetClipboardProvider(func() string) {}
 
 func (s *Source) applyChildExit(f *protocol.ChildExit) {
 	s.exitCode.Store(f.ExitCode)

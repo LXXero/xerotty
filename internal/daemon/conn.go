@@ -52,6 +52,20 @@ type clientConn struct {
 	// computation).
 	subsMu sync.Mutex
 	subs   map[uint32]*tabSub
+
+	// imgAccum reassembles chunked image pastes, keyed by tab ID.
+	// Chunks arrive in order on this (single) connection; on the
+	// Final chunk the accumulated bytes get written + the path
+	// typed. Only the read loop touches this, so no lock needed.
+	imgAccum map[uint32]*imageAssembly
+}
+
+// imageAssembly buffers an in-progress chunked image paste.
+type imageAssembly struct {
+	mime     string
+	filename string
+	buf      []byte
+	nextSeq  uint32
 }
 
 type tabSub struct {
@@ -235,12 +249,31 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		return c.handleImagePaste(&msg)
+	case protocol.MsgInputImageChunk:
+		var msg protocol.InputImageChunk
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		return c.handleImageChunk(&msg)
 	case protocol.MsgClipboardData:
 		var msg protocol.ClipboardData
 		if _, err := msg.UnmarshalMsg(body); err != nil {
 			return err
 		}
 		return c.handleClipboardData(&msg)
+	case protocol.MsgProposalResolve:
+		var msg protocol.ProposalResolve
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			if msg.Approve {
+				_, _, _ = c.session.ApproveProposal(int(msg.Index))
+			} else {
+				c.session.DropProposal(int(msg.Index))
+			}
+		}
+		return nil
 	case protocol.MsgClearScrollback:
 		var msg protocol.ClearScrollback
 		if _, err := msg.UnmarshalMsg(body); err != nil {
@@ -315,6 +348,9 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	for _, t := range tabs {
 		c.subscribe(t)
 	}
+	// Push the current propose-mode queue so a freshly-attached
+	// GUI shows any already-pending proposals in its gate.
+	c.daemon.broadcastProposals()
 	return nil
 }
 
@@ -439,16 +475,80 @@ func (c *clientConn) handlePaste(id uint32, b []byte) error {
 // the daemon doesn't try to garbage-collect them (they may still be
 // open in editors / referenced by long-lived agent sessions).
 func (c *clientConn) handleImagePaste(msg *protocol.InputImage) error {
+	return c.writeImageAndType(msg.ID, msg.MIME, msg.Filename, msg.Bytes)
+}
+
+// handleImageChunk accumulates one chunk of a chunked image paste.
+// On the Final chunk it flushes the assembled bytes through the
+// same write-temp-file-and-type-path logic as the single-frame
+// path. Out-of-order or oversized streams are dropped defensively.
+func (c *clientConn) handleImageChunk(msg *protocol.InputImageChunk) error {
 	if c.session == nil {
 		return nil
 	}
-	t := c.session.Tab(msg.ID)
+	if c.imgAccum == nil {
+		c.imgAccum = make(map[uint32]*imageAssembly)
+	}
+	asm := c.imgAccum[msg.ID]
+	if msg.Seq == 0 {
+		// First chunk (re)starts the assembly — capture metadata.
+		asm = &imageAssembly{mime: msg.MIME, filename: msg.Filename}
+		c.imgAccum[msg.ID] = asm
+	}
+	if asm == nil {
+		// Got a non-zero seq with no assembly in progress — the
+		// stream is corrupt/reordered. Drop it.
+		return nil
+	}
+	if msg.Seq != asm.nextSeq {
+		// Sequence gap — abandon the partial image rather than
+		// splice in garbage.
+		delete(c.imgAccum, msg.ID)
+		return nil
+	}
+	asm.buf = append(asm.buf, msg.Data...)
+	asm.nextSeq++
+	// Bound memory: a runaway stream shouldn't OOM the daemon.
+	if len(asm.buf) > 256*1024*1024 { // 256 MiB hard ceiling
+		delete(c.imgAccum, msg.ID)
+		return c.writeFrame(protocol.MsgError, &protocol.Error{
+			Code: 13, Message: "image paste: exceeds 256MiB ceiling",
+		})
+	}
+	if !msg.Final {
+		return nil
+	}
+	delete(c.imgAccum, msg.ID)
+	return c.writeImageAndType(msg.ID, asm.mime, asm.filename, asm.buf)
+}
+
+// writeImageAndType writes image bytes to a daemon-side temp file
+// and types the path into the tab's PTY. Shared by the single-
+// frame (handleImagePaste) and chunked (handleImageChunk) paths.
+//
+// The path is typed via Paste (so bracketed-paste wrapping applies
+// if the app supports it), surrounded by spaces so it doesn't
+// concatenate with prior typed input. We don't quote the path
+// because the temp filename is constructed to contain only safe
+// characters.
+//
+// Temp files persist until /tmp is cleaned by the OS or the user;
+// the daemon doesn't try to garbage-collect them (they may still be
+// open in editors / referenced by long-lived agent sessions).
+func (c *clientConn) writeImageAndType(tabID uint32, mime, filename string, data []byte) error {
+	if c.session == nil {
+		return nil
+	}
+	t := c.session.Tab(tabID)
 	if t == nil {
 		return nil
 	}
-	ext := extForMIME(msg.MIME)
+	if len(data) == 0 {
+		return nil // empty image — nothing to do
+	}
+	ext := extForMIME(mime)
 	prefix := "xerotty-paste"
-	if hint := sanitizeFilename(msg.Filename); hint != "" {
+	if hint := sanitizeFilename(filename); hint != "" {
 		prefix += "-" + hint
 	}
 	f, err := os.CreateTemp("", prefix+"-*"+ext)
@@ -457,7 +557,7 @@ func (c *clientConn) handleImagePaste(msg *protocol.InputImage) error {
 			Code: 10, Message: "image paste: temp file: " + err.Error(),
 		})
 	}
-	if _, err := f.Write(msg.Bytes); err != nil {
+	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
 		return c.writeFrame(protocol.MsgError, &protocol.Error{
