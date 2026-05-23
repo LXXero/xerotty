@@ -135,6 +135,10 @@ func New(cfg *config.Config, socketPath string) *Daemon {
 	}
 }
 
+// Config returns the daemon's config. Read-only — callers must not
+// mutate. Used by the MCP server to read trust-model settings.
+func (d *Daemon) Config() *config.Config { return d.cfg }
+
 // SocketPath returns the unix-socket path the daemon listens on.
 // Useful for the auto-spawn flow where the UI forks the daemon and
 // needs to know where to connect (the daemon prints it on stdout

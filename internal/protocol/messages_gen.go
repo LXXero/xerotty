@@ -1884,6 +1884,18 @@ func (z *Cursor) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Style")
 				return
 			}
+		case "blink":
+			z.Blink, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "Blink")
+				return
+			}
+		case "style_set":
+			z.StyleSet, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "StyleSet")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -1897,9 +1909,9 @@ func (z *Cursor) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *Cursor) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 5
+	// map header, size 7
 	// write "id"
-	err = en.Append(0x85, 0xa2, 0x69, 0x64)
+	err = en.Append(0x87, 0xa2, 0x69, 0x64)
 	if err != nil {
 		return
 	}
@@ -1948,15 +1960,35 @@ func (z *Cursor) EncodeMsg(en *msgp.Writer) (err error) {
 		err = msgp.WrapError(err, "Style")
 		return
 	}
+	// write "blink"
+	err = en.Append(0xa5, 0x62, 0x6c, 0x69, 0x6e, 0x6b)
+	if err != nil {
+		return
+	}
+	err = en.WriteBool(z.Blink)
+	if err != nil {
+		err = msgp.WrapError(err, "Blink")
+		return
+	}
+	// write "style_set"
+	err = en.Append(0xa9, 0x73, 0x74, 0x79, 0x6c, 0x65, 0x5f, 0x73, 0x65, 0x74)
+	if err != nil {
+		return
+	}
+	err = en.WriteBool(z.StyleSet)
+	if err != nil {
+		err = msgp.WrapError(err, "StyleSet")
+		return
+	}
 	return
 }
 
 // MarshalMsg implements msgp.Marshaler
 func (z *Cursor) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 5
+	// map header, size 7
 	// string "id"
-	o = append(o, 0x85, 0xa2, 0x69, 0x64)
+	o = append(o, 0x87, 0xa2, 0x69, 0x64)
 	o = msgp.AppendUint32(o, z.ID)
 	// string "row"
 	o = append(o, 0xa3, 0x72, 0x6f, 0x77)
@@ -1970,6 +2002,12 @@ func (z *Cursor) MarshalMsg(b []byte) (o []byte, err error) {
 	// string "style"
 	o = append(o, 0xa5, 0x73, 0x74, 0x79, 0x6c, 0x65)
 	o = msgp.AppendUint8(o, z.Style)
+	// string "blink"
+	o = append(o, 0xa5, 0x62, 0x6c, 0x69, 0x6e, 0x6b)
+	o = msgp.AppendBool(o, z.Blink)
+	// string "style_set"
+	o = append(o, 0xa9, 0x73, 0x74, 0x79, 0x6c, 0x65, 0x5f, 0x73, 0x65, 0x74)
+	o = msgp.AppendBool(o, z.StyleSet)
 	return
 }
 
@@ -2021,6 +2059,18 @@ func (z *Cursor) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Style")
 				return
 			}
+		case "blink":
+			z.Blink, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Blink")
+				return
+			}
+		case "style_set":
+			z.StyleSet, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "StyleSet")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -2035,7 +2085,7 @@ func (z *Cursor) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *Cursor) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.Uint16Size + 4 + msgp.Uint16Size + 8 + msgp.BoolSize + 6 + msgp.Uint8Size
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.Uint16Size + 4 + msgp.Uint16Size + 8 + msgp.BoolSize + 6 + msgp.Uint8Size + 6 + msgp.BoolSize + 10 + msgp.BoolSize
 	return
 }
 

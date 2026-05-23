@@ -2,11 +2,17 @@
 package tabs
 
 import (
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
+
+// atomicBool aliases sync/atomic.Bool so the Tab struct comment
+// can refer to it without importing noise elsewhere.
+type atomicBool = atomic.Bool
 
 // Tab represents a single terminal tab.
 //
@@ -17,8 +23,7 @@ import (
 // shows what's actually running — matching iTerm2/Terminal.app
 // behaviour for apps that don't emit OSC themselves.
 type Tab struct {
-	ID    int
-	Title string // OSC-set title; empty until the shell/app emits one
+	ID int
 	// Host is the named remote host this tab's PTY lives on (from
 	// cfg.Hosts). Empty for local tabs (in-process PTY or local
 	// daemon). The GUI uses this to render a host badge in the
@@ -32,12 +37,17 @@ type Tab struct {
 	Dirty    bool
 	Closed   bool
 
-	// BellPending is set when the tab's terminal rang the bell
-	// while not focused. The tab bar renders an urgency marker
-	// (●) for these so the user sees which background tab beeped.
-	// Cleared when the tab becomes active. Set from the bell
-	// callback installed in NewTab / AdoptTab.
-	BellPending bool
+	// title is the OSC-set title, set from the PTY/daemon callback
+	// goroutine and read from the render thread — guarded by
+	// titleMu. Accessed via Title() / SetTitle().
+	titleMu sync.RWMutex
+	title   string
+
+	// bellPending is set (off the render thread) when the tab's
+	// terminal rang the bell while not focused; the tab bar
+	// renders an urgency marker (●) and clears it on focus.
+	// atomic so the cross-goroutine set/read is safe.
+	bellPending atomicBool
 
 	// foregroundCache + foregroundAt throttle the per-tab PTY-pgid +
 	// processName lookup so we don't fork `ps` on macOS every frame.
@@ -64,9 +74,30 @@ func (t *Tab) DisplayTitle() string {
 	return base
 }
 
+// Title returns the OSC-set title (thread-safe).
+func (t *Tab) Title() string {
+	t.titleMu.RLock()
+	defer t.titleMu.RUnlock()
+	return t.title
+}
+
+// SetTitle sets the OSC-set title (thread-safe; called from the
+// PTY/daemon title callback on a non-render goroutine).
+func (t *Tab) SetTitle(s string) {
+	t.titleMu.Lock()
+	t.title = s
+	t.titleMu.Unlock()
+}
+
+// BellPending reports whether the tab beeped while unfocused.
+func (t *Tab) BellPending() bool { return t.bellPending.Load() }
+
+// SetBellPending sets/clears the bell-urgency flag.
+func (t *Tab) SetBellPending(b bool) { t.bellPending.Store(b) }
+
 func (t *Tab) titleBase() string {
-	if t.Title != "" {
-		return t.Title
+	if tt := t.Title(); tt != "" {
+		return tt
 	}
 	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {
 		t.foregroundCache = t.Terminal.ForegroundProcessName()
@@ -143,10 +174,10 @@ func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	m.Tabs = append(m.Tabs, tab)
 	m.ActiveIdx = len(m.Tabs) - 1
 	term.SetOnTitle(func(title string) {
-		tab.Title = title
+		tab.SetTitle(title)
 	})
 	term.SetOnBell(func() {
-		tab.BellPending = true
+		tab.SetBellPending(true)
 	})
 	return tab
 }
@@ -209,10 +240,10 @@ func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
 		// lookup fails) until the app emits an OSC 0/2 title.
 	}
 	term.SetOnTitle(func(title string) {
-		tab.Title = title
+		tab.SetTitle(title)
 	})
 	term.SetOnBell(func() {
-		tab.BellPending = true
+		tab.SetBellPending(true)
 	})
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
@@ -275,7 +306,7 @@ func (m *Manager) GoTo(n int) {
 // SetTitle sets the title of the active tab.
 func (m *Manager) SetTitle(title string) {
 	if tab := m.Active(); tab != nil {
-		tab.Title = title
+		tab.SetTitle(title)
 	}
 }
 

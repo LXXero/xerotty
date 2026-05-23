@@ -241,17 +241,18 @@ func (a *App) broadcastClipboard(text string) {
 	}
 }
 
-// cursorStyleName maps a DECSCUSR style enum (1..6) to the
-// renderer's cursor-style string. 1/2 = block, 3/4 = underline,
-// 5/6 = bar (odd = blinking, but blink is handled separately).
-// Style 0 ("default") never reaches here — caller checks for it.
+// cursorStyleName maps the vt cursor shape enum (0=block,
+// 1=underline, 2=bar) to the renderer's cursor-style string.
+// This is the vt/protocol enum, NOT raw DECSCUSR codes — the
+// daemon + terminal both normalize to the vt enum before it
+// reaches here.
 func cursorStyleName(style uint8) string {
 	switch style {
-	case 3, 4:
+	case 1:
 		return "underline"
-	case 5, 6:
+	case 2:
 		return "bar"
-	default: // 1, 2, anything else
+	default: // 0 = block
 		return "block"
 	}
 }
@@ -488,7 +489,7 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 		tab := w.tabs.AdoptTab(src)
 		tab.Host = hostName
 		if ts.Title != "" {
-			tab.Title = ts.Title
+			tab.SetTitle(ts.Title)
 		}
 		if cols > 1 && rows > 1 {
 			src.Resize(cols, rows)
@@ -1197,7 +1198,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
 			tab := w.tabs.AdoptTab(src)
 			if ts.Title != "" {
-				tab.Title = ts.Title
+				tab.SetTitle(ts.Title)
 			}
 			if cols > 1 && rows > 1 {
 				src.Resize(cols, rows)
@@ -2342,7 +2343,7 @@ func (a *Window) frame() {
 				src := a.app.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
 				tab := a.tabs.AdoptTab(src)
 				if ts.Title != "" {
-					tab.Title = ts.Title
+					tab.SetTitle(ts.Title)
 				}
 				src.Resize(cfgCols, cfgRows)
 				if ts.ID == snap.FocusedTabID {
@@ -2693,14 +2694,12 @@ func (a *Window) frame() {
 			// Only show cursor when at live position (not scrolled
 			// back) AND the terminal hasn't hidden it (DECTCEM).
 			if scrollOff == 0 && tab.Terminal.CursorVisible() {
-				// Cursor SHAPE: the terminal's DECSCUSR style wins
-				// over the config default. style 0 = "default" →
-				// use config. BLINK: terminal-set styles carry
-				// their own blink flag; otherwise fall back to the
-				// config blink setting.
+				// Cursor SHAPE: when the foreground app explicitly set
+				// the cursor via DECSCUSR (styleSet), honor it; else
+				// use the user's config preference. Same for blink.
 				styleStr := a.app.cfg.Appearance.CursorStyle
 				cfgBlink := a.app.cfg.Appearance.CursorBlink
-				if ts, tblink := tab.Terminal.CursorStyle(); ts != 0 {
+				if ts, tblink, styleSet := tab.Terminal.CursorStyle(); styleSet {
 					styleStr = cursorStyleName(ts)
 					cfgBlink = tblink
 				}
@@ -3449,8 +3448,8 @@ func (w *Window) renderTabBar() {
 
 		// Becoming active clears any pending bell urgency — the
 		// user is now looking at the tab that beeped.
-		if isActive && tab.BellPending {
-			tab.BellPending = false
+		if isActive && tab.BellPending() {
+			tab.SetBellPending(false)
 		}
 
 		// Whole-tab invisible button for hit detection. We use ONE
@@ -3517,7 +3516,7 @@ func (w *Window) renderTabBar() {
 		// titles don't bleed into the close button or the next tab.
 		// Prefix a bell marker for background tabs that beeped.
 		label := tab.DisplayTitle()
-		if tab.BellPending && !isActive {
+		if tab.BellPending() && !isActive {
 			label = "● " + label
 		}
 		labelSize := imgui.CalcTextSize(label)
@@ -4324,14 +4323,14 @@ func (w *Window) renderRenameDialog() {
 
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.Title = w.renameBuffer
+				tab.SetTitle(w.renameBuffer)
 			}
 			w.renamingTab = false
 		}
 
 		if imgui.Button("OK") {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.Title = w.renameBuffer
+				tab.SetTitle(w.renameBuffer)
 			}
 			w.renamingTab = false
 		}

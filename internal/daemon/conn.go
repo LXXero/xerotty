@@ -815,13 +815,15 @@ func cellEqual(a, b protocol.Cell) bool {
 
 func (c *clientConn) sendCursor(t *Tab) {
 	pos := t.Term.Emu.CursorPosition()
-	style, _ := t.Term.CursorStyle()
+	style, blink, styleSet := t.Term.CursorStyle()
 	_ = c.writeFrame(protocol.MsgCursor, &protocol.Cursor{
-		ID:      t.ID,
-		Row:     uint16(pos.Y),
-		Col:     uint16(pos.X),
-		Visible: t.Term.CursorVisible(),
-		Style:   style,
+		ID:       t.ID,
+		Row:      uint16(pos.Y),
+		Col:      uint16(pos.X),
+		Visible:  t.Term.CursorVisible(),
+		Style:    style,
+		Blink:    blink,
+		StyleSet: styleSet,
 	})
 }
 

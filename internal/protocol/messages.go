@@ -335,12 +335,22 @@ type CellFull struct {
 
 // Cursor reports the cursor position for a tab. Sent whenever the
 // cursor moves OR its visibility/style changes.
+//
+// Style uses the vt shape enum (0=block, 1=underline, 2=bar) — NOT
+// the raw DECSCUSR 1..6 codes. Blink carries the blink flag
+// separately (DECSCUSR's odd/even convention is decoded on the
+// daemon side). StyleSet reports whether the foreground app
+// explicitly chose a cursor style via DECSCUSR: when false the
+// client should fall back to its own configured cursor preference
+// rather than the (block) default.
 type Cursor struct {
-	ID      uint32 `msg:"id"`
-	Row     uint16 `msg:"row"`
-	Col     uint16 `msg:"col"`
-	Visible bool   `msg:"visible"`
-	Style   uint8  `msg:"style"` // 0=block, 1=underline, 2=bar
+	ID       uint32 `msg:"id"`
+	Row      uint16 `msg:"row"`
+	Col      uint16 `msg:"col"`
+	Visible  bool   `msg:"visible"`
+	Style    uint8  `msg:"style"` // vt enum: 0=block, 1=underline, 2=bar
+	Blink    bool   `msg:"blink"`
+	StyleSet bool   `msg:"style_set"`
 }
 
 // Title carries an OSC 0/1/2 title update for a tab.

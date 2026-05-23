@@ -73,7 +73,8 @@ type Source struct {
 
 	// cursorVisible / cursorStyle mirror the daemon's reported
 	// cursor state (from MsgCursor frames) so the GUI renderer
-	// draws the right shape + honors hide.
+	// draws the right shape + honors hide. cursorStyle packs the
+	// vt enum (bits 0..7) + blink (bit 8) + styleSet (bit 9).
 	cursorVisible atomic.Bool
 	cursorStyle   atomic.Uint32
 
@@ -371,22 +372,28 @@ func (s *Source) applyCursor(f *protocol.Cursor) {
 	s.mu.Unlock()
 	// Track visibility + style so the GUI renderer reflects the
 	// daemon's real cursor state (DECTCEM / DECSCUSR) rather than
-	// always drawing the config default.
+	// always drawing the config default. Pack style (vt enum) +
+	// blink + styleSet into the atomic.
 	s.cursorVisible.Store(f.Visible)
-	s.cursorStyle.Store(uint32(f.Style))
+	packed := uint32(f.Style)
+	if f.Blink {
+		packed |= 1 << 8
+	}
+	if f.StyleSet {
+		packed |= 1 << 9
+	}
+	s.cursorStyle.Store(packed)
 	s.signalDirty()
 }
 
 // CursorVisible reports the daemon-reported cursor visibility.
 func (s *Source) CursorVisible() bool { return s.cursorVisible.Load() }
 
-// CursorStyle returns the daemon-reported DECSCUSR style. The wire
-// Cursor.Style carries the raw style enum; blink is the odd-value
-// convention (1/3/5 blink, 2/4/6 steady), but the daemon currently
-// packs only the style number — derive blink from oddness.
-func (s *Source) CursorStyle() (style uint8, blink bool) {
-	v := uint8(s.cursorStyle.Load())
-	return v, v != 0 && v%2 == 1
+// CursorStyle returns the daemon-reported cursor shape (vt enum),
+// blink flag, and whether the foreground app explicitly set it.
+func (s *Source) CursorStyle() (style uint8, blink bool, styleSet bool) {
+	v := s.cursorStyle.Load()
+	return uint8(v & 0xFF), (v>>8)&1 != 0, (v>>9)&1 != 0
 }
 
 func (s *Source) applyTitle(f *protocol.Title) {

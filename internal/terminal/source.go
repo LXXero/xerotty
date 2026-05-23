@@ -104,13 +104,13 @@ type Source interface {
 	// (e.g. full-screen apps that hide it).
 	CursorVisible() bool
 
-	// CursorStyle returns the DECSCUSR cursor style (0 = default →
-	// GUI falls back to its config style; 1/2 = block, 3/4 =
-	// underline, 5/6 = bar; odd = blinking) + whether the app
-	// requested blink. The GUI uses this so apps that set their
-	// own cursor shape (vim bar in insert mode, etc.) render
-	// correctly instead of always showing the config default.
-	CursorStyle() (style uint8, blink bool)
+	// CursorStyle returns the cursor shape as the vt enum
+	// (0=block, 1=underline, 2=bar), the blink flag, and whether
+	// the foreground app explicitly chose it via DECSCUSR. When
+	// styleSet is false the GUI uses its config cursor preference;
+	// when true it honors the app's choice (vim bar in insert
+	// mode, etc.).
+	CursorStyle() (style uint8, blink bool, styleSet bool)
 
 	// Renderer-side view: subset of EmulatorView the renderer uses.
 	// *Terminal already exposes these (they pass through to the

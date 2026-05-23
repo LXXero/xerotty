@@ -37,6 +37,7 @@ package mcp
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,14 +56,31 @@ type Server struct {
 	d          *daemon.Daemon
 	socketPath string
 	listener   net.Listener
+
+	// Trust-model config (copied from cfg.MCP at construction).
+	defaultMode     string
+	allowModeChange bool
+	approvalToken   string
 }
 
 // New constructs a Server that will listen on socketPath when Run is
 // called. The Daemon is the live session host — methods read tab
 // state from / write input to whichever session the agent targets.
-// Phase 4 hardcodes the "default" session like everything else.
+// Trust-model knobs (default mode, mode-change lock, approval
+// token) come from the daemon's config.
 func New(d *daemon.Daemon, socketPath string) *Server {
-	return &Server{d: d, socketPath: socketPath}
+	cfg := d.Config()
+	mode := cfg.MCP.DefaultMode
+	if mode == "" {
+		mode = "observe"
+	}
+	return &Server{
+		d:               d,
+		socketPath:      socketPath,
+		defaultMode:     mode,
+		allowModeChange: cfg.MCP.AllowModeChange,
+		approvalToken:   cfg.MCP.ApprovalToken,
+	}
 }
 
 // SocketPath returns the socket path the server listens on.
@@ -108,18 +126,23 @@ func (s *Server) Stop() error {
 	return nil
 }
 
-// agentConn is per-connection state. Mode defaults to "observe".
+// agentConn is per-connection state. Mode starts at the server's
+// configured DefaultMode. authed goes true after a successful
+// agent/authenticate with the approval token; authed connections
+// can elevate to auto + approve/drop even when AllowModeChange is
+// false.
 type agentConn struct {
 	srv  *Server
 	conn net.Conn
 
-	mu   sync.Mutex
-	mode string
+	mu     sync.Mutex
+	mode   string
+	authed bool
 }
 
 func (s *Server) serve(conn net.Conn) {
 	defer conn.Close()
-	c := &agentConn{srv: s, conn: conn, mode: "observe"}
+	c := &agentConn{srv: s, conn: conn, mode: s.defaultMode}
 	c.run()
 }
 
@@ -189,6 +212,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleClipboard(req)
 	case "agent/mode":
 		return c.handleAgentMode(req)
+	case "agent/authenticate":
+		return c.handleAgentAuthenticate(req)
 	case "agent/clients":
 		return c.handleAgentClients(req)
 	case "server/info":
@@ -586,8 +611,65 @@ func (c *agentConn) handleAgentMode(req *rpcRequest) *rpcResponse {
 	default:
 		return invalidParams(req.ID, "mode must be one of: observe, propose, auto")
 	}
+	// Mode-change lock: when AllowModeChange is false, a connection
+	// can't change its own mode UNLESS it authenticated with the
+	// approval token. This is what turns propose mode into a real
+	// gate — agents land in DefaultMode and stay there; only a
+	// token-bearing reviewer elevates.
+	if !c.srv.allowModeChange && !c.isAuthed() {
+		// Allow de-escalation (toward observe) always; block
+		// elevation toward auto.
+		if modeRank(p.Mode) > modeRank(c.getMode()) {
+			return rpcErr(req.ID, -32099, "mode change blocked: server has allow_mode_change=false; authenticate with the approval token to elevate", nil)
+		}
+	}
 	c.setMode(p.Mode)
 	return ok(req.ID, map[string]string{"mode": p.Mode})
+}
+
+// modeRank orders modes by write authority: observe < propose <
+// auto. Used to allow de-escalation but block elevation under a
+// mode-change lock.
+func modeRank(m string) int {
+	switch m {
+	case "auto":
+		return 2
+	case "propose":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// handleAgentAuthenticate grants approval authority when the
+// connection presents the configured approval token. After this
+// the connection may elevate to auto + approve/drop proposals
+// even under a mode-change lock. No-op error if no token is
+// configured (auth not in use).
+func (c *agentConn) handleAgentAuthenticate(req *rpcRequest) *rpcResponse {
+	if c.srv.approvalToken == "" {
+		return rpcErr(req.ID, -32601, "agent/authenticate: no approval_token configured on this daemon", nil)
+	}
+	var p struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	// Constant-time compare to avoid leaking the token via timing.
+	if subtle.ConstantTimeCompare([]byte(p.Token), []byte(c.srv.approvalToken)) != 1 {
+		return rpcErr(req.ID, -32099, "agent/authenticate: invalid token", nil)
+	}
+	c.mu.Lock()
+	c.authed = true
+	c.mu.Unlock()
+	return ok(req.ID, map[string]bool{"authenticated": true})
+}
+
+func (c *agentConn) isAuthed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.authed
 }
 
 // requireWrite returns nil if this connection's mode permits writes
@@ -613,8 +695,15 @@ func (c *agentConn) requireWrite() error {
 // connection — a human's review tool, a supervising orchestrator,
 // or the (future) GUI gate — not the proposing agent itself.
 func (c *agentConn) requireApprovalAuthority() error {
+	// A token-authenticated connection always has approval
+	// authority (it's the designated reviewer). Otherwise require
+	// auto mode — and note that under a mode-change lock, only an
+	// authed connection could have reached auto anyway.
+	if c.isAuthed() {
+		return nil
+	}
 	if c.getMode() != "auto" {
-		return fmt.Errorf("approve/drop requires auto mode (a distinct authority from the propose-mode agent); current mode %q has no approval authority", c.getMode())
+		return fmt.Errorf("approve/drop requires auto mode or token authentication; current mode %q has no approval authority", c.getMode())
 	}
 	return nil
 }

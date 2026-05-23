@@ -26,6 +26,37 @@ type Config struct {
 	Tabs       TabConfig    `toml:"tabs"`
 	Hosts      []RemoteHost `toml:"hosts"`
 	Window     WindowConfig `toml:"window"`
+	MCP        MCPConfig    `toml:"mcp"`
+}
+
+// MCPConfig controls the AI-agent control socket's trust model.
+//
+// The default (observe, mode changes allowed) is fine for a local
+// trusted setup where you run the agent yourself. To turn the
+// propose queue into a real human-approval gate:
+//
+//	[mcp]
+//	default_mode = "propose"   # agents land here
+//	allow_mode_change = false  # ...and can't elevate themselves
+//	approval_token = "secret"  # your review tool authenticates
+//	                           # with this to gain auto authority
+//
+// With that, a propose-mode agent can queue writes but can't
+// approve them; only a connection that presented approval_token
+// (via the agent/authenticate method) can approve/drop.
+type MCPConfig struct {
+	// DefaultMode is the mode every new MCP connection starts in.
+	// "observe" (default) | "propose" | "auto".
+	DefaultMode string `toml:"default_mode"`
+	// AllowModeChange lets connections call agent/mode to change
+	// their own mode. Default true. Set false to pin connections
+	// at DefaultMode (except token-authenticated ones).
+	AllowModeChange bool `toml:"allow_mode_change"`
+	// ApprovalToken, when non-empty, is the shared secret a
+	// connection presents via agent/authenticate to gain
+	// approval authority (auto mode) even when AllowModeChange
+	// is false. Empty = no token auth.
+	ApprovalToken string `toml:"approval_token"`
 }
 
 // Appearance controls visual settings.
@@ -237,6 +268,10 @@ func Default() Config {
 			Columns: 80,
 			Rows:    24,
 			Title:   "xerotty",
+		},
+		MCP: MCPConfig{
+			DefaultMode:     "observe",
+			AllowModeChange: true,
 		},
 	}
 }

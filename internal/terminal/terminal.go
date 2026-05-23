@@ -49,7 +49,11 @@ type Terminal struct {
 	// visibility, blink). Without these the daemon hard-coded
 	// visible=true, style=0=block.
 	cursorVisible atomic.Bool
-	cursorStyle   atomic.Uint32 // packed: bit0..7=style enum, bit8=blink
+	cursorStyle   atomic.Uint32 // packed: bit0..7=vt style enum, bit8=blink
+	// cursorStyleSet goes true the first time the foreground app
+	// issues DECSCUSR. Until then the GUI should use its config
+	// cursor preference rather than the vt default (block).
+	cursorStyleSet atomic.Bool
 
 	cols        int
 	rows        int
@@ -166,7 +170,10 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 			t.cursorVisible.Store(visible)
 		},
 		CursorStyle: func(style vt.CursorStyle, blink bool) {
+			// style is the vt shape enum (0=block, 1=underline,
+			// 2=bar) — ship that, NOT a DECSCUSR code.
 			t.cursorStyle.Store(packCursorStyle(uint8(style), blink))
+			t.cursorStyleSet.Store(true)
 		},
 		EnableMode: func(mode ansi.Mode) {
 			switch mode {
@@ -606,11 +613,13 @@ func packCursorStyle(style uint8, blink bool) uint32 {
 	return v
 }
 
-// CursorStyle returns the current cursor style + blink state.
-// Updated by the vt CursorStyle callback from DECSCUSR.
-func (t *Terminal) CursorStyle() (style uint8, blink bool) {
+// CursorStyle returns the current cursor shape (vt enum: 0=block,
+// 1=underline, 2=bar), blink flag, and whether the foreground app
+// explicitly set it via DECSCUSR. When styleSet is false the GUI
+// should use its configured default cursor instead.
+func (t *Terminal) CursorStyle() (style uint8, blink bool, styleSet bool) {
 	v := t.cursorStyle.Load()
-	return uint8(v & 0xFF), (v>>8)&1 != 0
+	return uint8(v & 0xFF), (v>>8)&1 != 0, t.cursorStyleSet.Load()
 }
 
 // CursorVisible reports whether the cursor is currently visible.
