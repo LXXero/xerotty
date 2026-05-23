@@ -169,10 +169,17 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 		CursorVisibility: func(visible bool) {
 			t.cursorVisible.Store(visible)
 		},
-		CursorStyle: func(style vt.CursorStyle, blink bool) {
+		CursorStyle: func(style vt.CursorStyle, steady bool) {
+			// IMPORTANT: x/vt invokes this callback with the
+			// STEADY flag (the inverse of blink) as the second
+			// arg — see screen.go setCursorStyle's
+			// `cb.CursorStyle(style, !blink)`. So blink = !steady.
+			// Storing steady-as-blink would invert: DECSCUSR 1
+			// (blinking block) would render steady and vice-versa.
+			//
 			// style is the vt shape enum (0=block, 1=underline,
 			// 2=bar) — ship that, NOT a DECSCUSR code.
-			t.cursorStyle.Store(packCursorStyle(uint8(style), blink))
+			t.cursorStyle.Store(packCursorStyle(uint8(style), !steady))
 			t.cursorStyleSet.Store(true)
 		},
 		EnableMode: func(mode ansi.Mode) {

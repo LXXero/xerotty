@@ -171,13 +171,24 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "set_agent_mode",
-			"description": "Change this connection's mode: observe (read-only, default), propose (writes queue for user approval — no consumer yet, so they vanish), auto (writes apply directly).",
+			"description": "Change this connection's mode: observe (read-only, default), propose (writes queue for review — inspect with list_proposals, an authorized reviewer applies via approve_proposal or discards via drop_proposal), auto (writes apply directly). If the daemon has allow_mode_change=false you can only de-escalate unless you authenticate.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"mode": map[string]any{"type": "string", "enum": []string{"observe", "propose", "auto"}},
 				},
 				"required": []string{"mode"},
+			},
+		},
+		{
+			"name":        "authenticate",
+			"description": "Present the daemon's approval token to gain approval authority. Required for approve_proposal / drop_proposal (and to elevate to auto) when the daemon runs with allow_mode_change=false. This is how a generic MCP client becomes the trusted reviewer in a propose-mode gate.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"token": map[string]any{"type": "string"},
+				},
+				"required": []string{"token"},
 			},
 		},
 		{
@@ -250,6 +261,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleClipboard(inner)
 	case "set_agent_mode":
 		resp = c.handleAgentMode(inner)
+	case "authenticate":
+		resp = c.handleAgentAuthenticate(inner)
 	case "list_clients":
 		resp = c.handleAgentClients(inner)
 	case "get_server_info":

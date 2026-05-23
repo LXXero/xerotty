@@ -17,9 +17,15 @@ import (
 type Daemon struct {
 	cfg *config.Config
 
-	// listener for the UI/MCP protocol socket.
+	// listener for the UI/MCP protocol socket. Guarded by
+	// listenerMu because Run() writes it while Stop() (possibly
+	// on another goroutine, e.g. test teardown racing startup)
+	// reads + closes it. stopped lets Stop() called before Run()
+	// binds still tear down cleanly — Run checks it after binding.
+	listenerMu sync.Mutex
 	socketPath string
 	listener   net.Listener
+	stopped    bool
 
 	// Sessions, keyed by name. Phase 0 only ever holds "default".
 	mu       sync.Mutex
@@ -169,7 +175,18 @@ func (d *Daemon) Run() error {
 	if err != nil {
 		return fmt.Errorf("daemon: listen %s: %w", d.socketPath, err)
 	}
+	// Publish the listener under the lock. If Stop() already ran
+	// (raced ahead of us), tear down immediately instead of
+	// blocking forever in Accept.
+	d.listenerMu.Lock()
+	if d.stopped {
+		d.listenerMu.Unlock()
+		_ = ln.Close()
+		_ = os.Remove(d.socketPath)
+		return nil
+	}
 	d.listener = ln
+	d.listenerMu.Unlock()
 	// Filesystem-perm gate: only this user can connect.
 	_ = os.Chmod(d.socketPath, 0o600)
 
@@ -206,8 +223,12 @@ func (d *Daemon) ServeConn(conn net.Conn) {
 // continue running because they're owned by the session, not the
 // client.
 func (d *Daemon) Stop() error {
-	if d.listener != nil {
-		_ = d.listener.Close()
+	d.listenerMu.Lock()
+	d.stopped = true
+	ln := d.listener
+	d.listenerMu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
 	}
 	if d.socketPath != "" {
 		_ = os.Remove(d.socketPath)
