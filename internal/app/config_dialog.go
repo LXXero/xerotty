@@ -301,7 +301,17 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	for _, h := range cfg.Hosts {
 		d.tabSourceOpts = append(d.tabSourceOpts, "daemon:"+h.Name)
 	}
-	d.tabSourceIdx = prefIndexOf(d.tabSourceOpts, cfg.Tabs.Source)
+	// Membership check, NOT prefIndexOf — prefIndexOf returns 0
+	// (= "pty") on miss, which would silently downgrade an unknown
+	// source value. We want -1-on-miss semantics here so the
+	// preservation branch below actually fires.
+	d.tabSourceIdx = -1
+	for i, opt := range d.tabSourceOpts {
+		if opt == cfg.Tabs.Source {
+			d.tabSourceIdx = int32(i)
+			break
+		}
+	}
 	if d.tabSourceIdx < 0 {
 		// Source references a host not currently in cfg.Hosts —
 		// add it temporarily so the user can see + keep their

@@ -317,7 +317,9 @@ func (c *agentConn) handleProposalsList(req *rpcRequest) *rpcResponse {
 }
 
 func (c *agentConn) handleProposalsApprove(req *rpcRequest) *rpcResponse {
-	if err := c.requireWrite(); err != nil {
+	// Approval needs auto authority — a propose-mode agent must
+	// not approve its own queued writes.
+	if err := c.requireApprovalAuthority(); err != nil {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
@@ -341,7 +343,10 @@ func (c *agentConn) handleProposalsApprove(req *rpcRequest) *rpcResponse {
 }
 
 func (c *agentConn) handleProposalsDrop(req *rpcRequest) *rpcResponse {
-	if err := c.requireWrite(); err != nil {
+	// Dropping (rejecting) also needs auto authority — otherwise a
+	// propose-mode agent could clear its own pending writes to
+	// hide them from a reviewer.
+	if err := c.requireApprovalAuthority(); err != nil {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
@@ -595,6 +600,23 @@ func (c *agentConn) requireWrite() error {
 	default:
 		return fmt.Errorf("write blocked in observe mode; set agent/mode to auto or propose first")
 	}
+}
+
+// requireApprovalAuthority gates the approve_proposal path. A
+// propose-mode agent must NOT be able to approve its own queued
+// writes — that defeats the entire "human (or distinct authority)
+// reviews before it lands" purpose of propose mode. Only auto-mode
+// connections (which already have full write authority anyway) can
+// approve. Observe + propose are rejected.
+//
+// Intent: the approval comes from a SEPARATE auto-authorized
+// connection — a human's review tool, a supervising orchestrator,
+// or the (future) GUI gate — not the proposing agent itself.
+func (c *agentConn) requireApprovalAuthority() error {
+	if c.getMode() != "auto" {
+		return fmt.Errorf("approve/drop requires auto mode (a distinct authority from the propose-mode agent); current mode %q has no approval authority", c.getMode())
+	}
+	return nil
 }
 
 func (c *agentConn) modeIs(m string) bool { return c.getMode() == m }

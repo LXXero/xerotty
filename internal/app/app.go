@@ -78,6 +78,12 @@ type App struct {
 	remoteHubsMu sync.Mutex
 	remoteHubs   map[string]*remoteHubEntry
 
+	// suppressInitialTab tells spawnWindowImpl to skip ALL tab
+	// creation for the next spawn — used by spawnEmptyWindow when
+	// the caller will adopt tabs into the window itself (remote
+	// reattach). Reset to false right after.
+	suppressInitialTab bool
+
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
 
@@ -235,6 +241,21 @@ func (a *App) broadcastClipboard(text string) {
 	}
 }
 
+// cursorStyleName maps a DECSCUSR style enum (1..6) to the
+// renderer's cursor-style string. 1/2 = block, 3/4 = underline,
+// 5/6 = bar (odd = blinking, but blink is handled separately).
+// Style 0 ("default") never reaches here — caller checks for it.
+func cursorStyleName(style uint8) string {
+	switch style {
+	case 3, 4:
+		return "underline"
+	case 5, 6:
+		return "bar"
+	default: // 1, 2, anything else
+		return "block"
+	}
+}
+
 // expandMenu walks the configured menu items and replaces magic
 // placeholders with synthesized items:
 //
@@ -377,7 +398,13 @@ func (w *Window) openRemoteTab(hostName string) error {
 		return err
 	}
 	cols, rows := w.gridSize()
-	src, err := entry.hub.NewTabIn(0, cols, rows, "")
+	// Bind the new remote tab to THIS GUI window's dedicated
+	// window on the remote daemon (lazily minted). Using 0
+	// ("daemon default window") meant every GUI window's remote
+	// tabs piled into the same remote window, so reorder/focus
+	// later targeted the wrong window.
+	winID := w.windowIDForHub(entry.hub)
+	src, err := entry.hub.NewTabIn(winID, cols, rows, "")
 	if err != nil {
 		return fmt.Errorf("hub.NewTabIn on %s: %w", hostName, err)
 	}
@@ -417,21 +444,15 @@ func (w *Window) openRemoteReattach(hostName string) error {
 	// First daemon-window's tabs land in the CURRENT GUI window.
 	adoptIntoWindow(w, hostName, entry.hub, pending[0], cols, rows)
 
-	// Extra daemon windows → spawn extra GUI windows for them.
-	// spawnWindowImpl doesn't know about remote queues, so push
-	// the rest onto a per-app remoteSpawnQueue that the next
-	// frame's spawnWindow drain handles. For now, simpler: spawn
-	// new GUI windows synchronously and adopt into each.
+	// Extra daemon windows → spawn extra EMPTY GUI windows and
+	// adopt into each. spawnEmptyWindow skips the default-tab
+	// creation that plain spawnWindow does, so we don't leave a
+	// stray local PTY tab in each new window.
 	for _, snap := range pending[1:] {
-		// Spawn a fresh GUI window. After it constructs, find it
-		// and adopt into it. This is best-effort; if spawnWindow
-		// fails the tabs stay on the remote (user can open them
-		// via attach_remote again).
-		w.app.spawnWindow()
-		if len(w.app.windows) == 0 {
+		nw := w.app.spawnEmptyWindow()
+		if nw == nil {
 			continue
 		}
-		nw := w.app.windows[len(w.app.windows)-1]
 		nCols, nRows := nw.gridSize()
 		if nCols < 2 || nRows < 2 {
 			nCols, nRows = cols, rows
@@ -446,6 +467,20 @@ func (w *Window) openRemoteReattach(hostName string) error {
 // tabs from a daemonWindowSnapshot into the GUI window, sets the
 // Host badge, restores per-window focus.
 func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap daemonWindowSnapshot, cols, rows int) {
+	// Seed the per-hub window mapping so future tab creates /
+	// focus / reorder for this hub target the SAME remote window
+	// we just adopted from — not a freshly-minted one. Without
+	// this, windowIDForHub would SendWindowCreate a new remote
+	// window on first focus and the user's tabs would split
+	// across two remote windows on reattach.
+	if snap.WindowID != 0 {
+		w.daemonWindowIDsMu.Lock()
+		if w.daemonWindowIDs == nil {
+			w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+		}
+		w.daemonWindowIDs[hub] = snap.WindowID
+		w.daemonWindowIDsMu.Unlock()
+	}
 	var focusIdx = -1
 	startIdx := len(w.tabs.Tabs)
 	for i, ts := range snap.Tabs {
@@ -993,6 +1028,21 @@ func (a *App) spawnWindow() {
 	a.spawnWindowImpl(nil)
 }
 
+// spawnEmptyWindow creates a new GUI window with NO starting tab.
+// Used by remote reattach which adopts tabs into the window itself
+// — the normal spawn path would create a local/default PTY tab
+// first, leaving an unwanted stray tab. Returns the new Window
+// (or nil if spawn failed) so the caller can adopt into it.
+func (a *App) spawnEmptyWindow() *Window {
+	a.suppressInitialTab = true
+	a.spawnWindowImpl(nil)
+	a.suppressInitialTab = false
+	if len(a.windows) == 0 {
+		return nil
+	}
+	return a.windows[len(a.windows)-1]
+}
+
 func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	if len(a.windows) == 0 {
 		return // can't spawn before Run() has set up the main Window
@@ -1116,7 +1166,12 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	//   3. fresh daemon   — SendWindowCreate to mint a new daemon
 	//      window mode      window; Hub.SetDefaultWindowID makes
 	//                       NewTab put new tabs there.
-	if adopt != nil {
+	if a.suppressInitialTab {
+		// Empty window — caller (remote reattach) adopts tabs
+		// itself. Skip all tab creation. The window still gets a
+		// daemon-window association lazily via windowIDForHub when
+		// the first tab is adopted.
+	} else if adopt != nil {
 		if cols > 1 && rows > 1 {
 			adopt.Resize(cols, rows)
 		}
@@ -2635,10 +2690,22 @@ func (a *Window) frame() {
 				)
 			}
 
-			// Only show cursor when at live position (not scrolled back)
-			if scrollOff == 0 {
+			// Only show cursor when at live position (not scrolled
+			// back) AND the terminal hasn't hidden it (DECTCEM).
+			if scrollOff == 0 && tab.Terminal.CursorVisible() {
+				// Cursor SHAPE: the terminal's DECSCUSR style wins
+				// over the config default. style 0 = "default" →
+				// use config. BLINK: terminal-set styles carry
+				// their own blink flag; otherwise fall back to the
+				// config blink setting.
+				styleStr := a.app.cfg.Appearance.CursorStyle
+				cfgBlink := a.app.cfg.Appearance.CursorBlink
+				if ts, tblink := tab.Terminal.CursorStyle(); ts != 0 {
+					styleStr = cursorStyleName(ts)
+					cfgBlink = tblink
+				}
 				showCursor := true
-				if a.app.cfg.Appearance.CursorBlink {
+				if cfgBlink {
 					rate := float64(a.app.cfg.Appearance.BlinkRate) / 1000.0
 					if rate <= 0 {
 						rate = 0.53
@@ -2648,7 +2715,7 @@ func (a *Window) frame() {
 				if showCursor {
 					pos := tab.Terminal.Emulator().CursorPosition()
 					a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
-						a.app.cfg.Appearance.CursorStyle, drawList)
+						styleStr, drawList)
 				}
 			}
 
@@ -3380,6 +3447,12 @@ func (w *Window) renderTabBar() {
 		y1 := originY + height
 		isActive := i == w.tabs.ActiveIdx
 
+		// Becoming active clears any pending bell urgency — the
+		// user is now looking at the tab that beeped.
+		if isActive && tab.BellPending {
+			tab.BellPending = false
+		}
+
 		// Whole-tab invisible button for hit detection. We use ONE
 		// button rather than two (with the close X as a second
 		// overlapping InvisibleButton), because ImGui's "first item
@@ -3442,7 +3515,11 @@ func (w *Window) renderTabBar() {
 
 		// Centered label, clipped to the tab's interior so long
 		// titles don't bleed into the close button or the next tab.
+		// Prefix a bell marker for background tabs that beeped.
 		label := tab.DisplayTitle()
+		if tab.BellPending && !isActive {
+			label = "● " + label
+		}
 		labelSize := imgui.CalcTextSize(label)
 		labelX := x0 + framePad.X
 		labelMaxX := x1 - closeBtnW - framePad.X*2

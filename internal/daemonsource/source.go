@@ -71,6 +71,12 @@ type Source struct {
 	// every MsgBell frame.
 	onBell func()
 
+	// cursorVisible / cursorStyle mirror the daemon's reported
+	// cursor state (from MsgCursor frames) so the GUI renderer
+	// draws the right shape + honors hide.
+	cursorVisible atomic.Bool
+	cursorStyle   atomic.Uint32
+
 	// Lifecycle.
 	dataCh   chan struct{}
 	closed   atomic.Bool
@@ -94,6 +100,7 @@ func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 		s.scrollbackCap = 10000
 	}
 	s.exitCode.Store(-1)
+	s.cursorVisible.Store(true) // visible until daemon says otherwise
 	return s
 }
 
@@ -362,7 +369,24 @@ func (s *Source) applyCursor(f *protocol.Cursor) {
 	// CSI row;col H is 1-indexed.
 	_, _ = s.emu.Write([]byte("\x1b[" + itoa(int(f.Row)+1) + ";" + itoa(int(f.Col)+1) + "H"))
 	s.mu.Unlock()
+	// Track visibility + style so the GUI renderer reflects the
+	// daemon's real cursor state (DECTCEM / DECSCUSR) rather than
+	// always drawing the config default.
+	s.cursorVisible.Store(f.Visible)
+	s.cursorStyle.Store(uint32(f.Style))
 	s.signalDirty()
+}
+
+// CursorVisible reports the daemon-reported cursor visibility.
+func (s *Source) CursorVisible() bool { return s.cursorVisible.Load() }
+
+// CursorStyle returns the daemon-reported DECSCUSR style. The wire
+// Cursor.Style carries the raw style enum; blink is the odd-value
+// convention (1/3/5 blink, 2/4/6 steady), but the daemon currently
+// packs only the style number — derive blink from oddness.
+func (s *Source) CursorStyle() (style uint8, blink bool) {
+	v := uint8(s.cursorStyle.Load())
+	return v, v != 0 && v%2 == 1
 }
 
 func (s *Source) applyTitle(f *protocol.Title) {

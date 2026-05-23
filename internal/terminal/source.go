@@ -99,6 +99,19 @@ type Source interface {
 	// tab.
 	SetOnBell(fn func())
 
+	// CursorVisible reports whether the terminal cursor should be
+	// drawn (DECTCEM). The GUI hides the cursor when this is false
+	// (e.g. full-screen apps that hide it).
+	CursorVisible() bool
+
+	// CursorStyle returns the DECSCUSR cursor style (0 = default →
+	// GUI falls back to its config style; 1/2 = block, 3/4 =
+	// underline, 5/6 = bar; odd = blinking) + whether the app
+	// requested blink. The GUI uses this so apps that set their
+	// own cursor shape (vim bar in insert mode, etc.) render
+	// correctly instead of always showing the config default.
+	CursorStyle() (style uint8, blink bool)
+
 	// Renderer-side view: subset of EmulatorView the renderer uses.
 	// *Terminal already exposes these (they pass through to the
 	// emulator + the disk-scrollback ring); DaemonSource implements

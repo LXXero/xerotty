@@ -32,6 +32,13 @@ type Tab struct {
 	Dirty    bool
 	Closed   bool
 
+	// BellPending is set when the tab's terminal rang the bell
+	// while not focused. The tab bar renders an urgency marker
+	// (●) for these so the user sees which background tab beeped.
+	// Cleared when the tab becomes active. Set from the bell
+	// callback installed in NewTab / AdoptTab.
+	BellPending bool
+
 	// foregroundCache + foregroundAt throttle the per-tab PTY-pgid +
 	// processName lookup so we don't fork `ps` on macOS every frame.
 	// The cache is invalidated after foregroundCacheTTL.
@@ -138,6 +145,9 @@ func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	term.SetOnTitle(func(title string) {
 		tab.Title = title
 	})
+	term.SetOnBell(func() {
+		tab.BellPending = true
+	})
 	return tab
 }
 
@@ -200,6 +210,9 @@ func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
 	}
 	term.SetOnTitle(func(title string) {
 		tab.Title = title
+	})
+	term.SetOnBell(func() {
+		tab.BellPending = true
 	})
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
