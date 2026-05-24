@@ -858,21 +858,49 @@ func (a *App) hubsByName() map[string]*daemonsource.Hub {
 }
 
 // ListTabs implements guimcp.Backend: every tab across every hub
-// with namespaced IDs.
+// with namespaced IDs + triage metadata (cwd, foreground proc,
+// closed state, focused flag).
 func (a *App) ListTabs() []guimcp.TabRef {
+	focused := a.focusedDaemonTabIDs() // set of source pointers that are focused
 	var refs []guimcp.TabRef
 	for name, hub := range a.hubsByName() {
 		for _, src := range hub.Sources() {
 			refs = append(refs, guimcp.TabRef{
-				NSID:  guimcp.MakeNSID(name, src.TabID()),
-				Host:  name,
-				Title: src.Title(),
-				Cols:  src.Width(),
-				Rows:  src.Height(),
+				NSID:       guimcp.MakeNSID(name, src.TabID()),
+				Host:       name,
+				Title:      src.Title(),
+				Cols:       src.Width(),
+				Rows:       src.Height(),
+				CWD:        src.GetCWD(),
+				Foreground: src.ForegroundProcessName(),
+				Closed:     src.IsClosed(),
+				ExitCode:   src.ChildExitCode(),
+				Focused:    focused[src],
 			})
 		}
 	}
 	return refs
+}
+
+// focusedDaemonTabIDs returns the set of daemon Sources that are
+// the active tab of some GUI window — so list_tabs can flag which
+// tabs the user is actually looking at. Read on the guimcp
+// goroutine; the windows slice is only mutated on the main thread,
+// and a tab's active-ness is a transient read, so a momentarily
+// stale answer is harmless (it's advisory metadata).
+func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
+	out := map[*daemonsource.Source]bool{}
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		if t := w.tabs.Active(); t != nil && t.Terminal != nil {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok {
+				out[ds] = true
+			}
+		}
+	}
+	return out
 }
 
 // SourceFor implements guimcp.Backend: resolve "<host>:<tabid>"

@@ -14,25 +14,23 @@
 //   - observe (default): the agent can read tab state but write
 //     attempts return error -32099 "write blocked in observe mode".
 //
-//   - propose: write attempts are accepted by the server, queued
-//     on the session, and surfaced to a future xerotty UI gate for
-//     user approval. Phase 4 ships the queue but no UI consumer;
-//     until the UI lands, propose behaves like observe (writes are
-//     queued silently but never applied).
+//   - propose: write attempts are accepted + queued on the
+//     session for review. Consumed by the GUI's approval banner
+//     and the list_proposals / approve_proposal / drop_proposal
+//     tools. Approval requires auto mode or token authentication
+//     (see the trust-model config), so a propose-mode agent can't
+//     approve its own writes.
 //
 //   - auto: writes go straight to the PTY. Use when the agent has
 //     full delegated authority (typical for headless servers /
 //     CI / scripted operators).
 //
-// Method surface (subject to migration onto formal MCP /tools spec
-// once we wire that up):
-//
-//	tabs/list                   -> [{id, title, cols, rows, window_id, focused}]
-//	tab/screen   {tab_id}        -> {cols, rows, lines:[string,...]}
-//	tab/input    {tab_id, bytes} -> {ok:true} | error
-//	tab/paste    {tab_id, text}  -> {ok:true} | error
-//	tab/clipboard               -> {text}
-//	agent/mode   {mode?}         -> {mode}        (get if mode omitted, set otherwise)
+// Supports the standard MCP shape (initialize / tools/list /
+// tools/call) AND native JSON-RPC methods for `nc -U` debugging.
+// Native methods: tabs/list, tab/screen, tab/scrollback,
+// tab/input, tab/paste, tab/create, tab/close, tab/resize,
+// tab/clipboard, proposals/{list,approve,drop}, agent/{mode,
+// authenticate,clients}, server/info.
 package mcp
 
 import (

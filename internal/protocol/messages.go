@@ -349,9 +349,11 @@ type ClipboardSet struct {
 //     clipboard via OSC 52 set." Client puts it on the local
 //     system clipboard.
 //
-// Phase 3 implements only the client→server direction; the
-// server→client OSC 52 set path lands when we wire up OSC 52
-// passthrough in the vt emulator (Phase 4+).
+// ClipboardData is the client→server direction. The server→client
+// direction (a daemon app's OSC 52 set propagating to the client's
+// OS clipboard) is its own message, ClipboardSet. Both are wired:
+// the vt emulator's OSC 52 handling lives in
+// internal/terminal/terminal.go's dispatchOSC52.
 type ClipboardData struct {
 	Text     string `msg:"text"`
 	MIME     string `msg:"mime,omitempty"` // default "text/plain"

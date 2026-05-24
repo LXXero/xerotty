@@ -46,9 +46,11 @@ type Session struct {
 	// read it via Clipboard()/SetClipboard().
 	clipboard string
 
-	// Queue of writes proposed by agents in "propose" mode. Drained
-	// by a future UI gate. Phase 4 has no consumer — the field
-	// exists so writes don't silently vanish.
+	// Queue of writes proposed by agents in "propose" mode.
+	// Consumed two ways: the GUI's approval banner (broadcast via
+	// MsgProposalsChanged, resolved via MsgProposalResolve) and
+	// the MCP list_proposals/approve_proposal/drop_proposal tools.
+	// Bounded at proposedCap.
 	proposed []ProposedAction
 
 	// initMu serializes EnsureInitialTab so two concurrent

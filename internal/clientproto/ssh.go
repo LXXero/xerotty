@@ -54,8 +54,8 @@ func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) 
 // DialCommand spawns an arbitrary subprocess and treats its stdin +
 // stdout as the protocol transport. The subprocess MUST speak the
 // xerotty wire protocol over those streams — typical examples are
-// `xerottyd --stdio` (local subprocess daemon for testing) or
-// `flatpak run io.xerotty.Daemon --stdio` (containerized variant).
+// `xerotty serve --stdio` (local subprocess daemon for testing) or
+// `flatpak run io.xerotty.Daemon serve --stdio` (containerized).
 //
 // DialSSH is a thin convenience wrapper over this.
 //

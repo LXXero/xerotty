@@ -27,10 +27,11 @@ var _ terminal.Source = (*Source)(nil)
 // selection + search + link-detect code reads from — same shape as
 // the in-process PTYSource path.
 //
-// Scrollback: not yet shipped over the wire. Daemon-backed tabs
-// report ScrollbackLen()==0 and ScrollbackCellAt returns nil.
-// Phase 4+ adds a scrollback streaming protocol; until then the
-// shadow only holds the visible viewport.
+// Scrollback streams over the wire (MsgScrollbackAppend): the
+// daemon ships rows as they roll off the top, and this Source
+// keeps a bounded local mirror (scrollbackCap) that
+// ScrollbackLen/ScrollbackCellAt read from. Pre-attach history is
+// partially back-filled; MsgScrollbackCleared drops the mirror.
 type Source struct {
 	hub   *Hub
 	tabID uint32

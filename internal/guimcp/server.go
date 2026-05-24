@@ -51,13 +51,22 @@ type Backend interface {
 	SourceFor(nsID string) (*daemonsource.Source, bool)
 }
 
-// TabRef is one tab in the aggregated view.
+// TabRef is one tab in the aggregated view. Beyond identity +
+// dims it carries the metadata an orchestrator wants to triage
+// tabs without reading every screen: working dir, foreground
+// process, whether the shell exited, and whether it's the
+// user's focused tab.
 type TabRef struct {
-	NSID  string // "<host>:<tabid>"
-	Host  string
-	Title string
-	Cols  int
-	Rows  int
+	NSID       string // "<host>:<tabid>"
+	Host       string
+	Title      string
+	Cols       int
+	Rows       int
+	CWD        string // foreground proc's cwd ("" if unknown)
+	Foreground string // foreground process name (vim, less, ...)
+	Closed     bool   // child process exited
+	ExitCode   int    // -1 while running
+	Focused    bool   // the user's currently-focused tab in the GUI
 }
 
 // Server is the GUI's aggregating MCP listener.
@@ -200,11 +209,16 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 	out := make([]map[string]any, len(refs))
 	for i, r := range refs {
 		out[i] = map[string]any{
-			"id":    r.NSID,
-			"host":  r.Host,
-			"title": r.Title,
-			"cols":  r.Cols,
-			"rows":  r.Rows,
+			"id":         r.NSID,
+			"host":       r.Host,
+			"title":      r.Title,
+			"cols":       r.Cols,
+			"rows":       r.Rows,
+			"cwd":        r.CWD,
+			"foreground": r.Foreground,
+			"closed":     r.Closed,
+			"exit_code":  r.ExitCode,
+			"focused":    r.Focused,
 		}
 	}
 	return okResp(id, out)

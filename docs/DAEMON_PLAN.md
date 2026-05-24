@@ -109,10 +109,10 @@ I/O, the vt state machine, file/socket I/O.
 
 The UI doesn't have to commit to "all in-process" or "all daemon" —
 each tab independently picks its source. One window can have:
-- a local in-process PTY tab (today's behavior, fastest, simplest)
-- a tab connected to a local `xerottyd` (persistent + MCP-accessible)
-- a tab connected to `xerottyd@kh` over SSH (remote shell, persistent)
-- a tab connected to `xerottyd@xRyzen` over SSH
+- a local in-process PTY tab (fastest, simplest)
+- a tab on the local daemon (persistent + MCP-accessible)
+- a tab on `kh`'s daemon over SSH (remote shell, persistent)
+- a tab on `xRyzen`'s daemon over SSH
 
 All four use the same renderer, same input handling, same scrollback
 visualization. They differ only in where the cells originate.
