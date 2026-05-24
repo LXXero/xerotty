@@ -61,7 +61,17 @@ type App struct {
 	// Window builds its own tabs.Manager.SourceFactory via
 	// installSourceFactory so multi-window setups route NewTab
 	// calls to the right daemon window.
-	daemonHub *daemonsource.Hub
+	//
+	// daemonMu guards daemonHub + daemonHubName + guiMCP: read
+	// from the guimcp server's request goroutines (ListTabs /
+	// SourceFor) and written from init/reconnect paths
+	// (activeDaemonHub re-dial). daemonHubName is the default
+	// hub's host namespace ("local", or a cfg.Hosts name in
+	// daemon:<name> mode) — so the aggregated MCP doesn't list a
+	// remote-default daemon's tabs as both "local:" and "<host>:".
+	daemonMu      sync.Mutex
+	daemonHub     *daemonsource.Hub
+	daemonHubName string
 
 	// daemonAdoptQueue holds windows + their tabs the daemon
 	// reported at Attach time, in the order they came back. Each
@@ -86,12 +96,22 @@ type App struct {
 	// reattach). Reset to false right after.
 	suppressInitialTab bool
 
-	// pendingProposals is the propose-mode queue the local daemon
-	// last reported. Rendered as an approval banner. Guarded by
-	// proposalsMu (set from the hub router goroutine, read from
-	// the render thread).
+	// pendingProposals is the propose-mode queue across ALL hubs,
+	// each entry tagged with its originating hub + host name so
+	// Approve/Drop resolves against the RIGHT daemon (not just the
+	// local/default one). Guarded by proposalsMu (written from hub
+	// router goroutines, read from the render thread).
 	proposalsMu      sync.Mutex
-	pendingProposals []protocol.ProposalInfo
+	pendingProposals []guiProposal
+
+	// Clipboard-push throttle: a remote PTY's OSC 52 GET is
+	// answered server-side from the session clipboard, which is
+	// only fresh if the GUI pushed recent clipboard contents. We
+	// poll the OS clipboard on a slow timer and push on change so
+	// "copied in another app → OSC 52 read in a remote shell"
+	// returns current data, not just what xerotty itself copied.
+	lastClipboardPush string
+	lastClipboardPoll time.Time
 
 	// guiMCP is the GUI's aggregating MCP server (one socket
 	// covering every daemon hub). Started lazily the first time a
@@ -213,7 +233,11 @@ func (a *App) initRemoteDefaultSource(name string) error {
 	entry.reattachQueue = nil
 	a.remoteHubsMu.Unlock()
 
-	a.daemonHub = entry.hub
+	// Key the default hub by the host name, NOT "local" — in
+	// daemon:<name> mode the default daemon IS the remote, and
+	// the aggregated MCP must list its tabs once (as "<host>:"),
+	// not also as "local:".
+	a.setDaemonHub(entry.hub, name)
 	// Scrollback cap mirrors local-daemon path.
 	cap := a.cfg.Scrollback.Lines
 	if a.cfg.Scrollback.Mode == "unlimited" {
@@ -233,6 +257,34 @@ func (a *App) initRemoteDefaultSource(name string) error {
 type remoteHubEntry struct {
 	hub           *daemonsource.Hub
 	reattachQueue []daemonWindowSnapshot
+}
+
+// pollClipboardForDaemons reads the OS clipboard at most once a
+// second and, when it changed since the last push, broadcasts it
+// to every daemon. Keeps the daemon-side session clipboard fresh
+// enough that a remote PTY app's OSC 52 GET returns what's
+// actually on the user's clipboard — including text copied in a
+// different app — not just xerotty's own last copy. No-op when no
+// daemon hub is active. Called from the render loop; the time
+// gate keeps the SDL clipboard read off the per-frame hot path.
+func (a *App) pollClipboardForDaemons() {
+	now := time.Now()
+	if now.Sub(a.lastClipboardPoll) < time.Second {
+		return
+	}
+	a.lastClipboardPoll = now
+	if hub, _ := a.getDaemonHub(); hub == nil {
+		return
+	}
+	text, err := input.ClipboardRead()
+	if err != nil || text == "" {
+		return
+	}
+	if text == a.lastClipboardPush {
+		return
+	}
+	a.lastClipboardPush = text
+	a.broadcastClipboard(text)
 }
 
 // broadcastClipboard pushes the given text to every daemon Hub
@@ -578,7 +630,7 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
 	}
 	hub := daemonsource.NewHub(cli)
-	a.wireHubCallbacks(hub)
+	a.wireHubCallbacks(name, hub)
 
 	entry := &remoteHubEntry{hub: hub}
 	// Group tabs by their daemon-side window so reattach preserves
@@ -742,8 +794,8 @@ func (a *App) initDaemonSource() error {
 	if cap > 0 {
 		hub.SetScrollbackCap(cap)
 	}
-	a.wireHubCallbacks(hub)
-	a.daemonHub = hub
+	a.wireHubCallbacks("local", hub)
+	a.setDaemonHub(hub, "local")
 	// NOTE: tabSourceFactory is set per-Window by
 	// installSourceFactory() so multi-window setups don't all
 	// share Hub.defaultWindowID. App-level default is nil;
@@ -759,17 +811,43 @@ func (a *App) initDaemonSource() error {
 // These two methods are how that server enumerates + resolves
 // tabs across the local hub + every remote hub.
 
+// getDaemonHub returns the default hub + its host name under the
+// lock. Used by the guimcp request goroutines (which run
+// concurrently with activeDaemonHub's re-dial writes).
+func (a *App) getDaemonHub() (*daemonsource.Hub, string) {
+	a.daemonMu.Lock()
+	defer a.daemonMu.Unlock()
+	return a.daemonHub, a.daemonHubName
+}
+
+// setDaemonHub publishes the default hub + name under the lock.
+func (a *App) setDaemonHub(hub *daemonsource.Hub, name string) {
+	a.daemonMu.Lock()
+	a.daemonHub = hub
+	a.daemonHubName = name
+	a.daemonMu.Unlock()
+}
+
 // hubsByName returns the daemon hubs the GUI is connected to,
-// keyed by host namespace ("local" for the local/default daemon,
-// the cfg.Hosts name for remotes).
+// keyed by host namespace. The default hub is keyed by its OWN
+// name (daemonHubName) — "local" normally, but the host name in
+// daemon:<name> mode. That dedupes against the remoteHubs entry
+// for the same hub: in daemon:kh mode the kh hub is BOTH the
+// default and remoteHubs["kh"], and keying both by "kh" collapses
+// them into one map entry instead of listing the same tabs as
+// "local:" and "kh:".
 func (a *App) hubsByName() map[string]*daemonsource.Hub {
 	out := map[string]*daemonsource.Hub{}
-	if a.daemonHub != nil {
-		out["local"] = a.daemonHub
+	hub, name := a.getDaemonHub()
+	if hub != nil {
+		if name == "" {
+			name = "local"
+		}
+		out[name] = hub
 	}
 	a.remoteHubsMu.Lock()
-	for name, e := range a.remoteHubs {
-		out[name] = e.hub
+	for rname, e := range a.remoteHubs {
+		out[rname] = e.hub
 	}
 	a.remoteHubsMu.Unlock()
 	return out
@@ -816,17 +894,41 @@ func (a *App) SourceFor(nsID string) (*daemonsource.Source, bool) {
 	return nil, false
 }
 
+// guiProposal tags a daemon-reported proposal with the hub +
+// host it came from so the GUI gate resolves against the correct
+// daemon. Without the tag, a remote (kh) proposal's Approve would
+// have gone to the local/default hub — wrong daemon, wrong tab.
+type guiProposal struct {
+	hub  *daemonsource.Hub
+	host string
+	info protocol.ProposalInfo
+}
+
 // wireHubCallbacks installs the hub-level (session-global)
 // callbacks: OSC 52 clipboard writes → local OS clipboard, and
 // propose-mode queue updates → the approval banner. Called for
-// every hub (local + remote).
-func (a *App) wireHubCallbacks(hub *daemonsource.Hub) {
+// every hub (local + remote); name is the host namespace
+// ("local" or a cfg.Hosts name) used for display + so each hub's
+// proposal list replaces only its own entries.
+func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
 	hub.SetClipboardSetCallback(func(text string) {
 		_ = input.ClipboardWrite(text)
 	})
 	hub.SetProposalsCallback(func(infos []protocol.ProposalInfo) {
 		a.proposalsMu.Lock()
-		a.pendingProposals = infos
+		// Drop this hub's previous entries, keep other hubs', then
+		// append the fresh list. Keeps a unified multi-daemon view
+		// where each Approve/Drop still targets the right hub.
+		kept := a.pendingProposals[:0:0]
+		for _, gp := range a.pendingProposals {
+			if gp.hub != hub {
+				kept = append(kept, gp)
+			}
+		}
+		for _, info := range infos {
+			kept = append(kept, guiProposal{hub: hub, host: name, info: info})
+		}
+		a.pendingProposals = kept
 		a.proposalsMu.Unlock()
 	})
 	a.ensureGUIMCP()
@@ -837,12 +939,15 @@ func (a *App) wireHubCallbacks(hub *daemonsource.Hub) {
 // daemon sockets with a .gui.mcp.sock suffix. Best-effort: a
 // failure (e.g. socket in use by another xerotty) just logs.
 func (a *App) ensureGUIMCP() {
+	a.daemonMu.Lock()
 	if a.guiMCP != nil {
+		a.daemonMu.Unlock()
 		return
 	}
 	sock := guiMCPSocketPath()
 	srv := guimcp.New(a, sock)
 	a.guiMCP = srv
+	a.daemonMu.Unlock()
 	go func() {
 		fmt.Fprintf(os.Stderr, "xerotty: aggregating MCP on %s\n", sock)
 		if err := srv.Run(); err != nil {
@@ -903,24 +1008,26 @@ func (a *App) installSourceFactory(w *Window) {
 // (local or remote-default) to replace the hub, then returns the
 // new one. Returns nil on permanent failure.
 func (a *App) activeDaemonHub() *daemonsource.Hub {
-	if a.daemonHub == nil {
+	hub, _ := a.getDaemonHub()
+	if hub == nil {
 		return nil
 	}
 	select {
-	case <-a.daemonHub.Client().Closed():
+	case <-hub.Client().Closed():
 		// Hub is dead — re-init based on the configured source
 		// string. Local daemon mode auto-respawns; remote mode
-		// re-dials via SSH.
-		a.daemonHub = nil
+		// re-dials via SSH. init* call setDaemonHub under the lock.
+		a.setDaemonHub(nil, "")
 		src := a.cfg.Tabs.Source
 		if src == "daemon" {
 			_ = a.initDaemonSource()
 		} else if strings.HasPrefix(src, "daemon:") {
 			_ = a.initRemoteDefaultSource(strings.TrimPrefix(src, "daemon:"))
 		}
-		return a.daemonHub
+		h, _ := a.getDaemonHub()
+		return h
 	default:
-		return a.daemonHub
+		return hub
 	}
 }
 
@@ -2208,6 +2315,7 @@ func (a *App) findHubForClient(cli *clientproto.Client) *daemonsource.Hub {
 
 func (a *Window) frame() {
 	a.syncDaemonFocus()
+	a.app.pollClipboardForDaemons()
 
 	// macOS: after the first click that shifts the Cocoa first-responder,
 	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
@@ -3575,17 +3683,27 @@ func (w *Window) renderProposalGate() {
 	}
 	imgui.Text("AI agent wants to run (propose mode):")
 	imgui.Separator()
-	for _, p := range props {
-		kind := p.Kind
-		imgui.TextUnformatted(fmt.Sprintf("tab %d [%s]: %s", p.TabID, kind, p.Preview))
+	for i, gp := range props {
+		p := gp.info
+		// Unique widget IDs per (host, index) — two hubs can both
+		// have a proposal at index 0.
+		uid := fmt.Sprintf("##p%s%d%s", gp.host, p.Index, w.imguiSuffix())
+		imgui.TextUnformatted(fmt.Sprintf("%s tab %d [%s]: %s", gp.host, p.TabID, p.Kind, p.Preview))
 		imgui.SameLine()
-		if imgui.Button(fmt.Sprintf("Approve##p%d%s", p.Index, w.imguiSuffix())) {
-			_ = w.app.daemonHub.ResolveProposal(p.Index, true)
+		hub := gp.hub
+		idx := p.Index
+		if imgui.Button("Approve" + uid) {
+			if hub != nil {
+				_ = hub.ResolveProposal(idx, true)
+			}
 		}
 		imgui.SameLine()
-		if imgui.Button(fmt.Sprintf("Drop##p%d%s", p.Index, w.imguiSuffix())) {
-			_ = w.app.daemonHub.ResolveProposal(p.Index, false)
+		if imgui.Button("Drop" + uid) {
+			if hub != nil {
+				_ = hub.ResolveProposal(idx, false)
+			}
 		}
+		_ = i
 	}
 	imgui.End()
 }

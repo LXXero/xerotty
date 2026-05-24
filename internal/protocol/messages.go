@@ -7,12 +7,20 @@ package protocol
 // any of the message structs below. Minor field additions are NOT
 // breaking — msgpack lets newer servers send fields older clients
 // ignore.
-// ProtocolVersion bumped to 2 when Style packing grew the fgSet /
-// bgSet flag bits to distinguish "no color" from "ANSI black
-// (palette idx 0)". Same wire layout otherwise; old clients would
-// misinterpret bits 30/31 as "reserved zero" and render black as
-// default. Spike branch, no compat shims.
-const ProtocolVersion uint16 = 2
+// ProtocolVersion history:
+//   1 — initial.
+//   2 — Style packing grew fgSet/bgSet flag bits (ANSI black vs
+//       "no color").
+//   3 — added MsgInputImageChunk, MsgClipboardSet,
+//       MsgProposalsChanged, MsgProposalResolve, MsgScrollbackCleared,
+//       Cursor.Blink/StyleSet; chunked image paste dropped
+//       maxFrameSize back to 16 MiB. A v2 client sending a >16 MiB
+//       single-frame image to a v3 daemon would be disconnected;
+//       a v3 client's MsgInputImageChunk would be ignored by a v2
+//       daemon. Incompatible → bump. The Hello handshake rejects
+//       version mismatches, so this is the gate that prevents the
+//       silent-misbehavior scenarios.
+const ProtocolVersion uint16 = 3
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
