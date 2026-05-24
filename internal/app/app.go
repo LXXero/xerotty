@@ -273,7 +273,11 @@ func (a *App) pollClipboardForDaemons() {
 		return
 	}
 	a.lastClipboardPoll = now
-	if hub, _ := a.getDaemonHub(); hub == nil {
+	// Any hub (default OR ad-hoc remote) wants fresh clipboard for
+	// OSC 52 GET — broadcastClipboard pushes to all of them. Don't
+	// gate on the default hub alone, or PTY-default mode with
+	// ad-hoc remote tabs would never push.
+	if len(a.hubsByName()) == 0 {
 		return
 	}
 	text, err := input.ClipboardRead()
@@ -916,12 +920,16 @@ func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
 	})
 	hub.SetProposalsCallback(func(infos []protocol.ProposalInfo) {
 		a.proposalsMu.Lock()
-		// Drop this hub's previous entries, keep other hubs', then
-		// append the fresh list. Keeps a unified multi-daemon view
-		// where each Approve/Drop still targets the right hub.
+		// Drop this HOST's previous entries (by namespace, not hub
+		// pointer), keep other hosts', then append the fresh list.
+		// Filtering by host (not pointer) means a reconnected host
+		// — which gets a brand-new *Hub — still clears its stale
+		// rows: the new hub's callback fires under the same name,
+		// so an empty list correctly empties the host's rows
+		// instead of leaving orphans tagged with the dead pointer.
 		kept := a.pendingProposals[:0:0]
 		for _, gp := range a.pendingProposals {
-			if gp.hub != hub {
+			if gp.host != name {
 				kept = append(kept, gp)
 			}
 		}
@@ -3662,7 +3670,13 @@ func (w *Window) updateFontMetrics() {
 // the daemon applies/discards and broadcasts the updated queue,
 // which refreshes a.pendingProposals via the hub callback.
 func (w *Window) renderProposalGate() {
-	if w.app.daemonHub == nil || w.app.active != w {
+	// Render in the active window whenever ANY hub has pending
+	// proposals — NOT gated on a default daemonHub. Ad-hoc remote
+	// tabs (opened via the Remote menu in PTY-default mode) have a
+	// remote hub but no default hub; their propose-mode writes
+	// still need a visible gate. Each proposal carries its own
+	// hub, so Approve/Drop works regardless.
+	if w.app.active != w {
 		return
 	}
 	w.app.proposalsMu.Lock()
