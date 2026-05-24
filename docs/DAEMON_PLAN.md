@@ -1,29 +1,33 @@
 # xerotty daemon + thin UI + MCP
 
-> **HEAD UPDATE**: This plan originally proposed a separate
-> `xerottyd` binary for the daemon role. That was collapsed
-> early into the implementation — there's only ONE binary
-> (`xerotty`) with subcommands:
->
-> - `xerotty`            — GUI (default), can attach to local
->                          or remote daemons
-> - `xerotty serve`      — daemon mode (what this doc calls
->                          "xerottyd"); owns PTYs + wire socket
->                          + MCP socket
-> - `xerotty connect`    — CLI thin client
->
-> Socket FILENAMES still use the `xerottyd.sock` /
-> `xerottyd.mcp.sock` names for path stability, but the binary
-> itself is just `xerotty`. Anywhere this doc says "the
-> xerottyd binary", read "xerotty serve". Do NOT split it back
-> into a second binary.
+The architectural arc that split xerotty into a **headless daemon**
+that owns terminal sessions and a **thin UI client** that attaches
+to one or more daemons over a structured protocol — plus an **MCP
+socket** so AI agents (Claude Code, Xyphia, custom orchestrators)
+read/write sessions as first-class clients alongside the UI.
 
-The major architectural arc. Split xerotty into a **headless daemon**
-(`xerotty serve`) that owns terminal sessions, and a **thin UI client**
-(`xerotty`) that attaches to one or more daemons over a structured
-protocol. The daemon also exposes an **MCP socket** so AI agents
-(Claude Code, Xyphia, custom orchestrators) can read/write sessions
-as first-class clients alongside the UI.
+**Status: shipped on `spike/daemon`.** This doc is the design +
+rationale; the "Phased delivery" section near the bottom tracks
+exactly what landed. `docs/DAEMON_STATUS.md` is the
+where-the-code-lives + how-to-verify companion.
+
+## One binary, three roles
+
+There is a SINGLE binary, `xerotty`, with subcommands — NOT a
+separate `xerottyd`:
+
+- `xerotty`          — GUI (default). Runs in-process PTY tabs, or
+                       attaches to local + remote daemons.
+- `xerotty serve`    — daemon mode: owns PTYs, the wire-protocol
+                       socket, and the MCP socket. Headless (links
+                       SDL3/ImGui but never opens a window in this
+                       mode).
+- `xerotty connect`  — CLI thin client; attaches to a daemon and
+                       proxies the terminal you launched it from.
+
+Socket *filenames* keep the `xerottyd.sock` / `xerottyd.mcp.sock`
+names for path stability, but no `xerottyd` executable exists.
+Don't reintroduce one.
 
 ## Why
 
@@ -50,30 +54,36 @@ remote sessions, plus MCP plus the AI-driver model from `MCP_PLAN.md`
 ┌──────────────────────────────────────────────────────────┐
 │ host A (laptop)                                          │
 │                                                          │
-│ xerotty UI (one process per user)                        │
-│   ├── tab attached to host A's local xerottyd            │
-│   ├── tab attached to host B's xerottyd over SSH         │
-│   └── tab attached to host C's xerottyd over SSH         │
+│ xerotty GUI (one process per user)                       │
+│   ├── tab attached to host A's local `xerotty serve`     │
+│   ├── tab attached to host B's daemon over SSH           │
+│   └── tab attached to host C's daemon over SSH           │
+│                                                          │
+│ also runs an aggregating MCP socket covering all of      │
+│ the above (internal/guimcp) — one socket, host-          │
+│ namespaced tab IDs ("local:5", "kh:3").                  │
 └──────────────────────────────────────────────────────────┘
        │            │             │
        │ unix sock  │ ssh stdio   │ ssh stdio
        │            │             │
-   ┌───▼────┐   ┌───▼────┐    ┌──▼─────┐
-   │xerottyd│   │xerottyd│    │xerottyd│
-   │ host A │   │ host B │    │ host C │
-   └───┬────┘   └───┬────┘    └──┬─────┘
+  ┌────▼──────┐ ┌───▼───────┐ ┌──▼────────┐
+  │xerotty    │ │xerotty    │ │xerotty    │
+  │serve A    │ │serve B    │ │serve C    │
+  └────┬──────┘ └───┬───────┘ └──┬────────┘
        │            │             │
-       │ MCP socket each          │
+       │ per-daemon MCP socket    │
        │                          │
    ┌───▼──────────────────────────▼─────┐
    │ AI clients: Claude Code, Xyphia,   │
-   │ custom scripts. Each can drive any │
-   │ daemon's tabs in observe/propose/  │
-   │ auto mode.                         │
+   │ custom scripts. Connect to a       │
+   │ daemon's own MCP socket, or to the │
+   │ GUI's aggregating socket for the   │
+   │ whole multi-host view. observe/    │
+   │ propose/auto modes per connection. │
    └────────────────────────────────────┘
 ```
 
-**xerottyd is headless.** It owns:
+**The daemon (`xerotty serve`) is headless.** It owns:
 - PTYs and their child processes
 - in-memory cell grid (per session/tab)
 - scrollback (memory + disk in unlimited mode)
@@ -81,10 +91,12 @@ remote sessions, plus MCP plus the AI-driver model from `MCP_PLAN.md`
 - the wire protocol socket (UI clients)
 - the MCP socket (AI clients)
 
-It renders nothing. No SDL, no ImGui, no GL on the daemon side. Just
-PTY I/O, the vt state machine, file/socket I/O.
+It renders nothing in this mode — no window, no GL draw. (The
+binary still links SDL3/ImGui; a future build tag could strip
+them for truly minimal headless installs, not done yet.) Just PTY
+I/O, the vt state machine, file/socket I/O.
 
-**xerotty (the UI)** owns:
+**xerotty (the GUI)** owns:
 - SDL3 window + GL + ImGui
 - glyph cache + font system + theming
 - input → protocol-event translation
@@ -118,94 +130,84 @@ type Source interface {
     // ... title, cwd, foreground proc, ...
 }
 
-// implementations:
-type LocalPTYSource  struct { /* SafeEmulator + PTY, today's terminal.Terminal */ }
-type DaemonSource    struct { /* conn to xerottyd + cell mirror that diffs apply to */ }
+// implementations (shipped):
+//   *terminal.Terminal           — in-process PTY (internal/terminal)
+//   *daemonsource.Source         — conn to a daemon + a shadow
+//                                  vt.SafeEmulator that CellFull/
+//                                  CellDiff frames patch
+//                                  (internal/daemonsource)
 ```
 
-UI doesn't care which. `Tab.Source` is whichever was selected when
-the tab opened.
+UI doesn't care which. `tabs.Tab.Terminal` (typed `terminal.Source`)
+is whichever was selected when the tab opened. The real interface
+(`internal/terminal/source.go`) grew well past this sketch:
+title/bell/clipboard callbacks, cursor style+visibility, scrollback
+snapshots, image paste, etc.
 
 ## Lifecycle (model A, wezterm-style)
 
-Daemon mode is **opt-in per tab**, not all-or-nothing. The daemon
-binary `xerottyd` is **lazily auto-spawned** when a tab first needs
-it; users never manage the daemon lifecycle directly.
+Daemon mode is **opt-in**, not all-or-nothing. The daemon is
+**lazily auto-spawned** (`xerotty serve`, detached) when first
+needed; users never manage the daemon lifecycle directly.
 
 **Default behavior** (out of the box): new tabs are in-process
-`LocalPTYSource`. Identical to today. Fast startup, no daemon
-involved.
+PTYs (`*terminal.Terminal`). Identical to pre-daemon xerotty.
+Fast startup, no daemon involved.
 
-**Opt-in to "every tab persists"**: one config knob.
+**Opt-in via one config knob** (`internal/config`):
 ```toml
-[startup]
-default_tab_source = "daemon"   # "local" (default) | "daemon"
-
-[daemon]
-auto_spawn = true               # fork xerottyd in background if not running
-                                # when a daemon-source tab first opens.
-                                # default: true
-idle_timeout_minutes = 0        # 0 = never auto-exit; >0 = GC when no
-                                # sessions attached for that long
-listen = "unix"                 # "unix" local only (default), or
-                                # "unix+tls" to also expose a TLS port
-                                # for cross-host direct attach
+[tabs]
+source = "daemon"          # "pty" (default) | "daemon" | "daemon:<host>"
+daemon_socket = ""          # override; default $XDG_RUNTIME_DIR/xerottyd.sock
 ```
 
-With `default_tab_source = "daemon"` set, the user's daily flow is
-identical (`xerotty`, terminal opens, type into it) but now:
+- `"daemon"` — local auto-spawned daemon.
+- `"daemon:<host>"` — a remote host from `[[hosts]]` becomes the
+  DEFAULT source; new tabs land on that box.
+
+When daemon mode is on, the GUI auto-spawns `xerotty serve`
+(`daemonsource.EnsureLocalDaemon`, Setpgid-detached so it
+outlives the GUI) and the daily flow is identical (`xerotty`,
+terminal opens, type into it) but now:
 - closing the UI doesn't kill running processes — daemon survives
 - reopening attaches to the same tabs, mid-scrollback intact
 - another machine can SSH-attach to the SAME daemon and see the SAME
   tabs, work continues from wherever
 - AI agents (Claude / Xyphia) can connect to the MCP socket whenever
 
-**Remote tabs** always go through SSH:
+**Remote tabs** go through SSH:
 ```sh
-xerotty connect ssh://kh             # opens new window attached to kh's daemon
-xerotty connect ssh://kh --tab        # opens new tab in existing window
+xerotty connect --ssh kh              # CLI client attached to kh's daemon
 ```
-Under the hood: SSH to host, run `xerottyd attach` over stdio, every
-protocol frame flows over the SSH pipe. No new ports opened on the
-remote, no auth to configure — reuses `~/.ssh/config`.
+And from the GUI, host actions (`new_tab_remote:<host>` /
+`attach_remote:<host>`, auto-populated into the right-click menu's
+"Remote" submenu from `[[hosts]]`). Under the hood: SSH to the
+host, run `xerotty serve --stdio`, which BRIDGES the SSH pipe to a
+persistent daemon on that box (auto-spawning one if absent — see
+`internal/runner/stdio_bridge.go`). Every protocol frame flows
+over the SSH pipe. No new ports, no auth to configure — reuses
+`~/.ssh/config`. Disconnecting kills only the bridge; the remote
+daemon + its tabs survive.
 
-**Right-click / hotkey** in any running UI:
-- "New Tab" → uses `default_tab_source`
-- "New Local Tab (in-process)" → forces in-process even if default is daemon
-- "New Tab on…" → submenu of configured remotes (see below)
+`new_tab_remote:<host>` opens a fresh tab on the host;
+`attach_remote:<host>` adopts the host's already-running tabs
+(preserving its window layout + focus).
 
 ## Remote config
 
-Known remotes listed in TOML, surfaced in the UI menu + commands:
+Known hosts listed in TOML (`[[hosts]]`), surfaced in the GUI's
+"Remote" submenu + the `daemon:<host>` source mode:
 ```toml
-[[remote]]
-name = "kh"
-ssh  = "kh.zaxxon.cc"
-color = "#ff5555"           # tab badge color (red for prod)
-warn_destructive = true     # confirm dialog before sudo/rm-rf typed in this tab
-
-[[remote]]
-name = "xRyzen"
-ssh  = "xero@xRyzen.local"
-color = "#50fa7b"
+[[hosts]]
+name      = "kh"
+ssh_dest  = "kh.zaxxon.cc"      # anything ssh(1) accepts
+ssh_args  = ["-i", "~/.ssh/key"] # optional, before the dest
+remote_cmd = ""                  # default "xerotty serve --stdio"
 ```
-
-`xerotty connect ssh://kh` resolves `kh` against this list first, then
-falls back to a raw SSH host string.
 
 ## Headless installs
 
-> **HEAD UPDATE**: The "separate xerottyd binary" plan was
-> collapsed early. There's ONE binary now (`xerotty`) with
-> subcommands; `xerotty serve` is the daemon mode. The cmd/
-> xerottyd dir no longer exists. The headless-server install
-> still works — just install `xerotty` and run it as
-> `xerotty serve`. The binary DOES link SDL3/ImGui (which is
-> wasteful on headless boxes); we accept that cost for the
-> simpler one-binary distribution. A future build tag could
-> strip the GUI deps if it becomes a problem.
-
-Distribution model:
+Distribution model (single `xerotty` binary everywhere):
 - **dev/desktop machine**: install `xerotty`. User runs `xerotty`;
   daemon auto-spawns via `xerotty serve` when needed; no other
   config required.
@@ -246,33 +248,29 @@ shows the local cell-update path is bottlenecked. msgpack alone is
 fast enough that it's probably never needed; SHM is in the back
 pocket.
 
-**Frame format**:
+**Frame format** (actual, `internal/protocol/codec.go`):
 ```
-[u32 length (big-endian)][msgpack payload]
+[u32 length (big-endian)][u8 MsgType][msgpack payload]
 ```
+`maxFrameSize` is 16 MiB; image paste is chunked
+(`MsgInputImageChunk`, 1 MiB chunks) so no single frame carries a
+whole image. `ProtocolVersion` is 3; the Hello handshake rejects
+mismatches outright (no silent half-compatibility).
 
 **Transport options**:
-- Local: unix socket at `$XDG_RUNTIME_DIR/xerottyd.sock` (or
-  `~/.cache/xerotty/sock` macOS). Socket filename is still
-  `xerottyd.sock` for path stability across the binary
-  collapse — the daemon binary itself is just `xerotty serve`.
-- Remote: SSH-stdio. UI runs
-  `ssh host xerotty serve --stdio` (which bridges to a
-  persistent remote daemon — see internal/runner/stdio_bridge.go
-  for the auto-spawn-and-bridge logic). No TCP listener, no
-  separate auth, leverages `~/.ssh/config`.
-- (Future) Remote over TCP+TLS for low-overhead persistent connections
-  on trusted networks.
+- Local: unix socket at `$XDG_RUNTIME_DIR/xerottyd.sock`.
+- Remote: SSH-stdio. `xerotty connect --ssh host` runs
+  `ssh host xerotty serve --stdio`, which bridges to a persistent
+  remote daemon (auto-spawn + bridge in
+  `internal/runner/stdio_bridge.go`). No TCP listener, no separate
+  auth, leverages `~/.ssh/config`.
+- (Future) Remote over TCP+TLS for low-overhead persistent
+  connections on trusted networks.
 
-**Frame format**:
-```
-[u32 length][json payload]
-```
-
-Each message type is a Go struct with a `//go:generate msgp` directive
-in the file. `build.sh` and `make` run `go generate ./...` before
-build so generated `*_gen.go` encoders are always in sync with the
-struct definitions — schema drift is impossible.
+Each message type is a Go struct with a `//go:generate msgp`
+directive in `messages.go`. `build.sh` and `make` run
+`go generate ./...` before build so generated `*_gen.go` encoders
+stay in sync with the structs — schema drift is impossible.
 
 Payload is one of these message types (sketch — not final):
 
@@ -308,8 +306,22 @@ keeps the latest cursor / cwd; never blocks the PTY reader.
 
 ## MCP socket (AI ↔ daemon)
 
-Separate socket: `$XDG_RUNTIME_DIR/xerottyd-mcp.sock`. Standard
-JSON-RPC 2.0 per MCP spec. Tools roughly:
+Two layers, both line-delimited JSON-RPC 2.0 speaking the MCP
+shape (`initialize` / `tools/list` / `tools/call`, native methods
+also reachable for `nc -U` debugging):
+
+- **Per-daemon** (`internal/mcp`): each `xerotty serve` exposes
+  `$XDG_RUNTIME_DIR/xerottyd.mcp.sock` covering THAT daemon's tabs
+  (uint32 IDs).
+- **GUI aggregating** (`internal/guimcp`): the GUI runs ONE socket
+  (`$XDG_RUNTIME_DIR/xerotty-gui.mcp.sock`) covering every daemon
+  it's attached to (local + remotes), with host-namespaced string
+  IDs (`"local:5"`, `"kh:3"`). Ungated — it's the user's own
+  trusted GUI process. Reads/writes go through the same
+  `daemonsource.Source` the GUI renders from.
+
+Tools (per-daemon server; the aggregating server exposes the
+read/write subset with namespaced IDs):
 
 **read tools**:
 - `list_tabs(daemon_id?)` — id, title, host, cwd, mode, foreground proc
@@ -318,35 +330,50 @@ JSON-RPC 2.0 per MCP spec. Tools roughly:
 - `get_selection(tab_id)` — what the user has selected
 - `get_cwd(tab_id)`
 - `get_foreground_proc(tab_id)`
-- `get_recent_paste(tab_id)` — last image/text the user pasted in
-  the UI; AI gets the binary directly, no escape sequences
 
-**write tools** (gated by mode):
-- `write(tab_id, text)` — raw type, no newline
-- `run(tab_id, command)` — type + newline
-- `send_key(tab_id, key)` — `Ctrl+C`, `Escape`, etc.
-- `open_tab(daemon_id, command?)`
-- `close_tab(tab_id)`
-- `request_control(tab_id, reason)` — switches mode → `auto`,
-  user gets a notification asking to approve
+Shipped tool names: `list_tabs`, `get_screen`, `get_scrollback`,
+`get_clipboard`, `send_input`, `send_paste`, `create_tab`,
+`close_tab`, `resize_tab`, `list_proposals`, `approve_proposal`,
+`drop_proposal`, `set_agent_mode`, `authenticate`, `list_clients`,
+`get_server_info`. (The aggregating GUI server exposes the
+read/write subset over namespaced IDs.)
 
-**multi-client coordination**: each connect carries a `client_id`.
-Per-tab "current driver" lock. Many `observe` clients allowed, one
-write-capable driver at a time. Handoff via `request_control`.
+## Modes + trust boundary
 
-## Modes (from MCP_PLAN discussion)
+Mode is **per-connection** (not per-tab — simpler, and matches how
+agents actually attach):
+- `observe` — read only; writes return an error.
+- `propose` — writes QUEUE on the daemon (`Session.proposed`,
+  bounded). They don't apply until approved.
+- `auto` — writes apply directly.
 
-Three modes per tab:
-- 👁️ `observe` — AI can read, can't write
-- 💭 `propose` — AI's writes queue as dim ghost-text on prompt; user
-  Enter accepts, Esc rejects
-- 🤖 `auto` — AI writes directly
+No auto-gate / classifier mode (dodges the "what's safe" rabbit
+hole).
 
-Default for new tabs: `observe`. User upgrades via right-click menu or
-hotkey. Mode is per-tab, stored in session state.
+**Propose is a real gate, two ways to consume it:**
+- *GUI banner* — the daemon broadcasts the queue
+  (`MsgProposalsChanged`) to wire clients; the GUI renders an
+  "Agent proposals" overlay with per-item Approve/Drop, scoped to
+  the originating hub. Resolve goes back via `MsgProposalResolve`.
+- *Programmatic* — `list_proposals` / `approve_proposal` /
+  `drop_proposal` MCP tools.
 
-(No auto-gate / classifier mode — dodges the "what's safe" rabbit
-hole.)
+**Authority**: `[mcp]` config gates self-elevation —
+```toml
+[mcp]
+default_mode      = "observe"   # connection start mode
+allow_mode_change = true        # false → can't elevate own mode
+approval_token    = ""          # reviewer presents via agent/authenticate
+```
+With `allow_mode_change=false`, a propose-mode agent can't promote
+itself to auto or approve its own writes; only a connection that
+`authenticate`d with `approval_token` (or is already auto) can
+approve. That's how propose becomes a human (or distinct-authority)
+gate rather than honor-system.
+
+**Multi-client**: input is last-writer-wins per tab (no hard
+driver lock). Many readers fine. `list_clients` shows who's
+attached.
 
 ## Phased delivery
 
@@ -389,53 +416,62 @@ the current phase works end-to-end.
   bridge auto-spawn it), attach from laptop, work in a shell
   as if local. Disconnect, reattach later, tabs still there.
 
-### Phase 3 — structured paste + clipboard sync
-- UI sends `input_paste_image` as binary frame.
-- daemon stores the image; if foreground app understands Kitty / OSC
-  1337, daemon synthesizes that escape; otherwise stores for `get_recent_paste`.
-- Clipboard sync: daemon ↔ UI exchange clipboard contents via protocol
-  frames instead of OSC 52.
-- Acceptance: paste image in laptop UI while attached to remote daemon
-  → image reaches Claude Code running on remote without escape-sequence
-  acrobatics.
+### Phase 3 — structured paste + clipboard sync [SHIPPED]
+- Image paste as binary frames, chunked (`MsgInputImageChunk`).
+  Daemon writes the bytes to a temp file on ITS filesystem and
+  types the path into the PTY — so Claude Code on a remote box
+  reads it natively, no Kitty/OSC1337/base64 acrobatics.
+- Clipboard sync via protocol frames AND OSC 52: `MsgClipboardData`
+  (client→daemon, for OSC 52 reads), `MsgClipboardSet`
+  (daemon→client, when a PTY app OSC-52-writes the clipboard).
+  The GUI polls the OS clipboard on a slow timer so remote OSC 52
+  GET returns live data, not just what xerotty itself copied.
 
-### Phase 4 — MCP
-- New `internal/mcp` package wrapping a Go MCP server.
-- daemon spins it up on `$XDG_RUNTIME_DIR/xerottyd-mcp.sock`.
-- Read tools first; verify Claude Code can list tabs + read scrollback.
-- Then write tools gated by mode.
-- Mode UI: tab badge + right-click "Set mode: …" + hotkey cycle.
-- Acceptance: tell Claude "list my running tabs and figure out which
-  one has the failing build", it reads scrollback, identifies, asks
-  for `request_control` on that tab, you approve, it runs commands.
+### Phase 4 — MCP [SHIPPED]
+- `internal/mcp` per-daemon server on `xerottyd.mcp.sock`;
+  `internal/guimcp` aggregating server on `xerotty-gui.mcp.sock`.
+- Full read + write tool set (see above), write tools gated by
+  per-connection mode.
+- Mode UI: propose-queue approval banner + tab host badges.
 
-### Phase 5 — multi-driver coordination
-- Per-tab driver lock + handoff request flow.
-- Xyphia connects as a second MCP client, can drive its own tabs.
-- Acceptance: Claude on tab 1, Xyphia on tab 2, both working, both
-  show up in UI with distinct icon/color.
+### Phase 5 — multi-driver coordination [SHIPPED, simplified]
+- Multiple MCP clients + multiple wire clients on one daemon.
+- Input is last-writer-wins (no hard driver lock — deliberately
+  simpler than the originally-planned lock/handoff). `list_clients`
+  surfaces who's attached.
 
-### Phase 6 — host badges + ssh config integration
-- UI reads `~/.ssh/config` for known hosts → `xerotty connect prod-db`.
-- Per-host color/icon in tab bar so prod is visually obvious.
-- "Are you sure?" gate for destructive commands typed into red-flagged
-  tabs.
+### Phase 6 — host badges + remote integration [SHIPPED]
+- `[[hosts]]` registry; GUI "Remote" submenu auto-populated;
+  `daemon:<host>` default-source mode; `--ssh` for the CLI client.
+- Tabs carry a `Host` field; the tab title shows a "host: " badge.
+- (Per-host color + destructive-command gate: not done; future.)
 
-### Phase 7 — multi-attach
-- Two UI clients on same daemon can attach to the same session.
-- Read-only attach is easy; read-write needs cursor-sharing decisions.
+### Phase 7 — multi-attach [SHIPPED]
+- Multiple clients attach to the same daemon/session; cell frames
+  fan out per client. Reattach restores window layout + focus.
+  Cursor-sharing for simultaneous read-WRITE is still
+  last-writer-wins, not collaborative.
 
-### Phase 8 (optional) — SHM cell grid for local
+### Phase 8 (optional) — SHM cell grid for local [NOT DONE]
 - Only if profiling shows local cell-update traffic via msgpack is
-  a real bottleneck.
-- Daemon writes cell grid to a POSIX shm segment / memfd_create-
-  backed buffer; UI memory-reads it directly on render.
-- Control messages (input, resize, mode change) still flow over the
-  msgpack socket.
-- Fallback: any UI on a platform without shm (Windows? remote?)
-  uses msgpack-frame cells. Daemon always serves both transports.
-- Probably never needed — msgpack handles 60fps full-screen updates
-  with room to spare.
+  a real bottleneck. Hasn't been; msgpack handles 60fps full-screen
+  updates with room to spare. In the back pocket.
+
+## Beyond the original phases (also shipped)
+
+- **terminal.Source interface** — the GUI multiplexer abstraction;
+  in-process PTY + daemon both implement it, so a window mixes
+  local + remote tabs transparently.
+- **Cursor fidelity** — DECTCEM visibility + DECSCUSR shape/blink
+  carried over the wire (`MsgCursor` Blink/StyleSet), normalized
+  on the vt enum, honored by the renderer over config default.
+- **Bell** — `MsgBell` fan-out → tab-bar urgency marker.
+- **Scrollback streaming** — `MsgScrollbackAppend` (daemon runs
+  unlimited+disk so absolute indices stay stable) +
+  `MsgScrollbackCleared` broadcast on clear.
+- **Hub reconnect** — dead daemon connections (SSH drop, restart)
+  are detected + re-dialed transparently.
+- **-race clean** across all daemon-related packages.
 
 ## Open design questions
 
