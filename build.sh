@@ -3,6 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Pass `headless` to build the server artifact (xerotty-headless)
+# instead of the GUI binary: `./build.sh headless`. It links no
+# SDL3/GL/ImGui/freetype/fontconfig — `xerotty serve` + connect
+# only. Install it AS `xerotty` on servers so the SSH bridge +
+# auto-spawn (which run `xerotty serve`) stay uniform.
+HEADLESS=""
+if [[ "${1:-}" == "headless" ]]; then
+    HEADLESS=1
+fi
+
 # Always run `go generate` first so tinylib/msgp regenerates the
 # wire-format encoders in internal/protocol. Direct `go build` skips
 # this and produces a binary with stale encoders → cryptic decode
@@ -25,6 +35,28 @@ if ! command -v msgp >/dev/null 2>&1; then
 fi
 
 go generate ./...
+
+if [[ -n "$HEADLESS" ]]; then
+    # Lean server build: no GUI deps. Verify by import graph FIRST
+    # (catches a stray internal/app import before we even link),
+    # then by ldd on the artifact (catches silent re-fattening if
+    # someone adds an untagged GUI import later).
+    bad=$(go list -tags headless -deps ./cmd/xerotty 2>/dev/null \
+        | grep -ciE "internal/(app|platform|renderer|fontsys|glyphcache|sdlhack|dpi|input)|cimgui|veandco|/sdl" || true)
+    if [[ "$bad" != "0" ]]; then
+        echo "build.sh: headless build imports GUI packages ($bad) — a GUI import escaped the !headless tag." >&2
+        exit 1
+    fi
+    go build -tags headless -o xerotty-headless ./cmd/xerotty
+    if command -v ldd >/dev/null 2>&1; then
+        if ldd xerotty-headless 2>/dev/null | grep -qiE 'libSDL|libGL|freetype|fontconfig'; then
+            echo "build.sh: headless build re-linked GUI deps! (ldd found SDL/GL/freetype/fontconfig)" >&2
+            exit 1
+        fi
+    fi
+    echo "built: $(pwd)/xerotty-headless (no GUI deps — install AS xerotty on servers)"
+    exit 0
+fi
 
 case "$(uname -s)" in
 Darwin)

@@ -1,6 +1,7 @@
 # Built binaries at repo root — anchored so we don't accidentally
 # ignore subdirs named after these or themes named after these.
 /xerotty
+/xerotty-headless
 /xerotty.app
 /xerotty-sdl3-spike
 /iterm2-import

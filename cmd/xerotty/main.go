@@ -6,13 +6,21 @@
 //	xerotty serve [...]      # headless daemon (owns PTYs + sockets)
 //	xerotty connect [...]    # CLI thin client attached to a daemon
 //	xerotty --help           # show subcommands + per-mode flag help
+//
+// Build with `-tags headless` to produce a server artifact that
+// does NOT link SDL3/GL/ImGui/freetype/fontconfig: the GUI launch
+// lives in gui.go (//go:build !headless); the headless build
+// substitutes gui_headless.go, so internal/app is never imported
+// and its cgo deps never link. serve + connect work identically
+// in both builds. Install the lean artifact AS `xerotty` on
+// servers so the SSH bridge + auto-spawn re-exec (which run
+// `xerotty serve`) stay uniform.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/LXXero/xerotty/internal/app"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/runner"
 )
@@ -50,10 +58,10 @@ SEE ALSO
 `
 
 func main() {
-	// Subcommand dispatch happens before flag.Parse so the GUI
-	// keeps its own flag set untouched. Only the very first
-	// positional arg can name a subcommand; everything after it
-	// belongs to that subcommand's flag set.
+	// Subcommand dispatch happens before any GUI involvement so
+	// the headless build (which has no GUI) still serves + connects.
+	// Only the very first positional arg names a subcommand;
+	// everything after it belongs to that subcommand's flag set.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "serve":
@@ -72,9 +80,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	a := app.New(cfg)
-	if err := a.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty: %v\n", err)
-		os.Exit(1)
-	}
+	// launchGUI is defined in gui.go (full build) or
+	// gui_headless.go (-tags headless). The headless variant has
+	// no internal/app import, so SDL never links.
+	os.Exit(launchGUI(cfg))
 }

@@ -19,6 +19,18 @@ runtime-decode failures.
 If you must run `go build` for a quick syntax check, that's OK — but
 the artifact isn't shippable and isn't what tests should run against.
 
+**Headless build:** `./build.sh headless` (or `make headless`)
+produces `xerotty-headless` with NO SDL3/GL/ImGui/freetype/fontconfig
+linked — `serve` + `connect` only, GUI default stubbed. For server
+installs. The `-tags headless` build tag excludes `cmd/xerotty/gui.go`
+(the ONLY file importing `internal/app`) and substitutes
+`gui_headless.go`. **Invariant: `internal/app` must be imported from
+exactly one `//go:build !headless` file** — build.sh guards this with
+a `go list -deps` import-graph check + an `ldd` check, both of which
+fail the build if a GUI import escapes the tag. Install the lean
+artifact AS `xerotty` on servers so the SSH bridge + auto-spawn
+(`xerotty serve`) stay uniform.
+
 ## Architecture
 
 xerotty can run its tabs in-process (default) OR through a

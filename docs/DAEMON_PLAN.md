@@ -91,10 +91,15 @@ remote sessions, plus MCP plus the AI-driver model from `MCP_PLAN.md`
 - the wire protocol socket (UI clients)
 - the MCP socket (AI clients)
 
-It renders nothing in this mode — no window, no GL draw. (The
-binary still links SDL3/ImGui; a future build tag could strip
-them for truly minimal headless installs, not done yet.) Just PTY
-I/O, the vt state machine, file/socket I/O.
+It renders nothing in this mode — no window, no GL draw. For
+server installs, `./build.sh headless` (`-tags headless`) builds
+a binary that doesn't link SDL3/GL/ImGui/freetype/fontconfig at
+all (~6.6M vs ~12M): `serve` + `connect` only, GUI default
+stubbed. Same `xerotty serve` command surface — install the lean
+artifact AS `xerotty` so the SSH bridge + auto-spawn stay
+uniform. (Default build is still full-GUI; lean needs the
+explicit tag.) Just PTY I/O, the vt state machine, file/socket
+I/O.
 
 **xerotty (the GUI)** owns:
 - SDL3 window + GL + ImGui

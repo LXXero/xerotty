@@ -16,7 +16,7 @@ GO           := go
 
 UNAME_S := $(shell uname -s)
 
-.PHONY: all build generate app install clean
+.PHONY: all build headless generate app install clean
 
 all: build
 
@@ -32,6 +32,17 @@ generate:
 build: generate
 	$(GO) build -o $(BINARY) ./cmd/xerotty
 	@echo "built: $(CURDIR)/$(BINARY)"
+
+# Lean server build — no SDL3/GL/ImGui/freetype/fontconfig. The
+# !headless build tag excludes the one file that imports
+# internal/app, so the GUI cgo deps never enter the link. serve +
+# connect work identically; the no-arg GUI default is stubbed.
+# Install the artifact AS `xerotty` on servers so the SSH bridge +
+# auto-spawn (`xerotty serve`) stay uniform. See build.sh's
+# `headless` arg for the dep-graph + ldd guards.
+headless: generate
+	$(GO) build -tags headless -o $(BINARY)-headless ./cmd/xerotty
+	@echo "built: $(CURDIR)/$(BINARY)-headless (no GUI deps)"
 
 # Assemble a macOS .app bundle. The Info.plist's CFBundleIdentifier is
 # what tells Cocoa to coalesce multiple running processes of the same
@@ -118,5 +129,5 @@ else
 endif
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) $(BINARY)-headless
 	rm -rf $(APP_BUNDLE)
