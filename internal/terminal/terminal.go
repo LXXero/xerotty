@@ -967,7 +967,10 @@ func (t *Terminal) readEmu() {
 func (t *Terminal) GetCWD() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.cmd == nil || t.cmd.Process == nil {
+	// Bail once closed: Close() sets t.closed (under t.mu) BEFORE it
+	// closes the PTY, so checking it here under the same lock keeps us
+	// from touching the process/fd as it's torn down.
+	if t.closed || t.cmd == nil || t.cmd.Process == nil {
 		return ""
 	}
 	return processCWD(t.cmd.Process.Pid)
@@ -988,7 +991,10 @@ func (t *Terminal) GetCWD() string {
 func (t *Terminal) ForegroundProcessName() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.ptmx == nil {
+	// Bail once closed (see GetCWD): Close() marks t.closed under t.mu
+	// before closing the PTY, so this guard prevents reading the ptmx
+	// fd concurrently with its close (a -race-flagged data race).
+	if t.closed || t.ptmx == nil {
 		return ""
 	}
 	pgid, err := unix.IoctlGetInt(int(t.ptmx.Fd()), unix.TIOCGPGRP)
