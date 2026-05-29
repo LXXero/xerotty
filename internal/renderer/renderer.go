@@ -26,6 +26,45 @@ type Renderer struct {
 	// When nil, the renderer uses the ImGui Font field instead (legacy
 	// path for builds without OS font services).
 	Glyphs *glyphcache.Cache
+
+	// Selection state for the current frame, set by the app via
+	// SetSelection before Draw. When active, cells inside the range
+	// render with SelectionFg/SelectionBg so selected text stays
+	// readable — handled inside the normal bg+fg passes rather than as
+	// an opaque overlay (which buried the text). Rows are viewport
+	// rows; the range covers line-start→line-end on each row (full
+	// width on interior rows).
+	selActive    bool
+	selR1, selC1 int
+	selR2, selC2 int
+	selCols      int
+}
+
+// SetSelection records the current selection range for the next Draw.
+// Pass active=false to clear it. cols is the grid width, needed to
+// resolve the "to end of line" extent on the first/last selected rows.
+func (r *Renderer) SetSelection(active bool, r1, c1, r2, c2, cols int) {
+	r.selActive = active
+	r.selR1, r.selC1 = r1, c1
+	r.selR2, r.selC2 = r2, c2
+	r.selCols = cols
+}
+
+// cellSelected reports whether viewport cell (col,row) is within the
+// current selection, using row-major geometry (first row from its
+// start col, interior rows full width, last row up to its end col).
+func (r *Renderer) cellSelected(col, row int) bool {
+	if !r.selActive || row < r.selR1 || row > r.selR2 {
+		return false
+	}
+	lineStart, lineEnd := 0, r.selCols-1
+	if row == r.selR1 {
+		lineStart = r.selC1
+	}
+	if row == r.selR2 {
+		lineEnd = r.selC2
+	}
+	return col >= lineStart && col <= lineEnd
 }
 
 // New creates a new renderer with the given theme and metrics.
@@ -63,7 +102,7 @@ func cellAt(emu EmulatorView, col, row, scrollOffset int) *uv.Cell {
 
 // resolveCellColors resolves the fg/bg colors for a cell,
 // handling reverse video and dim/faint attributes.
-func (r *Renderer) resolveCellColors(cell *uv.Cell) (fg, bg uint32) {
+func (r *Renderer) resolveCellColors(cell *uv.Cell, col, row int) (fg, bg uint32) {
 	bold := cell.Style.Attrs&uv.AttrBold != 0
 	reverse := cell.Style.Attrs&uv.AttrReverse != 0
 	faint := cell.Style.Attrs&uv.AttrFaint != 0
@@ -89,6 +128,12 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell) (fg, bg uint32) {
 		fg = (fg & 0x00FFFFFF) | (a << 24)
 	}
 
+	// Selection wins over the cell's own colors so highlighted text
+	// stays legible. Applied last so it overrides reverse/faint too.
+	if r.cellSelected(col, row) {
+		fg, bg = r.Theme.SelectionFg, r.Theme.SelectionBg
+	}
+
 	return
 }
 
@@ -111,7 +156,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 				continue
 			}
 
-			_, bg := r.resolveCellColors(cell)
+			_, bg := r.resolveCellColors(cell, col, row)
 			if bg == r.Theme.Background {
 				col++
 				continue
@@ -124,7 +169,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 				if next == nil {
 					break
 				}
-				_, nextBg := r.resolveCellColors(next)
+				_, nextBg := r.resolveCellColors(next, col+runLen, row)
 				if nextBg != bg {
 					break
 				}
@@ -151,7 +196,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			}
 
 			attrs := cell.Style.Attrs
-			fg, _ := r.resolveCellColors(cell)
+			fg, _ := r.resolveCellColors(cell, col, row)
 			x := r.OffsetX + float32(col)*cellW
 			w := cellW
 			if cell.Width > 1 {
@@ -265,52 +310,6 @@ func (r *Renderer) drawUnderline(drawList *imgui.DrawList, style ansi.Underline,
 			)
 			dx += 6
 		}
-	}
-}
-
-// SelectionBounds describes a selection range in viewport cell coordinates.
-type SelectionBounds struct {
-	Active   bool
-	StartRow int
-	StartCol int
-	EndRow   int
-	EndCol   int
-}
-
-// DrawSelection renders the selection highlight overlay.
-// Bounds should already be normalized (start <= end).
-func (r *Renderer) DrawSelection(bounds SelectionBounds, cols, rows int, drawList *imgui.DrawList) {
-	if !bounds.Active {
-		return
-	}
-	cellW := r.Metrics.Width
-	cellH := r.Metrics.Height
-
-	r1, c1 := bounds.StartRow, bounds.StartCol
-	r2, c2 := bounds.EndRow, bounds.EndCol
-
-	for row := r1; row <= r2; row++ {
-		if row < 0 || row >= rows {
-			continue
-		}
-		lineStart := 0
-		lineEnd := cols - 1
-		if row == r1 {
-			lineStart = c1
-		}
-		if row == r2 {
-			lineEnd = c2
-		}
-
-		x := r.OffsetX + float32(lineStart)*cellW
-		y := r.OffsetY + float32(row)*cellH
-		w := float32(lineEnd-lineStart+1) * cellW
-
-		drawList.AddRectFilled(
-			imgui.Vec2{X: x, Y: y},
-			imgui.Vec2{X: x + w, Y: y + cellH},
-			r.Theme.SelectionBg,
-		)
 	}
 }
 

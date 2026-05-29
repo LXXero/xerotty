@@ -3019,18 +3019,18 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
-
-			// Draw selection highlight
+			// Feed the selection into the renderer so selected cells
+			// draw with SelectionFg/SelectionBg inline (text stays
+			// visible) instead of an opaque rect painted over the
+			// glyphs, which buried the selected text.
 			if a.sel.active {
 				r1, c1, r2, c2 := a.sel.normalize()
-				cols, rows := a.gridSize()
-				a.renderer.DrawSelection(renderer.SelectionBounds{
-					Active:   true,
-					StartRow: r1, StartCol: c1,
-					EndRow: r2, EndCol: c2,
-				}, cols, rows, drawList)
+				cols, _ := a.gridSize()
+				a.renderer.SetSelection(true, r1, c1, r2, c2, cols)
+			} else {
+				a.renderer.SetSelection(false, 0, 0, 0, 0, 0)
 			}
+			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
 
 			// Draw link underline on hover
 			if a.hoveredLink != nil {
