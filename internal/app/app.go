@@ -3240,7 +3240,7 @@ func (w *Window) isSearching() bool {
 func (w *Window) popupActive() bool {
 	// Note: prefDialog is a non-modal window. It manages its own focus
 	// through ImGui's WantCaptureKeyboard, so it shouldn't gate terminal input.
-	return w.renamingTab || w.pendingPaste != ""
+	return w.renamingTab || w.pendingPaste != "" || w.connectingHost
 }
 
 func (w *Window) processKeys() {
@@ -4784,6 +4784,7 @@ func (w *Window) renderRenameDialog() {
 // fix; only the stale error is cleared.
 func (w *Window) openConnectDialog() {
 	w.connectingHost = true
+	w.connectFocus = true
 	w.connectError = ""
 	w.app.active = w
 }
@@ -4817,6 +4818,15 @@ func (w *Window) renderConnectDialog() {
 	if imgui.BeginV("Connect to host###connectdlg"+w.imguiSuffix(), nil, flags) {
 		imgui.Text("SSH destination (user@host, host, or ~/.ssh/config alias):")
 		submit := false
+		// Land keyboard focus in the dest field when the dialog opens so
+		// the user can type immediately + Enter submits. Guard on
+		// !IsMouseDown so a menu-click that opened the dialog doesn't get
+		// its ActiveId snatched mid-click (same pattern as the search
+		// overlay).
+		if w.connectFocus && !imgui.IsMouseDown(0) {
+			imgui.SetKeyboardFocusHere()
+			w.connectFocus = false
+		}
 		imgui.InputTextWithHint("##connectdest", "user@host", &w.connectBuffer, 0, nil)
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
 			submit = true
