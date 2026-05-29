@@ -197,6 +197,20 @@ func (v *connectClient) run() error {
 		case <-v.c.Closed():
 			fmt.Fprint(os.Stdout, "\r\n[disconnected]\r\n")
 			return v.c.ExitErr()
+		// Drain the server→client channels this thin CLI viewer
+		// doesn't render. Client.Run dispatches these with BLOCKING
+		// sends, so an undrained one fills its buffer and wedges the
+		// read loop — after which CellFull/Diff stop arriving and the
+		// screen freezes. MsgTopologyChanged is the one that made this
+		// reachable (broadcast on every structural change); Title /
+		// Bell / scrollback / Errors are the same class. The CLI has
+		// no tab UI, so discarding them is correct.
+		case <-v.c.Topology():
+		case <-v.c.Title():
+		case <-v.c.Bell():
+		case <-v.c.ScrollbackAppend():
+		case <-v.c.ScrollbackCleared():
+		case <-v.c.Errors():
 		}
 	}
 }
