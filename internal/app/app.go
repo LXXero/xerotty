@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -137,16 +138,18 @@ type App struct {
 	// daemon hub comes up. nil in PTY mode.
 	guiMCP *guimcp.Server
 
-	// windowsMu guards the windows slice header against concurrent
-	// access from the guimcp goroutine. The slice is only mutated on
-	// the main thread (append on window open, truncate on reap), and
-	// every main-thread read runs on that same goroutine so it can't
-	// race itself — but the guimcp Backend (focusedDaemonTabIDs) reads
-	// it off-thread, so the writers + that one reader must synchronize
-	// or the append's realloc tears under the reader.
-	windowsMu sync.RWMutex
-	windows   []*Window // every OS window currently open in this process
-	active    *Window   // the window with input focus, or windows[0] if none
+	windows []*Window // every OS window currently open in this process
+	active  *Window   // the window with input focus, or windows[0] if none
+
+	// focusedSources is a snapshot of the daemon Sources that are the
+	// active tab of some window, republished once per frame on the
+	// main thread. The guimcp Backend (a separate goroutine) reads it
+	// via an atomic load instead of walking a.windows / each window's
+	// tabs.Manager — both of which are main-thread-only structures
+	// (public Tabs/ActiveIdx fields, no internal lock) that the UI
+	// mutates without synchronization. Publishing a snapshot keeps
+	// those structures single-threaded and gives MCP a race-free read.
+	focusedSources atomic.Pointer[map[*daemonsource.Source]bool]
 
 	// dragTab is the process-wide state for an in-progress drag of a
 	// tab across windows. nil when no drag is happening. Set when the
@@ -233,9 +236,7 @@ func New(cfg config.Config) *App {
 		}
 	}
 	w := newWindow(a)
-	a.windowsMu.Lock()
 	a.windows = append(a.windows, w)
-	a.windowsMu.Unlock()
 	a.active = w
 	return a
 }
@@ -994,16 +995,27 @@ func (a *App) ListTabs() []guimcp.TabRef {
 	return refs
 }
 
-// focusedDaemonTabIDs returns the set of daemon Sources that are
-// the active tab of some GUI window — so list_tabs can flag which
-// tabs the user is actually looking at. Read on the guimcp
-// goroutine; the windows slice is only mutated on the main thread,
-// and a tab's active-ness is a transient read, so a momentarily
-// stale answer is harmless (it's advisory metadata).
+// focusedDaemonTabIDs returns the set of daemon Sources that are the
+// active tab of some GUI window — so list_tabs can flag which tabs the
+// user is actually looking at. Called on the guimcp goroutine; it
+// reads the snapshot published by publishFocusedSources on the main
+// thread rather than walking a.windows / tabs.Manager directly (those
+// are mutated unsynchronized by the UI thread). A momentarily stale
+// answer is fine — this is advisory metadata.
 func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
+	if m := a.focusedSources.Load(); m != nil {
+		return *m
+	}
+	return map[*daemonsource.Source]bool{}
+}
+
+// publishFocusedSources recomputes the focused-Source set and stores
+// it for the guimcp goroutine to read. MUST be called on the main
+// thread (it walks a.windows and each window's tabs.Manager). The
+// stored map is treated as immutable after Store — readers never
+// mutate it — so the atomic swap is a safe hand-off.
+func (a *App) publishFocusedSources() {
 	out := map[*daemonsource.Source]bool{}
-	a.windowsMu.RLock()
-	defer a.windowsMu.RUnlock()
 	for _, w := range a.windows {
 		if w.tabs == nil {
 			continue
@@ -1014,7 +1026,7 @@ func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
 			}
 		}
 	}
-	return out
+	a.focusedSources.Store(&out)
 }
 
 // SourceFor implements guimcp.Backend: resolve "<host>:<tabid>"
@@ -1213,9 +1225,7 @@ func (a *App) reapClosedWindows() {
 			w.renderer.Glyphs = nil
 		}
 	}
-	a.windowsMu.Lock()
 	a.windows = survivors
-	a.windowsMu.Unlock()
 	// If the active Window was reaped, point at any surviving one.
 	if a.active != nil {
 		found := false
@@ -1664,9 +1674,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	// window in wrappedFrame's post-loop block.
 	w.pendingFocus = true
 
-	a.windowsMu.Lock()
 	a.windows = append(a.windows, w)
-	a.windowsMu.Unlock()
 	a.active = w
 }
 
@@ -2046,6 +2054,10 @@ func (a *App) Run() error {
 			platform.Quit()
 		}
 		a.updateTabDragDrop()
+		// Republish the focused-Source snapshot for the guimcp
+		// goroutine now that this frame's window/tab mutations are
+		// settled (see publishFocusedSources).
+		a.publishFocusedSources()
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
