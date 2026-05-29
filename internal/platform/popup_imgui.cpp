@@ -53,10 +53,13 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
     if (!parent) return -1;
 
     // No SDL_WINDOW_OPENGL here — we want a SDL_Renderer-managed
-    // window, not a GL context window.
+    // window, not a GL context window. TRANSPARENT so the surface can
+    // be larger than the visible menu: the caller sizes it to fit a
+    // cascaded submenu, and the area not covered by a menu window
+    // clears to transparent instead of an opaque box.
     SDL_Window* popup = SDL_CreatePopupWindow(
         parent, offset_x, offset_y, w, h,
-        SDL_WINDOW_POPUP_MENU);
+        SDL_WINDOW_POPUP_MENU | SDL_WINDOW_TRANSPARENT);
     if (!popup) {
         std::fprintf(stderr, "popup_imgui: SDL_CreatePopupWindow: %s\n",
                      SDL_GetError());
@@ -131,7 +134,13 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
 
                 ImGui::Render();
 
-                SDL_SetRenderDrawColor(renderer, 38, 38, 46, 255);
+                // Clear to fully transparent (not the old opaque
+                // 38,38,46) so only the ImGui menu/submenu windows are
+                // visible; the rest of the (deliberately oversized)
+                // surface stays see-through. BLENDMODE_NONE makes
+                // RenderClear write the 0-alpha straight to the buffer.
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
                 SDL_RenderClear(renderer);
                 ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
                 SDL_RenderPresent(renderer);

@@ -90,7 +90,7 @@ var prefMenuLabels = map[string]string{
 	"reset_terminal":   "Reset Terminal",
 	"rename_tab":       "Rename Tab",
 	"preferences":      "Preferences",
-	"connect_remote":   "Connect to host…",
+	"connect_remote":   "Connect to host...",
 	"font_size_up":     "Font Size Up",
 	"font_size_down":   "Font Size Down",
 	"font_size_reset":  "Font Size Reset",

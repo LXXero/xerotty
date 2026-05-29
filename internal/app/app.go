@@ -368,7 +368,7 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 			// [[hosts]] bookmarks — the GUI no longer requires a
 			// config entry to reach a remote box.
 			submenu = append(submenu, config.MenuItem{
-				Label:  "Connect to host…",
+				Label:  "Connect to host...",
 				Action: "connect_remote",
 			})
 			// New tab / window on the host of the CURRENT remote tab —
@@ -4194,6 +4194,41 @@ func (w *Window) renderTabBar() {
 	}
 }
 
+// measureMenu estimates the rendered width/height of a menu item list
+// in the popup's default ImGui font + style. Metrics are empirical
+// (item rows advance ~17px, separators ~4px, 8px window padding each
+// side; ~7px per default-font char). Submenu items add an arrow's
+// worth of width. Used to size the popup surface so a cascaded submenu
+// has room beside its parent.
+func measureMenu(items []config.MenuItem) (w, h float32) {
+	const (
+		itemAdvance = 17.0
+		sepAdvance  = 4.0
+		padY        = 8.0
+		padX        = 8.0
+		charW       = 7.0
+		arrowW      = 20.0 // submenu ">" indicator + spacing
+	)
+	w = 120
+	h = padY * 2
+	for _, item := range items {
+		if item.Action == "separator" {
+			h += sepAdvance
+			continue
+		}
+		iw := float32(len(item.Label))*charW + float32(len(item.Shortcut))*charW + 30
+		if len(item.Submenu) > 0 {
+			iw += arrowW
+		}
+		if iw > w {
+			w = iw
+		}
+		h += itemAdvance
+	}
+	w += padX * 2
+	return
+}
+
 func (w *Window) renderContextMenu() {
 	if !w.contextMenuOpen {
 		return
@@ -4225,46 +4260,49 @@ func (w *Window) renderContextMenu() {
 	}
 
 	ctx := w.menuContext()
-	// Pre-compute popup size matching the popup's actual rendering.
-	// Values are empirical — captured by tracing CursorPosY of an
-	// 11-item / 4-separator menu in the popup's default font + style
-	// and back-solving. See popup_imgui.cpp trace lines.
-	//
-	//   items * 17 + separators * 4 + 16 (top+bottom WindowPadding)
-	//   == actual rendered height
-	//
-	// These are properties of ImGui's default font + default style
-	// rendering MenuItem/Separator, so they hold for any
-	// user-customized menu items list.
-	const (
-		popupItemAdvance = 17.0 // MenuItem cursor advance (default font+style)
-		popupSepAdvance  = 4.0  // Separator cursor advance
-		popupWindowPadY  = 8.0
-		popupWindowPadX  = 8.0
-		popupCharW       = 7.0 // ~ default ImGui font monospace width
-	)
-	popupW := float32(120)
-	popupH := float32(popupWindowPadY * 2)
-	for _, item := range w.app.cfg.Menu.Items {
-		if item.Action == "separator" {
-			popupH += popupSepAdvance
-			continue
+	// Pre-compute popup size. The SDL surface is deliberately sized to
+	// fit the top-level menu PLUS the widest cascaded submenu to its
+	// right (and tall enough for it to drop down), so BeginMenu can
+	// open the submenu beside the parent instead of clamping it on top.
+	// The surface is transparent, so the extra room is invisible until
+	// a submenu opens. measureMenu's metrics are empirical for ImGui's
+	// default font + style (see popup_imgui.cpp).
+	expanded := w.app.expandMenu(w.app.cfg.Menu.Items)
+	mainW, mainH := measureMenu(expanded)
+	// Widest / tallest submenu among the top-level items.
+	var subW, subH float32
+	for _, item := range expanded {
+		if len(item.Submenu) > 0 {
+			sw, sh := measureMenu(item.Submenu)
+			if sw > subW {
+				subW = sw
+			}
+			if sh > subH {
+				subH = sh
+			}
 		}
-		labelW := float32(len(item.Label)) * popupCharW
-		shortcutW := float32(len(item.Shortcut)) * popupCharW
-		w := labelW + shortcutW + 30
-		if w > popupW {
-			popupW = w
-		}
-		popupH += popupItemAdvance
 	}
-	popupW += float32(popupWindowPadX * 2)
+	// Width: main + submenu side by side. Height: a submenu can open as
+	// low as the bottom of the main menu and drop subH further, so
+	// reserve mainH+subH (transparent slack — harmless).
+	popupW := mainW + subW + 8
+	popupH := mainH
+	if subW > 0 {
+		popupH = mainH + subH
+	}
 	var selectedAction string
 	platform.RunImGuiPopup(parentID, relX, relY, int(popupW), int(popupH),
 		func() platform.PopupMenuDrawResult {
-			io := imgui.CurrentIO()
+			// Anchor the menu at the surface's top-left, sized to the
+			// MEASURED main-menu rect — not the whole (oversized)
+			// surface (which would paint the menu background across the
+			// transparent submenu room) and not AlwaysAutoResize (which
+			// shrinks to the widest label and ignores the shortcuts
+			// drawn via the draw list, squashing label and shortcut
+			// together). The submenu opens as its own child window into
+			// the transparent area to the right.
 			imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
-			imgui.SetNextWindowSize(io.DisplaySize())
+			imgui.SetNextWindowSize(imgui.Vec2{X: mainW, Y: mainH})
 			flags := imgui.WindowFlagsNoTitleBar |
 				imgui.WindowFlagsNoResize |
 				imgui.WindowFlagsNoMove |
@@ -4272,27 +4310,23 @@ func (w *Window) renderContextMenu() {
 				imgui.WindowFlagsNoCollapse |
 				imgui.WindowFlagsNoScrollbar
 			var action string
-			var contentH float32
-			var contentW float32
 			if imgui.BeginV("##popupmenu", nil, flags) {
-				action = menu.RenderItemsOnly(w.app.expandMenu(w.app.cfg.Menu.Items), ctx)
-				// CursorPosY after the last item is exactly where the
-				// next item would go — i.e. the true rendered content
-				// height. Use it (plus a bit of bottom padding) as
-				// the desired SDL popup size; the C side then shrinks
-				// the OS window to fit. Robust against any
-				// miscalculation in the pre-Open estimate.
-				contentH = imgui.CursorPosY() + 8 // bottom padding
-				contentW = imgui.WindowSize().X
+				action = menu.RenderItemsOnly(expanded, ctx)
 			}
 			imgui.End()
-			res := platform.PopupMenuDrawResult{
-				DesiredWidth:  int(contentW),
-				DesiredHeight: int(contentH),
-			}
+			var res platform.PopupMenuDrawResult
 			if action != "" {
 				selectedAction = action
 				res.Close = true
+			}
+			// Dismiss on a click that lands in the transparent area
+			// (outside the menu/submenu windows) — the surface is
+			// bigger than the visible menu now, and the C side only
+			// auto-dismisses clicks on OTHER OS windows.
+			if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) || imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
+				if !imgui.CurrentIO().WantCaptureMouse() {
+					res.Close = true
+				}
 			}
 			return res
 		})
