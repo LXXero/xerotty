@@ -462,6 +462,54 @@ the current phase works end-to-end.
   a real bottleneck. Hasn't been; msgpack handles 60fps full-screen
   updates with room to spare. In the back pocket.
 
+### Phase 9 — topology broadcast + request correlation [PLANNED]
+
+Structural changes to a session aren't propagated to other attached
+clients. `MsgTabCreated` goes only to the requesting client;
+MCP-created/closed tabs emit no wire event; close/move notify only the
+caller. With one GUI per daemon this never showed — but the MCP /
+multi-agent workflows now create tabs that a live GUI (or a second
+client) never sees until reconnect. Two related defects fall out of
+the same gap (both found in review):
+
+- **No request correlation** — `Hub.NewTabIn` waits on the next
+  `TabCreated` with no request ID, so a *late* ack after a timeout
+  poisons the next create (adopts the wrong tab). `hub.go`.
+- **Scrollback clear lost for exited tabs** — `broadcastScrollbackCleared`
+  only wakes a tab's publish loop, which has already returned once the
+  tab exited; held/exited tabs never deliver the clear. `daemon.go`.
+
+Design — **snapshot + revision, not deltas**, so clients self-heal and
+there's no delta-ordering bug class (the failure mode that bit the
+Phase-7 fixes repeatedly):
+
+- **Request correlation**: add a `ReqID` to the tab-create request,
+  echo it in `MsgTabCreated`. `Hub.NewTabIn` matches on `ReqID` and
+  drops unmatched/late acks. Closes the poisoning bug; also lets
+  multiple in-flight creates coexist.
+- **`MsgTopologyChanged{SessionName, Revision, Windows, Tabs,
+  FocusedTabID}`**: monotonic per-session `Revision`; broadcast to
+  *every* attached client whenever structure changes. A client applies
+  it only if `Revision` is newer, replacing its tab/window view
+  (idempotent — no ordering assumptions).
+- **Daemon mutation helpers** `createTab / closeTab / moveTab /
+  createWindow / closeWindow`: the single funnel that mutates the
+  Session, bumps `Revision`, and broadcasts the snapshot. Both the wire
+  handlers and the MCP server route through these instead of poking
+  `Session` directly — so MCP-driven changes broadcast too.
+- **Client reconcile**: the `Hub` applies a snapshot by diffing against
+  its adopted tabs — adopt new IDs, drop vanished ones, update focus —
+  reusing the existing attach-time adoption path.
+- **Scrollback-clear (M2)**: fold delivery into the broadcast path (or
+  a subscriber-level pending flag the client reads next frame) so a
+  clear on a held/exited tab still reaches other clients.
+
+Tests: client A create/close/move visible to client B; MCP create
+visible to a wire client; a late `TabCreated` after timeout is ignored;
+clear-scrollback on a held/exited tab notifies other clients.
+Multi-client is now directly exercisable (two GUI windows on one
+daemon, or MCP mutating while a GUI watches).
+
 ## Beyond the original phases (also shipped)
 
 - **terminal.Source interface** — the GUI multiplexer abstraction;
