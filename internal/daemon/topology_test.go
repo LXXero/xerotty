@@ -1,6 +1,7 @@
 package daemon_test
 
 import (
+	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -431,5 +432,45 @@ func TestCloseTabUnsubscribesAllClients(t *testing.T) {
 		runtime.GC()
 		t.Fatalf("goroutines did not settle after %d create/close cycles: base=%d now=%d (subscription leak?)",
 			cycles, base, runtime.NumGoroutine())
+	}
+}
+
+// TestHandshakeRejectsVersionSkew verifies MED 2: a client speaking a
+// different protocol version gets a clean MsgError (not a silent hang),
+// so the WindowCreated.ReqID requirement can't cause a v5 client to
+// hang against an older daemon.
+func TestHandshakeRejectsVersionSkew(t *testing.T) {
+	_, sockPath := startDaemon(t)
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Speak a version the daemon doesn't.
+	if err := protocol.WriteFrame(conn, protocol.MsgHello, &protocol.Hello{
+		Version:  protocol.ProtocolVersion - 1,
+		ClientID: "skewed",
+	}); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+
+	// The daemon must promptly reply with MsgError — not hang.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	fr := protocol.NewFrameReader(conn)
+	tp, body, err := fr.ReadFrame()
+	if err != nil {
+		t.Fatalf("expected MsgError reply, got read error (hang/abrupt close?): %v", err)
+	}
+	if tp != protocol.MsgError {
+		t.Fatalf("expected MsgError for version skew, got %v", tp)
+	}
+	var e protocol.Error
+	if _, err := e.UnmarshalMsg(body); err != nil {
+		t.Fatalf("unmarshal error frame: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(e.Message), "version") {
+		t.Errorf("error message should mention version, got %q", e.Message)
 	}
 }
