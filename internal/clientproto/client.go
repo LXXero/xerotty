@@ -150,9 +150,18 @@ func (c *Client) SendTabCreateReq(windowID uint32, cols, rows uint16, cwd, comma
 }
 
 // SendWindowCreate registers a new logical UI window in the session.
+// Uncorrelated (ReqID 0); callers that adopt the resulting window ID
+// should use SendWindowCreateReq.
 func (c *Client) SendWindowCreate(posX, posY, width, height int32) error {
+	return c.SendWindowCreateReq(posX, posY, width, height, 0)
+}
+
+// SendWindowCreateReq is SendWindowCreate with a request ID the daemon
+// echoes in MsgWindowCreated, so the caller can correlate the reply
+// and drop a late ack from a timed-out request.
+func (c *Client) SendWindowCreateReq(posX, posY, width, height int32, reqID uint64) error {
 	return c.send(protocol.MsgWindowCreate, &protocol.WindowCreate{
-		PosX: posX, PosY: posY, Width: width, Height: height,
+		PosX: posX, PosY: posY, Width: width, Height: height, ReqID: reqID,
 	})
 }
 

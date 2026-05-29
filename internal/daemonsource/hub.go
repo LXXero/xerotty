@@ -81,6 +81,11 @@ type Hub struct {
 	nextReqID      atomic.Uint64
 	createMu       sync.Mutex
 	pendingCreates map[uint64]chan *protocol.TabCreated
+	// pendingWindowCreates is the WindowCreate analogue — same ReqID
+	// correlation (router-demuxed) so a late WindowCreated can't be
+	// adopted as a newer create's reply, and so undrained acks can't
+	// fill the client channel and wedge the read loop.
+	pendingWindowCreates map[uint64]chan *protocol.WindowCreated
 
 	// lastRevision is the highest topology revision applied so far,
 	// seeded from Attached.Revision. Only the router goroutine touches
@@ -137,9 +142,10 @@ func NewHub(c *clientproto.Client) *Hub {
 		c:              c,
 		sources:        make(map[uint32]*Source),
 		pending:        make(map[uint32][]pendingFrame),
-		pendingCreates: make(map[uint64]chan *protocol.TabCreated),
-		createTimeout:  tabCreateTimeout,
-		stopCh:         make(chan struct{}),
+		pendingCreates:       make(map[uint64]chan *protocol.TabCreated),
+		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
+		createTimeout:        tabCreateTimeout,
+		stopCh:               make(chan struct{}),
 	}
 	go h.router()
 	return h
@@ -372,6 +378,53 @@ func (h *Hub) deliverTabCreated(tc *protocol.TabCreated) {
 	}
 }
 
+// CreateWindow registers a new daemon-side window and returns its
+// assigned ID, correlating the reply by ReqID (so a late ack from a
+// timed-out create can't be mistaken for this one's). Mirrors NewTabIn.
+func (h *Hub) CreateWindow(posX, posY, width, height int32) (uint32, error) {
+	reqID := h.nextReqID.Add(1)
+	reply := make(chan *protocol.WindowCreated, 1)
+	h.createMu.Lock()
+	h.pendingWindowCreates[reqID] = reply
+	h.createMu.Unlock()
+	defer func() {
+		h.createMu.Lock()
+		delete(h.pendingWindowCreates, reqID)
+		h.createMu.Unlock()
+	}()
+
+	if err := h.c.SendWindowCreateReq(posX, posY, width, height, reqID); err != nil {
+		return 0, fmt.Errorf("daemonsource: SendWindowCreate: %w", err)
+	}
+	select {
+	case wc := <-reply:
+		return wc.Info.ID, nil
+	case <-h.c.Closed():
+		return 0, fmt.Errorf("daemonsource: connection closed before WindowCreated")
+	case <-h.stopCh:
+		return 0, fmt.Errorf("daemonsource: hub stopped before WindowCreated")
+	case <-time.After(h.createTimeout):
+		return 0, fmt.Errorf("daemonsource: timed out waiting for WindowCreated")
+	}
+}
+
+// deliverWindowCreated routes one MsgWindowCreated to its waiting
+// CreateWindow by ReqID; unmatched acks are dropped.
+func (h *Hub) deliverWindowCreated(wc *protocol.WindowCreated) {
+	h.createMu.Lock()
+	reply, ok := h.pendingWindowCreates[wc.ReqID]
+	if ok {
+		delete(h.pendingWindowCreates, wc.ReqID)
+	}
+	h.createMu.Unlock()
+	if ok {
+		select {
+		case reply <- wc:
+		default:
+		}
+	}
+}
+
 // applyTopology reconciles a topology snapshot against the Hub's
 // adopted Sources: adopt newly-appeared tab IDs, mark vanished ones
 // gone, and gate on revision so a stale/duplicate snapshot can't roll
@@ -442,6 +495,8 @@ func (h *Hub) router() {
 			// drop). Routed here — not consumed directly by NewTabIn —
 			// so concurrent creates don't steal each other's acks.
 			h.deliverTabCreated(tc)
+		case wc := <-cli.WindowCreated():
+			h.deliverWindowCreated(wc)
 		case topo := <-cli.Topology():
 			h.applyTopology(topo)
 		case f := <-cli.CellFull():
