@@ -9,7 +9,6 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
-	"github.com/LXXero/xerotty/internal/protocol"
 )
 
 // TestMCPCreateBroadcastsToWireClient verifies that a tab created by
@@ -55,14 +54,14 @@ func TestMCPCreateBroadcastsToWireClient(t *testing.T) {
 	startRev := attached.Revision
 
 	// Drain render frames so Run never back-pressures; keep Topology
-	// for the assertion.
+	// for the assertion — but DON'T consume CellFull/CellDiff: we
+	// assert the wire client receives cell content for the new tab,
+	// which proves the daemon subscribed it (HIGH 1: not blank).
 	go func() {
 		for {
 			select {
 			case <-wc.Closed():
 				return
-			case <-wc.CellFull():
-			case <-wc.CellDiff():
 			case <-wc.Cursor():
 			case <-wc.Title():
 			case <-wc.Bell():
@@ -86,9 +85,11 @@ func TestMCPCreateBroadcastsToWireClient(t *testing.T) {
 	mc.call(t, 2, "tab/create", map[string]any{"cols": 80, "rows": 24})
 
 	// The wire client should learn about the new tab via a topology
-	// broadcast with a newer revision and 2 tabs.
-	deadline := time.After(3 * time.Second)
-	for {
+	// broadcast with a newer revision and 2 tabs. Capture the new ID.
+	var newTab uint32
+	gotTopo := false
+	topoDeadline := time.After(3 * time.Second)
+	for !gotTopo {
 		select {
 		case topo := <-wc.Topology():
 			if topo.Revision <= startRev {
@@ -97,11 +98,37 @@ func TestMCPCreateBroadcastsToWireClient(t *testing.T) {
 			if len(topo.Tabs) != 2 {
 				t.Fatalf("wire client sees %d tabs after MCP create, want 2: %+v", len(topo.Tabs), topo.Tabs)
 			}
-			return // success
-		case <-deadline:
+			for _, ti := range topo.Tabs {
+				if ti.ID != attached.Tabs[0].ID {
+					newTab = ti.ID
+				}
+			}
+			gotTopo = true
+		case full := <-wc.CellFull():
+			_ = full // may arrive before/after topology; handled below
+		case diff := <-wc.CellDiff():
+			_ = diff
+		case <-topoDeadline:
 			t.Fatal("wire client never received MsgTopologyChanged for the MCP-created tab")
 		}
 	}
-}
 
-var _ = protocol.MsgTopologyChanged
+	// And it must receive a cell frame for THAT tab — i.e. the daemon
+	// started a publish loop feeding the wire client, not just told it
+	// the tab exists.
+	cellDeadline := time.After(3 * time.Second)
+	for {
+		select {
+		case full := <-wc.CellFull():
+			if full.ID == newTab {
+				return // success: content flowing to the wire client
+			}
+		case diff := <-wc.CellDiff():
+			if diff.ID == newTab {
+				return
+			}
+		case <-cellDeadline:
+			t.Fatalf("wire client never received cell content for MCP-created tab %d (blank — not subscribed)", newTab)
+		}
+	}
+}

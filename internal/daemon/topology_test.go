@@ -2,6 +2,8 @@ package daemon_test
 
 import (
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -231,5 +233,203 @@ func TestScrollbackClearOnExitedTabNotifiesOthers(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("client B never received ScrollbackCleared for the exited tab")
+	}
+}
+
+// drainExceptCells consumes every client channel EXCEPT CellFull /
+// CellDiff (which the caller reads to inspect tab content), so
+// Client.Run never back-pressures.
+func drainExceptCells(c *clientproto.Client) {
+	for {
+		select {
+		case <-c.Closed():
+			return
+		case <-c.Cursor():
+		case <-c.Title():
+		case <-c.Bell():
+		case <-c.ChildExit():
+		case <-c.TabState():
+		case <-c.ScrollbackAppend():
+		case <-c.ScrollbackCleared():
+		case <-c.TabCreated():
+		case <-c.WindowCreated():
+		case <-c.ClipboardSet():
+		case <-c.ProposalsChanged():
+		case <-c.Topology():
+		case <-c.Errors():
+		}
+	}
+}
+
+// waitForMarkerOnTab reads cell frames for a SPECIFIC tab, maintaining
+// a mirror, until needle appears or the timeout elapses. Frames for
+// other tabs are ignored.
+func waitForMarkerOnTab(t *testing.T, c *clientproto.Client, tabID uint32, needle string, dur time.Duration) bool {
+	t.Helper()
+	var mirror [][]protocol.Cell
+	deadline := time.After(dur)
+	for {
+		for _, row := range mirror {
+			var sb strings.Builder
+			for _, cell := range row {
+				if cell.Content == "" {
+					sb.WriteByte(' ')
+					continue
+				}
+				sb.WriteString(cell.Content)
+			}
+			if strings.Contains(sb.String(), needle) {
+				return true
+			}
+		}
+		select {
+		case full := <-c.CellFull():
+			if full.ID == tabID {
+				mirror = full.Grid
+			}
+		case diff := <-c.CellDiff():
+			if diff.ID == tabID {
+				for _, e := range diff.Cells {
+					if int(e.Row) < len(mirror) && int(e.Col) < len(mirror[e.Row]) {
+						mirror[e.Row][e.Col] = e.Cell
+					}
+				}
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// newestOtherTab waits until the session has a tab other than exclude
+// and returns its ID.
+func newestOtherTab(t *testing.T, sess *daemon.Session, exclude uint32, dur time.Duration) uint32 {
+	t.Helper()
+	deadline := time.After(dur)
+	for {
+		for _, tab := range sess.Tabs() {
+			if tab.ID != exclude {
+				return tab.ID
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no new tab appeared on the daemon")
+			return 0
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// TestSecondClientSeesCreatedTabContent verifies HIGH 1: a tab created
+// by client A is subscribed for client B too, so B receives B's own
+// publish loop feeding cell content — not a blank Source.
+func TestSecondClientSeesCreatedTabContent(t *testing.T) {
+	d, sockPath := startDaemon(t)
+
+	a := mustDial(t, sockPath, "client-A")
+	defer a.Close()
+	b := mustDial(t, sockPath, "client-B")
+	defer b.Close()
+
+	attA := <-a.Attached()
+	<-b.Attached()
+	origTab := attA.Tabs[0].ID
+
+	go drainClient(a, false, false) // A fully drained; we assert on B
+	go drainExceptCells(b)          // B: keep cell frames for the reader
+
+	sess := d.SessionByName("default")
+	if sess == nil {
+		t.Fatal("no default session")
+	}
+
+	// A creates a new tab.
+	if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+		t.Fatalf("A SendTabCreate: %v", err)
+	}
+	newTab := newestOtherTab(t, sess, origTab, 3*time.Second)
+
+	// A types into the NEW tab; B (a different client) must see the
+	// output land — proving the daemon subscribed B to the tab A made.
+	marker := "XEROTTY_SUBSCRIBE_ON_CREATE_OK"
+	if err := a.SendInput(newTab, []byte("echo "+marker+"\r")); err != nil {
+		t.Fatalf("A SendInput: %v", err)
+	}
+	if !waitForMarkerOnTab(t, b, newTab, marker, 5*time.Second) {
+		t.Fatal("client B never saw content of the tab A created — daemon didn't subscribe B (blank tab)")
+	}
+}
+
+// TestCloseTabUnsubscribesAllClients verifies HIGH 2: closing a tab
+// tears down its publish loop on EVERY client, not just the closer —
+// otherwise (with publish loops now outliving child exit) each viewer
+// leaks a goroutine + terminal ref per created-then-closed tab.
+func TestCloseTabUnsubscribesAllClients(t *testing.T) {
+	d, sockPath := startDaemon(t)
+
+	a := mustDial(t, sockPath, "client-A")
+	defer a.Close()
+	b := mustDial(t, sockPath, "client-B")
+	defer b.Close()
+
+	attA := <-a.Attached()
+	<-b.Attached()
+	origTab := attA.Tabs[0].ID
+
+	go drainClient(a, false, false)
+	go drainClient(b, false, false)
+
+	sess := d.SessionByName("default")
+	if sess == nil {
+		t.Fatal("no default session")
+	}
+
+	// Warm up + settle so the baseline reflects steady state.
+	time.Sleep(200 * time.Millisecond)
+	runtime.GC()
+	base := runtime.NumGoroutine()
+
+	const cycles = 15
+	for i := 0; i < cycles; i++ {
+		if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+		id := newestOtherTab(t, sess, origTab, 3*time.Second)
+		if err := a.SendTabClose(id); err != nil {
+			t.Fatalf("close %d: %v", i, err)
+		}
+		// Wait until the daemon dropped the tab.
+		deadline := time.After(3 * time.Second)
+		for sess.Tab(id) != nil {
+			select {
+			case <-deadline:
+				t.Fatalf("tab %d never closed", id)
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+	}
+
+	// After all the create/close churn the goroutine count must settle
+	// back near baseline. A per-client subscription leak would leave
+	// ~cycles publish loops (one per non-closing client) alive.
+	settled := false
+	for deadline := time.After(3 * time.Second); ; {
+		runtime.GC()
+		if n := runtime.NumGoroutine(); n <= base+8 {
+			settled = true
+			break
+		}
+		select {
+		case <-deadline:
+		case <-time.After(50 * time.Millisecond):
+			continue
+		}
+		break
+	}
+	if !settled {
+		runtime.GC()
+		t.Fatalf("goroutines did not settle after %d create/close cycles: base=%d now=%d (subscription leak?)",
+			cycles, base, runtime.NumGoroutine())
 	}
 }
