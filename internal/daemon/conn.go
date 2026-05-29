@@ -61,8 +61,18 @@ type clientConn struct {
 	// Subscriptions: per attached tab, a publish goroutine + the
 	// state it needs (cancel channel + last-shipped grid for diff
 	// computation).
-	subsMu sync.Mutex
-	subs   map[uint32]*tabSub
+	//
+	// subSession is the session these subs belong to, guarded by the
+	// SAME subsMu as the sub map. It's the synchronization point for
+	// the cross-connection subscribe fan-out: subscribeSessionClients
+	// (running on the CREATING connection's goroutine) and this
+	// connection's own teardown (stopAllSubs, on detach/disconnect)
+	// both take subsMu, so a subscribe can't slip in AFTER teardown
+	// and leak a publish loop. nil = not attached / torn down → don't
+	// accept subscriptions.
+	subsMu     sync.Mutex
+	subs       map[uint32]*tabSub
+	subSession *Session
 
 	// imgAccum reassembles chunked image pastes, keyed by tab ID.
 	// Chunks arrive in order on this (single) connection; on the
@@ -347,6 +357,12 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	}
 	c.session = c.daemon.session(name)
 	c.sessionName.Store(c.session.Name)
+	// Mark this connection as accepting subscriptions for the session
+	// (guarded by subsMu, the same lock subscribe/stopAllSubs use) so
+	// the cross-connection create fan-out can safely target us.
+	c.subsMu.Lock()
+	c.subSession = c.session
+	c.subsMu.Unlock()
 	created := false
 	if msg.NewIfMissing {
 		var err error
@@ -374,7 +390,7 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	// keyed by tab ID; a since-changed set self-heals on the next
 	// topology broadcast.)
 	for _, t := range c.session.Tabs() {
-		c.subscribe(t)
+		c.subscribe(c.session, t)
 	}
 	// If we just spawned the session's first tab, subscribe every
 	// attached client to it (a client that attached to the then-empty
@@ -710,8 +726,17 @@ const initialBackfillRows = 5000
 // then streams post-attach growth normally. Older-than-backfill
 // history stays on the daemon for future scrollback-request
 // protocol additions but isn't proactively shipped.
-func (c *clientConn) subscribe(t *Tab) {
+func (c *clientConn) subscribe(sess *Session, t *Tab) {
 	c.subsMu.Lock()
+	// Only subscribe if this connection is currently attached to the
+	// session the tab belongs to. Checked under subsMu (same lock
+	// stopAllSubs uses) so a concurrent detach/disconnect can't let a
+	// subscribe land after teardown — which would leak the publish
+	// loop, since the cancel that stops it has already been closed.
+	if c.subSession != sess {
+		c.subsMu.Unlock()
+		return
+	}
 	if c.subs == nil {
 		c.subs = make(map[uint32]*tabSub)
 	}
@@ -747,6 +772,11 @@ func (c *clientConn) unsubscribe(id uint32) {
 func (c *clientConn) stopAllSubs() {
 	c.subsMu.Lock()
 	defer c.subsMu.Unlock()
+	// Clear subSession under the lock so any subscribe racing this
+	// teardown (from another connection's create fan-out) sees we're
+	// no longer attached and skips, rather than adding a sub whose
+	// cancel we've already closed.
+	c.subSession = nil
 	for id, sub := range c.subs {
 		close(sub.cancel)
 		delete(c.subs, id)

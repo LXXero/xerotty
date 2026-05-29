@@ -290,7 +290,10 @@ func (d *Daemon) broadcastTopology(sess *Session) {
 // required — a same-numbered tab in another session must not be touched.
 func (d *Daemon) subscribeSessionClients(sess *Session, t *Tab) {
 	for _, c := range d.sessionClients(sess) {
-		c.subscribe(t)
+		// subscribe re-checks (under subsMu) that c is still attached
+		// to sess, so a connection detaching/disconnecting concurrently
+		// with this fan-out won't get a leaked publish loop.
+		c.subscribe(sess, t)
 	}
 }
 
