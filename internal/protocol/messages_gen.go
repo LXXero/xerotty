@@ -6449,6 +6449,12 @@ func (z *WindowCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Height")
 				return
 			}
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -6463,8 +6469,8 @@ func (z *WindowCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *WindowCreate) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(4)
-	var zb0001Mask uint8 /* 4 bits */
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
 	_ = zb0001Mask
 	if z.PosX == 0 {
 		zb0001Len--
@@ -6481,6 +6487,10 @@ func (z *WindowCreate) EncodeMsg(en *msgp.Writer) (err error) {
 	if z.Height == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x8
+	}
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x10
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -6538,6 +6548,18 @@ func (z *WindowCreate) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// write "req_id"
+			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteUint64(z.ReqID)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		}
 	}
 	return
 }
@@ -6546,8 +6568,8 @@ func (z *WindowCreate) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *WindowCreate) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(4)
-	var zb0001Mask uint8 /* 4 bits */
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
 	_ = zb0001Mask
 	if z.PosX == 0 {
 		zb0001Len--
@@ -6564,6 +6586,10 @@ func (z *WindowCreate) MarshalMsg(b []byte) (o []byte, err error) {
 	if z.Height == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x8
+	}
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x10
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -6589,6 +6615,11 @@ func (z *WindowCreate) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "height"
 			o = append(o, 0xa6, 0x68, 0x65, 0x69, 0x67, 0x68, 0x74)
 			o = msgp.AppendInt32(o, z.Height)
+		}
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// string "req_id"
+			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			o = msgp.AppendUint64(o, z.ReqID)
 		}
 	}
 	return
@@ -6636,6 +6667,12 @@ func (z *WindowCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Height")
 				return
 			}
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -6650,7 +6687,7 @@ func (z *WindowCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *WindowCreate) Msgsize() (s int) {
-	s = 1 + 6 + msgp.Int32Size + 6 + msgp.Int32Size + 6 + msgp.Int32Size + 7 + msgp.Int32Size
+	s = 1 + 6 + msgp.Int32Size + 6 + msgp.Int32Size + 6 + msgp.Int32Size + 7 + msgp.Int32Size + 7 + msgp.Uint64Size
 	return
 }
 
@@ -6678,6 +6715,12 @@ func (z *WindowCreated) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Info")
 				return
 			}
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -6691,16 +6734,44 @@ func (z *WindowCreated) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *WindowCreated) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 1
-	// write "info"
-	err = en.Append(0x81, 0xa4, 0x69, 0x6e, 0x66, 0x6f)
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = z.Info.EncodeMsg(en)
-	if err != nil {
-		err = msgp.WrapError(err, "Info")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "info"
+		err = en.Append(0xa4, 0x69, 0x6e, 0x66, 0x6f)
+		if err != nil {
+			return
+		}
+		err = z.Info.EncodeMsg(en)
+		if err != nil {
+			err = msgp.WrapError(err, "Info")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "req_id"
+			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteUint64(z.ReqID)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		}
 	}
 	return
 }
@@ -6708,13 +6779,31 @@ func (z *WindowCreated) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *WindowCreated) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 1
-	// string "info"
-	o = append(o, 0x81, 0xa4, 0x69, 0x6e, 0x66, 0x6f)
-	o, err = z.Info.MarshalMsg(o)
-	if err != nil {
-		err = msgp.WrapError(err, "Info")
-		return
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "info"
+		o = append(o, 0xa4, 0x69, 0x6e, 0x66, 0x6f)
+		o, err = z.Info.MarshalMsg(o)
+		if err != nil {
+			err = msgp.WrapError(err, "Info")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "req_id"
+			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			o = msgp.AppendUint64(o, z.ReqID)
+		}
 	}
 	return
 }
@@ -6743,6 +6832,12 @@ func (z *WindowCreated) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Info")
 				return
 			}
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -6757,7 +6852,7 @@ func (z *WindowCreated) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *WindowCreated) Msgsize() (s int) {
-	s = 1 + 5 + z.Info.Msgsize()
+	s = 1 + 5 + z.Info.Msgsize() + 7 + msgp.Uint64Size
 	return
 }
 

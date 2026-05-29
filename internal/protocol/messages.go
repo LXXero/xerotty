@@ -211,17 +211,22 @@ type TabCreated struct {
 
 // WindowCreate asks the daemon to register a new logical UI window
 // in the session. The window has no tabs yet — the UI follows up
-// with TabCreate (or MoveTab) to populate it.
+// with TabCreate (or MoveTab) to populate it. ReqID correlates the
+// reply (see TabCreate.ReqID) so a late WindowCreated from a
+// timed-out request can't be mistaken for a newer one's ack.
 type WindowCreate struct {
-	PosX   int32 `msg:"pos_x,omitempty"`
-	PosY   int32 `msg:"pos_y,omitempty"`
-	Width  int32 `msg:"width,omitempty"`
-	Height int32 `msg:"height,omitempty"`
+	PosX   int32  `msg:"pos_x,omitempty"`
+	PosY   int32  `msg:"pos_y,omitempty"`
+	Width  int32  `msg:"width,omitempty"`
+	Height int32  `msg:"height,omitempty"`
+	ReqID  uint64 `msg:"req_id,omitempty"`
 }
 
-// WindowCreated confirms a new window's assigned ID.
+// WindowCreated confirms a new window's assigned ID. ReqID echoes
+// WindowCreate.ReqID for correlation.
 type WindowCreated struct {
-	Info WindowInfo `msg:"info"`
+	Info  WindowInfo `msg:"info"`
+	ReqID uint64     `msg:"req_id,omitempty"`
 }
 
 // WindowClose tears down a window. Tabs in the window get reassigned
