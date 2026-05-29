@@ -1150,12 +1150,20 @@ type pendingTopoSnap struct {
 // windows / tabs.Manager). Called once per frame.
 //
 // Scope: it ADDS GUI tabs for daemon tabs that newly appeared (created
-// by another client or an MCP agent) and aren't yet shown. Removal of
-// vanished tabs is already handled elsewhere — applyTopology marks the
-// vanished Source closed (markVanished), and the per-frame CheckClosed
-// + on_child_exit reap drops the tab. Cross-window MOVE driven by a
-// remote actor is not reconciled here (see report).
+// by another client or an MCP agent), and RELOCATES a visible tab when
+// a snapshot shows it in a different daemon window than the GUI has it
+// (so later local focus/reorder targets the right daemon window).
+// Removal of vanished tabs is handled elsewhere — applyTopology marks
+// the vanished Source closed (markVanished) and the per-frame
+// CheckClosed + reap drops it (forced even under on_child_exit=hold).
 func (a *App) applyPendingTopology() {
+	// Don't reconcile mid-drag: a cross-window drag is actively moving
+	// a tab between managers, and relocating underneath it would
+	// corrupt the drag. Leave the (latest-wins) snapshot queued and
+	// process it on a later frame once the drag completes.
+	if a.dragTab != nil {
+		return
+	}
 	a.topoMu.Lock()
 	if len(a.pendingTopo) == 0 {
 		a.topoMu.Unlock()
@@ -1165,15 +1173,15 @@ func (a *App) applyPendingTopology() {
 	a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
 	a.topoMu.Unlock()
 	for hub, ps := range pend {
-		a.addNewDaemonTabs(hub, ps.host, ps.snap)
+		a.reconcileDaemonTabs(hub, ps.host, ps.snap)
 	}
 }
 
-// addNewDaemonTabs creates a GUI tab for each daemon tab in the
-// snapshot that this process isn't already showing for the hub —
-// preserving the target window's active tab (snapshot FocusedTabID is
+// reconcileDaemonTabs adds GUI tabs for newly-appeared daemon tabs and
+// relocates visible tabs that moved to a different daemon window —
+// preserving each window's active tab (snapshot FocusedTabID is
 // attach-time metadata, never used to hijack a live client's focus).
-func (a *App) addNewDaemonTabs(hub *daemonsource.Hub, host string, snap *protocol.TopologyChanged) {
+func (a *App) reconcileDaemonTabs(hub *daemonsource.Hub, host string, snap *protocol.TopologyChanged) {
 	cli := hub.Client()
 	// Which daemon tab IDs already have a GUI tab on this hub?
 	present := make(map[uint32]bool)
@@ -1196,6 +1204,9 @@ func (a *App) addNewDaemonTabs(hub *daemonsource.Hub, host string, snap *protoco
 	}
 	for _, ti := range snap.Tabs {
 		if present[ti.ID] {
+			// Already shown — but maybe in the wrong GUI window if a
+			// remote actor moved it. Relocate if so.
+			a.relocateDaemonTab(hub, ti.ID, winOfTab[ti.ID])
 			continue
 		}
 		target := a.targetWindowForDaemonTab(hub, winOfTab[ti.ID])
@@ -1257,6 +1268,82 @@ func (a *App) targetWindowForDaemonTab(hub *daemonsource.Hub, daemonWinID uint32
 		return hubWindow
 	}
 	return a.active
+}
+
+// relocateDaemonTab moves an already-visible daemon tab to the GUI
+// window mapped to its current daemon-side window, when a snapshot
+// shows it moved (by another client / MCP agent). Without this the tab
+// stays in its old GUI window and later local focus/reorder sends the
+// stale daemon window ID. No-op when the placement is already correct,
+// the daemon window has no GUI window, or the tab isn't found.
+// Preserves both windows' active tabs (a remote move must not steal a
+// live client's focus).
+func (a *App) relocateDaemonTab(hub *daemonsource.Hub, tabID, daemonWinID uint32) {
+	if daemonWinID == 0 {
+		return
+	}
+	cli := hub.Client()
+	// Locate the tab's current GUI window + index.
+	var srcWin *Window
+	srcIdx := -1
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		for i, t := range w.tabs.Tabs {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == cli && ds.TabID() == tabID {
+				srcWin, srcIdx = w, i
+				break
+			}
+		}
+		if srcWin != nil {
+			break
+		}
+	}
+	if srcWin == nil {
+		return
+	}
+	if srcWin.daemonWindowForHub(hub) == daemonWinID {
+		return // already in the right GUI window
+	}
+	// Destination GUI window must already map to this daemon window;
+	// if the GUI doesn't represent it, leave the tab put.
+	var dstWin *Window
+	for _, w := range a.windows {
+		if w.tabs != nil && w != srcWin && w.daemonWindowForHub(hub) == daemonWinID {
+			dstWin = w
+			break
+		}
+	}
+	if dstWin == nil {
+		return
+	}
+	moved := srcWin.tabs.Tabs[srcIdx]
+	host, title := moved.Host, moved.Title()
+	dstPrevActive := -1
+	if at := dstWin.tabs.Active(); at != nil {
+		dstPrevActive = at.ID
+	}
+	// RemoveTab preserves srcWin's active tab; AdoptTab focuses the
+	// moved tab in dstWin, so restore dstWin's prior active after.
+	srcWin.tabs.RemoveTab(srcIdx)
+	newTab := dstWin.tabs.AdoptTab(moved.Terminal)
+	newTab.Host = host
+	if title != "" {
+		newTab.SetTitle(title)
+	}
+	if dstPrevActive >= 0 {
+		for i, t := range dstWin.tabs.Tabs {
+			if t.ID == dstPrevActive {
+				dstWin.tabs.ActiveIdx = i
+				break
+			}
+		}
+	}
+	// If relocating emptied the source window, schedule it for reap.
+	if srcWin.tabs.Count() == 0 {
+		srcWin.pendingClose = true
+	}
 }
 
 // ensureGUIMCP starts the GUI's aggregating MCP server once, the
@@ -3148,6 +3235,13 @@ func (a *Window) frame() {
 	for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
 		tab := a.tabs.Tabs[i]
 		if !tab.Closed {
+			continue
+		}
+		// A daemon tab that vanished from the topology (closed by
+		// another client / MCP agent) is GONE — there's no local child
+		// to "hold", so force-remove it regardless of on_child_exit.
+		if ds, ok := tab.Terminal.(*daemonsource.Source); ok && ds.IsVanished() {
+			a.tabs.CloseTab(i)
 			continue
 		}
 		switch a.app.cfg.Tabs.OnChildExit {

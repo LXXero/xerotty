@@ -84,6 +84,11 @@ type Source struct {
 	closed   atomic.Bool
 	exited   atomic.Bool
 	exitCode atomic.Int32
+	// vanished is set when the tab disappeared from the daemon's
+	// topology (closed by another client / an MCP agent) — distinct
+	// from a local child exit. The GUI force-removes vanished tabs
+	// regardless of on_child_exit: there's no local child to "hold".
+	vanished atomic.Bool
 }
 
 // newSource is invoked by Hub. Don't call directly — call Hub.Adopt
@@ -282,11 +287,17 @@ func (s *Source) Detach() {
 // treats it as gone, and unregisters it from frame routing. No
 // MsgTabClose is sent — the tab is already gone on the daemon.
 func (s *Source) markVanished() {
+	s.vanished.Store(true)
 	s.exited.Store(true)
 	s.closed.Store(true)
 	s.hub.unregister(s.tabID)
 	s.signalDirty()
 }
+
+// IsVanished reports whether this tab disappeared from the daemon's
+// topology (closed remotely). The GUI uses it to force-remove the tab
+// even under on_child_exit=hold — a vanished tab has no child to hold.
+func (s *Source) IsVanished() bool { return s.vanished.Load() }
 
 func (s *Source) IsClosed() bool { return s.closed.Load() || s.exited.Load() }
 
