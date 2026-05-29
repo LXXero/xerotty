@@ -203,6 +203,75 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 	}
 }
 
+// --- topology mutation funnel ---
+//
+// CreateTab / CloseTab / MoveTab / CreateWindow / CloseWindow are the
+// single entry points for structural changes. Each mutates the
+// Session (which bumps its revision) and then broadcasts the new
+// topology snapshot to every client attached to that session. BOTH
+// the wire handlers and the MCP server route through these so an
+// MCP-driven create/close is seen by a watching GUI, not just the
+// agent that made it. Callers must not poke Session.NewTab/CloseTab/
+// etc. directly when they want the change broadcast.
+
+// CreateTab spawns a tab in the session and broadcasts the topology.
+func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
+	t, w, err := sess.NewTab(windowID, cols, rows, cwd)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.broadcastTopology(sess)
+	return t, w, nil
+}
+
+// CloseTab removes a tab from the session and broadcasts the topology.
+func (d *Daemon) CloseTab(sess *Session, id uint32) {
+	sess.CloseTab(id)
+	d.broadcastTopology(sess)
+}
+
+// MoveTab moves a tab between windows and broadcasts the topology.
+func (d *Daemon) MoveTab(sess *Session, tabID, toWindowID uint32, index int) {
+	sess.MoveTab(tabID, toWindowID, index)
+	d.broadcastTopology(sess)
+}
+
+// CreateWindow registers a window in the session and broadcasts.
+func (d *Daemon) CreateWindow(sess *Session, posX, posY, width, height int32) *Window {
+	w := sess.NewWindow(posX, posY, width, height)
+	d.broadcastTopology(sess)
+	return w
+}
+
+// CloseWindow tears down a window and broadcasts the topology.
+func (d *Daemon) CloseWindow(sess *Session, id uint32) {
+	sess.CloseWindow(id)
+	d.broadcastTopology(sess)
+}
+
+// broadcastTopology ships the session's current topology snapshot to
+// every client attached to that session. Snapshot + revision (not
+// deltas) so clients self-heal: a client applies it only if the
+// revision is newer, replacing its view wholesale — no delta-ordering
+// bug class. Clients attached to other sessions (or not yet attached)
+// are skipped via the sessionName atomic mirror, which is safe to read
+// off the read-loop goroutine (unlike c.session).
+func (d *Daemon) broadcastTopology(sess *Session) {
+	snap := sess.TopologySnapshot()
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		if name, _ := c.sessionName.Load().(string); name != sess.Name {
+			continue
+		}
+		_ = c.writeFrame(protocol.MsgTopologyChanged, &snap)
+	}
+}
+
 // WakeTabSubscribers nudges every client's publishLoop subscribed to
 // tabID to re-publish immediately. Used after a resize: it changes
 // the grid dimensions but emits no PTY output, so without an explicit

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
@@ -29,6 +30,12 @@ type Session struct {
 	mu       sync.Mutex
 	nextTabID uint32
 	nextWinID uint32
+
+	// revision is a monotonic per-session topology counter, bumped
+	// under mu on every structural change (tab/window create/close,
+	// tab move). It stamps the snapshots broadcast via
+	// MsgTopologyChanged so clients can gate stale/duplicate frames.
+	revision uint64
 
 	// All tabs in the session, keyed by ID. Each tab also lives
 	// in exactly one Window's TabIDs slice (the daemon enforces
@@ -302,6 +309,7 @@ func (s *Session) NewWindow(posX, posY, width, height int32) *Window {
 	}
 	s.nextWinID++
 	s.windows = append(s.windows, w)
+	s.revision++
 	return w
 }
 
@@ -325,6 +333,7 @@ func (s *Session) CloseWindow(id uint32) {
 		return
 	}
 	s.windows = append(s.windows[:removedIdx], s.windows[removedIdx+1:]...)
+	s.revision++
 	if len(removed.TabIDs) == 0 {
 		return
 	}
@@ -427,6 +436,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	if s.focusedTabID == 0 {
 		s.focusedTabID = t.ID
 	}
+	s.revision++
 	return t, w, nil
 }
 
@@ -472,6 +482,12 @@ func (s *Session) Tab(id uint32) *Tab {
 func (s *Session) Tabs() []*Tab {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.orderedTabsLocked()
+}
+
+// orderedTabsLocked returns the window-ordered tab list. Caller holds
+// s.mu. Extracted so Tabs() and TopologySnapshot() share one ordering.
+func (s *Session) orderedTabsLocked() []*Tab {
 	out := make([]*Tab, 0, len(s.tabs))
 	seen := make(map[uint32]bool, len(s.tabs))
 	for _, w := range s.windows {
@@ -497,6 +513,59 @@ func (s *Session) Tabs() []*Tab {
 		}
 	}
 	return out
+}
+
+// Revision returns the session's current topology revision.
+func (s *Session) Revision() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.revision
+}
+
+// TopologySnapshot captures a consistent (single-lock) view of the
+// session's structure — revision, windows, ordered tabs, focused tab
+// — ready to ship as MsgTopologyChanged (or to seed Attached). The
+// revision and window/tab membership are read together under s.mu so
+// the revision always matches the structure it stamps. Per-tab
+// Title/dims are read after the lock (they're metadata, not topology,
+// so a momentarily stale title can't desync the reconcile).
+func (s *Session) TopologySnapshot() protocol.TopologyChanged {
+	s.mu.Lock()
+	rev := s.revision
+	focused := s.focusedTabID
+	windows := make([]protocol.WindowInfo, len(s.windows))
+	for i, w := range s.windows {
+		ids := make([]uint32, len(w.TabIDs))
+		copy(ids, w.TabIDs)
+		windows[i] = protocol.WindowInfo{
+			ID:           w.ID,
+			PosX:         w.PosX,
+			PosY:         w.PosY,
+			Width:        w.Width,
+			Height:       w.Height,
+			TabIDs:       ids,
+			FocusedTabID: w.FocusedTabID,
+		}
+	}
+	ordered := s.orderedTabsLocked()
+	s.mu.Unlock()
+
+	tabs := make([]protocol.TabInfo, len(ordered))
+	for i, t := range ordered {
+		tabs[i] = protocol.TabInfo{
+			ID:    t.ID,
+			Title: t.Title(),
+			Cols:  uint16(t.Term.Width()),
+			Rows:  uint16(t.Term.Height()),
+		}
+	}
+	return protocol.TopologyChanged{
+		SessionName:  s.Name,
+		Revision:     rev,
+		Windows:      windows,
+		Tabs:         tabs,
+		FocusedTabID: focused,
+	}
 }
 
 // Windows returns a snapshot copy of the window list with each
@@ -626,6 +695,7 @@ func (s *Session) MoveTab(tabID, toWindowID uint32, index int) {
 	if dst.FocusedTabID == 0 {
 		dst.FocusedTabID = tabID
 	}
+	s.revision++
 }
 
 // CloseTab removes a tab from the session and kills its PTY child.
@@ -663,6 +733,7 @@ func (s *Session) CloseTab(id uint32) {
 			}
 		}
 	}
+	s.revision++
 	s.mu.Unlock()
 	t.Term.Close()
 }

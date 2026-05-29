@@ -266,7 +266,10 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t, _, err := sess.NewTab(p.WindowID, p.Cols, p.Rows, p.Cwd)
+	// Funnel through the daemon so the new tab broadcasts to every
+	// attached wire client — an MCP-created tab must be visible to a
+	// watching GUI, not just to the agent that made it.
+	t, _, err := c.srv.d.CreateTab(sess, p.WindowID, p.Cols, p.Rows, p.Cwd)
 	if err != nil {
 		return rpcErr(req.ID, -32000, "new tab: "+err.Error(), nil)
 	}
@@ -292,7 +295,9 @@ func (c *agentConn) handleTabClose(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	sess.CloseTab(p.TabID)
+	// Funnel through the daemon so the close broadcasts to every
+	// attached wire client.
+	c.srv.d.CloseTab(sess, p.TabID)
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 

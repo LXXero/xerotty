@@ -235,7 +235,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		if c.session != nil {
-			c.session.CloseWindow(msg.ID)
+			c.daemon.CloseWindow(c.session, msg.ID)
 		}
 		return nil
 	case protocol.MsgWindowMoveTab:
@@ -244,7 +244,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		if c.session != nil {
-			c.session.MoveTab(msg.TabID, msg.ToWindowID, int(msg.Index))
+			c.daemon.MoveTab(c.session, msg.TabID, msg.ToWindowID, int(msg.Index))
 		}
 		return nil
 	case protocol.MsgWindowGeometry:
@@ -347,47 +347,40 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	}
 	c.session = c.daemon.session(name)
 	c.sessionName.Store(c.session.Name)
+	created := false
 	if msg.NewIfMissing {
-		if _, err := c.session.EnsureInitialTab(80, 24, ""); err != nil {
+		var err error
+		if created, err = c.session.EnsureInitialTab(80, 24, ""); err != nil {
 			return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
 		}
 	}
-	tabs := c.session.Tabs()
-	tabInfos := make([]protocol.TabInfo, len(tabs))
-	for i, t := range tabs {
-		tabInfos[i] = protocol.TabInfo{
-			ID:    t.ID,
-			Title: t.Title(),
-			Cols:  uint16(t.Term.Width()),
-			Rows:  uint16(t.Term.Height()),
-		}
-	}
-	windows := c.session.Windows()
-	windowInfos := make([]protocol.WindowInfo, len(windows))
-	for i, w := range windows {
-		windowInfos[i] = protocol.WindowInfo{
-			ID:           w.ID,
-			PosX:         w.PosX,
-			PosY:         w.PosY,
-			Width:        w.Width,
-			Height:       w.Height,
-			TabIDs:       w.TabIDs,
-			FocusedTabID: w.FocusedTabID,
-		}
-	}
+	// Build the Attached frame from a consistent snapshot so its
+	// Revision matches the windows/tabs it carries — the client seeds
+	// its topology gate from this, so a mismatched revision would let
+	// a same-revision broadcast be ignored and leave the client stale.
+	snap := c.session.TopologySnapshot()
 	if err := c.writeFrame(protocol.MsgAttached, &protocol.Attached{
 		SessionName:  c.session.Name,
-		Windows:      windowInfos,
-		Tabs:         tabInfos,
-		FocusedTabID: c.session.FocusedTab(),
+		Windows:      snap.Windows,
+		Tabs:         snap.Tabs,
+		FocusedTabID: snap.FocusedTabID,
+		Revision:     snap.Revision,
 	}); err != nil {
 		return err
 	}
 	// Subscribe to each existing tab — start a publish goroutine
 	// per tab that emits CellFull frames whenever the terminal's
-	// data channel signals new output.
-	for _, t := range tabs {
+	// data channel signals new output. (subscribe is idempotent and
+	// keyed by tab ID; a since-changed set self-heals on the next
+	// topology broadcast.)
+	for _, t := range c.session.Tabs() {
 		c.subscribe(t)
+	}
+	// If we just spawned the session's first tab, tell any OTHER
+	// clients already attached to this session (they'd otherwise not
+	// learn about it until their next structural event).
+	if created {
+		c.daemon.broadcastTopology(c.session)
 	}
 	// Push the current propose-mode queue so a freshly-attached
 	// GUI shows any already-pending proposals in its gate.
@@ -395,15 +388,6 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	return nil
 }
 
-// TODO(topology-broadcast): tab/window create/close/move currently
-// only notify the requesting client (TabCreated is unicast; MCP
-// create/close emit no wire event at all), so a second attached client
-// never learns the topology changed. The planned shape: a
-// MsgTopologyChanged / SessionSnapshot event, plus daemon-level
-// createTab/closeTab/moveTab helpers that bump a session revision and
-// broadcast the new snapshot to every attached client — with the MCP
-// handlers routed through those same helpers so agent-driven changes
-// fan out too. Deliberately deferred to its own design pass (HIGH #1).
 func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if c.session == nil {
 		return fmt.Errorf("TabCreate before Attach")
@@ -416,10 +400,14 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if rows <= 0 {
 		rows = 24
 	}
-	t, w, err := c.session.NewTab(msg.WindowID, cols, rows, msg.Cwd)
+	// Route through the daemon funnel so the new tab is broadcast to
+	// every attached client (MsgTopologyChanged), not just acked to us.
+	t, w, err := c.daemon.CreateTab(c.session, msg.WindowID, cols, rows, msg.Cwd)
 	if err != nil {
 		return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
 	}
+	// Unicast the ack to the requester, echoing ReqID so it can
+	// correlate (the broadcast above is how OTHER clients learn).
 	// Report the ACTUAL grid dims, not the requested ones —
 	// Session.NewTab clamps to MaxTabDim, and the client (especially
 	// daemonsource) sizes its local emulator from this, so handing
@@ -432,6 +420,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 			Rows:  uint16(t.Term.Height()),
 		},
 		WindowID: w.ID,
+		ReqID:    msg.ReqID,
 	}); err != nil {
 		return err
 	}
@@ -443,7 +432,7 @@ func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
 	if c.session == nil {
 		return fmt.Errorf("WindowCreate before Attach")
 	}
-	w := c.session.NewWindow(msg.PosX, msg.PosY, msg.Width, msg.Height)
+	w := c.daemon.CreateWindow(c.session, msg.PosX, msg.PosY, msg.Width, msg.Height)
 	return c.writeFrame(protocol.MsgWindowCreated, &protocol.WindowCreated{
 		Info: protocol.WindowInfo{
 			ID:           w.ID,
@@ -462,7 +451,7 @@ func (c *clientConn) handleTabClose(msg *protocol.TabClose) error {
 		return nil
 	}
 	c.unsubscribe(msg.ID)
-	c.session.CloseTab(msg.ID)
+	c.daemon.CloseTab(c.session, msg.ID)
 	return nil
 }
 
@@ -786,6 +775,13 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 	stateTick := time.NewTicker(750 * time.Millisecond)
 	defer stateTick.Stop()
 
+	// exitedCh fires once when the child reaps; we then nil it so the
+	// select stops re-firing but the loop STAYS ALIVE. A held/exited
+	// tab (user keeps it open to read the final output) still has a
+	// live subscription, so a scrollback clear from another client —
+	// delivered via sub.wake → clearPending — still reaches this
+	// client. The loop ends only on sub.cancel (tab closed / detach).
+	exitedCh := t.Exited
 	for {
 		select {
 		case <-sub.cancel:
@@ -800,16 +796,23 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			c.sendCellsAndCursor(t, sub)
 		case <-stateTick.C:
 			c.sendTabState(t, sub)
-		case <-t.Exited:
+		case <-exitedCh:
 			// Child reaped. Flush any final cell state first (the
-			// shell's "logout"/"exit" line is interesting!), then
-			// ship MsgChildExit and tear this subscription down.
+			// shell's "logout"/"exit" line is interesting!), then ship
+			// MsgChildExit. Don't return — keep serving the held tab
+			// (see exitedCh comment above).
 			c.sendCellsAndCursor(t, sub)
 			_ = c.writeFrame(protocol.MsgChildExit, &protocol.ChildExit{
 				ID:       t.ID,
 				ExitCode: atomic.LoadInt32(&t.ExitCode),
 			})
-			return
+			exitedCh = nil
+			// Stop polling tab state: cwd/fg-proc can't change on a
+			// dead child, and sendTabState reads the PTY fd
+			// (ForegroundProcessName), which would race the ptmx being
+			// closed once the tab is finally torn down. The loop lives
+			// on for sub.cancel + wake (scrollback clear).
+			stateTick.Stop()
 		case <-time.After(500 * time.Millisecond):
 			// Keeps us responsive to cancel. No-op otherwise.
 		}
