@@ -86,7 +86,12 @@ func (s *Server) SocketPath() string { return s.socketPath }
 
 // Run blocks until the listener errors or Stop is called.
 func (s *Server) Run() error {
-	if _, err := os.Stat(s.socketPath); err == nil {
+	if fi, err := os.Stat(s.socketPath); err == nil {
+		// Same logic as daemon.Daemon.Run: never delete a non-socket
+		// that happens to live at this path.
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("mcp: %s exists and is not a socket; refusing to remove it", s.socketPath)
+		}
 		// Probe — same logic as daemon.Daemon.Run for stale sockets.
 		if c, err := net.Dial("unix", s.socketPath); err == nil {
 			c.Close()

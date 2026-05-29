@@ -237,7 +237,14 @@ func (d *Daemon) Run() error {
 	// would manifest as a connect-succeeds probe; we don't do
 	// that here because callers know whether they expect to be
 	// the first daemon. Phase 0 just refuses if the file exists.
-	if _, err := os.Stat(d.socketPath); err == nil {
+	if fi, err := os.Stat(d.socketPath); err == nil {
+		// Only ever remove an actual socket. If something else owns
+		// this path (a regular file, a directory the user pointed us
+		// at by mistake), refuse rather than silently delete their
+		// data on a dial failure.
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("daemon: %s exists and is not a socket; refusing to remove it", d.socketPath)
+		}
 		// Try to connect — if successful, another daemon is live
 		// and we bail. If it fails, the socket is stale and we
 		// can take over.

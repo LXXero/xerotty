@@ -86,7 +86,11 @@ func (s *Server) SocketPath() string { return s.socketPath }
 
 // Run blocks until the listener errors or Stop is called.
 func (s *Server) Run() error {
-	if _, err := os.Stat(s.socketPath); err == nil {
+	if fi, err := os.Stat(s.socketPath); err == nil {
+		// Never delete a non-socket that happens to live at this path.
+		if fi.Mode()&os.ModeSocket == 0 {
+			return fmt.Errorf("guimcp: %s exists and is not a socket; refusing to remove it", s.socketPath)
+		}
 		if c, err := net.Dial("unix", s.socketPath); err == nil {
 			c.Close()
 			return fmt.Errorf("guimcp: socket %s already in use", s.socketPath)
