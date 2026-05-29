@@ -500,6 +500,10 @@ func (a *Window) applyPreferences() {
 	prevFamily := a.app.cfg.Font.Family
 	prevPath := a.app.cfg.Font.Path
 	prevSource := a.app.cfg.Tabs.Source
+	// Snapshot the geometry-affecting inputs so we only reflow windows
+	// when one of them actually changed — see the resize gate below.
+	prevPx := renderer.PixelSize(&a.app.cfg)
+	prevPad := a.app.cfg.Appearance.Padding
 
 	a.prefDialog.applyTo(&a.app.cfg)
 
@@ -558,10 +562,16 @@ func (a *Window) applyPreferences() {
 		// which manifests as the terminal going blank or input/selection
 		// breaking until a resize forces a redraw.
 		a.app.pendingFontFace = true
-	} else {
-		// Size-only change from prefs is treated as "reset all windows
-		// to the new default" — overrides any per-window Cmd+= / Cmd+-
-		// zoom that diverged from the previous default.
+	} else if renderer.PixelSize(&a.app.cfg) != prevPx || a.app.cfg.Appearance.Padding != prevPad {
+		// Font size or padding changed — reflow every window to the new
+		// metrics. Treated as "reset all windows to the new default",
+		// overriding any per-window Cmd+= / Cmd+- zoom that diverged.
+		//
+		// Gated on an ACTUAL geometry change: updateFontMetrics requests
+		// a window resize, and running it on an Apply that changed
+		// nothing geometric (a menu/keybind/theme edit) needlessly
+		// resized windows — which on some WMs settled a couple grid rows
+		// short, shrinking tabbed terminals after Apply.
 		newSize := renderer.PixelSize(&a.app.cfg)
 		for _, win := range a.app.windows {
 			win.fontSize = newSize
