@@ -276,6 +276,18 @@ func (s *Source) Detach() {
 	s.signalDirty()
 }
 
+// markVanished is called by the Hub's topology reconcile when the
+// daemon reports this tab no longer exists (another client or an MCP
+// agent closed it). It flags the source closed+exited so the GUI
+// treats it as gone, and unregisters it from frame routing. No
+// MsgTabClose is sent — the tab is already gone on the daemon.
+func (s *Source) markVanished() {
+	s.exited.Store(true)
+	s.closed.Store(true)
+	s.hub.unregister(s.tabID)
+	s.signalDirty()
+}
+
 func (s *Source) IsClosed() bool { return s.closed.Load() || s.exited.Load() }
 
 func (s *Source) ChildExitCode() int { return int(s.exitCode.Load()) }

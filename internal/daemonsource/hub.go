@@ -20,6 +20,7 @@ package daemonsource
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
@@ -71,6 +72,30 @@ type Hub struct {
 	// window. The GUI can override per-tab via NewTabInWindow.
 	defaultWindowID uint32
 
+	// Request correlation for tab creates. nextReqID mints a unique
+	// ID per NewTabIn; pendingCreates maps it to the waiter's reply
+	// channel. The router delivers each MsgTabCreated to the matching
+	// waiter (or drops it if none — a late ack after the waiter timed
+	// out, or a tab another client created). This lets concurrent
+	// creates coexist and stops a late ack from poisoning a newer one.
+	nextReqID      atomic.Uint64
+	createMu       sync.Mutex
+	pendingCreates map[uint64]chan *protocol.TabCreated
+
+	// lastRevision is the highest topology revision applied so far,
+	// seeded from Attached.Revision. Only the router goroutine touches
+	// it (in applyTopology), so no lock needed beyond that serialization.
+	lastRevision uint64
+
+	// onTopology, if set, fires after the Hub reconciles a topology
+	// snapshot — the GUI hooks it to refresh its window/tab view.
+	// Guarded by mu.
+	onTopology func(*protocol.TopologyChanged)
+
+	// createTimeout bounds NewTabIn's wait for its ack. A field (not
+	// the bare const) so tests can shorten it.
+	createTimeout time.Duration
+
 	stopCh chan struct{}
 }
 
@@ -109,10 +134,12 @@ const pendingCap = 64
 // Stop to tear it down.
 func NewHub(c *clientproto.Client) *Hub {
 	h := &Hub{
-		c:       c,
-		sources: make(map[uint32]*Source),
-		pending: make(map[uint32][]pendingFrame),
-		stopCh:  make(chan struct{}),
+		c:              c,
+		sources:        make(map[uint32]*Source),
+		pending:        make(map[uint32][]pendingFrame),
+		pendingCreates: make(map[uint64]chan *protocol.TabCreated),
+		createTimeout:  tabCreateTimeout,
+		stopCh:         make(chan struct{}),
 	}
 	go h.router()
 	return h
@@ -268,18 +295,28 @@ func (h *Hub) NewTab(cols, rows int, cwd string) (*Source, error) {
 // windowID = 0 means "daemon's default window" (typically the
 // first window the daemon created).
 func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, error) {
-	if err := h.c.SendTabCreate(windowID, uint16(cols), uint16(rows), cwd, ""); err != nil {
+	// Mint a request ID and register a waiter channel BEFORE sending,
+	// so the router can never deliver our ack before we're listening.
+	reqID := h.nextReqID.Add(1)
+	reply := make(chan *protocol.TabCreated, 1)
+	h.createMu.Lock()
+	h.pendingCreates[reqID] = reply
+	h.createMu.Unlock()
+	defer func() {
+		h.createMu.Lock()
+		delete(h.pendingCreates, reqID)
+		h.createMu.Unlock()
+	}()
+
+	if err := h.c.SendTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", reqID); err != nil {
 		return nil, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
 	}
-	// TabCreated should arrive on the client's channel; wait for it.
-	// Multiple in-flight TabCreates can race — pick the first one.
-	// Bail if the connection dies (Closed) or the hub shuts down
-	// (stopCh) so a dropped daemon doesn't wedge the caller forever.
+	// Wait for OUR ack (matched by ReqID in the router). Bail if the
+	// connection dies, the hub shuts down, or the daemon never answers
+	// — so a dropped/hung daemon can't wedge the caller forever, and a
+	// late ack for a timed-out create can't bind us to the wrong tab.
 	select {
-	case tc, ok := <-h.c.TabCreated():
-		if !ok {
-			return nil, fmt.Errorf("daemonsource: client closed before TabCreated")
-		}
+	case tc := <-reply:
 		// Adopt at the dims the daemon actually allocated (it clamps
 		// to MaxTabDim), not what we requested — otherwise the local
 		// emulator would be sized wrong and desync from the daemon.
@@ -288,10 +325,89 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 		return nil, fmt.Errorf("daemonsource: connection closed before TabCreated")
 	case <-h.stopCh:
 		return nil, fmt.Errorf("daemonsource: hub stopped before TabCreated")
-	case <-time.After(tabCreateTimeout):
+	case <-time.After(h.createTimeout):
 		// The conn is up but the daemon never confirmed — don't block
 		// the GUI's tab-create forever.
 		return nil, fmt.Errorf("daemonsource: timed out waiting for TabCreated")
+	}
+}
+
+// SetTopologyCallback registers a hub-level handler fired after the
+// Hub reconciles a topology snapshot (a tab/window was created/closed/
+// moved by some client or MCP agent). The GUI uses it to refresh its
+// window/tab view from the Hub's now-current Sources. Guarded by mu.
+func (h *Hub) SetTopologyCallback(fn func(*protocol.TopologyChanged)) {
+	h.mu.Lock()
+	h.onTopology = fn
+	h.mu.Unlock()
+}
+
+// SeedRevision sets the baseline topology revision (from the Attached
+// frame) so subsequent MsgTopologyChanged frames are gated correctly.
+// Call once, right after attach, before the router could deliver a
+// broadcast. Safe to call from the attach goroutine.
+func (h *Hub) SeedRevision(rev uint64) {
+	h.mu.Lock()
+	if rev > h.lastRevision {
+		h.lastRevision = rev
+	}
+	h.mu.Unlock()
+}
+
+// deliverTabCreated routes one MsgTabCreated to its waiting NewTabIn
+// by ReqID. Unmatched acks (a create that already timed out, or a tab
+// another client created — handled by topology reconcile) are dropped.
+func (h *Hub) deliverTabCreated(tc *protocol.TabCreated) {
+	h.createMu.Lock()
+	reply, ok := h.pendingCreates[tc.ReqID]
+	if ok {
+		delete(h.pendingCreates, tc.ReqID)
+	}
+	h.createMu.Unlock()
+	if ok {
+		select {
+		case reply <- tc:
+		default: // waiter already gave up; reply is cap-1 anyway
+		}
+	}
+}
+
+// applyTopology reconciles a topology snapshot against the Hub's
+// adopted Sources: adopt newly-appeared tab IDs, mark vanished ones
+// gone, and gate on revision so a stale/duplicate snapshot can't roll
+// the view backwards. Runs only on the router goroutine, so the
+// revision gate needs no extra lock. Idempotent.
+func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
+	h.mu.Lock()
+	if topo.Revision <= h.lastRevision {
+		h.mu.Unlock()
+		return
+	}
+	h.lastRevision = topo.Revision
+	want := make(map[uint32]bool, len(topo.Tabs))
+	for _, ti := range topo.Tabs {
+		want[ti.ID] = true
+	}
+	var vanished []*Source
+	for id, s := range h.sources {
+		if !want[id] {
+			vanished = append(vanished, s)
+		}
+	}
+	cb := h.onTopology
+	h.mu.Unlock()
+
+	// Adopt new tabs (Adopt locks h.mu internally, so call it outside
+	// the lock above). Idempotent for already-known IDs.
+	for _, ti := range topo.Tabs {
+		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
+	}
+	// Drop tabs that no longer exist on the daemon.
+	for _, s := range vanished {
+		s.markVanished()
+	}
+	if cb != nil {
+		cb(topo)
 	}
 }
 
@@ -321,6 +437,13 @@ func (h *Hub) router() {
 			return
 		case <-cli.Closed():
 			return
+		case tc := <-cli.TabCreated():
+			// Correlated ack for a NewTabIn (or a stale/foreign one we
+			// drop). Routed here — not consumed directly by NewTabIn —
+			// so concurrent creates don't steal each other's acks.
+			h.deliverTabCreated(tc)
+		case topo := <-cli.Topology():
+			h.applyTopology(topo)
 		case f := <-cli.CellFull():
 			if s := h.lookup(f.ID); s != nil {
 				s.applyCellFull(f)

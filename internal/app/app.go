@@ -688,6 +688,7 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
 	}
 	hub := daemonsource.NewHub(cli)
+	hub.SeedRevision(attached.Revision)
 	a.wireHubCallbacks(name, hub)
 
 	entry := &remoteHubEntry{hub: hub}
@@ -899,6 +900,9 @@ func (a *App) initDaemonSource() error {
 		})
 	}
 	hub := daemonsource.NewHub(cli)
+	// Seed the topology-revision gate from the attach snapshot so
+	// later MsgTopologyChanged broadcasts are applied only when newer.
+	hub.SeedRevision(attached.Revision)
 	// Mirror the GUI's scrollback config so daemon-backed tabs
 	// have the same history depth as in-process ones. "unlimited"
 	// mode → use a large fixed cap (the client still bounds memory
