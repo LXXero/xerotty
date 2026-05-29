@@ -462,7 +462,27 @@ the current phase works end-to-end.
   a real bottleneck. Hasn't been; msgpack handles 60fps full-screen
   updates with room to spare. In the back pocket.
 
-### Phase 9 — topology broadcast + request correlation [PLANNED]
+### Phase 9 — topology broadcast + request correlation [SHIPPED]
+
+Implementation notes (as built):
+- `ProtocolVersion` bumped to 4. `TabCreate`/`TabCreated` carry `ReqID`;
+  `Attached` carries `Revision`; new `MsgTopologyChanged`.
+- Daemon funnel `CreateTab/CloseTab/MoveTab/CreateWindow/CloseWindow`
+  bumps `Session.revision` and broadcasts `TopologySnapshot()` to every
+  client of the session; wire handlers AND the MCP server route through
+  it. Clients gate on revision (seeded from `Attached.Revision`).
+- `Hub.NewTabIn` correlates acks by `ReqID` (router-demuxed, so
+  concurrent creates don't steal each other's acks; late acks dropped);
+  `Hub.applyTopology` reconciles adopted Sources (adopt new, mark
+  vanished, revision-gate).
+- M2: the per-tab publish loop stays alive after child exit (stops its
+  state ticker) so a scrollback clear on a held/exited tab still
+  reaches other clients.
+- Deferred: live GUI window/tab rendering of remotely-driven topology
+  changes (the Hub reconciles + `SetTopologyCallback` is wired, but the
+  app doesn't yet add/remove tab UIs from the callback — see report).
+
+Original design follows.
 
 Structural changes to a session aren't propagated to other attached
 clients. `MsgTabCreated` goes only to the requesting client;
