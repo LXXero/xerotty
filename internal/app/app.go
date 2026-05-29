@@ -56,6 +56,15 @@ type App struct {
 	baseCellH       float32 // cell height at base font size
 	pendingFontFace bool    // rebuild font atlas at start of next frame
 
+	// menuActivityFrame is the main-loop FrameCount on which some
+	// Window opened its context menu. Opening a menu runs a blocking
+	// popup that grabs the OS pointer, so by the time the NEXT Window's
+	// frame() checks MouseFocusWindowID (same main frame — the popup
+	// uses a separate ImGui context, FrameCount unchanged) the focus
+	// has moved to it and it would open a second menu. Gating opens on
+	// "FrameCount != menuActivityFrame" keeps it one-menu-per-frame.
+	menuActivityFrame int
+
 	// Daemon-source plumbing — only populated when cfg.Tabs.Source
 	// == "daemon". hub owns the connection + frame router; each
 	// Window builds its own tabs.Manager.SourceFactory via
@@ -362,6 +371,18 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 				Label:  "Connect to host…",
 				Action: "connect_remote",
 			})
+			// New tab / window on the host of the CURRENT remote tab —
+			// "give me another shell on the box I'm already in". Act on
+			// the active tab's host at dispatch time, so they need no
+			// per-host entries and work for ad-hoc connections too.
+			submenu = append(submenu, config.MenuItem{
+				Label:  "New Tab (current host)",
+				Action: "remote_new_tab",
+			})
+			submenu = append(submenu, config.MenuItem{
+				Label:  "New Window (current host)",
+				Action: "remote_new_window",
+			})
 			for _, h := range a.cfg.Hosts {
 				submenu = append(submenu, config.MenuItem{Action: "separator"})
 				submenu = append(submenu, config.MenuItem{
@@ -497,6 +518,18 @@ func (w *Window) openRemoteTab(hostName string) error {
 	tab.Host = hostName
 	w.tabSwitchReq = tab.ID
 	return nil
+}
+
+// openRemoteWindow spawns a NEW GUI window and opens a fresh remote
+// tab for hostName inside it. The window starts empty (no stray local
+// PTY tab) and gets its own daemon-side window on the host's hub, so
+// its tabs/focus/reorder stay independent of the spawning window's.
+func (w *Window) openRemoteWindow(hostName string) error {
+	nw := w.app.spawnEmptyWindow()
+	if nw == nil {
+		return fmt.Errorf("spawn window for %s failed", hostName)
+	}
+	return nw.openRemoteTab(hostName)
 }
 
 // openRemoteReattach drains UNADOPTED daemon windows the remote
@@ -1778,6 +1811,15 @@ func (a *App) Run() error {
 			// SDL_WINDOW_BORDERLESS.
 			windowClass := imgui.NewWindowClass()
 			windowClass.SetViewportFlagsOverrideClear(imgui.ViewportFlagsNoDecoration)
+			// NoAutoMerge: each xerotty Window must be its OWN OS
+			// viewport, never merged into another window's surface.
+			// Without this, a spawned window whose cascaded position
+			// lands within an existing window's rect gets merged by
+			// ImGui and renders INSIDE that window (e.g. "New Window"
+			// from a remote-reattach window drew the new terminal on
+			// top of the remote one). Mirrors the prefs dialog, which
+			// already forces this for the same reason.
+			windowClass.SetViewportFlagsOverrideSet(imgui.ViewportFlagsNoAutoMerge)
 			imgui.SetNextWindowClass(windowClass)
 			windowClass.Destroy()
 			// Position outside the main viewport the first time so
@@ -3141,10 +3183,19 @@ func (a *Window) frame() {
 	// just record the position; renderContextMenu draws via BeginV
 	// and we control when it closes.
 	mp := imgui.MousePos()
-	mouseInThisWindow := mp.X >= a.contentOriginX &&
-		mp.X < a.contentOriginX+float32(a.width) &&
-		mp.Y >= a.contentOriginY &&
-		mp.Y < a.contentOriginY+float32(a.height)
+	// Which Window the cursor is physically over, by OS-level pointer
+	// focus. This is the authoritative discriminator on Wayland, where
+	// every viewport reports Pos (0,0) and io.MousePos is surface-local
+	// — so a contentOrigin-based rect test is true for EVERY Window and
+	// ImGui's focus flag lags the compositor (verified: a right-click
+	// opened the menu on whichever Window ImGui happened to mark
+	// focused, not the one clicked). MouseFocusWindowID goes through OS
+	// pointer-focus and is reliable on X11/Wayland/Cocoa.
+	myWinID := uintptr(0)
+	if vp := a.viewport(); vp != nil {
+		myWinID = vp.PlatformHandle()
+	}
+	mouseOverThisWindow := myWinID != 0 && platform.MouseFocusWindowID() == myWinID
 	// Only OPEN the menu via right-click; never re-open or reposition
 	// while it's already open. If the user right-clicks the terminal
 	// with the menu showing, the click counts as a click-outside and
@@ -3152,16 +3203,15 @@ func (a *Window) frame() {
 	// re-set contextMenuOpenedFrame here, allowCloseClick would be
 	// false for that frame and the menu would silently reposition
 	// instead of closing.
-	// Only the focused Window opens its menu — without this gate,
-	// overlapping multi-viewport popout rects mean a right-click in
-	// the overlap area fires "menu open" on BOTH windows (verified:
-	// same mouse pos passes mouseInThisWindow for both), producing
-	// duplicate menus and an ImGui ID conflict. We use IsWindowFocused
-	// inline (not a.app.active, which is last-frame's value updated
-	// post-render) so the *clicked* window is the one that responds.
-	thisWindowFocused := imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows)
-	if thisWindowFocused && mouseInThisWindow && imgui.IsMouseClickedBool(imgui.MouseButtonRight) && !a.contextMenuOpen {
+	rightClicked := imgui.IsMouseClickedBool(imgui.MouseButtonRight)
+	// Open the menu only on the Window the cursor is over — exactly
+	// where the user right-clicked. Only one Window can be under the
+	// pointer at a time, so a click that dismisses one Window's menu
+	// can never reopen a menu on a different Window.
+	menuBusyThisFrame := int(imgui.FrameCount()) == a.app.menuActivityFrame
+	if mouseOverThisWindow && rightClicked && !a.contextMenuOpen && !menuBusyThisFrame {
 		a.contextMenuOpen = true
+		a.app.menuActivityFrame = int(imgui.FrameCount())
 		a.contextMenuX = mp.X
 		a.contextMenuY = mp.Y
 		// Remember which frame we opened on — renderContextMenu skips
@@ -3466,6 +3516,27 @@ func (w *Window) dispatchAction(action string) {
 	}
 	if action == "connect_remote" {
 		w.openConnectDialog()
+		return
+	}
+	// "remote_new_tab" / "remote_new_window" act on the host of the
+	// CURRENTLY active tab — a new tab/window on the same remote box
+	// you're looking at. No-op (with a note) when the active tab is
+	// local; the plain new_tab/new_window actions cover the local case.
+	if action == "remote_new_tab" || action == "remote_new_window" {
+		t := w.tabs.Active()
+		if t == nil || t.Host == "" {
+			fmt.Fprintf(os.Stderr, "xerotty: %s: active tab is not on a remote host\n", action)
+			return
+		}
+		var err error
+		if action == "remote_new_tab" {
+			err = w.openRemoteTab(t.Host)
+		} else {
+			err = w.openRemoteWindow(t.Host)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: %s %s: %v\n", action, t.Host, err)
+		}
 		return
 	}
 	switch action {
