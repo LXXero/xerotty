@@ -2846,15 +2846,17 @@ func (a *Window) frame() {
 	}
 
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
-	// Geometric scope: only the Window whose content rect contains the
-	// cursor consumes the wheel. Using a.app.active fails the same way
-	// the selection / right-click gates did on Wayland multi-viewport
-	// — focus tracking is unreliable so the wheel would silently no-op.
-	mpW := imgui.MousePos()
-	wheelInThisWindow := mpW.X >= a.contentOriginX &&
-		mpW.X < a.contentOriginX+float32(a.width) &&
-		mpW.Y >= a.contentOriginY &&
-		mpW.Y < a.contentOriginY+float32(a.height)
+	// io.MouseWheel is global, so EVERY Window's frame() sees the same
+	// delta — gate to the Window the cursor is actually over or the
+	// wheel scrolls all Windows at once. The contentOrigin rect test
+	// can't do this on Wayland (every viewport reports Pos (0,0) and
+	// io.MousePos is surface-local), so use the OS pointer-focus
+	// (MouseFocusWindowID), same as the context-menu open gate.
+	myWheelWinID := uintptr(0)
+	if vp := a.viewport(); vp != nil {
+		myWheelWinID = vp.PlatformHandle()
+	}
+	wheelInThisWindow := myWheelWinID != 0 && platform.MouseFocusWindowID() == myWheelWinID
 	wheel := imgui.CurrentIO().MouseWheel()
 	if wheel != 0 && wheelInThisWindow {
 		vpOffY := a.contentOriginY
