@@ -376,10 +376,14 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	for _, t := range c.session.Tabs() {
 		c.subscribe(t)
 	}
-	// If we just spawned the session's first tab, tell any OTHER
-	// clients already attached to this session (they'd otherwise not
-	// learn about it until their next structural event).
+	// If we just spawned the session's first tab, subscribe every
+	// attached client to it (a client that attached to the then-empty
+	// session must get its publish loop too, not just us) and tell
+	// them all about the new topology.
 	if created {
+		for _, t := range c.session.Tabs() {
+			c.daemon.subscribeSessionClients(c.session, t)
+		}
 		c.daemon.broadcastTopology(c.session)
 	}
 	// Push the current propose-mode queue so a freshly-attached
@@ -400,8 +404,9 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if rows <= 0 {
 		rows = 24
 	}
-	// Route through the daemon funnel so the new tab is broadcast to
-	// every attached client (MsgTopologyChanged), not just acked to us.
+	// Route through the daemon funnel: it subscribes EVERY attached
+	// client (including us) to the new tab and broadcasts the topology
+	// (MsgTopologyChanged), so the tab isn't just acked to the creator.
 	t, w, err := c.daemon.CreateTab(c.session, msg.WindowID, cols, rows, msg.Cwd)
 	if err != nil {
 		return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
@@ -412,7 +417,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	// Session.NewTab clamps to MaxTabDim, and the client (especially
 	// daemonsource) sizes its local emulator from this, so handing
 	// back the pre-clamp request would desync the mirror.
-	if err := c.writeFrame(protocol.MsgTabCreated, &protocol.TabCreated{
+	return c.writeFrame(protocol.MsgTabCreated, &protocol.TabCreated{
 		Info: protocol.TabInfo{
 			ID:    t.ID,
 			Title: t.Title(),
@@ -421,11 +426,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 		},
 		WindowID: w.ID,
 		ReqID:    msg.ReqID,
-	}); err != nil {
-		return err
-	}
-	c.subscribe(t)
-	return nil
+	})
 }
 
 func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
@@ -443,6 +444,7 @@ func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
 			TabIDs:       w.TabIDs,
 			FocusedTabID: w.FocusedTabID,
 		},
+		ReqID: msg.ReqID,
 	})
 }
 
@@ -450,7 +452,8 @@ func (c *clientConn) handleTabClose(msg *protocol.TabClose) error {
 	if c.session == nil {
 		return nil
 	}
-	c.unsubscribe(msg.ID)
+	// The funnel unsubscribes EVERY client (including us) before
+	// closing the tab, so we don't unsubscribe here ourselves.
 	c.daemon.CloseTab(c.session, msg.ID)
 	return nil
 }

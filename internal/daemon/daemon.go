@@ -215,17 +215,28 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 // etc. directly when they want the change broadcast.
 
 // CreateTab spawns a tab in the session and broadcasts the topology.
+// It subscribes EVERY client currently attached to the session to the
+// new tab — not just the requester — so a tab created by any client
+// (or an MCP agent) has a daemon-side publish loop feeding cells /
+// title / state / scrollback to all of them. Without this, other
+// clients adopt the tab from the broadcast but see it blank.
 func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
 	t, w, err := sess.NewTab(windowID, cols, rows, cwd)
 	if err != nil {
 		return nil, nil, err
 	}
+	d.subscribeSessionClients(sess, t)
 	d.broadcastTopology(sess)
 	return t, w, nil
 }
 
 // CloseTab removes a tab from the session and broadcasts the topology.
+// It tears down the tab's subscription on EVERY client first — publish
+// loops outlive child exit now (M2), so a missed unsubscribe would
+// leak a goroutine plus a terminal ref on every viewer, not just the
+// requester.
 func (d *Daemon) CloseTab(sess *Session, id uint32) {
+	d.unsubscribeSessionClients(sess, id)
 	sess.CloseTab(id)
 	d.broadcastTopology(sess)
 }
@@ -270,6 +281,40 @@ func (d *Daemon) broadcastTopology(sess *Session) {
 		}
 		_ = c.writeFrame(protocol.MsgTopologyChanged, &snap)
 	}
+}
+
+// subscribeSessionClients starts a publish loop for tab t on every
+// client attached to sess. subscribe is idempotent (a no-op if the
+// client already has the sub), so re-subscribing the requesting client
+// is harmless. Tab IDs are per-session, so the sessionName filter is
+// required — a same-numbered tab in another session must not be touched.
+func (d *Daemon) subscribeSessionClients(sess *Session, t *Tab) {
+	for _, c := range d.sessionClients(sess) {
+		c.subscribe(t)
+	}
+}
+
+// unsubscribeSessionClients tears down tab id's publish loop on every
+// client attached to sess (no-op for clients without that sub).
+func (d *Daemon) unsubscribeSessionClients(sess *Session, id uint32) {
+	for _, c := range d.sessionClients(sess) {
+		c.unsubscribe(id)
+	}
+}
+
+// sessionClients snapshots the client connections attached to sess
+// (matched via the sessionName atomic mirror, safe off the read-loop
+// goroutine).
+func (d *Daemon) sessionClients(sess *Session) []*clientConn {
+	d.clientsMu.Lock()
+	defer d.clientsMu.Unlock()
+	out := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		if name, _ := c.sessionName.Load().(string); name == sess.Name {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // WakeTabSubscribers nudges every client's publishLoop subscribed to
