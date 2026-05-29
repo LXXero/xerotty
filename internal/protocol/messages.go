@@ -20,7 +20,12 @@ package protocol
 //       daemon. Incompatible → bump. The Hello handshake rejects
 //       version mismatches, so this is the gate that prevents the
 //       silent-misbehavior scenarios.
-const ProtocolVersion uint16 = 3
+//   4 — Phase 9: request correlation (TabCreate/TabCreated.ReqID) +
+//       MsgTopologyChanged broadcast + Attached.Revision. A v3 client
+//       wouldn't echo/match ReqID and would ignore MsgTopologyChanged,
+//       so structural changes from other clients would silently not
+//       propagate. Hard-gated by the handshake.
+const ProtocolVersion uint16 = 4
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -71,6 +76,8 @@ const (
 
 	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
 	MsgProposalResolve   MsgType = 41 // client → server: approve/drop a pending proposal
+
+	MsgTopologyChanged   MsgType = 42 // server → client: full session topology snapshot (broadcast on structural change)
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -114,6 +121,11 @@ type Attached struct {
 	Windows     []WindowInfo `msg:"windows"`
 	Tabs        []TabInfo    `msg:"tabs"`
 	FocusedTabID uint32      `msg:"focused_tab_id"` // app-wide focused tab
+	// Revision is the session's topology revision at attach time. It
+	// seeds the client's gate so subsequent MsgTopologyChanged frames
+	// (which carry monotonically-increasing revisions) are applied
+	// only when newer — Attached IS the revision-N snapshot.
+	Revision uint64 `msg:"revision"`
 }
 
 // WindowInfo describes a top-level UI window — a grouping of tabs.
@@ -160,6 +172,12 @@ type TabCreate struct {
 	Rows     uint16 `msg:"rows"`
 	Cwd      string `msg:"cwd,omitempty"`
 	Command  string `msg:"command,omitempty"`
+	// ReqID correlates this request with its MsgTabCreated reply. The
+	// daemon echoes it verbatim. The client matches on it so a LATE
+	// ack (after a prior create timed out) can't be mistaken for the
+	// reply to a newer create — and so multiple in-flight creates can
+	// coexist. 0 means "uncorrelated" (legacy callers / fire-and-forget).
+	ReqID uint64 `msg:"req_id,omitempty"`
 }
 
 // TabClose asks the daemon to close a tab. Daemon kills the child
@@ -181,10 +199,14 @@ type TabFocus struct {
 type TabCreatedInfo TabInfo
 
 // TabCreated confirms a newly-spawned tab's assigned ID + initial
-// dimensions, and which window it landed in.
+// dimensions, and which window it landed in. ReqID echoes the
+// TabCreate.ReqID so the requesting client can correlate (see
+// TabCreate.ReqID). It's unicast to the requester; the broadcast that
+// tells OTHER clients about the new tab is MsgTopologyChanged.
 type TabCreated struct {
 	Info     TabInfo `msg:"info"`
 	WindowID uint32  `msg:"window_id"`
+	ReqID    uint64  `msg:"req_id,omitempty"`
 }
 
 // WindowCreate asks the daemon to register a new logical UI window
@@ -502,4 +524,24 @@ type ScrollbackAppend struct {
 	ID      uint32   `msg:"id"`
 	BaseIdx uint32   `msg:"base_idx"`
 	Rows    [][]Cell `msg:"rows"`
+}
+
+// TopologyChanged is broadcast server→client to EVERY client attached
+// to a session whenever its structure changes — a tab or window is
+// created/closed, or a tab moves between windows (whether the change
+// came from a wire client or an MCP agent). It carries a full
+// snapshot, not a delta, so there's no ordering/merge bug class: the
+// client replaces its tab/window view wholesale, idempotently.
+//
+// Revision is a monotonically-increasing per-session counter. The
+// client applies a snapshot only if Revision is strictly greater than
+// the last one it applied (seeded from Attached.Revision), so a
+// reordered or duplicated broadcast can't roll the view backwards.
+// Windows/Tabs/FocusedTabID mirror the Attached frame's fields.
+type TopologyChanged struct {
+	SessionName  string       `msg:"session_name"`
+	Revision     uint64       `msg:"revision"`
+	Windows      []WindowInfo `msg:"windows"`
+	Tabs         []TabInfo    `msg:"tabs"`
+	FocusedTabID uint32       `msg:"focused_tab_id"`
 }
