@@ -5348,11 +5348,11 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		cell := cellAtViewport(tab.Terminal.Emulator(), col, row, scrollOff)
+		cell := cellAtViewport(tab.Terminal, col, row, scrollOff)
 		if cell != nil && isSelWordChar(cell.Content) {
-			w.sel.selectWord(tab.Terminal.Emulator(), col, row, scrollOff)
+			w.sel.selectWord(tab.Terminal, col, row, scrollOff)
 		} else {
-			w.sel.selectSpace(tab.Terminal.Emulator(), col, row, scrollOff)
+			w.sel.selectSpace(tab.Terminal, col, row, scrollOff)
 		}
 		if w.sel.active {
 			// iTerm2-style: hold-and-drag after a double-click extends
@@ -5360,7 +5360,7 @@ func (w *Window) handleMouseSelection() {
 			// anchor. Release without movement just keeps the word
 			// selection.
 			w.sel.dragging = true
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 		w.lastDblClickTime = imgui.Time()
 		w.lastDblClickRow = row
@@ -5372,11 +5372,11 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.sel.selectLine(tab.Terminal.Emulator(), row, scrollOff)
+			w.sel.selectLine(tab.Terminal, row, scrollOff)
 			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
 				w.sel.dragging = true
-				w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+				w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 			}
 			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
@@ -5392,7 +5392,7 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		w.sel.extendDrag(row, col, tab.Terminal.Emulator(), scrollOff)
+		w.sel.extendDrag(row, col, tab.Terminal, scrollOff)
 	}
 
 	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
@@ -5404,7 +5404,7 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 	}
 
@@ -5461,7 +5461,7 @@ func (w *Window) selectedText() string {
 	if s, ok := w.scroll[tab.ID]; ok {
 		scrollOff = s.Offset
 	}
-	return w.sel.extractText(tab.Terminal.Emulator(), scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
+	return w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
 }
 
 func getCWD(term interface{}) string {

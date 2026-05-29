@@ -5,8 +5,22 @@ import (
 	"unicode"
 
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/x/vt"
 )
+
+// cellGrid is the scrollback-aware cell reader the selection needs.
+// Both in-process (*terminal.Terminal) and daemon-backed
+// (*daemonsource.Source) tabs satisfy it through terminal.Source — so
+// selection reads scrollback from whichever holds it. Critically, for
+// daemon tabs the scrollback lives in the Source's mirror, NOT the
+// bare viewport *vt.SafeEmulator; reading the raw emulator (as this
+// code used to) returned empty cells once scrolled back, so copying a
+// selection from scrollback yielded nothing on daemon-backed tabs.
+type cellGrid interface {
+	Width() int
+	CellAt(col, row int) *uv.Cell
+	ScrollbackLen() int
+	ScrollbackCellAt(col, row int) *uv.Cell
+}
 
 // selectionMode controls how a held drag extends the current selection.
 // iTerm2-style: the mode is set when the user enters drag (single click
@@ -87,7 +101,7 @@ func (s *selection) contains(col, row int) bool {
 // rather than the grid padding. With trimTrailing=false the full
 // padded row is preserved — useful for copying ASCII art or
 // alignment-sensitive content where column position matters.
-func (s *selection) extractText(emu *vt.SafeEmulator, scrollOffset int, trimTrailing bool) string {
+func (s *selection) extractText(emu cellGrid, scrollOffset int, trimTrailing bool) string {
 	if !s.active {
 		return ""
 	}
@@ -149,7 +163,7 @@ func (s *selection) startCharDrag(row, col int) {
 
 // selectWord selects the word under (col, row) using word-character rules.
 // Sets mode=word, the anchor brackets the word, and active=true.
-func (s *selection) selectWord(emu *vt.SafeEmulator, col, row, scrollOffset int) {
+func (s *selection) selectWord(emu cellGrid, col, row, scrollOffset int) {
 	cell := cellAtViewport(emu, col, row, scrollOffset)
 	if cell == nil || !isSelWordChar(cell.Content) {
 		return
@@ -168,7 +182,7 @@ func (s *selection) selectWord(emu *vt.SafeEmulator, col, row, scrollOffset int)
 // xfce4-terminal behavior: double-click on blank = select the blank run.
 // Mode stays modeWord so drag-extend treats the run as a single unit
 // and snaps to neighbouring word/whitespace runs.
-func (s *selection) selectSpace(emu *vt.SafeEmulator, col, row, scrollOffset int) {
+func (s *selection) selectSpace(emu cellGrid, col, row, scrollOffset int) {
 	cell := cellAtViewport(emu, col, row, scrollOffset)
 	if cell != nil && isSelWordChar(cell.Content) {
 		return // not blank — selectWord should handle this
@@ -185,7 +199,7 @@ func (s *selection) selectSpace(emu *vt.SafeEmulator, col, row, scrollOffset int
 
 // selectLine selects the entire line at the given row.
 // xfce4-terminal behavior: triple-click = select line.
-func (s *selection) selectLine(emu *vt.SafeEmulator, row, scrollOffset int) {
+func (s *selection) selectLine(emu cellGrid, row, scrollOffset int) {
 	cols := emu.Width()
 	s.mode = modeLine
 	s.anchorR1, s.anchorR2 = row, row
@@ -200,7 +214,7 @@ func (s *selection) selectLine(emu *vt.SafeEmulator, row, scrollOffset int) {
 // cursor at (curRow, curCol). Mode controls how the cursor end snaps:
 // modeChar uses the exact cell, modeWord expands to the word /
 // whitespace run under the cursor, modeLine selects whole rows.
-func (s *selection) extendDrag(curRow, curCol int, emu *vt.SafeEmulator, scrollOffset int) {
+func (s *selection) extendDrag(curRow, curCol int, emu cellGrid, scrollOffset int) {
 	cols := emu.Width()
 	if curCol < 0 {
 		curCol = 0
@@ -280,7 +294,7 @@ func cellClass(c *uv.Cell) charClass {
 // contiguous whitespace run, or a single punctuation cell. Used by
 // selectWord / selectSpace for the initial pick and by extendDrag in
 // modeWord.
-func wordBoundsAt(emu *vt.SafeEmulator, col, row, scrollOffset int) (startCol, endCol int) {
+func wordBoundsAt(emu cellGrid, col, row, scrollOffset int) (startCol, endCol int) {
 	cols := emu.Width()
 	class := cellClass(cellAtViewport(emu, col, row, scrollOffset))
 	if class == classPunct {
@@ -305,7 +319,7 @@ func wordBoundsAt(emu *vt.SafeEmulator, col, row, scrollOffset int) (startCol, e
 
 // cellAtViewport returns the cell at viewport (col, row) accounting for scroll.
 // This mirrors renderer.cellAt but is accessible from the app package.
-func cellAtViewport(emu *vt.SafeEmulator, col, row, scrollOffset int) *uv.Cell {
+func cellAtViewport(emu cellGrid, col, row, scrollOffset int) *uv.Cell {
 	sbLen := emu.ScrollbackLen()
 	contentIdx := sbLen - scrollOffset + row
 	if contentIdx < sbLen {
