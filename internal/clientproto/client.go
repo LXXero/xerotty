@@ -43,6 +43,7 @@ type Client struct {
 	sbCleared     chan *protocol.ScrollbackCleared
 	clipboardSet  chan *protocol.ClipboardSet
 	proposals     chan *protocol.ProposalsChanged
+	topology      chan *protocol.TopologyChanged
 	errCh         chan *protocol.Error
 	closed     chan struct{}
 
@@ -87,6 +88,7 @@ func wrap(conn net.Conn) *Client {
 		sbCleared:     make(chan *protocol.ScrollbackCleared, 8),
 		clipboardSet:  make(chan *protocol.ClipboardSet, 8),
 		proposals:     make(chan *protocol.ProposalsChanged, 8),
+		topology:      make(chan *protocol.TopologyChanged, 8),
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
@@ -131,10 +133,19 @@ func (c *Client) Detach() error {
 }
 
 // SendTabCreate requests a new tab. windowID=0 means "session's
-// default window".
+// default window". Uncorrelated (ReqID 0) — for fire-and-forget
+// callers that don't need to match the MsgTabCreated reply. Callers
+// that adopt the resulting tab should use SendTabCreateReq.
 func (c *Client) SendTabCreate(windowID uint32, cols, rows uint16, cwd, command string) error {
+	return c.SendTabCreateReq(windowID, cols, rows, cwd, command, 0)
+}
+
+// SendTabCreateReq is SendTabCreate with a request ID the daemon
+// echoes in MsgTabCreated, so the caller can correlate the reply to
+// this specific request (see protocol.TabCreate.ReqID).
+func (c *Client) SendTabCreateReq(windowID uint32, cols, rows uint16, cwd, command string, reqID uint64) error {
 	return c.send(protocol.MsgTabCreate, &protocol.TabCreate{
-		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command,
+		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command, ReqID: reqID,
 	})
 }
 
@@ -310,6 +321,12 @@ func (c *Client) ClipboardSet() <-chan *protocol.ClipboardSet { return c.clipboa
 // updates. The GUI renders an approval gate from the latest list.
 func (c *Client) ProposalsChanged() <-chan *protocol.ProposalsChanged { return c.proposals }
 
+// Topology returns the channel of MsgTopologyChanged snapshots —
+// broadcast whenever the session's window/tab structure changes
+// (from any client or MCP agent). The Hub consumes these to reconcile
+// its adopted Sources.
+func (c *Client) Topology() <-chan *protocol.TopologyChanged { return c.topology }
+
 // SendProposalResolve approves (apply) or drops (discard) a
 // pending propose-mode proposal by index.
 func (c *Client) SendProposalResolve(index uint32, approve bool) error {
@@ -472,6 +489,16 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		case c.proposals <- msg:
 		default:
 		}
+	case protocol.MsgTopologyChanged:
+		msg := &protocol.TopologyChanged{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		// Block — topology snapshots are revision-gated and idempotent,
+		// but dropping one risks the client missing a structural change
+		// until the next mutation. The channel is buffered; back-pressure
+		// the daemon rather than lose a snapshot.
+		c.topology <- msg
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
