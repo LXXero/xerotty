@@ -90,6 +90,16 @@ type App struct {
 	remoteHubsMu sync.Mutex
 	remoteHubs   map[string]*remoteHubEntry
 
+	// adhocHosts holds ad-hoc "Connect to host…" targets the user
+	// typed this session — connections NOT backed by a [[hosts]]
+	// bookmark. Keyed by the same string used as the hub registry
+	// key + Tab.Host badge (the typed destination, e.g. "user@kh").
+	// resolveRemote consults this so re-dials after an SSH drop can
+	// recover the dest/args without a cfg entry. Main-thread only
+	// (touched from the connect dialog + remoteHubFor, both on the
+	// UI goroutine), so it shares no lock with remoteHubs.
+	adhocHosts map[string]config.RemoteHost
+
 	// suppressInitialTab tells spawnWindowImpl to skip ALL tab
 	// creation for the next spawn — used by spawnEmptyWindow when
 	// the caller will adopt tabs into the window itself (remote
@@ -344,14 +354,16 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 	out := make([]config.MenuItem, 0, len(items))
 	for _, item := range items {
 		if item.Action == "_remote_hosts" {
-			if len(a.cfg.Hosts) == 0 {
-				continue
-			}
-			submenu := make([]config.MenuItem, 0, len(a.cfg.Hosts)*2+1)
-			for i, h := range a.cfg.Hosts {
-				if i > 0 {
-					submenu = append(submenu, config.MenuItem{Action: "separator"})
-				}
+			submenu := make([]config.MenuItem, 0, len(a.cfg.Hosts)*2+2)
+			// Ad-hoc connect is always offered, even with no
+			// [[hosts]] bookmarks — the GUI no longer requires a
+			// config entry to reach a remote box.
+			submenu = append(submenu, config.MenuItem{
+				Label:  "Connect to host…",
+				Action: "connect_remote",
+			})
+			for _, h := range a.cfg.Hosts {
+				submenu = append(submenu, config.MenuItem{Action: "separator"})
 				submenu = append(submenu, config.MenuItem{
 					Label:  "New tab on " + h.Name,
 					Action: "new_tab_remote:" + h.Name,
@@ -460,7 +472,9 @@ func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, _ /*ignored*/ uint32, idx int3
 }
 
 // openRemoteTab spawns a NEW tab whose source is a daemon on a
-// named remote host (from cfg.Hosts). For "show me what's already
+// remote host. hostName is a hub-registry key: a cfg.Hosts bookmark
+// name, an ad-hoc destination from the connect dialog, or a bare SSH
+// dest — all resolved by remoteHubFor. For "show me what's already
 // running over there" use openRemoteReattach instead. Both share
 // the per-host Hub so they use one SSH connection.
 func (w *Window) openRemoteTab(hostName string) error {
@@ -579,8 +593,10 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 // remoteHubFor returns the registry entry for the named host,
 // lazily building it (SSH-dial + hello + attach) on first request.
 // Subsequent calls reuse the same Hub so one SSH connection serves
-// many tabs on that host. Returns an error if the named host isn't
-// in cfg.Hosts or the SSH connection fails.
+// many tabs on that host. name is resolved by resolveRemote (a
+// cfg.Hosts bookmark, a session ad-hoc target, or a bare SSH dest),
+// so a config entry is NOT required. Returns an error if the name is
+// blank or the SSH connection fails.
 //
 // The Attached frame is captured into the entry's reattachQueue so
 // openRemoteReattach can later adopt any pre-existing remote tabs.
@@ -602,15 +618,9 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 	}
 	a.remoteHubsMu.Unlock()
 
-	var host *config.RemoteHost
-	for i := range a.cfg.Hosts {
-		if a.cfg.Hosts[i].Name == name {
-			host = &a.cfg.Hosts[i]
-			break
-		}
-	}
-	if host == nil {
-		return nil, fmt.Errorf("remote host %q not in cfg.Hosts", name)
+	host, ok := a.resolveRemote(name)
+	if !ok {
+		return nil, fmt.Errorf("remote host %q: empty destination", name)
 	}
 
 	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
@@ -685,6 +695,65 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 	a.remoteHubs[name] = entry
 	a.remoteHubsMu.Unlock()
 	return entry, nil
+}
+
+// resolveRemote maps a hub-registry key to the SSH connection params
+// to dial it. Three sources, in priority order:
+//
+//  1. a [[hosts]] bookmark whose Name matches — the configured path.
+//  2. an ad-hoc target the user typed via "Connect to host…" this
+//     session (a.adhocHosts).
+//  3. fallback: treat the key ITSELF as a bare SSH destination
+//     (normalized) with the default remote command. This is what
+//     makes `ssh user@host`-style connections work without any
+//     config entry — the GUI no longer requires a bookmark.
+//
+// ok is false only for an empty/blank key, which can't be dialed.
+func (a *App) resolveRemote(name string) (config.RemoteHost, bool) {
+	for i := range a.cfg.Hosts {
+		if a.cfg.Hosts[i].Name == name {
+			return a.cfg.Hosts[i], true
+		}
+	}
+	if h, ok := a.adhocHosts[name]; ok {
+		return h, true
+	}
+	dest := normalizeSSHDest(name)
+	if dest == "" {
+		return config.RemoteHost{}, false
+	}
+	return config.RemoteHost{Name: name, SSHDest: dest}, true
+}
+
+// normalizeSSHDest cleans a user-typed destination into something
+// ssh(1) accepts. Plain `ssh user@host:2222` does NOT work — bare
+// `host:port` is parsed as a hostname, not a port — but the URI form
+// `ssh://[user@]host:port` does. So a trailing numeric `:port` with
+// no scheme is rewritten to the ssh:// form; everything else (plain
+// "user@host", an ~/.ssh/config alias, an already-ssh:// URI) passes
+// through untouched.
+func normalizeSSHDest(in string) string {
+	s := strings.TrimSpace(in)
+	if s == "" || strings.Contains(s, "://") {
+		return s
+	}
+	// Only treat the LAST colon as a port separator, and only when
+	// what follows is all digits — leaves IPv6 literals and aliases
+	// containing colons alone.
+	if i := strings.LastIndex(s, ":"); i > 0 && i < len(s)-1 {
+		port := s[i+1:]
+		allDigits := true
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return "ssh://" + s
+		}
+	}
+	return s
 }
 
 // daemonTabSnapshot is one tab the daemon reported at attach time —
@@ -906,10 +975,15 @@ func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
 // SourceFor implements guimcp.Backend: resolve "<host>:<tabid>"
 // to the Source on that host's hub.
 func (a *App) SourceFor(nsID string) (*daemonsource.Source, bool) {
-	host, idStr, ok := strings.Cut(nsID, ":")
-	if !ok {
+	// Split on the LAST colon, not the first: an ad-hoc host key can
+	// itself contain a colon (e.g. "user@host:2222"), and the tab ID
+	// is always the trailing numeric segment. strings.Cut (first
+	// colon) would mis-parse "user@host:2222:5" as host="user@host".
+	i := strings.LastIndex(nsID, ":")
+	if i < 0 {
 		return nil, false
 	}
+	host, idStr := nsID[:i], nsID[i+1:]
 	id64, err := strconv.ParseUint(idStr, 10, 32)
 	if err != nil {
 		return nil, false
@@ -3111,6 +3185,9 @@ func (a *Window) frame() {
 	// Tab rename dialog
 	a.renderRenameDialog()
 
+	// "Connect to host…" ad-hoc remote dialog
+	a.renderConnectDialog()
+
 	// Preferences dialog
 	a.renderPreferences()
 
@@ -3192,6 +3269,16 @@ func (w *Window) processKeys() {
 	// even though nothing on screen needs the keys.
 	if imgui.CurrentIO().WantTextInput() && !searchInputFocused {
 		return
+	}
+
+	// Past the gates, the terminal owns keyboard input this frame —
+	// re-assert SDL text input on this Window so typed characters keep
+	// flowing. A dialog's InputText (rename/connect/search) closing
+	// makes the ImGui backend SDL_StopTextInput this very window,
+	// which would otherwise leave the terminal able to see mapped keys
+	// (Enter, arrows) but not typed characters. No-op when already on.
+	if vp := w.viewport(); vp != nil {
+		platform.EnsureTextInput(vp.PlatformHandle())
 	}
 
 	// Poll ImGui key state (SDL backend's SetKeyCallback is not implemented).
@@ -3375,6 +3462,10 @@ func (w *Window) dispatchAction(action string) {
 		if err := w.openRemoteReattach(host); err != nil {
 			fmt.Fprintf(os.Stderr, "xerotty: attach_remote %s: %v\n", host, err)
 		}
+		return
+	}
+	if action == "connect_remote" {
+		w.openConnectDialog()
 		return
 	}
 	switch action {
@@ -4686,6 +4777,105 @@ func (w *Window) renderRenameDialog() {
 		}
 	}
 	imgui.End()
+}
+
+// openConnectDialog shows the ad-hoc "Connect to host…" prompt. The
+// buffers persist between opens so a typo'd dest is still there to
+// fix; only the stale error is cleared.
+func (w *Window) openConnectDialog() {
+	w.connectingHost = true
+	w.connectError = ""
+	w.app.active = w
+}
+
+// renderConnectDialog draws the ad-hoc remote-connect prompt. Mirrors
+// renderRenameDialog: a single dimmed, auto-resizing modal centered on
+// this Window, Enter-to-submit from the destination field.
+func (w *Window) renderConnectDialog() {
+	if !w.connectingHost {
+		return
+	}
+
+	// Dim THIS Window only — same as the rename / paste dialogs.
+	dimCol := uint32(0x80000000)
+	w.bgDrawList().AddRectFilled(
+		imgui.Vec2{X: w.contentOriginX, Y: w.contentOriginY},
+		imgui.Vec2{X: w.contentOriginX + float32(w.width), Y: w.contentOriginY + float32(w.height)},
+		dimCol,
+	)
+
+	if vp := w.viewport(); vp != nil {
+		imgui.SetNextWindowViewport(vp.ID())
+	}
+	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
+	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
+
+	flags := imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoDocking
+	if imgui.BeginV("Connect to host###connectdlg"+w.imguiSuffix(), nil, flags) {
+		imgui.Text("SSH destination (user@host, host, or ~/.ssh/config alias):")
+		submit := false
+		imgui.InputTextWithHint("##connectdest", "user@host", &w.connectBuffer, 0, nil)
+		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
+			submit = true
+		}
+		imgui.Text("Extra ssh options (optional):")
+		imgui.InputTextWithHint("##connectargs", "-p 2222 -i ~/.ssh/key", &w.connectArgsBuffer, 0, nil)
+		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
+			submit = true
+		}
+
+		if w.connectError != "" {
+			imgui.Text("Error: " + w.connectError)
+		}
+
+		if imgui.Button("Connect") {
+			submit = true
+		}
+		imgui.SameLineV(0, 8)
+		if imgui.Button("Cancel") {
+			w.connectingHost = false
+			w.connectError = ""
+		}
+
+		if submit {
+			w.doConnect()
+		}
+	}
+	imgui.End()
+}
+
+// doConnect dials the typed ad-hoc destination, registers it as a
+// session host so re-dials/reattach can find it, and opens a tab.
+// On failure it keeps the dialog open with the error so the user can
+// correct the input.
+func (w *Window) doConnect() {
+	dest := strings.TrimSpace(w.connectBuffer)
+	if dest == "" {
+		w.connectError = "destination is required"
+		return
+	}
+	host := config.RemoteHost{
+		Name:    dest,
+		SSHDest: normalizeSSHDest(dest),
+		SSHArgs: strings.Fields(w.connectArgsBuffer),
+	}
+	if w.app.adhocHosts == nil {
+		w.app.adhocHosts = make(map[string]config.RemoteHost)
+	}
+	w.app.adhocHosts[dest] = host
+
+	if err := w.openRemoteTab(dest); err != nil {
+		// Drop the half-registered entry so a later retry with
+		// corrected args isn't shadowed by this failed attempt.
+		delete(w.app.adhocHosts, dest)
+		w.connectError = err.Error()
+		return
+	}
+	w.connectingHost = false
+	w.connectError = ""
 }
 
 func (w *Window) handleMouseSelection() {

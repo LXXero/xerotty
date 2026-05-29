@@ -322,6 +322,25 @@ extern "C" void platform_raise_window(unsigned long window_id) {
     SDL_RaiseWindow(w);
 }
 
+// platform_ensure_text_input re-asserts SDL text input on the given
+// window if it isn't already active. SDL3 only delivers
+// SDL_EVENT_TEXT_INPUT (the source of typed characters the terminal
+// reads via io.InputQueueCharacters) while text input is ACTIVE on a
+// window. The ImGui SDL3 backend's PlatformSetImeData calls
+// SDL_StopTextInput on a window whenever an InputText there
+// deactivates — so any dialog (rename, connect, search) pinned to the
+// terminal's own viewport turns the terminal's character input OFF
+// when it closes, leaving mapped keys working but typing dead. The
+// app calls this every frame the terminal owns keyboard input,
+// re-establishing the invariant "focused terminal window has text
+// input active." Guarded by SDL_TextInputActive so it's a no-op when
+// already on and never fights the backend while an InputText is up.
+extern "C" void platform_ensure_text_input(unsigned long window_id) {
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return;
+    if (!SDL_TextInputActive(w)) SDL_StartTextInput(w);
+}
+
 extern "C" void platform_resync_modifiers(void) {
     // On macOS, SDL_GetModState mirrors the per-window NSEvent
     // modifier stream — which AppKit corrupts during window-focus

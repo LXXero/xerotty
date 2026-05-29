@@ -151,6 +151,21 @@ func RaiseWindow(windowID uintptr) {
 	C.platform_raise_window(C.ulong(windowID))
 }
 
+// EnsureTextInput re-asserts SDL text input on the window so the
+// terminal keeps receiving typed characters (SDL_EVENT_TEXT_INPUT →
+// io.InputQueueCharacters). The ImGui SDL3 backend calls
+// SDL_StopTextInput on a window when an InputText there deactivates,
+// so any dialog pinned to the terminal's viewport (rename, connect,
+// search) silently kills terminal typing on close. Called every frame
+// the terminal owns keyboard input; a no-op (guarded by
+// SDL_TextInputActive) when already active. windowID 0 is ignored.
+func EnsureTextInput(windowID uintptr) {
+	if windowID == 0 {
+		return
+	}
+	C.platform_ensure_text_input(C.ulong(windowID))
+}
+
 // MouseFocusWindowID returns the SDL_WindowID of the window the OS
 // cursor is currently over, or 0 if it's not over any of our windows.
 // Reliable on every backend (X11, XWayland, native Wayland, Cocoa)

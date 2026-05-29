@@ -62,6 +62,7 @@ var prefMenuActions = []string{
 	"search", "fullscreen",
 	"select_all", "clear_scrollback", "reset_terminal",
 	"rename_tab", "preferences",
+	"connect_remote",
 	"font_size_up", "font_size_down", "font_size_reset",
 	// _remote_hosts is a magic action: at render time
 	// app.expandMenu replaces it with a "Remote" submenu
@@ -89,6 +90,7 @@ var prefMenuLabels = map[string]string{
 	"reset_terminal":   "Reset Terminal",
 	"rename_tab":       "Rename Tab",
 	"preferences":      "Preferences",
+	"connect_remote":   "Connect to host…",
 	"font_size_up":     "Font Size Up",
 	"font_size_down":   "Font Size Down",
 	"font_size_reset":  "Font Size Reset",

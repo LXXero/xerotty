@@ -91,6 +91,12 @@ void platform_resync_modifiers(void);
 // in the first frame after Cmd+N route to the wrong window.
 void platform_raise_window(unsigned long window_id);
 
+// platform_ensure_text_input re-asserts SDL text input on the given
+// window if not already active, so the terminal keeps receiving
+// SDL_EVENT_TEXT_INPUT (typed characters) after an ImGui InputText
+// dialog on the same viewport closes and the backend stopped it.
+void platform_ensure_text_input(unsigned long window_id);
+
 // platform_set_window_icon attaches an RGBA8 pixel buffer to the
 // SDL_Window with the given ID via SDL_SetWindowIcon. The pixels are
 // row-major, top-to-bottom, with no padding (pitch = width * 4). On

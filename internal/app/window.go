@@ -111,6 +111,10 @@ type Window struct {
 	hoveredLink        *linkHit
 	renamingTab        bool
 	renameBuffer       string
+	connectingHost     bool   // "Connect to host…" dialog open
+	connectBuffer      string // typed SSH destination (user@host / alias)
+	connectArgsBuffer  string // optional extra ssh args (e.g. "-p 2222 -i key")
+	connectError       string // last connect failure, shown in the dialog
 	sbDragging         bool
 	searchFocusInput   bool
 	searchInputFocused bool
