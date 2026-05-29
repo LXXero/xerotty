@@ -522,13 +522,15 @@ func (s *Source) signalDirty() {
 
 // uvCellFromProto converts a wire-format Cell back to the
 // ultraviolet.Cell the emulator expects. Reverses
-// daemon/cell_convert.go::cellFromUV. The attr byte already lines
-// up with uv.Attr* bit positions (both packs in the same order, see
-// protocol.PackStyle).
+// daemon/cell_convert.go::cellFromUV — including the per-bit attr
+// remap: protocol's attr bit layout (Bold,Italic,Faint,…) does NOT
+// match ultraviolet's (Bold,Faint,Italic,…), so the raw bits must be
+// translated, not copied. Copying them straight swapped faint↔italic
+// and reverse/strike, which made faint text render un-dimmed.
 func uvCellFromProto(p protocol.Cell) uv.Cell {
 	attrs, ulStyle, fgSet, fgIdx, fgIsRGB, bgSet, bgIdx, bgIsRGB := protocol.UnpackStyle(p.Style)
 	style := uv.Style{
-		Attrs:     uint8(attrs),
+		Attrs:     uvAttrsFromProto(attrs),
 		Underline: uv.Underline(ulStyle),
 	}
 	if fgSet {
@@ -559,6 +561,38 @@ func uvCellFromProto(p protocol.Cell) uv.Cell {
 		c.Width = 1
 	}
 	return c
+}
+
+// uvAttrsFromProto translates protocol attr bits to ultraviolet attr
+// bits. The two enums are NOT bit-compatible (protocol orders
+// Bold,Italic,Faint,Blink,Reverse,Strike,Conceal; ultraviolet orders
+// Bold,Faint,Italic,Blink,RapidBlink,Reverse,Conceal,Strikethrough),
+// so each flag is mapped explicitly — the exact inverse of
+// daemon/cell_convert.go's uv→protocol mapping.
+func uvAttrsFromProto(a uint32) uint8 {
+	var out uint8
+	if a&protocol.AttrBold != 0 {
+		out |= uv.AttrBold
+	}
+	if a&protocol.AttrItalic != 0 {
+		out |= uv.AttrItalic
+	}
+	if a&protocol.AttrFaint != 0 {
+		out |= uv.AttrFaint
+	}
+	if a&protocol.AttrBlink != 0 {
+		out |= uv.AttrBlink
+	}
+	if a&protocol.AttrReverse != 0 {
+		out |= uv.AttrReverse
+	}
+	if a&protocol.AttrStrike != 0 {
+		out |= uv.AttrStrikethrough
+	}
+	if a&protocol.AttrConceal != 0 {
+		out |= uv.AttrConceal
+	}
+	return out
 }
 
 // rgbColor unpacks a packed 0xRRGGBB integer into a stdlib
