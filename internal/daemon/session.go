@@ -85,6 +85,25 @@ type ProposedAction struct {
 	Bytes  []byte // raw for input, paste text encoded as bytes
 }
 
+// MaxTabDim bounds client-requested grid dimensions. A bogus or
+// hostile TabCreate/Resize (rows/cols in the millions) would
+// otherwise make the daemon allocate an enormous cell grid on every
+// snapshot and OOM. 2000 is far past any real display — a 4K screen
+// at a tiny 6px font is ~640 columns.
+const MaxTabDim = 2000
+
+// ClampTabDim clamps a requested dimension to [1, MaxTabDim]. Used at
+// every client-facing tab create/resize boundary (wire + MCP).
+func ClampTabDim(v int) int {
+	if v < 1 {
+		return 1
+	}
+	if v > MaxTabDim {
+		return MaxTabDim
+	}
+	return v
+}
+
 // proposedCap bounds Session.proposed so a noisy agent can't
 // exhaust memory in propose mode. Drops oldest on overflow — the
 // alternative (blocking the agent's RPC) would hang propose-mode
@@ -219,13 +238,6 @@ type Tab struct {
 
 	Term *terminal.Terminal
 
-	// Per-tab serial number incremented every time the daemon
-	// observes a "potentially new render" signal (new PTY data,
-	// cursor move from app side, resize). Connections compare to
-	// their last-published serial to decide whether to send a fresh
-	// frame.
-	dirty atomic.Uint64
-
 	// Exited is closed once the PTY child reaps. Subscribers (each
 	// attached client's publishLoop) select on it to know when to
 	// ship MsgChildExit + tear down the per-(client, tab) state.
@@ -344,6 +356,8 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	// "memory mode" preference still applies as a client-side
 	// display cap (daemonsource.Hub.SetScrollbackCap). Server
 	// hoards; client decides how much to mirror.
+	cols = ClampTabDim(cols)
+	rows = ClampTabDim(rows)
 	term, err := terminal.NewDaemonHosted(s.cfg, cols, rows, cwd)
 	if err != nil {
 		return nil, nil, err

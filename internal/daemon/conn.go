@@ -24,11 +24,16 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		reader:  protocol.NewFrameReader(conn),
 		joined:  time.Now(),
 	}
+	// Install the unregister before handshake: handshake registers the
+	// client on the daemon BEFORE writing HelloAck, so a failed ack
+	// write would otherwise leak the client entry. unregisterClient is
+	// a no-op delete if registration never happened (version mismatch
+	// bails before registering).
+	defer d.unregisterClient(c)
 	if err := c.handshake(); err != nil {
 		fmt.Fprintf(os.Stderr, "xerottyd: handshake failed: %v\n", err)
 		return
 	}
-	defer d.unregisterClient(c)
 	c.runReadLoop()
 }
 
@@ -45,7 +50,13 @@ type clientConn struct {
 	clientID string    // from Hello
 	joined   time.Time // when this conn was accepted
 
-	session *Session // nil until Attach succeeds
+	session *Session // nil until Attach succeeds; only the read loop touches it
+
+	// sessionName mirrors session.Name ("" when detached) for
+	// cross-goroutine reads. AttachedClients (called on the MCP
+	// goroutine) needs the name but must not touch c.session, which
+	// the read loop mutates without a lock. Always holds a string.
+	sessionName atomic.Value
 
 	// Subscriptions: per attached tab, a publish goroutine + the
 	// state it needs (cancel channel + last-shipped grid for diff
@@ -59,6 +70,14 @@ type clientConn struct {
 	// typed. Only the read loop touches this, so no lock needed.
 	imgAccum map[uint32]*imageAssembly
 }
+
+// maxConcurrentImageAssemblies caps how many in-progress chunked
+// image pastes one connection may have open at once. Each assembly
+// can buffer up to the 256MiB per-assembly ceiling, so without this
+// a client could pin N×256MiB by interleaving uploads under distinct
+// tab IDs. A real client pastes one image at a time; a few in flight
+// is generous.
+const maxConcurrentImageAssemblies = 4
 
 // imageAssembly buffers an in-progress chunked image paste.
 type imageAssembly struct {
@@ -82,8 +101,10 @@ type tabSub struct {
 	// lastScrollbackLen is the highest absolute scrollback index we
 	// shipped to this client. When the daemon's scrollback grows
 	// past this, the new rows (lastScrollbackLen .. current) get
-	// shipped as MsgScrollbackAppend.
-	lastScrollbackLen int
+	// shipped as MsgScrollbackAppend. Atomic because the publish
+	// goroutine advances it while broadcastScrollbackCleared (running
+	// on whichever client issued the clear) resets it to 0.
+	lastScrollbackLen atomic.Int64
 
 	// Per-sub cache of the last TabState we sent. Suppresses
 	// re-sends when nothing changed since the previous tick.
@@ -161,6 +182,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 	case protocol.MsgDetach:
 		c.stopAllSubs()
 		c.session = nil
+		c.sessionName.Store("")
 		return nil
 	case protocol.MsgTabCreate:
 		var msg protocol.TabCreate
@@ -306,6 +328,7 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 		name = "default"
 	}
 	c.session = c.daemon.session(name)
+	c.sessionName.Store(c.session.Name)
 	if msg.NewIfMissing {
 		if _, err := c.session.EnsureInitialTab(80, 24, ""); err != nil {
 			return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
@@ -420,8 +443,16 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 	if t == nil {
 		return nil
 	}
-	t.Term.Resize(int(msg.Cols), int(msg.Rows))
-	t.dirty.Add(1)
+	t.Term.Resize(ClampTabDim(int(msg.Cols)), ClampTabDim(int(msg.Rows)))
+	// Wake every subscriber's publishLoop so it re-paints at the new
+	// dimensions. publishLoop selects on DataCh; a resize alone emits
+	// no PTY output, so without this nudge the client would show the
+	// old grid until the app next wrote something. Non-blocking —
+	// DataCh is cap=1 and the publishLoop drains it.
+	select {
+	case t.Term.DataCh <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -486,11 +517,25 @@ func (c *clientConn) handleImageChunk(msg *protocol.InputImageChunk) error {
 	if c.session == nil {
 		return nil
 	}
+	// Don't buffer bytes for a tab that doesn't exist — otherwise a
+	// client could pin memory under arbitrary bogus tab IDs that no
+	// Final flush will ever target. Also drops any stale partial.
+	if c.session.Tab(msg.ID) == nil {
+		delete(c.imgAccum, msg.ID)
+		return nil
+	}
 	if c.imgAccum == nil {
 		c.imgAccum = make(map[uint32]*imageAssembly)
 	}
 	asm := c.imgAccum[msg.ID]
 	if msg.Seq == 0 {
+		// Cap concurrent assemblies so a client can't pin many
+		// parallel 256MiB buffers under distinct tab IDs.
+		if asm == nil && len(c.imgAccum) >= maxConcurrentImageAssemblies {
+			return c.writeFrame(protocol.MsgError, &protocol.Error{
+				Code: 14, Message: "image paste: too many concurrent uploads",
+			})
+		}
 		// First chunk (re)starts the assembly — capture metadata.
 		asm = &imageAssembly{mime: msg.MIME, filename: msg.Filename}
 		c.imgAccum[msg.ID] = asm
@@ -662,9 +707,9 @@ func (c *clientConn) subscribe(t *Tab) {
 		backfillFrom = 0
 	}
 	sub := &tabSub{
-		cancel:            make(chan struct{}),
-		lastScrollbackLen: backfillFrom,
+		cancel: make(chan struct{}),
 	}
+	sub.lastScrollbackLen.Store(int64(backfillFrom))
 	c.subs[t.ID] = sub
 	c.subsMu.Unlock()
 
@@ -843,18 +888,19 @@ const scrollbackBatchMax = 256
 // Pre-attach back-fill is a separate (future) request/response.
 func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	cur := t.Term.ScrollbackLen()
-	if cur <= sub.lastScrollbackLen {
+	last := int(sub.lastScrollbackLen.Load())
+	if cur <= last {
 		return
 	}
 	end := cur
-	if end-sub.lastScrollbackLen > scrollbackBatchMax {
-		end = sub.lastScrollbackLen + scrollbackBatchMax
+	if end-last > scrollbackBatchMax {
+		end = last + scrollbackBatchMax
 	}
 	// Atomic snapshot of the requested range under publishMu so the
 	// rows can't shift mid-iteration. (Even in unlimited+disk mode
 	// the disk evict-from-memory step happens under publishMu, so
 	// here we get a coherent view.)
-	uvRows := t.Term.SnapshotScrollbackRange(sub.lastScrollbackLen, end)
+	uvRows := t.Term.SnapshotScrollbackRange(last, end)
 	rows := make([][]protocol.Cell, 0, len(uvRows))
 	for _, uvRow := range uvRows {
 		row := make([]protocol.Cell, len(uvRow))
@@ -866,10 +912,10 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	}
 	_ = c.writeFrame(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
 		ID:      t.ID,
-		BaseIdx: uint32(sub.lastScrollbackLen),
+		BaseIdx: uint32(last),
 		Rows:    rows,
 	})
-	sub.lastScrollbackLen = end
+	sub.lastScrollbackLen.Store(int64(end))
 	// More to ship? Bump DataCh so the next iteration of
 	// publishLoop kicks in immediately rather than waiting for the
 	// 500ms fallback. Non-blocking — channel is cap=1 and the

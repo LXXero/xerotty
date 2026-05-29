@@ -137,8 +137,16 @@ type App struct {
 	// daemon hub comes up. nil in PTY mode.
 	guiMCP *guimcp.Server
 
-	windows []*Window // every OS window currently open in this process
-	active  *Window   // the window with input focus, or windows[0] if none
+	// windowsMu guards the windows slice header against concurrent
+	// access from the guimcp goroutine. The slice is only mutated on
+	// the main thread (append on window open, truncate on reap), and
+	// every main-thread read runs on that same goroutine so it can't
+	// race itself — but the guimcp Backend (focusedDaemonTabIDs) reads
+	// it off-thread, so the writers + that one reader must synchronize
+	// or the append's realloc tears under the reader.
+	windowsMu sync.RWMutex
+	windows   []*Window // every OS window currently open in this process
+	active    *Window   // the window with input focus, or windows[0] if none
 
 	// dragTab is the process-wide state for an in-progress drag of a
 	// tab across windows. nil when no drag is happening. Set when the
@@ -225,7 +233,9 @@ func New(cfg config.Config) *App {
 		}
 	}
 	w := newWindow(a)
+	a.windowsMu.Lock()
 	a.windows = append(a.windows, w)
+	a.windowsMu.Unlock()
 	a.active = w
 	return a
 }
@@ -992,6 +1002,8 @@ func (a *App) ListTabs() []guimcp.TabRef {
 // stale answer is harmless (it's advisory metadata).
 func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
 	out := map[*daemonsource.Source]bool{}
+	a.windowsMu.RLock()
+	defer a.windowsMu.RUnlock()
 	for _, w := range a.windows {
 		if w.tabs == nil {
 			continue
@@ -1201,7 +1213,9 @@ func (a *App) reapClosedWindows() {
 			w.renderer.Glyphs = nil
 		}
 	}
+	a.windowsMu.Lock()
 	a.windows = survivors
+	a.windowsMu.Unlock()
 	// If the active Window was reaped, point at any surviving one.
 	if a.active != nil {
 		found := false
@@ -1650,7 +1664,9 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	// window in wrappedFrame's post-loop block.
 	w.pendingFocus = true
 
+	a.windowsMu.Lock()
 	a.windows = append(a.windows, w)
+	a.windowsMu.Unlock()
 	a.active = w
 }
 

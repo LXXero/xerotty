@@ -59,8 +59,10 @@ func (d *Daemon) AttachedClients() []AttachedClient {
 			RemoteAddr: c.conn.RemoteAddr().String(),
 			JoinedUnix: c.joined.Unix(),
 		}
-		if c.session != nil {
-			ac.SessionName = c.session.Name
+		// Read the session name from the atomic mirror — c.session
+		// itself is owned by the read loop and racy to touch here.
+		if v, ok := c.sessionName.Load().(string); ok {
+			ac.SessionName = v
 		}
 		out = append(out, ac)
 	}
@@ -186,7 +188,7 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 		if !ok {
 			continue
 		}
-		sub.lastScrollbackLen = 0
+		sub.lastScrollbackLen.Store(0)
 		_ = c.writeFrame(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: tabID})
 	}
 }

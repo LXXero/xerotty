@@ -266,11 +266,19 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 	}
 	// TabCreated should arrive on the client's channel; wait for it.
 	// Multiple in-flight TabCreates can race — pick the first one.
-	tc, ok := <-h.c.TabCreated()
-	if !ok {
-		return nil, fmt.Errorf("daemonsource: client closed before TabCreated")
+	// Bail if the connection dies (Closed) or the hub shuts down
+	// (stopCh) so a dropped daemon doesn't wedge the caller forever.
+	select {
+	case tc, ok := <-h.c.TabCreated():
+		if !ok {
+			return nil, fmt.Errorf("daemonsource: client closed before TabCreated")
+		}
+		return h.Adopt(tc.Info.ID, cols, rows), nil
+	case <-h.c.Closed():
+		return nil, fmt.Errorf("daemonsource: connection closed before TabCreated")
+	case <-h.stopCh:
+		return nil, fmt.Errorf("daemonsource: hub stopped before TabCreated")
 	}
-	return h.Adopt(tc.Info.ID, cols, rows), nil
 }
 
 // Adopt creates a Source for a tab that already exists on the daemon

@@ -318,7 +318,13 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
-	t.Term.Resize(p.Cols, p.Rows)
+	t.Term.Resize(daemon.ClampTabDim(p.Cols), daemon.ClampTabDim(p.Rows))
+	// Wake subscribers so they re-paint at the new size (a resize
+	// emits no PTY output on its own). Mirrors the wire handler.
+	select {
+	case t.Term.DataCh <- struct{}{}:
+	default:
+	}
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 
