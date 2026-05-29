@@ -25,7 +25,13 @@ package protocol
 //       wouldn't echo/match ReqID and would ignore MsgTopologyChanged,
 //       so structural changes from other clients would silently not
 //       propagate. Hard-gated by the handshake.
-const ProtocolVersion uint16 = 4
+//   5 — WindowCreate/WindowCreated.ReqID. The client now REQUIRES the
+//       echoed ReqID (a reply without it is dropped as unmatched), so a
+//       v5 client against an early-v4 daemon — which didn't echo window
+//       ReqIDs — would drop every WindowCreated and hang the
+//       window-create wait. Bumping forces the handshake to reject the
+//       skew (clean error) instead of silently hanging.
+const ProtocolVersion uint16 = 5
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
