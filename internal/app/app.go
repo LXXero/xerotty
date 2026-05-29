@@ -151,6 +151,14 @@ type App struct {
 	// those structures single-threaded and gives MCP a race-free read.
 	focusedSources atomic.Pointer[map[*daemonsource.Source]bool]
 
+	// pendingTopo holds the latest topology snapshot per hub awaiting a
+	// main-thread reconcile. The Hub fires SetTopologyCallback on its
+	// router goroutine; GUI tab/window mutation must happen on the main
+	// thread, so the callback just stashes here (latest wins) + wakes
+	// the loop, and applyPendingTopology drains it each frame.
+	topoMu      sync.Mutex
+	pendingTopo map[*daemonsource.Hub]pendingTopoSnap
+
 	// dragTab is the process-wide state for an in-progress drag of a
 	// tab across windows. nil when no drag is happening. Set when the
 	// user drags a tab down past the tab bar (lift-off threshold)
@@ -431,6 +439,22 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 // graceful.
 //
 // Solves the cross-hub ID confusion: when a window contains tabs
+// daemonWindowForHub returns this Window's known daemon-window ID on
+// the given hub WITHOUT creating one (0 if unknown). Read-only
+// counterpart to windowIDForHub, used by topology placement to match
+// a snapshot window to a GUI window.
+func (w *Window) daemonWindowForHub(hub *daemonsource.Hub) uint32 {
+	w.daemonWindowIDsMu.Lock()
+	defer w.daemonWindowIDsMu.Unlock()
+	if id, ok := w.daemonWindowIDs[hub]; ok {
+		return id
+	}
+	if hub == w.app.daemonHub {
+		return w.daemonWindowID
+	}
+	return 0
+}
+
 // from multiple daemons, focus/reorder operations need to send
 // the WINDOW ID FOR THAT TAB'S DAEMON, not the primary one.
 func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
@@ -454,15 +478,11 @@ func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
 	}
 	w.daemonWindowIDsMu.Unlock()
 
-	// Otherwise mint a fresh daemon window on this hub.
-	if err := hub.Client().SendWindowCreate(0, 0, int32(w.width), int32(w.height)); err != nil {
-		return 0
-	}
-	var id uint32
-	select {
-	case wc := <-hub.Client().WindowCreated():
-		id = wc.Info.ID
-	case <-time.After(2 * time.Second):
+	// Otherwise mint a fresh daemon window on this hub. CreateWindow
+	// correlates the reply by ReqID (router-demuxed), so a late ack
+	// from a previous timed-out create can't be adopted here.
+	id, err := hub.CreateWindow(0, 0, int32(w.width), int32(w.height))
+	if err != nil {
 		return 0
 	}
 	w.daemonWindowIDsMu.Lock()
@@ -1102,7 +1122,141 @@ func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
 		a.pendingProposals = kept
 		a.proposalsMu.Unlock()
 	})
+	// Topology snapshots (a tab/window created/closed/moved by another
+	// client or an MCP agent) → reconcile the GUI tab bar. Stash the
+	// latest and wake the loop; the actual GUI mutation runs on the
+	// main thread in applyPendingTopology.
+	hub.SetTopologyCallback(func(s *protocol.TopologyChanged) {
+		a.topoMu.Lock()
+		if a.pendingTopo == nil {
+			a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
+		}
+		a.pendingTopo[hub] = pendingTopoSnap{host: name, snap: s}
+		a.topoMu.Unlock()
+		platform.PostWake()
+	})
 	a.ensureGUIMCP()
+}
+
+// pendingTopoSnap is a queued topology snapshot + the hub's display
+// host, awaiting main-thread reconcile.
+type pendingTopoSnap struct {
+	host string
+	snap *protocol.TopologyChanged
+}
+
+// applyPendingTopology drains queued topology snapshots and reconciles
+// the GUI tab bar against each. MUST run on the main thread (it mutates
+// windows / tabs.Manager). Called once per frame.
+//
+// Scope: it ADDS GUI tabs for daemon tabs that newly appeared (created
+// by another client or an MCP agent) and aren't yet shown. Removal of
+// vanished tabs is already handled elsewhere — applyTopology marks the
+// vanished Source closed (markVanished), and the per-frame CheckClosed
+// + on_child_exit reap drops the tab. Cross-window MOVE driven by a
+// remote actor is not reconciled here (see report).
+func (a *App) applyPendingTopology() {
+	a.topoMu.Lock()
+	if len(a.pendingTopo) == 0 {
+		a.topoMu.Unlock()
+		return
+	}
+	pend := a.pendingTopo
+	a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
+	a.topoMu.Unlock()
+	for hub, ps := range pend {
+		a.addNewDaemonTabs(hub, ps.host, ps.snap)
+	}
+}
+
+// addNewDaemonTabs creates a GUI tab for each daemon tab in the
+// snapshot that this process isn't already showing for the hub —
+// preserving the target window's active tab (snapshot FocusedTabID is
+// attach-time metadata, never used to hijack a live client's focus).
+func (a *App) addNewDaemonTabs(hub *daemonsource.Hub, host string, snap *protocol.TopologyChanged) {
+	cli := hub.Client()
+	// Which daemon tab IDs already have a GUI tab on this hub?
+	present := make(map[uint32]bool)
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		for _, t := range w.tabs.Tabs {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == cli {
+				present[ds.TabID()] = true
+			}
+		}
+	}
+	// daemon windowID for each tab in the snapshot, for placement.
+	winOfTab := make(map[uint32]uint32, len(snap.Tabs))
+	for _, wi := range snap.Windows {
+		for _, id := range wi.TabIDs {
+			winOfTab[id] = wi.ID
+		}
+	}
+	for _, ti := range snap.Tabs {
+		if present[ti.ID] {
+			continue
+		}
+		target := a.targetWindowForDaemonTab(hub, winOfTab[ti.ID])
+		if target == nil {
+			// No GUI window represents this hub yet — a window that
+			// adopts the hub will pick the tab up. Skip for now.
+			continue
+		}
+		src := hub.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
+		// Preserve the target window's active tab across the add.
+		prevActiveID := -1
+		if at := target.tabs.Active(); at != nil {
+			prevActiveID = at.ID
+		}
+		tab := target.tabs.AdoptTab(src) // AdoptTab focuses the new tab…
+		if host != "" && host != "local" {
+			tab.Host = host
+		}
+		if ti.Title != "" {
+			tab.SetTitle(ti.Title)
+		}
+		// …so restore the prior active tab — don't steal focus from a
+		// live client just because another client made a tab.
+		if prevActiveID >= 0 {
+			for i, t := range target.tabs.Tabs {
+				if t.ID == prevActiveID {
+					target.tabs.ActiveIdx = i
+					break
+				}
+			}
+		}
+		present[ti.ID] = true
+	}
+}
+
+// targetWindowForDaemonTab picks the GUI window a newly-appeared
+// daemon tab should join: the window mapped to the tab's daemon-side
+// window, else any window already showing this hub's tabs, else the
+// active window. Returns nil if no window represents the hub yet.
+func (a *App) targetWindowForDaemonTab(hub *daemonsource.Hub, daemonWinID uint32) *Window {
+	var hubWindow *Window
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		if daemonWinID != 0 && w.daemonWindowForHub(hub) == daemonWinID {
+			return w
+		}
+		if hubWindow == nil {
+			for _, t := range w.tabs.Tabs {
+				if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == hub.Client() {
+					hubWindow = w
+					break
+				}
+			}
+		}
+	}
+	if hubWindow != nil {
+		return hubWindow
+	}
+	return a.active
 }
 
 // ensureGUIMCP starts the GUI's aggregating MCP server once, the
@@ -1633,17 +1787,14 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		// to the same on-screen position.
 		_ = a.daemonHub.Client().SendWindowGeometry(snap.WindowID, 0, 0, int32(w.width), int32(w.height))
 	} else if a.daemonHub != nil {
-		// Fresh daemon window for this GUI window.
-		if err := a.daemonHub.Client().SendWindowCreate(0, 0, int32(w.width), int32(w.height)); err == nil {
-			select {
-			case wc := <-a.daemonHub.Client().WindowCreated():
-				w.daemonWindowID = wc.Info.ID
-				a.daemonHub.SetDefaultWindowID(w.daemonWindowID)
-			case <-time.After(2 * time.Second):
-				// Daemon didn't respond; new tabs will land in
-				// daemon's default window. Non-fatal.
-			}
+		// Fresh daemon window for this GUI window. CreateWindow
+		// correlates the reply by ReqID (router-demuxed).
+		if id, err := a.daemonHub.CreateWindow(0, 0, int32(w.width), int32(w.height)); err == nil {
+			w.daemonWindowID = id
+			a.daemonHub.SetDefaultWindowID(w.daemonWindowID)
 		}
+		// else: daemon didn't respond; new tabs land in its default
+		// window. Non-fatal.
 		var cwd string
 		if a.cfg.Tabs.InheritCWD && parent != nil {
 			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
@@ -2058,6 +2209,9 @@ func (a *App) Run() error {
 			platform.Quit()
 		}
 		a.updateTabDragDrop()
+		// Reconcile any topology snapshots from other clients / MCP
+		// agents into the GUI tab bar (add newly-created tabs).
+		a.applyPendingTopology()
 		// Republish the focused-Source snapshot for the guimcp
 		// goroutine now that this frame's window/tab mutations are
 		// settled (see publishFocusedSources).
@@ -2784,14 +2938,10 @@ func (a *Window) frame() {
 			}
 		} else if a.app.daemonHub != nil {
 			// Daemon mode, no existing tabs — mint a fresh daemon
-			// window for this first GUI window.
-			if err := a.app.daemonHub.Client().SendWindowCreate(0, 0, int32(a.width), int32(a.height)); err == nil {
-				select {
-				case wc := <-a.app.daemonHub.Client().WindowCreated():
-					a.daemonWindowID = wc.Info.ID
-					a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
-				case <-time.After(2 * time.Second):
-				}
+			// window for this first GUI window (ReqID-correlated).
+			if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
+				a.daemonWindowID = id
+				a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
 			}
 			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
 				platform.Quit()
