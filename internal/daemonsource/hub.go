@@ -20,10 +20,17 @@ package daemonsource
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/protocol"
 )
+
+// tabCreateTimeout bounds how long NewTabIn waits for the daemon to
+// confirm a tab. The closed-channel cases handle a dropped conn; this
+// covers the conn-stays-open-but-daemon-never-answers case so a hung
+// daemon can't wedge the GUI's tab-create indefinitely.
+const tabCreateTimeout = 10 * time.Second
 
 // Hub owns the daemon connection and demuxes incoming frames to
 // per-tab Source instances. A GUI process needs ONE Hub for each
@@ -273,11 +280,18 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 		if !ok {
 			return nil, fmt.Errorf("daemonsource: client closed before TabCreated")
 		}
-		return h.Adopt(tc.Info.ID, cols, rows), nil
+		// Adopt at the dims the daemon actually allocated (it clamps
+		// to MaxTabDim), not what we requested — otherwise the local
+		// emulator would be sized wrong and desync from the daemon.
+		return h.Adopt(tc.Info.ID, int(tc.Info.Cols), int(tc.Info.Rows)), nil
 	case <-h.c.Closed():
 		return nil, fmt.Errorf("daemonsource: connection closed before TabCreated")
 	case <-h.stopCh:
 		return nil, fmt.Errorf("daemonsource: hub stopped before TabCreated")
+	case <-time.After(tabCreateTimeout):
+		// The conn is up but the daemon never confirmed — don't block
+		// the GUI's tab-create forever.
+		return nil, fmt.Errorf("daemonsource: timed out waiting for TabCreated")
 	}
 }
 

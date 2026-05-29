@@ -88,7 +88,24 @@ type imageAssembly struct {
 }
 
 type tabSub struct {
-	cancel   chan struct{}
+	cancel chan struct{}
+
+	// wake nudges this subscription's publishLoop to re-publish now,
+	// independent of the shared Terminal.DataCh. DataCh is a single
+	// cap-1 channel every client's publishLoop competes for, so a
+	// resize token on it wakes only ONE subscriber; events that must
+	// reach every attached client (resize repaint, scrollback clear)
+	// signal each sub's own wake instead. cap 1 — coalescing is fine.
+	wake chan struct{}
+
+	// clearPending is set by broadcastScrollbackCleared (off the
+	// publish goroutine) and consumed by sendNewScrollback ON the
+	// publish goroutine. Routing the reset + MsgScrollbackCleared send
+	// through the publish goroutine serializes it against in-flight
+	// scrollback appends, so a stale append can't repopulate cleared
+	// history or leave lastScrollbackLen pointing past a cleared ring.
+	clearPending atomic.Bool
+
 	// lastGrid is what we last shipped to this client for this
 	// tab. Used to compute CellDiff frames — only cells whose
 	// contents/style/width changed since last send go on the wire.
@@ -101,9 +118,10 @@ type tabSub struct {
 	// lastScrollbackLen is the highest absolute scrollback index we
 	// shipped to this client. When the daemon's scrollback grows
 	// past this, the new rows (lastScrollbackLen .. current) get
-	// shipped as MsgScrollbackAppend. Atomic because the publish
-	// goroutine advances it while broadcastScrollbackCleared (running
-	// on whichever client issued the clear) resets it to 0.
+	// shipped as MsgScrollbackAppend. Atomic so the late DataCh-driven
+	// re-publish (which may run after the publish goroutine already
+	// advanced it) reads a coherent value; all writes happen on the
+	// publish goroutine (advance here, reset on clearPending).
 	lastScrollbackLen atomic.Int64
 
 	// Per-sub cache of the last TabState we sent. Suppresses
@@ -377,6 +395,15 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	return nil
 }
 
+// TODO(topology-broadcast): tab/window create/close/move currently
+// only notify the requesting client (TabCreated is unicast; MCP
+// create/close emit no wire event at all), so a second attached client
+// never learns the topology changed. The planned shape: a
+// MsgTopologyChanged / SessionSnapshot event, plus daemon-level
+// createTab/closeTab/moveTab helpers that bump a session revision and
+// broadcast the new snapshot to every attached client — with the MCP
+// handlers routed through those same helpers so agent-driven changes
+// fan out too. Deliberately deferred to its own design pass (HIGH #1).
 func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if c.session == nil {
 		return fmt.Errorf("TabCreate before Attach")
@@ -393,12 +420,16 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if err != nil {
 		return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
 	}
+	// Report the ACTUAL grid dims, not the requested ones —
+	// Session.NewTab clamps to MaxTabDim, and the client (especially
+	// daemonsource) sizes its local emulator from this, so handing
+	// back the pre-clamp request would desync the mirror.
 	if err := c.writeFrame(protocol.MsgTabCreated, &protocol.TabCreated{
 		Info: protocol.TabInfo{
 			ID:    t.ID,
 			Title: t.Title(),
-			Cols:  uint16(cols),
-			Rows:  uint16(rows),
+			Cols:  uint16(t.Term.Width()),
+			Rows:  uint16(t.Term.Height()),
 		},
 		WindowID: w.ID,
 	}); err != nil {
@@ -444,15 +475,10 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 		return nil
 	}
 	t.Term.Resize(ClampTabDim(int(msg.Cols)), ClampTabDim(int(msg.Rows)))
-	// Wake every subscriber's publishLoop so it re-paints at the new
-	// dimensions. publishLoop selects on DataCh; a resize alone emits
-	// no PTY output, so without this nudge the client would show the
-	// old grid until the app next wrote something. Non-blocking —
-	// DataCh is cap=1 and the publishLoop drains it.
-	select {
-	case t.Term.DataCh <- struct{}{}:
-	default:
-	}
+	// Fan out to EVERY subscriber so all attached clients re-paint at
+	// the new dimensions now (a resize emits no PTY output, and the
+	// shared DataCh would wake only one of them).
+	c.daemon.WakeTabSubscribers(t.ID)
 	return nil
 }
 
@@ -708,6 +734,7 @@ func (c *clientConn) subscribe(t *Tab) {
 	}
 	sub := &tabSub{
 		cancel: make(chan struct{}),
+		wake:   make(chan struct{}, 1),
 	}
 	sub.lastScrollbackLen.Store(int64(backfillFrom))
 	c.subs[t.ID] = sub
@@ -764,6 +791,12 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 		case <-sub.cancel:
 			return
 		case <-t.Term.DataCh:
+			c.sendCellsAndCursor(t, sub)
+		case <-sub.wake:
+			// Per-sub nudge (resize repaint, scrollback clear). Unlike
+			// DataCh this reaches THIS subscriber specifically, so
+			// every attached client reacts, not just whichever one
+			// happened to win the shared channel.
 			c.sendCellsAndCursor(t, sub)
 		case <-stateTick.C:
 			c.sendTabState(t, sub)
@@ -887,6 +920,17 @@ const scrollbackBatchMax = 256
 // attach time, so this naturally streams only post-attach growth.
 // Pre-attach back-fill is a separate (future) request/response.
 func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
+	// Flush a pending scrollback-clear first, on this (publish)
+	// goroutine, so the reset + MsgScrollbackCleared are ordered
+	// against the append below rather than racing it from the
+	// clearing client's goroutine. The server already dropped its
+	// scrollback (ClearScrollback) before flagging, so ScrollbackLen
+	// reads 0 here and the append guard short-circuits — no cleared
+	// history gets repopulated.
+	if sub.clearPending.Swap(false) {
+		sub.lastScrollbackLen.Store(0)
+		_ = c.writeFrame(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: t.ID})
+	}
 	cur := t.Term.ScrollbackLen()
 	last := int(sub.lastScrollbackLen.Load())
 	if cur <= last {
@@ -916,13 +960,15 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 		Rows:    rows,
 	})
 	sub.lastScrollbackLen.Store(int64(end))
-	// More to ship? Bump DataCh so the next iteration of
-	// publishLoop kicks in immediately rather than waiting for the
-	// 500ms fallback. Non-blocking — channel is cap=1 and the
-	// publishLoop is what drains it.
+	// More to ship? Nudge THIS sub's own wake so the next iteration of
+	// its publishLoop continues draining the batch immediately rather
+	// than waiting for the 500ms fallback. Using sub.wake (not the
+	// shared DataCh) ensures the continuation reaches this subscriber
+	// specifically — a DataCh token could be consumed by another
+	// client's loop, stalling this one's drain. Non-blocking; cap 1.
 	if end < cur {
 		select {
-		case t.Term.DataCh <- struct{}{}:
+		case sub.wake <- struct{}{}:
 		default:
 		}
 	}

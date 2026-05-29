@@ -421,6 +421,17 @@ func (t *Terminal) Close() {
 		t.mu.Unlock()
 
 		close(t.done)
+		// Unblock readEmu, which is parked in t.Emu.Read (a blocking
+		// io.PipeReader read that the done-channel select can't
+		// interrupt). Closing the emulator's INPUT pipe makes that
+		// Read return io.EOF. We deliberately do NOT call Emu.Close():
+		// that also flips vt's unsynchronized `closed` bool, which
+		// races readEmu's own `if e.closed` check (caught by -race in
+		// TestCursorStyleDECSCUSR). Closing the pipe touches only the
+		// pipe's internally-locked state, so there's no race.
+		if pw, ok := t.Emu.InputPipe().(*io.PipeWriter); ok {
+			_ = pw.CloseWithError(io.EOF)
+		}
 		if t.cmd.Process != nil {
 			_ = t.cmd.Process.Kill()
 		}
@@ -933,6 +944,15 @@ func (t *Terminal) readEmu() {
 		}
 
 		n, err := t.Emu.Read(buf)
+		// Discard close-time wakeups: Close() unblocks the Read above
+		// by closing the input pipe, but the bytes (if any) are stale
+		// and the ptmx is about to close — re-check done before
+		// writing back so we don't push a response into a dying PTY.
+		select {
+		case <-t.done:
+			return
+		default:
+		}
 		if n > 0 {
 			_, _ = t.ptmx.Write(buf[:n])
 		}

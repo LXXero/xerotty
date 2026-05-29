@@ -270,10 +270,11 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 	if err != nil {
 		return rpcErr(req.ID, -32000, "new tab: "+err.Error(), nil)
 	}
+	// Report actual (clamped) dims — NewTab bounds to MaxTabDim.
 	return ok(req.ID, map[string]any{
 		"tab_id": t.ID,
-		"cols":   p.Cols,
-		"rows":   p.Rows,
+		"cols":   t.Term.Width(),
+		"rows":   t.Term.Height(),
 	})
 }
 
@@ -319,12 +320,10 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
 	t.Term.Resize(daemon.ClampTabDim(p.Cols), daemon.ClampTabDim(p.Rows))
-	// Wake subscribers so they re-paint at the new size (a resize
-	// emits no PTY output on its own). Mirrors the wire handler.
-	select {
-	case t.Term.DataCh <- struct{}{}:
-	default:
-	}
+	// Fan out to every subscriber so all attached clients re-paint at
+	// the new size (a resize emits no PTY output). Mirrors the wire
+	// handler.
+	c.srv.d.WakeTabSubscribers(p.TabID)
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 

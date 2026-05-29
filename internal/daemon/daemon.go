@@ -169,11 +169,12 @@ func (d *Daemon) broadcastBell(tabID uint32) {
 }
 
 // broadcastScrollbackCleared notifies every attached client with a
-// subscription on tabID that scrollback was cleared. Resets each
-// sub's lastScrollbackLen so the next publish doesn't think the
-// daemon's scrollback shrank (which would silently skip new
-// growth until it climbed back past the old length). Ships
-// MsgScrollbackCleared so client-side scrollback mirrors drop too.
+// subscription on tabID that scrollback was cleared. It flags each
+// sub and wakes its publish goroutine, which resets lastScrollbackLen
+// (so the next publish doesn't think the daemon's scrollback shrank
+// and skip new growth) and ships MsgScrollbackCleared so client-side
+// mirrors drop too — both done on the publish goroutine to stay
+// ordered against in-flight appends.
 func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 	d.clientsMu.Lock()
 	conns := make([]*clientConn, 0, len(d.clients))
@@ -188,8 +189,45 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 		if !ok {
 			continue
 		}
-		sub.lastScrollbackLen.Store(0)
-		_ = c.writeFrame(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: tabID})
+		// Hand the reset + MsgScrollbackCleared to the sub's publish
+		// goroutine (via clearPending + wake) so they're serialized
+		// against any in-flight scrollback append. Doing the reset
+		// here would race a publish that already snapshotted rows and
+		// is about to store a stale lastScrollbackLen / ship a stale
+		// append, repopulating the history we just cleared.
+		sub.clearPending.Store(true)
+		select {
+		case sub.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// WakeTabSubscribers nudges every client's publishLoop subscribed to
+// tabID to re-publish immediately. Used after a resize: it changes
+// the grid dimensions but emits no PTY output, so without an explicit
+// nudge clients would only re-paint on the 500ms fallback tick. The
+// shared Terminal.DataCh can't do this — a single token there wakes
+// just one of the competing publishLoops, leaving the other attached
+// clients showing stale dimensions. Per-sub wake fans out to all.
+func (d *Daemon) WakeTabSubscribers(tabID uint32) {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		c.subsMu.Lock()
+		sub, ok := c.subs[tabID]
+		c.subsMu.Unlock()
+		if !ok {
+			continue
+		}
+		select {
+		case sub.wake <- struct{}{}:
+		default:
+		}
 	}
 }
 
