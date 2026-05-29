@@ -4858,7 +4858,8 @@ func (w *Window) renderConnectDialog() {
 }
 
 // doConnect dials the typed ad-hoc destination, registers it as a
-// session host so re-dials/reattach can find it, and opens a tab.
+// session host so re-dials/reattach can find it, and reattaches the
+// host's existing tabs (or opens a fresh one if it has none).
 // On failure it keeps the dialog open with the error so the user can
 // correct the input.
 func (w *Window) doConnect() {
@@ -4877,7 +4878,12 @@ func (w *Window) doConnect() {
 	}
 	w.app.adhocHosts[dest] = host
 
-	if err := w.openRemoteTab(dest); err != nil {
+	// Reattach rather than always opening a fresh tab: the remote
+	// daemon keeps PTYs alive across disconnects, so connecting should
+	// restore whatever was already running there (e.g. a long-lived
+	// shell or editor). openRemoteReattach falls back to a new tab when
+	// the host has nothing to reattach to.
+	if err := w.openRemoteReattach(dest); err != nil {
 		// Drop the half-registered entry so a later retry with
 		// corrected args isn't shadowed by this failed attempt.
 		delete(w.app.adhocHosts, dest)
