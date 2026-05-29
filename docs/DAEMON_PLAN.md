@@ -561,6 +561,14 @@ daemon, or MCP mutating while a GUI watches).
   images? LRU + size cap? Disk-back?
 - **Session naming**: numeric IDs only, or human-readable session names
   (`xerotty attach build-farm`)?
+- **Broadcast back-pressure** (Phase 9 follow-up): `broadcastTopology`
+  and the other fan-out broadcasts run synchronously on the caller's
+  goroutine iterating clients, so one slow/blocked client can
+  back-pressure the mutating caller. Fine at current client counts;
+  revisit (per-client async send queue?) if many clients attach to one
+  daemon. Same applies to cross-window-move GUI reconcile, which is
+  implemented but not covered by the headless suite (interactive-path
+  only).
 
 ## Notes on existing code
 
