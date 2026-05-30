@@ -1,51 +1,73 @@
 package clientproto_test
 
 import (
+	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 )
 
-// TestClientHeartbeatReapsSilentDaemon verifies the layer-4d client
-// heartbeat: when the daemon stops sending ANYTHING (hung / dead SSH),
-// the client tears its own connection down within the liveness window so
-// the Hub can re-dial. The peer here never replies, so lastInbound stays
-// at connect time and the window trips.
-func TestClientHeartbeatReapsSilentDaemon(t *testing.T) {
-	cliConn, peerConn := net.Pipe()
-	c := clientproto.Wrap(cliConn)
-	c.SetHeartbeat(30*time.Millisecond, 150*time.Millisecond)
+// wedgedConn is a net.Conn that never makes progress: Read and Write
+// both block until Close, and SetWriteDeadline is a NO-OP (mirroring
+// SSH-stdio, where the write deadline can't catch a stall). It models a
+// hung daemon whose receive buffer has filled — our writes wedge and no
+// inbound frame (hence no pong) ever arrives. The ONLY detector here is
+// the heartbeat's dual-clock, which is exactly what the test exercises.
+type wedgedConn struct {
+	closed chan struct{}
+	once   sync.Once
+}
 
-	// Drain the peer side so the client's writer (Hello-less here, but it
-	// emits heartbeat pings) never blocks on the synchronous pipe. Never
-	// write back — that's the "silent daemon" the heartbeat must catch.
-	go func() {
-		buf := make([]byte, 4096)
-		for {
-			if _, err := peerConn.Read(buf); err != nil {
-				return
-			}
-		}
-	}()
+func newWedgedConn() *wedgedConn { return &wedgedConn{closed: make(chan struct{})} }
+
+func (c *wedgedConn) Read(b []byte) (int, error)  { <-c.closed; return 0, io.EOF }
+func (c *wedgedConn) Write(b []byte) (int, error) { <-c.closed; return 0, io.ErrClosedPipe }
+func (c *wedgedConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+func (c *wedgedConn) LocalAddr() net.Addr                { return wedgedAddr{} }
+func (c *wedgedConn) RemoteAddr() net.Addr               { return wedgedAddr{} }
+func (c *wedgedConn) SetDeadline(t time.Time) error      { return nil }
+func (c *wedgedConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *wedgedConn) SetWriteDeadline(t time.Time) error { return nil }
+
+type wedgedAddr struct{}
+
+func (wedgedAddr) Network() string { return "wedged" }
+func (wedgedAddr) String() string  { return "wedged" }
+
+// TestClientHeartbeatReapsWedgedDaemon verifies the layer-4d dual-clock
+// reap (finding 2): when our writes stop making progress AND no pong
+// arrives for the window, the client tears its own connection down so
+// the Hub can re-dial. This is the SSH-stdio scenario (no write
+// deadline), so the heartbeat is the sole detector. A peer that still
+// DRAINS our writes is deliberately NOT reaped (write-progress fresh) —
+// that's the false-reap this fix avoids — so the dead peer here must
+// wedge writes, not merely go silent.
+func TestClientHeartbeatReapsWedgedDaemon(t *testing.T) {
+	conn := newWedgedConn()
+	c := clientproto.Wrap(conn)
+	c.SetHeartbeat(20*time.Millisecond, 120*time.Millisecond)
 
 	go c.Run()
 
 	select {
 	case <-c.Closed():
-		// Reaped — good.
+		// Reaped via the dual-clock — good.
 	case <-time.After(3 * time.Second):
-		t.Fatalf("client did not reap a silent daemon within the liveness window")
+		t.Fatalf("client did not reap a wedged daemon within the liveness window")
 	}
-	_ = peerConn.Close()
+	_ = conn.Close()
 }
 
-// TestClientHeartbeatKeepsLiveConn verifies the converse: a peer that
-// keeps sending frames (here, raw bytes that bump lastInbound on every
-// ReadFrame... actually we must send VALID frames) keeps the conn alive
-// past several windows. We send periodic Pong frames as the daemon's
-// keep-alive analogue.
+// TestClientHeartbeatKeepsLiveConn verifies the converse: a healthy
+// daemon — one that drains our writes (write-progress fresh) AND answers
+// our pings with Pongs (pong clock fresh) — is never reaped, across
+// several windows. Both dual-clock signals stay fresh.
 func TestClientHeartbeatKeepsLiveConn(t *testing.T) {
 	cliConn, peerConn := net.Pipe()
 	c := clientproto.Wrap(cliConn)
@@ -53,8 +75,8 @@ func TestClientHeartbeatKeepsLiveConn(t *testing.T) {
 
 	stop := make(chan struct{})
 	defer close(stop)
-	// Peer: drain client writes AND periodically send a Pong so the
-	// client's lastInbound stays fresh.
+	// Peer: drain client writes (keeps write-progress fresh) AND
+	// periodically send a Pong (keeps the pong clock fresh).
 	go func() {
 		buf := make([]byte, 4096)
 		for {

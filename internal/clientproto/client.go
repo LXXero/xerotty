@@ -116,17 +116,30 @@ type Client struct {
 	closeOnce sync.Once
 
 	// Heartbeat liveness (Phase 10 layer 4d). The heartbeat goroutine
-	// (started by Run) arms pingPending each tick; the writer flushes
-	// the ping OUT-OF-BAND, ahead of the FIFO backlog (via coalesceCh),
-	// so a long outbound queue can't delay the probe. lastInbound is the
-	// UnixNano of the most recent frame received — ANY frame counts as
-	// liveness (cell data, the daemon's own ping, a pong). If it goes
-	// stale past clientLivenessWindow the conn is reaped so the Hub
-	// re-dials.
-	coalesceCh  chan struct{}
-	pingPending atomic.Bool
-	pingNonce   atomic.Uint64
-	lastInbound atomic.Int64
+	// (started by Run) arms pingPending each tick; the writer flushes the
+	// ping OUT-OF-BAND, ahead of the FIFO backlog (via coalesceCh), so a
+	// long outbound queue can't delay the probe. Likewise a Pong reply to
+	// the daemon's ping is flushed out-of-band (pongPending) so it isn't
+	// stuck behind queued input — which would delay our pong and let the
+	// daemon falsely reap us.
+	//
+	// Liveness uses the SAME dual-clock the daemon adopted (commit
+	// 2b72279): reap ONLY when BOTH are stale past the window —
+	//   - lastWriteProgress: a frame was successfully written to the
+	//     daemon (set by the writer). If our writes are landing, the
+	//     daemon IS draining our input → its read path is alive, so a
+	//     late pong (e.g. we're flushing a big backlog) must NOT reap it.
+	//   - lastPong: a Pong to OUR ping arrived (set by the read loop).
+	//     Only a real ping→pong counts; generic inbound doesn't, so a
+	//     daemon that streams output but stopped reading still gets
+	//     caught once our writes wedge and its pong goes stale.
+	coalesceCh        chan struct{}
+	pingPending       atomic.Bool
+	pingNonce         atomic.Uint64
+	pongPending       atomic.Bool
+	pongNonce         atomic.Uint64
+	lastWriteProgress atomic.Int64
+	lastPong          atomic.Int64
 	// heartbeatInterval / livenessWindow default to the package consts;
 	// SetHeartbeat overrides them (tests shorten them). Set before Run
 	// starts the heartbeat goroutine, so no synchronization is needed.
@@ -205,49 +218,82 @@ func wrap(conn net.Conn) *Client {
 		closed:     make(chan struct{}),
 	}
 	// Start the writer before any Send* (Hello sends, then reads the
-	// HelloAck synchronously off the reader — the writer must already
-	// be draining outCh for that send to flush). lastInbound is seeded
-	// to "now" so the heartbeat window doesn't trip before the first
-	// frame arrives.
-	c.lastInbound.Store(time.Now().UnixNano())
+	// HelloAck synchronously off the reader — the writer must already be
+	// draining outCh for that send to flush). Seed both liveness clocks
+	// to "now" so the window doesn't trip before the first round-trip.
+	now := time.Now().UnixNano()
+	c.lastWriteProgress.Store(now)
+	c.lastPong.Store(now)
 	go c.writeLoop()
 	return c
 }
 
 // writeLoop is the sole writer of the connection. Each pass it flushes
-// an out-of-band heartbeat ping (if armed) AHEAD of the FIFO backlog,
-// then drains one queued frame — so a ping can jump a large outbound
-// queue and isn't delayed by it. Each frame goes through the
-// idle-progress deadline; any write error tears the conn down (which
-// unblocks the read loop and any producer waiting on a full queue).
+// the out-of-band PRIORITY frames (a heartbeat ping and/or a pong reply)
+// AHEAD of the FIFO backlog, then drains one queued frame — so a ping or
+// pong can jump a large outbound queue and isn't delayed by it (a
+// delayed pong would let the daemon falsely reap us). Each frame goes
+// through the idle-progress deadline; any write error tears the conn
+// down (which unblocks the read loop and any producer on a full queue).
 func (c *Client) writeLoop() {
 	for {
-		if c.pingPending.Swap(false) {
-			if err := protocol.WriteFrame(c.dw, protocol.MsgPing, &protocol.Ping{Nonce: c.pingNonce.Add(1)}); err != nil {
-				c.shutdown()
-				return
-			}
+		if err := c.flushPriority(); err != nil {
+			c.shutdown()
+			return
 		}
 		select {
 		case <-c.outDone:
 			return
 		case f := <-c.outCh:
-			if err := protocol.WriteFrame(c.dw, f.typ, f.body); err != nil {
+			if err := c.writeFrameRaw(f.typ, f.body); err != nil {
 				c.shutdown()
 				return
 			}
 		case <-c.coalesceCh:
-			// A ping was armed — loop back to flush it ahead of the queue.
+			// A priority frame was armed — loop back to flushPriority.
 		}
 	}
 }
 
+// flushPriority writes the armed out-of-band ping + pong ahead of the
+// FIFO backlog. Pong echoes the most recent ping nonce we received
+// (coalesced — the daemon's liveness check doesn't match nonces, it just
+// needs a recent pong).
+func (c *Client) flushPriority() error {
+	if c.pingPending.Swap(false) {
+		if err := c.writeFrameRaw(protocol.MsgPing, &protocol.Ping{Nonce: c.pingNonce.Add(1)}); err != nil {
+			return err
+		}
+	}
+	if c.pongPending.Swap(false) {
+		if err := c.writeFrameRaw(protocol.MsgPong, &protocol.Pong{Nonce: c.pongNonce.Load()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeFrameRaw writes one frame through the idle-progress deadline and,
+// on success, records write progress for the heartbeat's dual-clock.
+// Only the writeLoop goroutine calls it.
+func (c *Client) writeFrameRaw(t protocol.MsgType, body protocol.Msg) error {
+	if err := protocol.WriteFrame(c.dw, t, body); err != nil {
+		return err
+	}
+	c.lastWriteProgress.Store(time.Now().UnixNano())
+	return nil
+}
+
 // heartbeatLoop pings the daemon periodically and reaps the connection
-// if no inbound frame arrives for clientLivenessWindow — the only fast
-// way to notice a hung/dead daemon over SSH-stdio (where write deadlines
-// are no-ops). Started by Run (i.e. AFTER the Hello handshake, so a ping
-// never jumps ahead of Hello and breaks the daemon's handshake reader).
-// Exits when the conn is torn down (outDone).
+// when it's both unable to SEND (no write progress for a window) AND
+// unanswered (no pong for a window) — the dual-clock the daemon proved
+// out in commit 2b72279, mirrored here. Either clock fresh keeps the
+// conn alive, so a client flushing a big backlog (writes progressing)
+// isn't reaped for a late pong, and a daemon that streams output but
+// stopped reading is still caught once our writes wedge + pong goes
+// stale. The only fast detector over SSH-stdio (write deadlines are
+// no-ops there). Started by Run (AFTER the Hello handshake, so a ping
+// never jumps ahead of Hello). Exits when the conn is torn down.
 func (c *Client) heartbeatLoop() {
 	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
@@ -256,7 +302,9 @@ func (c *Client) heartbeatLoop() {
 		case <-c.outDone:
 			return
 		case <-ticker.C:
-			if time.Since(time.Unix(0, c.lastInbound.Load())) > c.livenessWindow {
+			writeIdle := time.Since(time.Unix(0, c.lastWriteProgress.Load()))
+			pongIdle := time.Since(time.Unix(0, c.lastPong.Load()))
+			if writeIdle > c.livenessWindow && pongIdle > c.livenessWindow {
 				c.shutdown()
 				return
 			}
@@ -276,6 +324,17 @@ func (c *Client) SetHeartbeat(interval, window time.Duration) {
 // requestPing arms the out-of-band ping slot and nudges the writer.
 func (c *Client) requestPing() {
 	c.pingPending.Store(true)
+	select {
+	case c.coalesceCh <- struct{}{}:
+	default:
+	}
+}
+
+// requestPong arms the out-of-band pong slot (echoing the daemon's ping
+// nonce) and nudges the writer so the reply jumps the FIFO backlog.
+func (c *Client) requestPong(nonce uint64) {
+	c.pongNonce.Store(nonce)
+	c.pongPending.Store(true)
 	select {
 	case c.coalesceCh <- struct{}{}:
 	default:
@@ -596,9 +655,6 @@ func (c *Client) Run() {
 			c.doneMu.Unlock()
 			return
 		}
-		// Any inbound frame proves the daemon is alive — refresh the
-		// liveness clock the heartbeat checks.
-		c.lastInbound.Store(time.Now().UnixNano())
 		if err := c.handle(t, body); err != nil {
 			c.doneMu.Lock()
 			c.exitErr = err
@@ -726,18 +782,20 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		}
 		c.errCh <- msg
 	case protocol.MsgPing:
-		// Heartbeat (Phase 10): reply so the daemon knows we're alive.
-		// A daemon reaps a client that stops ponging.
+		// The daemon is probing us — reply OUT-OF-BAND (priority slot, not
+		// the FIFO outCh) so our pong jumps ahead of any queued input. A
+		// pong stuck behind a big paste would delay it past the daemon's
+		// window and get us falsely reaped (finding 3).
 		msg := &protocol.Ping{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
 			return err
 		}
-		_ = c.send(protocol.MsgPong, &protocol.Pong{Nonce: msg.Nonce})
+		c.requestPong(msg.Nonce)
 	case protocol.MsgPong:
-		// Reply to our own heartbeat ping. Liveness is tracked by
-		// lastInbound (bumped for every frame in Run's loop, including
-		// this one), so there's nothing extra to record here — the pong
-		// having arrived at all is the signal.
+		// Reply to OUR heartbeat ping — the only thing that proves the
+		// daemon's read+respond path is alive (the pong clock of the
+		// dual-clock liveness check). Generic inbound doesn't count.
+		c.lastPong.Store(time.Now().UnixNano())
 	default:
 		// Unknown message — skip, log to stderr eventually. For
 		// Phase 0 just ignore so the connection stays alive.
