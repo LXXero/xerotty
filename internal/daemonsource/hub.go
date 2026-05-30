@@ -333,6 +333,19 @@ func (h *Hub) SeedInstance(id string) {
 	h.tombMu.Unlock()
 }
 
+// InstanceID returns the daemon-process identity this Hub is currently
+// connected to (Attached.InstanceID, updated on every reconnect by
+// noteInstance). "" means unknown (pre-v7 daemon, or not yet seeded).
+// The GUI's reseat uses it to scope its mint-once to a single daemon
+// instance: if the instance changes mid-reseat (a second restart), the
+// previously-minted window ID belongs to a dead daemon and must be
+// re-minted on the new one.
+func (h *Hub) InstanceID() string {
+	h.tombMu.Lock()
+	defer h.tombMu.Unlock()
+	return h.daemonInstance
+}
+
 // noteInstance is called on every reconnect with the new connection's
 // Attached.InstanceID. It drops all tombstones only when the identity
 // CHANGES from a known baseline (a restarted/fresh daemon — its tab-id
@@ -873,23 +886,45 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 	tabs := h.reconcileTombstones(att.Tabs)
 
 	h.mu.Lock()
-	want := make(map[uint32]bool, len(tabs))
-	for _, ti := range tabs {
-		want[ti.ID] = true
-	}
 	var vanished []*Source
-	for id, s := range h.sources {
-		if !want[id] {
+	if restarted {
+		// The daemon RESTARTED: the old tab-id space is DEAD. Numeric IDs
+		// on the fresh daemon belong to a different process and are
+		// meaningless to compare against pre-restart Sources — a new tab
+		// reusing an old ID is NOT the old tab surviving. So vanish EVERY
+		// pre-restart Source (restart-vanished, so the GUI reseats) and
+		// let the new daemon's tabs be adopted as FRESH Sources below,
+		// regardless of ID collisions.
+		for _, s := range h.sources {
 			vanished = append(vanished, s)
+		}
+	} else {
+		// Same instance (e.g. an SSH blip the daemon survived): match by
+		// ID. Surviving tabs are re-adopted idempotently; only IDs absent
+		// from the snapshot vanished (a remote close while the link was
+		// down).
+		want := make(map[uint32]bool, len(tabs))
+		for _, ti := range tabs {
+			want[ti.ID] = true
+		}
+		for id, s := range h.sources {
+			if !want[id] {
+				vanished = append(vanished, s)
+			}
 		}
 	}
 	h.mu.Unlock()
 
-	for _, ti := range tabs {
-		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
-	}
+	// Vanish FIRST, adopt SECOND. markVanished unregisters the Source, so
+	// on a restart an Adopt for a reused numeric ID then creates a FRESH
+	// Source instead of returning the dead one. (Order is irrelevant in
+	// the same-instance case — vanished IDs and adopted IDs never overlap
+	// there — so this is safe for both paths.)
 	for _, s := range vanished {
 		s.markVanished(restarted)
+	}
+	for _, ti := range tabs {
+		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
 	}
 	if cb != nil {
 		cb(&protocol.TopologyChanged{

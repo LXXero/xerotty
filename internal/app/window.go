@@ -196,6 +196,14 @@ type Window struct {
 	// minted, cleared (with daemonReseatPending) once NewTab finally
 	// succeeds — retries reuse the minted window and only redo NewTab.
 	daemonReseatMinted bool
+	// daemonReseatInstance is the daemon InstanceID the reseat window was
+	// minted against. It scopes the mint-once to a SINGLE restart episode:
+	// if a SECOND daemon restart happens while a reseat is still pending
+	// (CreateWindow done, NewTab not yet succeeded), the minted window ID
+	// belongs to the now-dead intermediate daemon. Comparing this against
+	// the hub's current InstanceID detects that and forces a re-mint on
+	// the new daemon, so focus/move don't keep targeting a stale window.
+	daemonReseatInstance string
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 	// pendingFocus asks the main loop to raise + key-focus this Window's

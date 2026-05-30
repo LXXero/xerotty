@@ -524,6 +524,25 @@ func (w *Window) setLocalDaemonWindowID(id uint32) {
 	}
 }
 
+// reseatNeedsMint decides whether a reseat episode must (re)mint a fresh
+// daemon window. Factored out of frame() (which isn't unit-testable —
+// it drives ImGui) so the second-restart-mid-reseat logic can be tested
+// directly. Returns true when:
+//   - nothing has been minted yet this episode (minted == false), OR
+//   - the daemon instance CHANGED since the mint (a second restart while
+//     the first reseat was still pending) — the prior window ID lived in
+//     the dead intermediate daemon's id-space and is stale, so re-mint.
+//
+// When currentInstance is "" (pre-v7 / unknown) we can't detect a
+// restart, so a minted window is kept as-is — the same safe degradation
+// the rest of the instance-scoped logic uses.
+func reseatNeedsMint(minted bool, mintedInstance, currentInstance string) bool {
+	if !minted {
+		return true
+	}
+	return currentInstance != "" && currentInstance != mintedInstance
+}
+
 // sendDaemonMoveTab persists a tab move to the owning daemon.
 // Same-window reorder OR cross-window drag — both go through the
 // same MsgWindowMoveTab carrying (TabID, ToWindowID, Index).
@@ -3371,10 +3390,17 @@ func (a *Window) frame() {
 		// leaked a daemon window per tick. setLocalDaemonWindowID keeps
 		// the legacy field, the per-hub map, and the hub default window
 		// all consistent so later focus/move use the NEW window ID.
-		if !a.daemonReseatMinted {
+		//
+		// The mint-once is scoped to the CURRENT daemon instance: if a
+		// SECOND restart happens mid-reseat, the previously-minted window
+		// ID belongs to the dead intermediate daemon, so reseatNeedsMint
+		// forces a re-mint on the new one (see its doc).
+		curInstance := a.app.daemonHub.InstanceID()
+		if reseatNeedsMint(a.daemonReseatMinted, a.daemonReseatInstance, curInstance) {
 			if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
 				a.setLocalDaemonWindowID(id)
 				a.daemonReseatMinted = true
+				a.daemonReseatInstance = curInstance
 			}
 		}
 		// Only retry the cheap part (NewTab) each frame. NewTab routes
@@ -3387,6 +3413,7 @@ func (a *Window) frame() {
 				// Got a tab; episode over — resume normal rendering.
 				a.daemonReseatPending = false
 				a.daemonReseatMinted = false
+				a.daemonReseatInstance = ""
 			}
 		}
 		if a.tabs.Count() == 0 {

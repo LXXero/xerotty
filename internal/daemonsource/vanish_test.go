@@ -138,6 +138,106 @@ func TestVanishRestartVsRemoteClose(t *testing.T) {
 	})
 }
 
+// TestRestartVanishesReusedID is the finding-1 regression: when the
+// daemon restarts and the FRESH daemon already has a tab whose numeric
+// ID collides with a pre-restart tab, the stale pre-restart Source must
+// NOT be treated as "surviving" just because the ID matches. The old
+// tab-id space is dead — every pre-restart Source is restart-vanished
+// and the new daemon's tab is adopted as a FRESH, distinct Source.
+//
+// Without the fix the resync matched old Sources to new tabs by raw
+// numeric ID, so the reused ID kept the dead Source bound to the new
+// daemon's tab (never vanished) — the GUI would render a corpse.
+func TestRestartVanishesReusedID(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+
+	startDaemon := func() (*daemon.Daemon, chan error) {
+		cfg := config.Default()
+		d := daemon.New(&cfg, sockPath)
+		done := make(chan error, 1)
+		go func() { done <- d.Run() }()
+		time.Sleep(50 * time.Millisecond)
+		return d, done
+	}
+
+	d1, done1 := startDaemon()
+	cli, att1, err := dialAttach(sockPath, "owner")
+	if err != nil {
+		t.Fatalf("initial dial: %v", err)
+	}
+	hub := daemonsource.NewHub(cli)
+	defer hub.Stop()
+	hub.SeedInstance(att1.InstanceID)
+
+	// Gate the reconnect so we restart the daemon AND pre-create the
+	// colliding tab before the owner reattaches.
+	firstStarted := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	hub.SetRedial(func() (*clientproto.Client, *protocol.Attached, error) {
+		once.Do(func() {
+			close(firstStarted)
+			<-release
+		})
+		return dialAttach(sockPath, "owner")
+	})
+
+	oldSrc, err := hub.NewTab(40, 10, "")
+	if err != nil {
+		t.Fatalf("tab on d1: %v", err)
+	}
+	oldID := oldSrc.TabID()
+
+	// Drop the link, stop d1, bring up a FRESH daemon (new InstanceID,
+	// tab-id space reset to 1).
+	_ = cli.Close()
+	<-firstStarted
+	_ = d1.Stop()
+	<-done1
+
+	d2, done2 := startDaemon()
+	defer func() { _ = d2.Stop(); <-done2 }()
+
+	// A separate client creates a tab on d2 that REUSES the old numeric
+	// ID, and stays attached so the tab is in the owner's reattach
+	// snapshot.
+	probe, _, err := dialAttach(sockPath, "probe")
+	if err != nil {
+		t.Fatalf("probe dial: %v", err)
+	}
+	defer probe.Close()
+	pHub := daemonsource.NewHub(probe)
+	defer pHub.Stop()
+	newSrcOnD2, err := pHub.NewTab(40, 10, "")
+	if err != nil {
+		t.Fatalf("tab on d2: %v", err)
+	}
+	if newSrcOnD2.TabID() != oldID {
+		t.Fatalf("d2 did not reuse tab id %d (got %d) — test assumption broken", oldID, newSrcOnD2.TabID())
+	}
+
+	// Owner reconnects to d2 → resync sees a new InstanceID + a tab
+	// reusing oldID.
+	close(release)
+
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) && !oldSrc.IsVanished() {
+		time.Sleep(40 * time.Millisecond)
+	}
+	if !oldSrc.IsVanished() {
+		t.Fatalf("stale pre-restart Source for reused id %d never vanished — matched the new tab by raw ID", oldID)
+	}
+	if !oldSrc.VanishedByRestart() {
+		t.Fatalf("reused-id vanish not flagged as a restart — GUI would close instead of reseat")
+	}
+
+	// The hub must now hold a FRESH Source for oldID (adopted from d2),
+	// not the dead pre-restart one.
+	if got := hub.Adopt(oldID, 40, 10); got == oldSrc {
+		t.Fatalf("hub kept the dead pre-restart Source bound to d2's reused id %d", oldID)
+	}
+}
+
 // dialAttach connects, says hello, runs the client, attaches, and waits
 // for the Attached frame. Shared by the vanish-path subtests.
 func dialAttach(sockPath, name string) (*clientproto.Client, *protocol.Attached, error) {
