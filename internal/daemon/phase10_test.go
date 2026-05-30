@@ -109,17 +109,27 @@ func TestStuckClientDoesNotBlockOthers(t *testing.T) {
 	}
 }
 
-// TestUnresponsiveClientReaped verifies Phase 10 layer 2: a client that
-// stops responding to heartbeat pings (and sends no other inbound
-// traffic) is reaped and cleaned up. The reaped conn goes through the
-// normal disconnect path, so AttachedClients drops it.
-func TestUnresponsiveClientReaped(t *testing.T) {
+// attachedBy reports whether a client with the given ClientID is
+// currently registered on the daemon.
+func attachedBy(d *daemon.Daemon, id string) bool {
+	for _, ac := range d.AttachedClients() {
+		if ac.ClientID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestFlowingReaderNotReaped verifies finding #1: a client that keeps
+// READING the daemon's output (so writes keep making progress) is NOT
+// reaped even though it never pongs. Write progress overrides pong
+// staleness — a slow-but-flowing reader draining a backlog, whose pong
+// is merely late, must not be killed.
+func TestFlowingReaderNotReaped(t *testing.T) {
 	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
-	// Short windows so the reap happens within the test. Set BEFORE Run
-	// so the serving goroutines observe them race-free.
-	d.SetHeartbeat(40*time.Millisecond, 250*time.Millisecond)
+	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
 	doneRun := make(chan error, 1)
 	go func() { doneRun <- d.Run() }()
 	defer func() { _ = d.Stop(); <-doneRun }()
@@ -132,7 +142,7 @@ func TestUnresponsiveClientReaped(t *testing.T) {
 	defer conn.Close()
 	fr := protocol.NewFrameReader(conn)
 	if err := protocol.WriteFrame(conn, protocol.MsgHello, &protocol.Hello{
-		Version: protocol.ProtocolVersion, ClientID: "silent",
+		Version: protocol.ProtocolVersion, ClientID: "flowing",
 	}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
@@ -140,9 +150,8 @@ func TestUnresponsiveClientReaped(t *testing.T) {
 	if err := protocol.WriteFrame(conn, protocol.MsgAttach, &protocol.Attach{NewIfMissing: true}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	// Read+discard everything the daemon sends — but NEVER pong. So the
-	// socket is "alive" yet the app is unresponsive: no inbound frames
-	// reach the daemon, and it must reap us.
+	// Read+discard EVERYTHING forever (incl. the heartbeat pings) but
+	// never pong. Writes keep flowing, so we must stay alive.
 	go func() {
 		for {
 			if _, _, err := fr.ReadFrame(); err != nil {
@@ -151,30 +160,96 @@ func TestUnresponsiveClientReaped(t *testing.T) {
 		}
 	}()
 
-	// Confirm we registered first.
-	attachedBy := func(id string) bool {
-		for _, ac := range d.AttachedClients() {
-			if ac.ClientID == id {
-				return true
+	// Well past several windows, still attached.
+	time.Sleep(600 * time.Millisecond)
+	if !attachedBy(d, "flowing") {
+		t.Fatal("a flowing (still-reading) client was wrongly reaped because it didn't pong — finding 1 regression")
+	}
+}
+
+// TestStoppedReaderReaped verifies finding #2: a client that STOPS
+// reading (so the daemon's writer wedges) and stops ponging IS reaped —
+// even while it keeps SENDING frames. Generic inbound no longer counts
+// as liveness; only a real pong (or write progress) does. Served over
+// an unbuffered net.Pipe so the writer wedges immediately, exercising
+// the heartbeat rather than the layer-3 deadline.
+func TestStoppedReaderReaped(t *testing.T) {
+	cfg := config.Default()
+	d := daemon.New(&cfg, "")
+	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
+
+	cConn, sConn := net.Pipe()
+	go d.ServeConn(sConn)
+	defer cConn.Close()
+	fr := protocol.NewFrameReader(cConn)
+	if err := protocol.WriteFrame(cConn, protocol.MsgHello, &protocol.Hello{
+		Version: protocol.ProtocolVersion, ClientID: "stopped",
+	}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	readFrameExpect(t, fr, protocol.MsgHelloAck)
+	if err := protocol.WriteFrame(cConn, protocol.MsgAttach, &protocol.Attach{NewIfMissing: true}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	// From here we never READ again — the daemon's writer wedges on its
+	// next frame. But we keep SENDING (focus pings) to prove that
+	// inbound traffic does NOT keep us alive.
+	stopSend := make(chan struct{})
+	defer close(stopSend)
+	go func() {
+		for {
+			select {
+			case <-stopSend:
+				return
+			case <-time.After(25 * time.Millisecond):
+				if err := protocol.WriteFrame(cConn, protocol.MsgTabFocus, &protocol.TabFocus{ID: 1}); err != nil {
+					return
+				}
 			}
 		}
-		return false
-	}
-	deadline := time.After(2 * time.Second)
-	for !attachedBy("silent") {
+	}()
+
+	deadline := time.After(3 * time.Second)
+	for attachedBy(d, "stopped") {
 		select {
 		case <-deadline:
-			t.Fatal("client never registered")
+			t.Fatal("a stopped-reading client (still sending, never ponging) was not reaped — finding 2")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
 
-	// Now, with no pongs, the daemon must reap + clean us up.
-	deadline = time.After(3 * time.Second)
-	for attachedBy("silent") {
+// TestHandshakeHangNoZombie verifies finding #3: a client that sends
+// Hello then never reads (so the synchronous HelloAck write would hang
+// before the writer/heartbeat goroutines exist) does NOT leave a
+// registered-but-stuck conn — the handshake watchdog closes it.
+func TestHandshakeHangNoZombie(t *testing.T) {
+	cfg := config.Default()
+	d := daemon.New(&cfg, "")
+	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
+
+	cConn, sConn := net.Pipe()
+	go d.ServeConn(sConn)
+	defer cConn.Close()
+	// Send Hello, then NEVER read — the daemon's HelloAck write blocks
+	// on the unbuffered pipe. The watchdog must close the conn and the
+	// deferred unregister must clean up.
+	if err := protocol.WriteFrame(cConn, protocol.MsgHello, &protocol.Hello{
+		Version: protocol.ProtocolVersion, ClientID: "hang",
+	}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+
+	// No zombie may persist past the watchdog window. (Without it, the
+	// HelloAck write blocks forever and "hang" stays registered.)
+	deadline := time.After(2 * time.Second)
+	for {
+		if !attachedBy(d, "hang") && len(d.AttachedClients()) == 0 {
+			break
+		}
 		select {
 		case <-deadline:
-			t.Fatal("unresponsive client was not reaped within 3s")
+			t.Fatal("a hung handshake left a registered zombie conn — finding 3")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

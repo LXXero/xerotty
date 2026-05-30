@@ -40,17 +40,21 @@ type Daemon struct {
 
 	// Heartbeat tuning (Phase 10 layer 2). Defaults set in New;
 	// SetHeartbeat overrides them (tests use short windows). Read by
-	// each conn's heartbeatLoop.
+	// each conn's heartbeatLoop + the handshake watchdog.
 	heartbeatInterval time.Duration
-	inboundDeadWindow time.Duration
+	// livenessWindow is the staleness threshold: a conn is reaped only
+	// when BOTH write-progress and pong have been stale this long. Also
+	// bounds the synchronous handshake (watchdog).
+	livenessWindow time.Duration
 }
 
-// SetHeartbeat overrides the heartbeat ping interval and the
-// no-inbound reap window. Call before Run / serving connections (new
-// conns read these). Used by tests to shorten the windows.
-func (d *Daemon) SetHeartbeat(interval, dead time.Duration) {
+// SetHeartbeat overrides the heartbeat ping interval and the liveness
+// staleness window (also the handshake watchdog). Call before Run /
+// serving connections (new conns read these). Used by tests to shorten
+// the windows.
+func (d *Daemon) SetHeartbeat(interval, window time.Duration) {
 	d.heartbeatInterval = interval
-	d.inboundDeadWindow = dead
+	d.livenessWindow = window
 }
 
 // AttachedClient is a snapshot of one connected wire-protocol client.
@@ -388,7 +392,7 @@ func New(cfg *config.Config, socketPath string) *Daemon {
 		socketPath:        socketPath,
 		sessions:          make(map[string]*Session),
 		heartbeatInterval: defaultHeartbeatInterval,
-		inboundDeadWindow: defaultInboundDeadWindow,
+		livenessWindow:    defaultLivenessWindow,
 	}
 }
 
