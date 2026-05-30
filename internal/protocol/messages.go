@@ -36,7 +36,15 @@ package protocol
 //       a v5 client (which would treat MsgPing as unknown and never
 //       pong) would reap a perfectly-live client; the handshake gate
 //       prevents that mismatch.
-const ProtocolVersion uint16 = 6
+//   7 — Phase 10 layer 4c fix: Attached.InstanceID (a random nonce
+//       minted once per daemon process). The client scopes its
+//       close-tombstones to this identity and drops them on reconnect
+//       to a DIFFERENT instance (a restarted daemon with a reused
+//       tab-id space) so a legitimately-recreated tab isn't suppressed
+//       forever. A v6 client gets InstanceID="" and would keep
+//       cross-restart tombstones; the handshake gate forces the clean
+//       version error instead of that silent misbehavior.
+const ProtocolVersion uint16 = 7
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -140,6 +148,14 @@ type Attached struct {
 	// (which carry monotonically-increasing revisions) are applied
 	// only when newer — Attached IS the revision-N snapshot.
 	Revision uint64 `msg:"revision"`
+	// InstanceID is a random nonce minted once when the daemon PROCESS
+	// starts (not per-session, not per-connection). It identifies the
+	// daemon's tab-id space: reconnecting to the same daemon yields the
+	// same InstanceID; reconnecting after a restart yields a fresh one.
+	// The client uses the change to drop close-tombstones whose tab IDs
+	// belonged to the dead daemon — otherwise a restarted daemon reusing
+	// an ID (tab IDs reset to 1) would have a legit new tab suppressed.
+	InstanceID string `msg:"instance_id,omitempty"`
 }
 
 // WindowInfo describes a top-level UI window — a grouping of tabs.

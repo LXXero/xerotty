@@ -671,6 +671,7 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 		Tabs:         snap.Tabs,
 		FocusedTabID: snap.FocusedTabID,
 		Revision:     snap.Revision,
+		InstanceID:   c.daemon.instanceID,
 	})
 	// Subscribe to each existing tab — start a publish goroutine
 	// per tab that emits CellFull frames whenever the terminal's

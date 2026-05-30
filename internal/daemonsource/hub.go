@@ -75,6 +75,13 @@ type Hub struct {
 	// router's reconcile don't contend on h.mu.
 	tombMu     sync.Mutex
 	tombstones map[uint32]struct{}
+	// daemonInstance is the daemon-process identity (Attached.InstanceID)
+	// the tombstones are scoped to. On reconnect to a DIFFERENT instance
+	// (a restarted daemon — fresh tab-id space starting back at 1), the
+	// tombstones belonged to the dead daemon's IDs and must be dropped,
+	// or a legitimately-recreated tab that reuses an ID would be
+	// suppressed (and SendTabClose replayed) forever. Guarded by tombMu.
+	daemonInstance string
 
 	// onClipboardSet fires when the daemon ships MsgClipboardSet
 	// (a remote PTY app wrote the clipboard). Clipboard is
@@ -312,6 +319,43 @@ func (h *Hub) unregister(id uint32) {
 func (h *Hub) addTombstone(id uint32) {
 	h.tombMu.Lock()
 	h.tombstones[id] = struct{}{}
+	h.tombMu.Unlock()
+}
+
+// SeedInstance records the daemon's instance identity at initial attach
+// (alongside SeedRevision), so the first reconnect can tell same-daemon
+// from restarted-daemon. Call once, right after attach. id "" (a
+// pre-v7 daemon that doesn't send InstanceID) is recorded as-is; tombstones
+// then never auto-drop on reconnect, which is the safe pre-fix behavior.
+func (h *Hub) SeedInstance(id string) {
+	h.tombMu.Lock()
+	h.daemonInstance = id
+	h.tombMu.Unlock()
+}
+
+// noteInstance is called on every reconnect with the new connection's
+// Attached.InstanceID. It drops all tombstones only when the identity
+// CHANGES from a known baseline (a restarted/fresh daemon — its tab-id
+// space resets to 1, so old tombstones would suppress legit reused IDs).
+// Cases:
+//   - id == "" (pre-v7 daemon): unknown identity → never drop (safe).
+//   - no baseline yet (unseeded): record it, DON'T drop — clearing on a
+//     first same-daemon reconnect would wrongly discard a tombstone for
+//     a tab closed while disconnected.
+//   - id differs from baseline: a restart → drop tombstones, rebase.
+//   - id matches baseline: same daemon → keep tombstones.
+func (h *Hub) noteInstance(id string) {
+	if id == "" {
+		return
+	}
+	h.tombMu.Lock()
+	switch {
+	case h.daemonInstance == "":
+		h.daemonInstance = id
+	case id != h.daemonInstance:
+		h.tombstones = make(map[uint32]struct{})
+		h.daemonInstance = id
+	}
 	h.tombMu.Unlock()
 }
 
@@ -802,6 +846,12 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 	h.lastRevision = att.Revision
 	cb := h.onTopology
 	h.mu.Unlock()
+
+	// If we reconnected to a DIFFERENT daemon instance (a restart), drop
+	// tombstones first — they belonged to the dead daemon's tab-id space,
+	// which the fresh daemon reuses from 1. Must run BEFORE
+	// reconcileTombstones so a reused ID isn't suppressed / re-closed.
+	h.noteInstance(att.InstanceID)
 
 	// Same tombstone replay as the live path: a tab the user closed
 	// while the link was down is re-closed, not resurrected, by this

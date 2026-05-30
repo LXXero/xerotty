@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -46,6 +48,12 @@ type Daemon struct {
 	// when BOTH write-progress and pong have been stale this long. Also
 	// bounds the synchronous handshake (watchdog).
 	livenessWindow time.Duration
+
+	// instanceID is a random nonce minted once at New() — the identity
+	// of THIS daemon process's tab-id space. Shipped in every Attached
+	// so clients can tell a reconnect-to-same-daemon (same ID) from a
+	// reconnect-after-restart (new ID) and scope close-tombstones to it.
+	instanceID string
 }
 
 // SetHeartbeat overrides the heartbeat ping interval and the liveness
@@ -393,7 +401,21 @@ func New(cfg *config.Config, socketPath string) *Daemon {
 		sessions:          make(map[string]*Session),
 		heartbeatInterval: defaultHeartbeatInterval,
 		livenessWindow:    defaultLivenessWindow,
+		instanceID:        newInstanceID(),
 	}
+}
+
+// newInstanceID mints a random per-process identity for the daemon's
+// tab-id space. crypto/rand so two daemons (or a restart) never collide;
+// a collision would let a client keep stale tombstones across a restart.
+// Falls back to a pid+time string only if the OS RNG is unavailable
+// (effectively never) — still distinct enough across a restart.
+func newInstanceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("pid%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // Config returns the daemon's config. Read-only — callers must not

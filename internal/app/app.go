@@ -730,6 +730,7 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return a.dialRemoteDaemon(name, host)
 	})
 	hub.SeedRevision(attached.Revision)
+	hub.SeedInstance(attached.InstanceID)
 	a.wireHubCallbacks(name, hub)
 
 	entry := &remoteHubEntry{hub: hub}
@@ -959,6 +960,9 @@ func (a *App) initDaemonSource() error {
 	// Seed the topology-revision gate from the attach snapshot so
 	// later MsgTopologyChanged broadcasts are applied only when newer.
 	hub.SeedRevision(attached.Revision)
+	// Seed the daemon identity so the first reconnect can distinguish a
+	// same-daemon resync from a restarted-daemon one (tombstone scoping).
+	hub.SeedInstance(attached.InstanceID)
 	// Mirror the GUI's scrollback config so daemon-backed tabs
 	// have the same history depth as in-process ones. "unlimited"
 	// mode → use a large fixed cap (the client still bounds memory

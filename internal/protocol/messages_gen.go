@@ -208,6 +208,12 @@ func (z *Attached) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Revision")
 				return
 			}
+		case "instance_id":
+			z.InstanceID, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "InstanceID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -221,70 +227,98 @@ func (z *Attached) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *Attached) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 5
-	// write "session_name"
-	err = en.Append(0x85, 0xac, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+	// check for omitted fields
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
+	_ = zb0001Mask
+	if z.InstanceID == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteString(z.SessionName)
-	if err != nil {
-		err = msgp.WrapError(err, "SessionName")
-		return
-	}
-	// write "windows"
-	err = en.Append(0xa7, 0x77, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteArrayHeader(uint32(len(z.Windows)))
-	if err != nil {
-		err = msgp.WrapError(err, "Windows")
-		return
-	}
-	for za0001 := range z.Windows {
-		err = z.Windows[za0001].EncodeMsg(en)
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "session_name"
+		err = en.Append(0xac, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
 		if err != nil {
-			err = msgp.WrapError(err, "Windows", za0001)
 			return
 		}
-	}
-	// write "tabs"
-	err = en.Append(0xa4, 0x74, 0x61, 0x62, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteArrayHeader(uint32(len(z.Tabs)))
-	if err != nil {
-		err = msgp.WrapError(err, "Tabs")
-		return
-	}
-	for za0002 := range z.Tabs {
-		err = z.Tabs[za0002].EncodeMsg(en)
+		err = en.WriteString(z.SessionName)
 		if err != nil {
-			err = msgp.WrapError(err, "Tabs", za0002)
+			err = msgp.WrapError(err, "SessionName")
 			return
 		}
-	}
-	// write "focused_tab_id"
-	err = en.Append(0xae, 0x66, 0x6f, 0x63, 0x75, 0x73, 0x65, 0x64, 0x5f, 0x74, 0x61, 0x62, 0x5f, 0x69, 0x64)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint32(z.FocusedTabID)
-	if err != nil {
-		err = msgp.WrapError(err, "FocusedTabID")
-		return
-	}
-	// write "revision"
-	err = en.Append(0xa8, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint64(z.Revision)
-	if err != nil {
-		err = msgp.WrapError(err, "Revision")
-		return
+		// write "windows"
+		err = en.Append(0xa7, 0x77, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteArrayHeader(uint32(len(z.Windows)))
+		if err != nil {
+			err = msgp.WrapError(err, "Windows")
+			return
+		}
+		for za0001 := range z.Windows {
+			err = z.Windows[za0001].EncodeMsg(en)
+			if err != nil {
+				err = msgp.WrapError(err, "Windows", za0001)
+				return
+			}
+		}
+		// write "tabs"
+		err = en.Append(0xa4, 0x74, 0x61, 0x62, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteArrayHeader(uint32(len(z.Tabs)))
+		if err != nil {
+			err = msgp.WrapError(err, "Tabs")
+			return
+		}
+		for za0002 := range z.Tabs {
+			err = z.Tabs[za0002].EncodeMsg(en)
+			if err != nil {
+				err = msgp.WrapError(err, "Tabs", za0002)
+				return
+			}
+		}
+		// write "focused_tab_id"
+		err = en.Append(0xae, 0x66, 0x6f, 0x63, 0x75, 0x73, 0x65, 0x64, 0x5f, 0x74, 0x61, 0x62, 0x5f, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.FocusedTabID)
+		if err != nil {
+			err = msgp.WrapError(err, "FocusedTabID")
+			return
+		}
+		// write "revision"
+		err = en.Append(0xa8, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.Revision)
+		if err != nil {
+			err = msgp.WrapError(err, "Revision")
+			return
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// write "instance_id"
+			err = en.Append(0xab, 0x69, 0x6e, 0x73, 0x74, 0x61, 0x6e, 0x63, 0x65, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.InstanceID)
+			if err != nil {
+				err = msgp.WrapError(err, "InstanceID")
+				return
+			}
+		}
 	}
 	return
 }
@@ -292,36 +326,54 @@ func (z *Attached) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *Attached) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 5
-	// string "session_name"
-	o = append(o, 0x85, 0xac, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
-	o = msgp.AppendString(o, z.SessionName)
-	// string "windows"
-	o = append(o, 0xa7, 0x77, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73)
-	o = msgp.AppendArrayHeader(o, uint32(len(z.Windows)))
-	for za0001 := range z.Windows {
-		o, err = z.Windows[za0001].MarshalMsg(o)
-		if err != nil {
-			err = msgp.WrapError(err, "Windows", za0001)
-			return
+	// check for omitted fields
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
+	_ = zb0001Mask
+	if z.InstanceID == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "session_name"
+		o = append(o, 0xac, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+		o = msgp.AppendString(o, z.SessionName)
+		// string "windows"
+		o = append(o, 0xa7, 0x77, 0x69, 0x6e, 0x64, 0x6f, 0x77, 0x73)
+		o = msgp.AppendArrayHeader(o, uint32(len(z.Windows)))
+		for za0001 := range z.Windows {
+			o, err = z.Windows[za0001].MarshalMsg(o)
+			if err != nil {
+				err = msgp.WrapError(err, "Windows", za0001)
+				return
+			}
+		}
+		// string "tabs"
+		o = append(o, 0xa4, 0x74, 0x61, 0x62, 0x73)
+		o = msgp.AppendArrayHeader(o, uint32(len(z.Tabs)))
+		for za0002 := range z.Tabs {
+			o, err = z.Tabs[za0002].MarshalMsg(o)
+			if err != nil {
+				err = msgp.WrapError(err, "Tabs", za0002)
+				return
+			}
+		}
+		// string "focused_tab_id"
+		o = append(o, 0xae, 0x66, 0x6f, 0x63, 0x75, 0x73, 0x65, 0x64, 0x5f, 0x74, 0x61, 0x62, 0x5f, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.FocusedTabID)
+		// string "revision"
+		o = append(o, 0xa8, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e)
+		o = msgp.AppendUint64(o, z.Revision)
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// string "instance_id"
+			o = append(o, 0xab, 0x69, 0x6e, 0x73, 0x74, 0x61, 0x6e, 0x63, 0x65, 0x5f, 0x69, 0x64)
+			o = msgp.AppendString(o, z.InstanceID)
 		}
 	}
-	// string "tabs"
-	o = append(o, 0xa4, 0x74, 0x61, 0x62, 0x73)
-	o = msgp.AppendArrayHeader(o, uint32(len(z.Tabs)))
-	for za0002 := range z.Tabs {
-		o, err = z.Tabs[za0002].MarshalMsg(o)
-		if err != nil {
-			err = msgp.WrapError(err, "Tabs", za0002)
-			return
-		}
-	}
-	// string "focused_tab_id"
-	o = append(o, 0xae, 0x66, 0x6f, 0x63, 0x75, 0x73, 0x65, 0x64, 0x5f, 0x74, 0x61, 0x62, 0x5f, 0x69, 0x64)
-	o = msgp.AppendUint32(o, z.FocusedTabID)
-	// string "revision"
-	o = append(o, 0xa8, 0x72, 0x65, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e)
-	o = msgp.AppendUint64(o, z.Revision)
 	return
 }
 
@@ -399,6 +451,12 @@ func (z *Attached) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Revision")
 				return
 			}
+		case "instance_id":
+			z.InstanceID, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "InstanceID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -421,7 +479,7 @@ func (z *Attached) Msgsize() (s int) {
 	for za0002 := range z.Tabs {
 		s += z.Tabs[za0002].Msgsize()
 	}
-	s += 15 + msgp.Uint32Size + 9 + msgp.Uint64Size
+	s += 15 + msgp.Uint32Size + 9 + msgp.Uint64Size + 12 + msgp.StringPrefixSize + len(z.InstanceID)
 	return
 }
 
