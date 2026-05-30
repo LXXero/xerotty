@@ -3403,12 +3403,16 @@ func (a *Window) frame() {
 				a.daemonReseatInstance = curInstance
 			}
 		}
-		// Only retry the cheap part (NewTab) each frame. NewTab routes
-		// through the daemon SourceFactory, which uses this window's
-		// daemonWindowID. Requires the window to have been minted — if
-		// CreateWindow is still failing, retry it next frame instead of
-		// landing the tab in the daemon's default window.
-		if a.daemonReseatMinted {
+		// Only retry the cheap part (NewTab) each frame — but ONLY once we
+		// actually hold a window minted for the CURRENT daemon instance.
+		// If CreateWindow failed this frame (daemon mid-redial), the mint
+		// is either absent (first episode) or stale (a second restart left
+		// daemonReseatInstance pointing at the dead intermediate daemon).
+		// Running NewTab with that stale daemonWindowID would silently land
+		// the tab in the daemon's DEFAULT window (session.go falls back for
+		// unknown IDs). So skip NewTab and retry next frame — the window
+		// stays open+empty with daemonReseatPending set, never pendingClose.
+		if a.daemonReseatMinted && a.daemonReseatInstance == curInstance {
 			if _, err := a.tabs.NewTab(cols, rows, ""); err == nil {
 				// Got a tab; episode over — resume normal rendering.
 				a.daemonReseatPending = false

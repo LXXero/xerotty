@@ -231,10 +231,26 @@ func TestRestartVanishesReusedID(t *testing.T) {
 		t.Fatalf("reused-id vanish not flagged as a restart — GUI would close instead of reseat")
 	}
 
-	// The hub must now hold a FRESH Source for oldID (adopted from d2),
-	// not the dead pre-restart one.
-	if got := hub.Adopt(oldID, 40, 10); got == oldSrc {
+	// resyncAfterReconnect must have ALREADY adopted a FRESH Source for
+	// the reused ID — prove it via Lookup (read-only), NOT Adopt, so the
+	// test doesn't create the Source it's checking for. A non-nil, distinct
+	// pointer means the resync itself re-adopted d2's tab as a new Source.
+	deadline = time.Now().Add(5 * time.Second)
+	var fresh *daemonsource.Source
+	for time.Now().Before(deadline) {
+		if fresh = hub.Lookup(oldID); fresh != nil && fresh != oldSrc {
+			break
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	if fresh == nil {
+		t.Fatalf("resync did not adopt a fresh Source for reused id %d", oldID)
+	}
+	if fresh == oldSrc {
 		t.Fatalf("hub kept the dead pre-restart Source bound to d2's reused id %d", oldID)
+	}
+	if fresh.IsVanished() {
+		t.Fatalf("freshly-adopted Source for id %d is already vanished", oldID)
 	}
 }
 

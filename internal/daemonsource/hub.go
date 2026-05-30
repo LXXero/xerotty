@@ -445,6 +445,12 @@ func (h *Hub) lookup(id uint32) *Source {
 	return h.sources[id]
 }
 
+// Lookup returns the registered Source for a tab ID, or nil if none —
+// a read-only accessor that, unlike Adopt, never creates a Source. Used
+// by tests to assert what the Hub adopted on its own (e.g. that a resync
+// adopted a new tab) without the lookup itself mutating hub state.
+func (h *Hub) Lookup(id uint32) *Source { return h.lookup(id) }
+
 // SetDefaultWindowID picks which daemon-side window new tabs land
 // in when NewTab is called without an explicit window. The GUI
 // usually creates one daemon-side window per UI window at startup
