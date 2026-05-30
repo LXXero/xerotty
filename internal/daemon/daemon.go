@@ -98,7 +98,7 @@ func (d *Daemon) broadcastProposals() {
 	}
 	d.clientsMu.Unlock()
 	for _, c := range conns {
-		_ = c.writeFrame(protocol.MsgProposalsChanged, &protocol.ProposalsChanged{Proposals: infos})
+		c.sendProposals(&protocol.ProposalsChanged{Proposals: infos})
 	}
 }
 
@@ -142,7 +142,7 @@ func (d *Daemon) broadcastClipboardSet(text string) {
 	}
 	d.clientsMu.Unlock()
 	for _, c := range conns {
-		_ = c.writeFrame(protocol.MsgClipboardSet, &protocol.ClipboardSet{Text: text})
+		c.trySend(protocol.MsgClipboardSet, &protocol.ClipboardSet{Text: text})
 	}
 }
 
@@ -164,7 +164,7 @@ func (d *Daemon) broadcastBell(tabID uint32) {
 		if !ok {
 			continue
 		}
-		_ = c.writeFrame(protocol.MsgBell, &protocol.Bell{ID: tabID})
+		c.trySend(protocol.MsgBell, &protocol.Bell{ID: tabID})
 	}
 }
 
@@ -279,7 +279,7 @@ func (d *Daemon) broadcastTopology(sess *Session) {
 		if name, _ := c.sessionName.Load().(string); name != sess.Name {
 			continue
 		}
-		_ = c.writeFrame(protocol.MsgTopologyChanged, &snap)
+		c.sendTopology(&snap)
 	}
 }
 

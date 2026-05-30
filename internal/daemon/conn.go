@@ -12,17 +12,30 @@ import (
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
-// serveConn handles one client connection from accept to close. It
-// runs in its own goroutine. Two sub-goroutines handle the read
-// loop (client commands) and the publish loop (cell updates from
-// attached tabs).
+// outFrame is one queued outbound frame for the writer goroutine.
+type outFrame struct {
+	typ  protocol.MsgType
+	body protocol.Msg
+}
+
+// outQueueCap bounds the per-conn ordered send queue. Large enough to
+// absorb a normal burst (initial paint + a scrollback batch) without
+// back-pressuring a healthy client; a sustained-slow client fills it
+// and gets reaped by the heartbeat (layer 2).
+const outQueueCap = 256
+
+// serveConn handles one client connection from accept to close. It runs
+// in its own goroutine, alongside a writer goroutine (sole owner of
+// conn writes) and, after Attach, per-tab publish loops.
 func (d *Daemon) serveConn(conn net.Conn) {
-	defer conn.Close()
 	c := &clientConn{
-		daemon:  d,
-		conn:    conn,
-		reader:  protocol.NewFrameReader(conn),
-		joined:  time.Now(),
+		daemon:     d,
+		conn:       conn,
+		reader:     protocol.NewFrameReader(conn),
+		joined:     time.Now(),
+		outCh:      make(chan outFrame, outQueueCap),
+		coalesceCh: make(chan struct{}, 1),
+		outDone:    make(chan struct{}),
 	}
 	// Install the unregister before handshake: handshake registers the
 	// client on the daemon BEFORE writing HelloAck, so a failed ack
@@ -30,11 +43,88 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// a no-op delete if registration never happened (version mismatch
 	// bails before registering).
 	defer d.unregisterClient(c)
+	// Handshake writes synchronously — no other goroutine writes the
+	// conn yet, so it doesn't go through the async writer.
 	if err := c.handshake(); err != nil {
 		fmt.Fprintf(os.Stderr, "xerottyd: handshake failed: %v\n", err)
+		_ = conn.Close()
 		return
 	}
+	// From here the writer goroutine owns all conn writes.
+	writerDone := make(chan struct{})
+	go func() { c.writeLoop(); close(writerDone) }()
 	c.runReadLoop()
+	// Read side ended (peer close / error / reap) — stop the writer and
+	// unblock anything stuck in a Write, then wait for it to drain out.
+	c.shutdown()
+	<-writerDone
+}
+
+// shutdown stops the async writer and closes the connection. Idempotent
+// (called from serveConn after the read loop ends, and from the writer
+// itself on a write error). Closing the conn unblocks both the read
+// loop's ReadFrame and any in-flight Write; closing outDone releases
+// producers blocked on a full queue.
+func (c *clientConn) shutdown() {
+	c.closeOnce.Do(func() {
+		close(c.outDone)
+		_ = c.conn.Close()
+	})
+}
+
+// writeLoop is the per-conn writer goroutine: the SOLE writer of the
+// connection. It drains the ordered queue and the latest-wins coalesce
+// slots, serializing all frames. Any write error tears the conn down.
+func (c *clientConn) writeLoop() {
+	for {
+		select {
+		case <-c.outDone:
+			return
+		case f := <-c.outCh:
+			if err := c.writeFrameRaw(f.typ, f.body); err != nil {
+				c.shutdown()
+				return
+			}
+		case <-c.coalesceCh:
+			if err := c.flushCoalesced(); err != nil {
+				c.shutdown()
+				return
+			}
+		}
+	}
+}
+
+// flushCoalesced writes whatever latest-wins frames are pending. Loops
+// until both slots are empty so a slot set while we were writing the
+// other still goes out this pass.
+func (c *clientConn) flushCoalesced() error {
+	for {
+		c.coalesceMu.Lock()
+		topo := c.pendingTopology
+		props := c.pendingProposals
+		c.pendingTopology = nil
+		c.pendingProposals = nil
+		c.coalesceMu.Unlock()
+		if topo == nil && props == nil {
+			return nil
+		}
+		if topo != nil {
+			if err := c.writeFrameRaw(protocol.MsgTopologyChanged, topo); err != nil {
+				return err
+			}
+		}
+		if props != nil {
+			if err := c.writeFrameRaw(protocol.MsgProposalsChanged, props); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// writeFrameRaw performs the actual conn write. Only the writeLoop
+// goroutine (and handshake, before the writer starts) calls it.
+func (c *clientConn) writeFrameRaw(t protocol.MsgType, body protocol.Msg) error {
+	return protocol.WriteFrame(c.conn, t, body)
 }
 
 // clientConn is the per-connection state. The read loop owns
@@ -45,7 +135,32 @@ type clientConn struct {
 	conn   net.Conn
 	reader *protocol.FrameReader
 
-	writeMu sync.Mutex // serializes WriteFrame across goroutines
+	// Outbound async writer (Phase 10 layer 1). ALL frame writes go
+	// through the single writeLoop goroutine, so a mutating goroutine
+	// (broadcast fan-out, a tab's publish loop) NEVER blocks in a
+	// synchronous Write on a slow/stuck client — it enqueues and moves
+	// on. The writer is the sole owner of conn writes, replacing the
+	// old write mutex.
+	//
+	//   - outCh:      bounded FIFO for ordered frames. Per-conn
+	//                 producers (read-loop responses, publish loop)
+	//                 may block on it (back-pressures only this conn);
+	//                 fan-out producers use the non-blocking trySend.
+	//   - coalesceCh: cap-1 nudge that a latest-wins slot is pending.
+	//   - pendingTopology / pendingProposals: latest-wins slots so a
+	//                 burst of structural / propose-queue broadcasts to
+	//                 a slow client collapses to just the newest.
+	//   - outDone:    closed by shutdown() to stop the writer; blocking
+	//                 sends select on it so they never wedge.
+	outCh      chan outFrame
+	coalesceCh chan struct{}
+	outDone    chan struct{}
+
+	coalesceMu       sync.Mutex
+	pendingTopology  *protocol.TopologyChanged
+	pendingProposals *protocol.ProposalsChanged
+
+	closeOnce sync.Once
 
 	clientID string    // from Hello
 	joined   time.Time // when this conn was accepted
@@ -161,8 +276,9 @@ func (c *clientConn) handshake() error {
 	}
 	if hello.Version != protocol.ProtocolVersion {
 		// Send an Error and bail. Phase 0 doesn't try to negotiate
-		// older versions.
-		_ = c.writeFrame(protocol.MsgError, &protocol.Error{
+		// older versions. Synchronous — the async writer isn't running
+		// yet, and we're about to return anyway.
+		_ = c.writeFrameRaw(protocol.MsgError, &protocol.Error{
 			Code:    1,
 			Message: fmt.Sprintf("unsupported protocol version %d; daemon speaks %d", hello.Version, protocol.ProtocolVersion),
 		})
@@ -173,7 +289,7 @@ func (c *clientConn) handshake() error {
 	// other clients / MCP agents can see who's attached.
 	c.clientID = hello.ClientID
 	c.daemon.registerClient(c)
-	return c.writeFrame(protocol.MsgHelloAck, &protocol.HelloAck{
+	return c.writeFrameRaw(protocol.MsgHelloAck, &protocol.HelloAck{
 		ServerVersion: protocol.ProtocolVersion,
 		ServerID:      fmt.Sprintf("%s:%d", host, os.Getpid()),
 		Hostname:      host,
@@ -367,7 +483,8 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	if msg.NewIfMissing {
 		var err error
 		if created, err = c.session.EnsureInitialTab(80, 24, ""); err != nil {
-			return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
+			c.send(protocol.MsgError, &protocol.Error{Code: 2, Message: err.Error()})
+			return nil
 		}
 	}
 	// Build the Attached frame from a consistent snapshot so its
@@ -375,15 +492,13 @@ func (c *clientConn) handleAttach(msg *protocol.Attach) error {
 	// its topology gate from this, so a mismatched revision would let
 	// a same-revision broadcast be ignored and leave the client stale.
 	snap := c.session.TopologySnapshot()
-	if err := c.writeFrame(protocol.MsgAttached, &protocol.Attached{
+	c.send(protocol.MsgAttached, &protocol.Attached{
 		SessionName:  c.session.Name,
 		Windows:      snap.Windows,
 		Tabs:         snap.Tabs,
 		FocusedTabID: snap.FocusedTabID,
 		Revision:     snap.Revision,
-	}); err != nil {
-		return err
-	}
+	})
 	// Subscribe to each existing tab — start a publish goroutine
 	// per tab that emits CellFull frames whenever the terminal's
 	// data channel signals new output. (subscribe is idempotent and
@@ -425,7 +540,8 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	// (MsgTopologyChanged), so the tab isn't just acked to the creator.
 	t, w, err := c.daemon.CreateTab(c.session, msg.WindowID, cols, rows, msg.Cwd)
 	if err != nil {
-		return c.writeFrame(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
+		c.send(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
+		return nil
 	}
 	// Unicast the ack to the requester, echoing ReqID so it can
 	// correlate (the broadcast above is how OTHER clients learn).
@@ -433,7 +549,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	// Session.NewTab clamps to MaxTabDim, and the client (especially
 	// daemonsource) sizes its local emulator from this, so handing
 	// back the pre-clamp request would desync the mirror.
-	return c.writeFrame(protocol.MsgTabCreated, &protocol.TabCreated{
+	c.send(protocol.MsgTabCreated, &protocol.TabCreated{
 		Info: protocol.TabInfo{
 			ID:    t.ID,
 			Title: t.Title(),
@@ -443,6 +559,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 		WindowID: w.ID,
 		ReqID:    msg.ReqID,
 	})
+	return nil
 }
 
 func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
@@ -450,7 +567,7 @@ func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
 		return fmt.Errorf("WindowCreate before Attach")
 	}
 	w := c.daemon.CreateWindow(c.session, msg.PosX, msg.PosY, msg.Width, msg.Height)
-	return c.writeFrame(protocol.MsgWindowCreated, &protocol.WindowCreated{
+	c.send(protocol.MsgWindowCreated, &protocol.WindowCreated{
 		Info: protocol.WindowInfo{
 			ID:           w.ID,
 			PosX:         w.PosX,
@@ -462,6 +579,7 @@ func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
 		},
 		ReqID: msg.ReqID,
 	})
+	return nil
 }
 
 func (c *clientConn) handleTabClose(msg *protocol.TabClose) error {
@@ -566,9 +684,10 @@ func (c *clientConn) handleImageChunk(msg *protocol.InputImageChunk) error {
 		// Cap concurrent assemblies so a client can't pin many
 		// parallel 256MiB buffers under distinct tab IDs.
 		if asm == nil && len(c.imgAccum) >= maxConcurrentImageAssemblies {
-			return c.writeFrame(protocol.MsgError, &protocol.Error{
+			c.send(protocol.MsgError, &protocol.Error{
 				Code: 14, Message: "image paste: too many concurrent uploads",
 			})
+			return nil
 		}
 		// First chunk (re)starts the assembly — capture metadata.
 		asm = &imageAssembly{mime: msg.MIME, filename: msg.Filename}
@@ -590,9 +709,10 @@ func (c *clientConn) handleImageChunk(msg *protocol.InputImageChunk) error {
 	// Bound memory: a runaway stream shouldn't OOM the daemon.
 	if len(asm.buf) > 256*1024*1024 { // 256 MiB hard ceiling
 		delete(c.imgAccum, msg.ID)
-		return c.writeFrame(protocol.MsgError, &protocol.Error{
+		c.send(protocol.MsgError, &protocol.Error{
 			Code: 13, Message: "image paste: exceeds 256MiB ceiling",
 		})
+		return nil
 	}
 	if !msg.Final {
 		return nil
@@ -632,21 +752,24 @@ func (c *clientConn) writeImageAndType(tabID uint32, mime, filename string, data
 	}
 	f, err := os.CreateTemp("", prefix+"-*"+ext)
 	if err != nil {
-		return c.writeFrame(protocol.MsgError, &protocol.Error{
+		c.send(protocol.MsgError, &protocol.Error{
 			Code: 10, Message: "image paste: temp file: " + err.Error(),
 		})
+		return nil
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
-		return c.writeFrame(protocol.MsgError, &protocol.Error{
+		c.send(protocol.MsgError, &protocol.Error{
 			Code: 11, Message: "image paste: write: " + err.Error(),
 		})
+		return nil
 	}
 	if err := f.Close(); err != nil {
-		return c.writeFrame(protocol.MsgError, &protocol.Error{
+		c.send(protocol.MsgError, &protocol.Error{
 			Code: 12, Message: "image paste: close: " + err.Error(),
 		})
+		return nil
 	}
 	t.Term.Paste(" " + f.Name() + " ")
 	return nil
@@ -835,7 +958,7 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			// MsgChildExit. Don't return — keep serving the held tab
 			// (see exitedCh comment above).
 			c.sendCellsAndCursor(t, sub)
-			_ = c.writeFrame(protocol.MsgChildExit, &protocol.ChildExit{
+			c.send(protocol.MsgChildExit, &protocol.ChildExit{
 				ID:       t.ID,
 				ExitCode: atomic.LoadInt32(&t.ExitCode),
 			})
@@ -869,7 +992,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	sub.lastAppCursor = appCursor
 	sub.lastTitle = title
 	sub.stateInit = true
-	_ = c.writeFrame(protocol.MsgTabState, &protocol.TabState{
+	c.send(protocol.MsgTabState, &protocol.TabState{
 		ID:                    t.ID,
 		CWD:                   cwd,
 		ForegroundProcessName: fg,
@@ -903,20 +1026,28 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 	// Decide: resync with CellFull (first paint, or dimensions
 	// changed), or diff against lastGrid.
 	if sub.lastGrid == nil || sub.lastCols != cols || sub.lastRows != rows {
-		_ = c.writeFrame(protocol.MsgCellFull, &protocol.CellFull{
+		// Cell frames are droppable (trySend): only advance lastGrid if
+		// the frame was actually queued. On a drop the stale lastGrid
+		// makes the NEXT publish re-send a fresh CellFull — natural
+		// coalescing, never a desync.
+		if c.trySend(protocol.MsgCellFull, &protocol.CellFull{
 			ID:   t.ID,
 			Cols: cols,
 			Rows: rows,
 			Grid: grid,
-		})
-		sub.lastGrid = grid
-		sub.lastCols = cols
-		sub.lastRows = rows
+		}) {
+			sub.lastGrid = grid
+			sub.lastCols = cols
+			sub.lastRows = rows
+		}
 	} else {
 		diff := computeCellDiff(t.ID, sub.lastGrid, grid)
 		if len(diff.Cells) > 0 {
-			_ = c.writeFrame(protocol.MsgCellDiff, diff)
-			sub.lastGrid = grid
+			// Only advance lastGrid if the diff was queued — otherwise
+			// the dropped cells fold into the next diff (no desync).
+			if c.trySend(protocol.MsgCellDiff, diff) {
+				sub.lastGrid = grid
+			}
 		}
 		// If nothing changed (rare — usually only happens when an
 		// app emits cursor-only escapes), skip the frame entirely.
@@ -965,7 +1096,7 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	// history gets repopulated.
 	if sub.clearPending.Swap(false) {
 		sub.lastScrollbackLen.Store(0)
-		_ = c.writeFrame(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: t.ID})
+		c.send(protocol.MsgScrollbackCleared, &protocol.ScrollbackCleared{ID: t.ID})
 	}
 	cur := t.Term.ScrollbackLen()
 	last := int(sub.lastScrollbackLen.Load())
@@ -990,7 +1121,7 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 		}
 		rows = append(rows, row)
 	}
-	_ = c.writeFrame(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
+	c.send(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
 		ID:      t.ID,
 		BaseIdx: uint32(last),
 		Rows:    rows,
@@ -1044,7 +1175,7 @@ func cellEqual(a, b protocol.Cell) bool {
 func (c *clientConn) sendCursor(t *Tab) {
 	pos := t.Term.Emu.CursorPosition()
 	style, blink, styleSet := t.Term.CursorStyle()
-	_ = c.writeFrame(protocol.MsgCursor, &protocol.Cursor{
+	c.trySend(protocol.MsgCursor, &protocol.Cursor{
 		ID:       t.ID,
 		Row:      uint16(pos.Y),
 		Col:      uint16(pos.X),
@@ -1055,8 +1186,57 @@ func (c *clientConn) sendCursor(t *Tab) {
 	})
 }
 
-func (c *clientConn) writeFrame(t protocol.MsgType, body protocol.Msg) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return protocol.WriteFrame(c.conn, t, body)
+// send enqueues a frame, blocking until there's room OR the conn is
+// torn down. For PER-CONN producers (read-loop responses, a tab's
+// publish loop) where back-pressure stays local to this connection and
+// the frame must not be dropped (responses, scrollback rows, child
+// exit). Fan-out callers must NOT use this — use trySend/sendTopology.
+func (c *clientConn) send(t protocol.MsgType, body protocol.Msg) {
+	select {
+	case c.outCh <- outFrame{typ: t, body: body}:
+	case <-c.outDone:
+	}
+}
+
+// trySend enqueues without blocking, returning false if the queue is
+// full (frame dropped). For fan-out broadcasts (bell, clipboard, ping)
+// that run on a mutating/shared goroutine and must never block on a
+// slow client, and for droppable cell frames whose state re-syncs on
+// the next publish (the caller must skip its lastGrid update on a
+// false return so the dropped delta is re-included next time).
+func (c *clientConn) trySend(t protocol.MsgType, body protocol.Msg) bool {
+	select {
+	case c.outCh <- outFrame{typ: t, body: body}:
+		return true
+	default:
+		return false
+	}
+}
+
+// sendTopology stores the snapshot in the latest-wins topology slot
+// (keeping the newest revision) and nudges the writer. Non-blocking —
+// the fan-out caller never waits on a slow client.
+func (c *clientConn) sendTopology(snap *protocol.TopologyChanged) {
+	c.coalesceMu.Lock()
+	if c.pendingTopology == nil || snap.Revision >= c.pendingTopology.Revision {
+		c.pendingTopology = snap
+	}
+	c.coalesceMu.Unlock()
+	select {
+	case c.coalesceCh <- struct{}{}:
+	default:
+	}
+}
+
+// sendProposals stores the propose-queue list in the latest-wins slot
+// (the list is a full snapshot, so newest simply replaces) and nudges
+// the writer. Non-blocking.
+func (c *clientConn) sendProposals(p *protocol.ProposalsChanged) {
+	c.coalesceMu.Lock()
+	c.pendingProposals = p
+	c.coalesceMu.Unlock()
+	select {
+	case c.coalesceCh <- struct{}{}:
+	default:
+	}
 }
