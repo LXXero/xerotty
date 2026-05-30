@@ -178,6 +178,16 @@ type Window struct {
 	imguiName     string // stable ImGui ID suffix (e.g. "win0")
 	imViewport    *imgui.Viewport
 	pendingClose  bool
+	// daemonReseatPending is set when this Window emptied because its
+	// daemon-backed tabs all VANISHED (the daemon process restarted and
+	// took the shells with it) rather than the user closing them. Closing
+	// the last window calls platform.Quit(), so a local daemon restart
+	// would silently exit the whole GUI — instead we keep the Window alive
+	// and reseat a fresh tab on the reconnected daemon. The flag persists
+	// across frames so that if the hub is still mid-redial (NewTab returns
+	// a transient error) we retry next frame instead of falling through to
+	// pendingClose. Cleared once a tab is successfully created.
+	daemonReseatPending bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 	// pendingFocus asks the main loop to raise + key-focus this Window's

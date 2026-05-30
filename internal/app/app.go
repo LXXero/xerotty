@@ -3279,37 +3279,81 @@ func (a *Window) frame() {
 
 	// Check for closed tabs and handle on_child_exit policy
 	a.tabs.CheckClosed()
+	// Track WHY tabs closed this frame. A daemon-side VANISH (the daemon
+	// restarted, or a tab was closed by another client/MCP agent) is
+	// handled differently from a local child exit when it empties the
+	// window: see the Count()==0 block below.
+	daemonVanished := false
+	otherClose := false
 	for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
 		tab := a.tabs.Tabs[i]
 		if !tab.Closed {
 			continue
 		}
 		// A daemon tab that vanished from the topology (closed by
-		// another client / MCP agent) is GONE — there's no local child
-		// to "hold", so force-remove it regardless of on_child_exit.
+		// another client / MCP agent, or lost when the daemon process
+		// restarted) is GONE — there's no local child to "hold", so
+		// force-remove it regardless of on_child_exit.
 		if ds, ok := tab.Terminal.(*daemonsource.Source); ok && ds.IsVanished() {
 			a.tabs.CloseTab(i)
+			daemonVanished = true
 			continue
 		}
 		switch a.app.cfg.Tabs.OnChildExit {
 		case "close":
 			a.tabs.CloseTab(i)
+			otherClose = true
 		case "hold":
 			// Keep tab open — user can close manually
 		case "hold_on_error":
 			if tab.Terminal.ChildExitCode() == 0 {
 				a.tabs.CloseTab(i)
+				otherClose = true
 			}
 			// Non-zero exit: keep tab open so user can see output
 		default:
 			a.tabs.CloseTab(i)
+			otherClose = true
 		}
 	}
 
-	// No tabs left in this Window — close just this Window. The reap
-	// pass in wrappedFrame removes it; if it was the last Window the
-	// process exits.
-	if a.tabs.Count() == 0 {
+	// No tabs left in this Window. Normally that closes the Window (and,
+	// if it's the last one, quits the app). But if the window emptied
+	// ONLY because its daemon-backed tabs VANISHED — the daemon process
+	// was restarted and took the shells with it, not the user closing
+	// them — closing the last window would call platform.Quit() and
+	// silently exit the whole GUI. A daemon is local infrastructure, not
+	// a quit request, so instead keep the Window alive and reseat a fresh
+	// tab on the reconnected daemon ("the server came back, here's a new
+	// shell"). The persistent flag retries across frames while the hub is
+	// still mid-redial; a genuine user/child-exit empty still closes.
+	if a.tabs.Count() == 0 && (a.daemonReseatPending || (daemonVanished && !otherClose)) && a.app.daemonHub != nil {
+		a.daemonReseatPending = true
+		cols, rows := a.gridSize()
+		if cols < 2 || rows < 2 {
+			cols, rows = 80, 24
+		}
+		// The old daemonWindowID belonged to the dead daemon; mint a
+		// fresh daemon window for this GUI window before adding the tab
+		// (mirrors first-frame init). NewTab routes through the daemon
+		// SourceFactory, which uses this window's daemonWindowID.
+		if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
+			a.daemonWindowID = id
+			a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
+		}
+		if _, err := a.tabs.NewTab(cols, rows, ""); err == nil {
+			a.daemonReseatPending = false // got a tab; resume normal rendering
+		}
+		if a.tabs.Count() == 0 {
+			// Hub still mid-reconnect — render an empty frame and retry
+			// next frame. Crucially do NOT set pendingClose.
+			imgui.CurrentIO().ClearInputKeys()
+			return
+		}
+		// Fell through with a fresh tab; render it this frame.
+	} else if a.tabs.Count() == 0 {
+		// The reap pass in wrappedFrame removes this Window; if it was
+		// the last Window the process exits.
 		a.pendingClose = true
 		// Clear ImGui's input key state so any key the user was
 		// holding at close time (Ctrl-D / Enter / etc. — i.e. the
