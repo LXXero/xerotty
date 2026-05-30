@@ -2250,6 +2250,22 @@ func (a *App) Run() error {
 			imgui.PopStyleVarV(2)
 			if shouldRenderFrame {
 				win.imViewport = imgui.WindowViewport()
+				// Apply window opacity (cfg.Appearance.Opacity) via
+				// SDL_SetWindowOpacity — only when it changed, so the
+				// first valid frame and live prefs-slider edits both
+				// take effect without calling SDL every frame. The
+				// SDL2→SDL3 migration dropped this wiring; see SPEC
+				// "Window opacity support".
+				if op := a.cfg.Appearance.Opacity; op != win.appliedOpacity {
+					if h := win.imViewport.PlatformHandle(); h != 0 {
+						applied := op
+						if applied <= 0 || applied > 1 {
+							applied = 1.0 // never hide/invalidate the window
+						}
+						platform.SetWindowOpacity(h, applied)
+						win.appliedOpacity = op
+					}
+				}
 				// Capture the wrapper's actual content origin (NOT
 				// viewport.Pos — see contentOriginY comment on
 				// Window). CursorScreenPos right after Begin is the

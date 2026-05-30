@@ -379,6 +379,12 @@ extern "C" void platform_raise_window(unsigned long window_id) {
     SDL_RaiseWindow(w);
 }
 
+extern "C" void platform_set_window_opacity(unsigned long window_id, float opacity) {
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return;
+    SDL_SetWindowOpacity(w, opacity);
+}
+
 // platform_ensure_text_input re-asserts SDL text input on the given
 // window if it isn't already active. SDL3 only delivers
 // SDL_EVENT_TEXT_INPUT (the source of typed characters the terminal

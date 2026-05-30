@@ -160,6 +160,13 @@ func RaiseWindow(windowID uintptr) {
 	C.platform_raise_window(C.ulong(windowID))
 }
 
+// SetWindowOpacity sets whole-window opacity (0..1) on the SDL_Window
+// with the given ID (a viewport PlatformHandle). Restores the documented
+// `opacity` config the SDL2→SDL3 migration dropped.
+func SetWindowOpacity(windowID uintptr, opacity float32) {
+	C.platform_set_window_opacity(C.ulong(windowID), C.float(opacity))
+}
+
 // EnsureTextInput re-asserts SDL text input on the window so the
 // terminal keeps receiving typed characters (SDL_EVENT_TEXT_INPUT →
 // io.InputQueueCharacters). The ImGui SDL3 backend calls

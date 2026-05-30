@@ -91,6 +91,13 @@ void platform_resync_modifiers(void);
 // in the first frame after Cmd+N route to the wrong window.
 void platform_raise_window(unsigned long window_id);
 
+// platform_set_window_opacity sets whole-window opacity (0..1) on the
+// SDL_Window with the given ID via SDL_SetWindowOpacity — the compositor
+// blends the whole window. Restores the documented `opacity` config that
+// the SDL2→SDL3 migration dropped. No-op if the compositor doesn't
+// support per-window opacity.
+void platform_set_window_opacity(unsigned long window_id, float opacity);
+
 // platform_ensure_text_input re-asserts SDL text input on the given
 // window if not already active, so the terminal keeps receiving
 // SDL_EVENT_TEXT_INPUT (typed characters) after an ImGui InputText

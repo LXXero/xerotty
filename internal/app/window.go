@@ -127,6 +127,11 @@ type Window struct {
 	lastTabBarW        float32
 	lastTabBarH        float32
 	skipDisplaySync    int
+	// appliedOpacity is the cfg.Appearance.Opacity value last pushed to
+	// SDL_SetWindowOpacity for this Window. Tracked so the per-frame apply
+	// only calls SDL on change (first valid frame + live prefs edits),
+	// never every frame. -1 sentinel until the first apply.
+	appliedOpacity float32
 
 	// Context menu state. ImGui's BeginPopup auto-closes the popup
 	// whenever the OS window loses focus / mouse crosses the parent
@@ -280,11 +285,12 @@ func (w *Window) titleForWindow() string {
 // kept alive only for the ImGui context).
 func newWindow(app *App) *Window {
 	return &Window{
-		app:          app,
-		scroll:       make(map[int]*scrollback.State),
-		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
-		tabSwitchReq: -1,
-		tabDragIdx:   -1,
+		app:            app,
+		scroll:         make(map[int]*scrollback.State),
+		tabBarH:        0, // updated each frame from imgui.FrameHeight() when >1 tab
+		tabSwitchReq:   -1,
+		tabDragIdx:     -1,
+		appliedOpacity: -1, // sentinel: forces opacity apply on first valid frame
 	}
 }
 
