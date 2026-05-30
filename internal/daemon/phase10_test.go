@@ -2,9 +2,12 @@ package daemon_test
 
 import (
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
@@ -103,5 +106,110 @@ func TestStuckClientDoesNotBlockOthers(t *testing.T) {
 	case <-a.TabCreated():
 	case <-time.After(5 * time.Second):
 		t.Fatal("A's second TabCreated never arrived — daemon path degraded with a stuck client")
+	}
+}
+
+// TestUnresponsiveClientReaped verifies Phase 10 layer 2: a client that
+// stops responding to heartbeat pings (and sends no other inbound
+// traffic) is reaped and cleaned up. The reaped conn goes through the
+// normal disconnect path, so AttachedClients drops it.
+func TestUnresponsiveClientReaped(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	cfg := config.Default()
+	d := daemon.New(&cfg, sockPath)
+	// Short windows so the reap happens within the test. Set BEFORE Run
+	// so the serving goroutines observe them race-free.
+	d.SetHeartbeat(40*time.Millisecond, 250*time.Millisecond)
+	doneRun := make(chan error, 1)
+	go func() { doneRun <- d.Run() }()
+	defer func() { _ = d.Stop(); <-doneRun }()
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	fr := protocol.NewFrameReader(conn)
+	if err := protocol.WriteFrame(conn, protocol.MsgHello, &protocol.Hello{
+		Version: protocol.ProtocolVersion, ClientID: "silent",
+	}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	readFrameExpect(t, fr, protocol.MsgHelloAck)
+	if err := protocol.WriteFrame(conn, protocol.MsgAttach, &protocol.Attach{NewIfMissing: true}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	// Read+discard everything the daemon sends — but NEVER pong. So the
+	// socket is "alive" yet the app is unresponsive: no inbound frames
+	// reach the daemon, and it must reap us.
+	go func() {
+		for {
+			if _, _, err := fr.ReadFrame(); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Confirm we registered first.
+	attachedBy := func(id string) bool {
+		for _, ac := range d.AttachedClients() {
+			if ac.ClientID == id {
+				return true
+			}
+		}
+		return false
+	}
+	deadline := time.After(2 * time.Second)
+	for !attachedBy("silent") {
+		select {
+		case <-deadline:
+			t.Fatal("client never registered")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// Now, with no pongs, the daemon must reap + clean us up.
+	deadline = time.After(3 * time.Second)
+	for attachedBy("silent") {
+		select {
+		case <-deadline:
+			t.Fatal("unresponsive client was not reaped within 3s")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestResponsiveClientNotReaped is the converse of the reap test: a
+// client that keeps ponging (clientproto auto-replies to pings) stays
+// attached well past the dead window, even with no user traffic.
+func TestResponsiveClientNotReaped(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	cfg := config.Default()
+	d := daemon.New(&cfg, sockPath)
+	d.SetHeartbeat(30*time.Millisecond, 150*time.Millisecond)
+	doneRun := make(chan error, 1)
+	go func() { doneRun <- d.Run() }()
+	defer func() { _ = d.Stop(); <-doneRun }()
+	time.Sleep(50 * time.Millisecond)
+
+	// mustDial returns a clientproto client whose Run loop auto-pongs.
+	c := mustDial(t, sockPath, "alive")
+	defer c.Close()
+	<-c.Attached()
+	go drainClient(c, false, false)
+
+	// Idle (no input/resize) for several dead-windows. Pongs alone must
+	// keep it alive.
+	time.Sleep(700 * time.Millisecond)
+
+	found := false
+	for _, ac := range d.AttachedClients() {
+		if ac.ClientID == "alive" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a ponging client was wrongly reaped (heartbeat false positive)")
 	}
 }

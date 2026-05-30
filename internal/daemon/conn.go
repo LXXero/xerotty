@@ -24,9 +24,19 @@ type outFrame struct {
 // and gets reaped by the heartbeat (layer 2).
 const outQueueCap = 256
 
+const (
+	// defaultHeartbeatInterval is how often the daemon pings each client.
+	defaultHeartbeatInterval = 5 * time.Second
+	// defaultInboundDeadWindow reaps a client after this long with NO
+	// inbound frame (any frame — input, pong — resets it). ~3 missed
+	// pings. Both are per-Daemon overridable via SetHeartbeat.
+	defaultInboundDeadWindow = 18 * time.Second
+)
+
 // serveConn handles one client connection from accept to close. It runs
 // in its own goroutine, alongside a writer goroutine (sole owner of
-// conn writes) and, after Attach, per-tab publish loops.
+// conn writes), a heartbeat goroutine, and, after Attach, per-tab
+// publish loops.
 func (d *Daemon) serveConn(conn net.Conn) {
 	c := &clientConn{
 		daemon:     d,
@@ -37,6 +47,7 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		coalesceCh: make(chan struct{}, 1),
 		outDone:    make(chan struct{}),
 	}
+	c.lastInbound.Store(time.Now().UnixNano())
 	// Install the unregister before handshake: handshake registers the
 	// client on the daemon BEFORE writing HelloAck, so a failed ack
 	// write would otherwise leak the client entry. unregisterClient is
@@ -53,11 +64,40 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// From here the writer goroutine owns all conn writes.
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
+	go c.heartbeatLoop()
 	c.runReadLoop()
 	// Read side ended (peer close / error / reap) — stop the writer and
 	// unblock anything stuck in a Write, then wait for it to drain out.
+	// (The heartbeat goroutine also exits on outDone.)
 	c.shutdown()
 	<-writerDone
+}
+
+// heartbeatLoop pings the client periodically and reaps it if no
+// inbound frame has arrived within inboundDeadWindow. This is the ONLY
+// liveness detector that works over the SSH-stdio transport (where
+// write deadlines are no-ops). Reaping = shutdown(), which routes
+// through the existing race-safe read-loop teardown.
+func (c *clientConn) heartbeatLoop() {
+	ticker := time.NewTicker(c.daemon.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.outDone:
+			return
+		case <-ticker.C:
+			idle := time.Since(time.Unix(0, c.lastInbound.Load()))
+			if idle > c.daemon.inboundDeadWindow {
+				fmt.Fprintf(os.Stderr, "xerottyd: reaping unresponsive client %q (idle %s)\n", c.clientID, idle.Round(time.Second))
+				c.shutdown()
+				return
+			}
+			// Non-blocking ping: if the queue is jammed the ping is
+			// dropped, but then lastInbound won't advance either → the
+			// conn gets reaped on a later tick anyway.
+			c.trySend(protocol.MsgPing, &protocol.Ping{Nonce: c.pingNonce.Add(1)})
+		}
+	}
 }
 
 // shutdown stops the async writer and closes the connection. Idempotent
@@ -161,6 +201,15 @@ type clientConn struct {
 	pendingProposals *protocol.ProposalsChanged
 
 	closeOnce sync.Once
+
+	// Heartbeat liveness (Phase 10 layer 2). lastInbound is the
+	// UnixNano of the most recent inbound frame (ANY frame — input,
+	// pong, etc. — counts as liveness), updated by the read loop. The
+	// heartbeat goroutine pings periodically and reaps the conn if no
+	// inbound traffic arrives within inboundDeadWindow. pingNonce just
+	// labels outbound pings.
+	lastInbound atomic.Int64
+	pingNonce   atomic.Uint64
 
 	clientID string    // from Hello
 	joined   time.Time // when this conn was accepted
@@ -308,6 +357,8 @@ func (c *clientConn) runReadLoop() {
 			}
 			return
 		}
+		// Any inbound frame is liveness — refresh the heartbeat clock.
+		c.lastInbound.Store(time.Now().UnixNano())
 		if err := c.dispatch(t, body); err != nil {
 			fmt.Fprintf(os.Stderr, "xerottyd: dispatch %v: %v\n", t, err)
 			// continue — a bad command shouldn't kill the connection
@@ -460,6 +511,18 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 				c.daemon.broadcastScrollbackCleared(t.ID)
 			}
 		}
+		return nil
+	case protocol.MsgPing:
+		// A live peer probing us — echo it back. (lastInbound is
+		// already refreshed by the read loop for ANY frame.)
+		var msg protocol.Ping
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		c.send(protocol.MsgPong, &protocol.Pong{Nonce: msg.Nonce})
+		return nil
+	case protocol.MsgPong:
+		// Liveness only — already accounted for by lastInbound.
 		return nil
 	default:
 		return fmt.Errorf("unknown message type %v", t)

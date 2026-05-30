@@ -3634,6 +3634,212 @@ func (z MsgType) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *Ping) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "nonce":
+			z.Nonce, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "Nonce")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z Ping) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 1
+	// write "nonce"
+	err = en.Append(0x81, 0xa5, 0x6e, 0x6f, 0x6e, 0x63, 0x65)
+	if err != nil {
+		return
+	}
+	err = en.WriteUint64(z.Nonce)
+	if err != nil {
+		err = msgp.WrapError(err, "Nonce")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z Ping) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 1
+	// string "nonce"
+	o = append(o, 0x81, 0xa5, 0x6e, 0x6f, 0x6e, 0x63, 0x65)
+	o = msgp.AppendUint64(o, z.Nonce)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *Ping) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "nonce":
+			z.Nonce, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Nonce")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z Ping) Msgsize() (s int) {
+	s = 1 + 6 + msgp.Uint64Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *Pong) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "nonce":
+			z.Nonce, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "Nonce")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z Pong) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 1
+	// write "nonce"
+	err = en.Append(0x81, 0xa5, 0x6e, 0x6f, 0x6e, 0x63, 0x65)
+	if err != nil {
+		return
+	}
+	err = en.WriteUint64(z.Nonce)
+	if err != nil {
+		err = msgp.WrapError(err, "Nonce")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z Pong) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 1
+	// string "nonce"
+	o = append(o, 0x81, 0xa5, 0x6e, 0x6f, 0x6e, 0x63, 0x65)
+	o = msgp.AppendUint64(o, z.Nonce)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *Pong) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "nonce":
+			z.Nonce, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Nonce")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z Pong) Msgsize() (s int) {
+	s = 1 + 6 + msgp.Uint64Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *ProposalInfo) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field

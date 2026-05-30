@@ -31,7 +31,12 @@ package protocol
 //       ReqIDs — would drop every WindowCreated and hang the
 //       window-create wait. Bumping forces the handshake to reject the
 //       skew (clean error) instead of silently hanging.
-const ProtocolVersion uint16 = 5
+//   6 — Phase 10: MsgPing/MsgPong heartbeat. The daemon pings and reaps
+//       a client with no inbound traffic for ~18s. A v6 daemon pinging
+//       a v5 client (which would treat MsgPing as unknown and never
+//       pong) would reap a perfectly-live client; the handshake gate
+//       prevents that mismatch.
+const ProtocolVersion uint16 = 6
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -84,6 +89,9 @@ const (
 	MsgProposalResolve   MsgType = 41 // client → server: approve/drop a pending proposal
 
 	MsgTopologyChanged   MsgType = 42 // server → client: full session topology snapshot (broadcast on structural change)
+
+	MsgPing              MsgType = 43 // either direction: liveness probe (heartbeat)
+	MsgPong              MsgType = 44 // either direction: reply echoing Ping.Nonce
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -555,4 +563,18 @@ type TopologyChanged struct {
 	Windows      []WindowInfo `msg:"windows"`
 	Tabs         []TabInfo    `msg:"tabs"`
 	FocusedTabID uint32       `msg:"focused_tab_id"`
+}
+
+// Ping is a liveness probe (Phase 10 heartbeat). The daemon sends it
+// ~every 5s; a live peer replies with Pong echoing Nonce. Either side
+// may ping. Any inbound frame (including Pong) counts as liveness, so
+// the Nonce is mainly for the pinger's own round-trip / reconnect
+// detection.
+type Ping struct {
+	Nonce uint64 `msg:"nonce"`
+}
+
+// Pong replies to a Ping, echoing its Nonce.
+type Pong struct {
+	Nonce uint64 `msg:"nonce"`
 }

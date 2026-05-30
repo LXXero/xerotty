@@ -514,6 +514,17 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 			return err
 		}
 		c.errCh <- msg
+	case protocol.MsgPing:
+		// Heartbeat (Phase 10): reply so the daemon knows we're alive.
+		// A daemon reaps a client that stops ponging.
+		msg := &protocol.Ping{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		_ = c.send(protocol.MsgPong, &protocol.Pong{Nonce: msg.Nonce})
+	case protocol.MsgPong:
+		// Reply to our own ping (client-side liveness detection lands
+		// with the reconnect UX in layer 4). No-op for now.
 	default:
 		// Unknown message — skip, log to stderr eventually. For
 		// Phase 0 just ignore so the connection stays alive.

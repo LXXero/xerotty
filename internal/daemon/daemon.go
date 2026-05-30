@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -36,6 +37,20 @@ type Daemon struct {
 	// "who's attached" UI.
 	clientsMu sync.Mutex
 	clients   map[*clientConn]struct{}
+
+	// Heartbeat tuning (Phase 10 layer 2). Defaults set in New;
+	// SetHeartbeat overrides them (tests use short windows). Read by
+	// each conn's heartbeatLoop.
+	heartbeatInterval time.Duration
+	inboundDeadWindow time.Duration
+}
+
+// SetHeartbeat overrides the heartbeat ping interval and the
+// no-inbound reap window. Call before Run / serving connections (new
+// conns read these). Used by tests to shorten the windows.
+func (d *Daemon) SetHeartbeat(interval, dead time.Duration) {
+	d.heartbeatInterval = interval
+	d.inboundDeadWindow = dead
 }
 
 // AttachedClient is a snapshot of one connected wire-protocol client.
@@ -369,9 +384,11 @@ func (d *Daemon) unregisterClient(c *clientConn) {
 // listening — caller must remove it first if it's stale).
 func New(cfg *config.Config, socketPath string) *Daemon {
 	return &Daemon{
-		cfg:        cfg,
-		socketPath: socketPath,
-		sessions:   make(map[string]*Session),
+		cfg:               cfg,
+		socketPath:        socketPath,
+		sessions:          make(map[string]*Session),
+		heartbeatInterval: defaultHeartbeatInterval,
+		inboundDeadWindow: defaultInboundDeadWindow,
 	}
 }
 
