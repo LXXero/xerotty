@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,48 @@ import (
 
 	"github.com/LXXero/xerotty/internal/protocol"
 )
+
+// writeProgressWindow is the idle-progress write timeout (Phase 10
+// layer 3): the writer refreshes a deadline this far out after each
+// SUCCESSFUL partial write, and declares the conn dead only if NO bytes
+// move for the whole window. So a big-but-flowing write (a large paste)
+// is never killed — only a genuinely stalled one. No-op over stdio,
+// where SetWriteDeadline is a stub (heartbeat covers that transport).
+const writeProgressWindow = 5 * time.Second
+
+// deadlineWriter wraps a conn so each frame write is bounded by an
+// idle-progress deadline (see writeProgressWindow). Only the writer
+// goroutine (and handshake, pre-writer) uses it, so it needs no lock.
+type deadlineWriter struct {
+	conn   net.Conn
+	window time.Duration
+}
+
+func (w *deadlineWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		_ = w.conn.SetWriteDeadline(time.Now().Add(w.window))
+		n, err := w.conn.Write(p)
+		written += n
+		p = p[n:]
+		if err != nil {
+			// Bytes moved before the deadline → progress, not a stall:
+			// refresh the window and keep writing the rest. Only a
+			// zero-progress timeout (or any non-timeout error) is fatal.
+			if n > 0 && isTimeout(err) {
+				continue
+			}
+			return written, err
+		}
+	}
+	_ = w.conn.SetWriteDeadline(time.Time{}) // clear between frames
+	return written, nil
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
 
 // outFrame is one queued outbound frame for the writer goroutine.
 type outFrame struct {
@@ -46,6 +89,7 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		outCh:      make(chan outFrame, outQueueCap),
 		coalesceCh: make(chan struct{}, 1),
 		outDone:    make(chan struct{}),
+		dw:         &deadlineWriter{conn: conn, window: writeProgressWindow},
 	}
 	c.lastInbound.Store(time.Now().UnixNano())
 	// Install the unregister before handshake: handshake registers the
@@ -161,10 +205,11 @@ func (c *clientConn) flushCoalesced() error {
 	}
 }
 
-// writeFrameRaw performs the actual conn write. Only the writeLoop
-// goroutine (and handshake, before the writer starts) calls it.
+// writeFrameRaw performs the actual conn write, through the
+// idle-progress write deadline (layer 3). Only the writeLoop goroutine
+// (and handshake, before the writer starts) calls it.
 func (c *clientConn) writeFrameRaw(t protocol.MsgType, body protocol.Msg) error {
-	return protocol.WriteFrame(c.conn, t, body)
+	return protocol.WriteFrame(c.dw, t, body)
 }
 
 // clientConn is the per-connection state. The read loop owns
@@ -195,6 +240,7 @@ type clientConn struct {
 	outCh      chan outFrame
 	coalesceCh chan struct{}
 	outDone    chan struct{}
+	dw         *deadlineWriter // conn wrapped with the layer-3 write deadline
 
 	coalesceMu       sync.Mutex
 	pendingTopology  *protocol.TopologyChanged
