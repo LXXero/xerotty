@@ -394,6 +394,7 @@ func defaultKeybindsLinux() map[string]string {
 		"Shift+Home":       "scroll_top",
 		"Shift+End":        "scroll_bottom",
 		"Ctrl+Comma":       "preferences",
+		"Ctrl+Shift+O":     "toggle_opacity",
 	}
 }
 
@@ -431,6 +432,7 @@ func defaultKeybindsDarwin() map[string]string {
 		"Shift+Home":      "scroll_top",
 		"Shift+End":       "scroll_bottom",
 		"Ctrl+Comma":      "preferences",
+		"Ctrl+Shift+O":    "toggle_opacity",
 	}
 }
 
@@ -461,6 +463,7 @@ func defaultMenuLinux() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Ctrl+Shift+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Ctrl+Shift+O"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
@@ -487,6 +490,7 @@ func defaultMenuDarwin() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+Shift+O"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},

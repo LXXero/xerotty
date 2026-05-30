@@ -57,6 +57,13 @@ type App struct {
 	baseCellH       float32 // cell height at base font size
 	pendingFontFace bool    // rebuild font atlas at start of next frame
 
+	// forceOpaque overrides cfg.Appearance.Opacity to 1.0 while set.
+	// Toggled by the "toggle_opacity" action (keybind / menu) so the
+	// window can be made provably leak-free before a screenshot — a
+	// translucent window blends whatever's behind it. Read each frame by
+	// the per-Window opacity apply in Run().
+	forceOpaque atomic.Bool
+
 	// menuActivityFrame is the main-loop FrameCount on which some
 	// Window opened its context menu. Opening a menu runs a blocking
 	// popup that grabs the OS pointer, so by the time the NEXT Window's
@@ -2256,7 +2263,11 @@ func (a *App) Run() error {
 				// take effect without calling SDL every frame. The
 				// SDL2→SDL3 migration dropped this wiring; see SPEC
 				// "Window opacity support".
-				if op := a.cfg.Appearance.Opacity; op != win.appliedOpacity {
+				op := a.cfg.Appearance.Opacity
+				if a.forceOpaque.Load() {
+					op = 1.0 // SIGUSR1 screenshot-safe override
+				}
+				if op != win.appliedOpacity {
 					if h := win.imViewport.PlatformHandle(); h != 0 {
 						applied := op
 						if applied <= 0 || applied > 1 {
@@ -4145,6 +4156,15 @@ func (w *Window) dispatchAction(action string) {
 			s.OpenSearch()
 			w.searchFocusInput = true
 		}
+	case "toggle_opacity":
+		// Flip between the configured opacity and fully opaque. Opaque is
+		// the screenshot-safe state: a translucent window blends whatever
+		// is behind it, so a capture can leak other windows — toggle to
+		// opaque before shooting. App-level so all windows flip together;
+		// the per-Window opacity apply in Run() picks it up. PostWake
+		// forces an immediate render so the change is visible at once.
+		w.app.forceOpaque.Store(!w.app.forceOpaque.Load())
+		platform.PostWake()
 	case "font_size_up":
 		// Per-window zoom — only this Window's font size changes.
 		// Other Windows keep their own zoom level (iTerm2-style).
