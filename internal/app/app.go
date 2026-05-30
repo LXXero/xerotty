@@ -4356,8 +4356,13 @@ func (w *Window) renderTabBar() {
 		}
 
 		// Dispatch the click: cursor inside the close X rect → close,
-		// anywhere else on the tab → switch.
-		if clicked {
+		// anywhere else on the tab → switch. Gate on an actual mouse
+		// press — InvisibleButton also reports `clicked` when ImGui
+		// keyboard-nav ACTIVATES the (still nav-focused) button via
+		// Enter/Space. Without this gate, hitting Enter in the terminal
+		// re-"clicked" a previously-focused tab button and jumped focus
+		// to it (the "Enter jumps to the first tab" bug).
+		if clicked && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 			if mouseInClose {
 				closedIdx = i
 			} else {
