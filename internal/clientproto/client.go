@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -33,6 +34,20 @@ const clientWriteProgressWindow = 5 * time.Second
 // back-pressuring the UI; a wedged daemon fills it and the writer's
 // deadline (or the heartbeat) tears the conn down, unblocking senders.
 const outQueueCap = 256
+
+const (
+	// clientHeartbeatInterval is how often the client pings the daemon.
+	// The daemon also pings us independently (~5s); either side's traffic
+	// refreshes our liveness clock, so this is mostly to provoke a pong
+	// on an otherwise-idle link.
+	clientHeartbeatInterval = 5 * time.Second
+	// clientLivenessWindow is how long with NO inbound frame at all (not
+	// even the daemon's own ping) before we declare the daemon dead and
+	// tear the conn down so the Hub re-dials. ~3 missed heartbeats. This
+	// is the ONLY fast detector over SSH-stdio, where write deadlines are
+	// no-ops — a dead SSH path delivers nothing, so the window trips.
+	clientLivenessWindow = 18 * time.Second
+)
 
 // outFrame is one queued outbound frame for the writer goroutine.
 type outFrame struct {
@@ -100,6 +115,24 @@ type Client struct {
 	// read loop can all call it without double-closing.
 	closeOnce sync.Once
 
+	// Heartbeat liveness (Phase 10 layer 4d). The heartbeat goroutine
+	// (started by Run) arms pingPending each tick; the writer flushes
+	// the ping OUT-OF-BAND, ahead of the FIFO backlog (via coalesceCh),
+	// so a long outbound queue can't delay the probe. lastInbound is the
+	// UnixNano of the most recent frame received — ANY frame counts as
+	// liveness (cell data, the daemon's own ping, a pong). If it goes
+	// stale past clientLivenessWindow the conn is reaped so the Hub
+	// re-dials.
+	coalesceCh  chan struct{}
+	pingPending atomic.Bool
+	pingNonce   atomic.Uint64
+	lastInbound atomic.Int64
+	// heartbeatInterval / livenessWindow default to the package consts;
+	// SetHeartbeat overrides them (tests shorten them). Set before Run
+	// starts the heartbeat goroutine, so no synchronization is needed.
+	heartbeatInterval time.Duration
+	livenessWindow    time.Duration
+
 	// Inbound channels. Each is buffered to absorb a small burst
 	// before back-pressuring the daemon's send loop.
 	cellFull   chan *protocol.CellFull
@@ -149,7 +182,10 @@ func wrap(conn net.Conn) *Client {
 		reader:     protocol.NewFrameReader(conn),
 		outCh:      make(chan outFrame, outQueueCap),
 		outDone:    make(chan struct{}),
+		coalesceCh: make(chan struct{}, 1),
 		dw:         &deadlineWriter{conn: conn, window: clientWriteProgressWindow},
+		heartbeatInterval: clientHeartbeatInterval,
+		livenessWindow:    clientLivenessWindow,
 		cellFull:   make(chan *protocol.CellFull, 16),
 		cellDiff:   make(chan *protocol.CellDiff, 64),
 		cursor:     make(chan *protocol.Cursor, 64),
@@ -170,17 +206,28 @@ func wrap(conn net.Conn) *Client {
 	}
 	// Start the writer before any Send* (Hello sends, then reads the
 	// HelloAck synchronously off the reader — the writer must already
-	// be draining outCh for that send to flush).
+	// be draining outCh for that send to flush). lastInbound is seeded
+	// to "now" so the heartbeat window doesn't trip before the first
+	// frame arrives.
+	c.lastInbound.Store(time.Now().UnixNano())
 	go c.writeLoop()
 	return c
 }
 
-// writeLoop is the sole writer of the connection. It drains the FIFO
-// send queue, writing each frame through the idle-progress deadline.
-// Any write error tears the conn down (which unblocks the read loop and
-// any producer waiting on a full queue).
+// writeLoop is the sole writer of the connection. Each pass it flushes
+// an out-of-band heartbeat ping (if armed) AHEAD of the FIFO backlog,
+// then drains one queued frame — so a ping can jump a large outbound
+// queue and isn't delayed by it. Each frame goes through the
+// idle-progress deadline; any write error tears the conn down (which
+// unblocks the read loop and any producer waiting on a full queue).
 func (c *Client) writeLoop() {
 	for {
+		if c.pingPending.Swap(false) {
+			if err := protocol.WriteFrame(c.dw, protocol.MsgPing, &protocol.Ping{Nonce: c.pingNonce.Add(1)}); err != nil {
+				c.shutdown()
+				return
+			}
+		}
 		select {
 		case <-c.outDone:
 			return
@@ -189,7 +236,49 @@ func (c *Client) writeLoop() {
 				c.shutdown()
 				return
 			}
+		case <-c.coalesceCh:
+			// A ping was armed — loop back to flush it ahead of the queue.
 		}
+	}
+}
+
+// heartbeatLoop pings the daemon periodically and reaps the connection
+// if no inbound frame arrives for clientLivenessWindow — the only fast
+// way to notice a hung/dead daemon over SSH-stdio (where write deadlines
+// are no-ops). Started by Run (i.e. AFTER the Hello handshake, so a ping
+// never jumps ahead of Hello and breaks the daemon's handshake reader).
+// Exits when the conn is torn down (outDone).
+func (c *Client) heartbeatLoop() {
+	ticker := time.NewTicker(c.heartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.outDone:
+			return
+		case <-ticker.C:
+			if time.Since(time.Unix(0, c.lastInbound.Load())) > c.livenessWindow {
+				c.shutdown()
+				return
+			}
+			c.requestPing()
+		}
+	}
+}
+
+// SetHeartbeat overrides the ping interval + liveness window. Call
+// before Run (which starts the heartbeat). Mainly for tests; the
+// defaults (5s / 18s) are right for production.
+func (c *Client) SetHeartbeat(interval, window time.Duration) {
+	c.heartbeatInterval = interval
+	c.livenessWindow = window
+}
+
+// requestPing arms the out-of-band ping slot and nudges the writer.
+func (c *Client) requestPing() {
+	c.pingPending.Store(true)
+	select {
+	case c.coalesceCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -493,6 +582,10 @@ func (c *Client) Run() {
 		c.doneMu.Unlock()
 		close(c.closed)
 	}()
+	// Heartbeat starts here, not in wrap(): Hello has already completed
+	// by the time Run is invoked, so an out-of-band ping can't slip
+	// ahead of the Hello frame and break the daemon's handshake reader.
+	go c.heartbeatLoop()
 	for {
 		t, body, err := c.reader.ReadFrame()
 		if err != nil {
@@ -503,6 +596,9 @@ func (c *Client) Run() {
 			c.doneMu.Unlock()
 			return
 		}
+		// Any inbound frame proves the daemon is alive — refresh the
+		// liveness clock the heartbeat checks.
+		c.lastInbound.Store(time.Now().UnixNano())
 		if err := c.handle(t, body); err != nil {
 			c.doneMu.Lock()
 			c.exitErr = err
@@ -638,8 +734,10 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		}
 		_ = c.send(protocol.MsgPong, &protocol.Pong{Nonce: msg.Nonce})
 	case protocol.MsgPong:
-		// Reply to our own ping (client-side liveness detection lands
-		// with the reconnect UX in layer 4). No-op for now.
+		// Reply to our own heartbeat ping. Liveness is tracked by
+		// lastInbound (bumped for every frame in Run's loop, including
+		// this one), so there's nothing extra to record here — the pong
+		// having arrived at all is the signal.
 	default:
 		// Unknown message — skip, log to stderr eventually. For
 		// Phase 0 just ignore so the connection stays alive.
