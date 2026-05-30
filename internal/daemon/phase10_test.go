@@ -120,11 +120,15 @@ func attachedBy(d *daemon.Daemon, id string) bool {
 	return false
 }
 
-// TestFlowingReaderNotReaped verifies finding #1: a client that keeps
-// READING the daemon's output (so writes keep making progress) is NOT
-// reaped even though it never pongs. Write progress overrides pong
-// staleness — a slow-but-flowing reader draining a backlog, whose pong
-// is merely late, must not be killed.
+// TestFlowingReaderNotReaped verifies finding #1: a client draining a
+// live stream of PAYLOAD (so payload write-progress stays fresh) is NOT
+// reaped even though it never pongs — a slow-but-flowing reader whose
+// pong is merely late must not be killed. We drive deterministic payload
+// by toggling the tab dimensions, which forces a CellFull each time
+// (shell-output-independent). NOTE: heartbeat ping writes alone no longer
+// count as progress (that's the idle-zombie fix), so the stream is what
+// keeps this client alive — an idle non-ponging reader IS now reaped,
+// see TestIdleHungClientReaped.
 func TestFlowingReaderNotReaped(t *testing.T) {
 	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
 	cfg := config.Default()
@@ -150,8 +154,22 @@ func TestFlowingReaderNotReaped(t *testing.T) {
 	if err := protocol.WriteFrame(conn, protocol.MsgAttach, &protocol.Attach{NewIfMissing: true}); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
+	// Read the Attached frame to learn the tab id we'll resize.
+	_, body, err := fr.ReadFrame()
+	if err != nil {
+		t.Fatalf("read attached: %v", err)
+	}
+	var att protocol.Attached
+	if _, err := att.UnmarshalMsg(body); err != nil {
+		t.Fatalf("unmarshal attached: %v", err)
+	}
+	if len(att.Tabs) == 0 {
+		t.Fatalf("attached with no tabs")
+	}
+	tabID := att.Tabs[0].ID
+
 	// Read+discard EVERYTHING forever (incl. the heartbeat pings) but
-	// never pong. Writes keep flowing, so we must stay alive.
+	// never pong.
 	go func() {
 		for {
 			if _, _, err := fr.ReadFrame(); err != nil {
@@ -160,10 +178,82 @@ func TestFlowingReaderNotReaped(t *testing.T) {
 		}
 	}()
 
+	// Drive continuous PAYLOAD: toggle the dimensions, forcing a CellFull
+	// each time. This is the genuine "draining a live stream" case.
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		cols := uint16(80)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(25 * time.Millisecond):
+				cols ^= 1 // 80 <-> 81
+				_ = protocol.WriteFrame(conn, protocol.MsgResize, &protocol.Resize{ID: tabID, Cols: cols, Rows: 24})
+			}
+		}
+	}()
+
 	// Well past several windows, still attached.
 	time.Sleep(600 * time.Millisecond)
 	if !attachedBy(d, "flowing") {
-		t.Fatal("a flowing (still-reading) client was wrongly reaped because it didn't pong — finding 1 regression")
+		t.Fatal("a flowing (payload-draining) client was wrongly reaped because it didn't pong — finding 1 regression")
+	}
+}
+
+// TestIdleHungClientReaped is the daemon-side regression for the
+// live-found bug, symmetric to the client fix: on an IDLE session (no
+// payload flowing) a hung client that stops ponging must still be
+// reaped. The client here reads+discards everything (so the daemon's
+// tiny pings keep succeeding into the socket buffer) but never pongs.
+// The OLD reaper counted those succeeding ping writes as write-progress,
+// so the dual-clock && never fired and the hung idle client lived
+// forever. Excluding ping/pong from write-progress lets the pong clock
+// reap it.
+func TestIdleHungClientReaped(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	cfg := config.Default()
+	d := daemon.New(&cfg, sockPath)
+	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
+	doneRun := make(chan error, 1)
+	go func() { doneRun <- d.Run() }()
+	defer func() { _ = d.Stop(); <-doneRun }()
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	fr := protocol.NewFrameReader(conn)
+	if err := protocol.WriteFrame(conn, protocol.MsgHello, &protocol.Hello{
+		Version: protocol.ProtocolVersion, ClientID: "idle-hung",
+	}); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	readFrameExpect(t, fr, protocol.MsgHelloAck)
+	// Attach WITHOUT NewIfMissing so the session stays empty/idle — no
+	// tab, no payload, only the daemon's keepalive pings flow.
+	if err := protocol.WriteFrame(conn, protocol.MsgAttach, &protocol.Attach{}); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	// Read+discard everything (the pings keep succeeding) but NEVER pong.
+	go func() {
+		for {
+			if _, _, err := fr.ReadFrame(); err != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(3 * time.Second)
+	for attachedBy(d, "idle-hung") {
+		select {
+		case <-deadline:
+			t.Fatal("a hung idle client (reading pings but never ponging) was not reaped — idle-zombie blind spot")
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 

@@ -137,15 +137,20 @@ func (d *Daemon) serveConn(conn net.Conn) {
 }
 
 // heartbeatLoop probes the client periodically and reaps it only when
-// it's both unable to RECEIVE (no successful write for a window) AND
+// it's both unable to RECEIVE (no PAYLOAD write progress for a window —
+// heartbeat ping/pong writes are excluded, see writeFrameRaw) AND
 // unresponsive (no pong for a window). Either signal fresh keeps it
-// alive: a slow-but-flowing reader (writes progressing) is never
-// reaped even if its pong is late (finding 1); a client that stopped
-// reading wedges the writer AND stops ponging, so both go stale and it
-// IS reaped — including one that keeps sending input, since generic
-// inbound no longer counts (finding 2). This is the ONLY liveness
-// detector over SSH-stdio (where write deadlines are no-ops). Reaping =
-// shutdown(), routing through the existing race-safe teardown.
+// alive: a slow-but-flowing reader draining a backlog (payload writes
+// progressing) is never reaped even if its pong is late (finding 1); a
+// client that stopped reading wedges the writer AND stops ponging, so
+// both go stale and it IS reaped — including one that keeps sending
+// input, since generic inbound doesn't count (finding 2). On an IDLE
+// session (no payload), write-progress goes stale, so a hung client that
+// stops ponging IS reaped (the pong clock decides) while a ponging one
+// stays — closing the idle-zombie blind spot where the daemon's own
+// pings used to self-refresh the clock forever. This is the ONLY
+// liveness detector over SSH-stdio (where write deadlines are no-ops).
+// Reaping = shutdown(), routing through the existing race-safe teardown.
 func (c *clientConn) heartbeatLoop() {
 	ticker := time.NewTicker(c.daemon.heartbeatInterval)
 	defer ticker.Stop()
@@ -254,11 +259,25 @@ func (c *clientConn) flushPriority() error {
 // idle-progress write deadline (layer 3), and records write progress
 // for the heartbeat on success. Only the writeLoop goroutine (and
 // handshake, before the writer starts) calls it.
+//
+// Heartbeat control frames (our own out-of-band Ping, and Pong replies)
+// are EXCLUDED from write-progress. They're low-volume self-traffic the
+// kernel buffers even for a hung-but-socket-open peer (SIGSTOP'd /
+// deadlocked client), so counting a "successful" ping write as progress
+// would let an IDLE session's pings self-refresh the clock forever and
+// never reap a hung idle client — the symmetric blind spot to the
+// client-side bug. Only SUBSTANTIVE payload draining (cell frames,
+// scrollback, responses) proves the peer is reading; that's what keeps a
+// slow-but-alive client draining a backlog from being reaped (finding 1).
+// On idle, write-progress correctly goes stale and the pong clock alone
+// decides liveness — a ponging client stays, a hung one is reaped.
 func (c *clientConn) writeFrameRaw(t protocol.MsgType, body protocol.Msg) error {
 	if err := protocol.WriteFrame(c.dw, t, body); err != nil {
 		return err
 	}
-	c.lastWriteProgress.Store(time.Now().UnixNano())
+	if t != protocol.MsgPing && t != protocol.MsgPong {
+		c.lastWriteProgress.Store(time.Now().UnixNano())
+	}
 	return nil
 }
 
@@ -302,11 +321,14 @@ type clientConn struct {
 	// progress clocks decide liveness; the conn is reaped ONLY when
 	// BOTH are stale past livenessWindow:
 	//
-	//   - lastWriteProgress: a frame was successfully written to the
-	//     client (set by the writer after each write). If bytes are
-	//     still moving outbound, the client IS reading us — never reap
-	//     it (a slow-but-flowing reader draining a backlog may answer
-	//     pings late, but it's alive).
+	//   - lastWriteProgress: a PAYLOAD frame was successfully written to
+	//     the client (set by the writer; heartbeat ping/pong writes are
+	//     excluded — see writeFrameRaw). If real bytes are still moving
+	//     outbound, the client IS reading us — never reap it (a
+	//     slow-but-flowing reader draining a backlog may answer pings
+	//     late, but it's alive). On idle there's no payload, so this goes
+	//     stale and the pong clock alone decides — a hung idle client no
+	//     longer hides behind the daemon's own keepalive pings.
 	//   - lastPong: a Pong arrived (set by the read loop). Proves the
 	//     client's read+respond path is alive. Generic inbound does NOT
 	//     count — a client that keeps SENDING but stopped reading must
