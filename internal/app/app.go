@@ -3421,7 +3421,16 @@ func (a *Window) frame() {
 					// the next toggle — at most 2 renders/blink-period
 					// instead of the old full frame cap.
 					nextToggle := float64(int(now/rate)+1) * rate
-					if ms := int((nextToggle - now) * 1000); ms >= 1 && ms < a.app.idleWakeMs {
+					// Clamp to a 1ms floor: the interval is always
+					// positive, so a sub-millisecond remainder must NOT
+					// round down to 0 and get ignored — otherwise the
+					// loop falls back to the 1000ms safety net and the
+					// cursor stays un-toggled for up to a second.
+					ms := int((nextToggle - now) * 1000)
+					if ms < 1 {
+						ms = 1
+					}
+					if ms < a.app.idleWakeMs {
 						a.app.idleWakeMs = ms
 					}
 				}
