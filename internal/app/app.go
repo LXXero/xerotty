@@ -662,6 +662,34 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 	}
 }
 
+// dialRemoteDaemon SSH-dials the given resolved host, completes the
+// Hello + Attach handshake, starts the read loop, and returns the
+// connected client + Attached snapshot. Takes the already-resolved host
+// (not a name to re-resolve) so it's safe to call from the Hub's
+// reconnect goroutine without racing the main-thread-only a.adhocHosts.
+func (a *App) dialRemoteDaemon(name string, host config.RemoteHost) (*clientproto.Client, *protocol.Attached, error) {
+	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
+	}
+	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach to %s: %w", name, err)
+	}
+	select {
+	case attached := <-cli.Attached():
+		return cli, attached, nil
+	case <-time.After(5 * time.Second):
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("no Attached response from %s within 5s", name)
+	}
+}
+
 // remoteHubFor returns the registry entry for the named host,
 // lazily building it (SSH-dial + hello + attach) on first request.
 // Subsequent calls reuse the same Hub so one SSH connection serves
@@ -675,18 +703,12 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 	a.remoteHubsMu.Lock()
 	if e, ok := a.remoteHubs[name]; ok {
-		// Check the underlying connection is still alive. SSH
-		// drops, the remote daemon was killed, network blip —
-		// any of those leave the cached Hub with a dead client.
-		// Re-dial instead of handing back a corpse.
-		select {
-		case <-e.hub.Client().Closed():
-			delete(a.remoteHubs, name)
-			e.hub.Stop()
-		default:
-			a.remoteHubsMu.Unlock()
-			return e, nil
-		}
+		// The cached hub self-heals (layer 4b): a dropped SSH path /
+		// killed remote daemon is re-dialed by the hub's own reconnect
+		// loop, keeping the same Sources. So always hand it back — never
+		// tear it down + re-dial, which would orphan the live tabs.
+		a.remoteHubsMu.Unlock()
+		return e, nil
 	}
 	a.remoteHubsMu.Unlock()
 
@@ -695,27 +717,18 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return nil, fmt.Errorf("remote host %q: empty destination", name)
 	}
 
-	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
+	cli, attached, err := a.dialRemoteDaemon(name, host)
 	if err != nil {
-		return nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
-	}
-	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
-		_ = cli.Close()
-		return nil, fmt.Errorf("hello to %s: %w", name, err)
-	}
-	go cli.Run()
-	if err := cli.Attach("", false); err != nil {
-		_ = cli.Close()
-		return nil, fmt.Errorf("attach to %s: %w", name, err)
-	}
-	var attached *protocol.Attached
-	select {
-	case attached = <-cli.Attached():
-	case <-time.After(5 * time.Second):
-		_ = cli.Close()
-		return nil, fmt.Errorf("no Attached response from %s within 5s", name)
+		return nil, err
 	}
 	hub := daemonsource.NewHub(cli)
+	// Self-heal over SSH. Capture the resolved host (NOT a re-resolve
+	// inside the closure) so the reconnect dialer never touches
+	// a.adhocHosts off the main goroutine — SSH params don't change
+	// mid-session anyway.
+	hub.SetRedial(func() (*clientproto.Client, *protocol.Attached, error) {
+		return a.dialRemoteDaemon(name, host)
+	})
 	hub.SeedRevision(attached.Revision)
 	a.wireHubCallbacks(name, hub)
 
@@ -854,36 +867,45 @@ type daemonWindowSnapshot struct {
 	FocusedTabID uint32
 }
 
+// dialLocalDaemon ensures the local daemon is reachable (auto-spawning
+// it if needed), completes the Hello + Attach handshake, starts the
+// client read loop, and returns the connected client + its Attached
+// snapshot. Shared by the initial connect and the Hub's reconnect
+// dialer (SetRedial), so both paths are identical — a reconnect after a
+// daemon restart re-spawns and re-attaches exactly like first launch.
+// Attach uses NewIfMissing=false: the GUI creates tabs itself via
+// NewTab, it doesn't want the daemon's default-tab-on-empty behavior.
+func (a *App) dialLocalDaemon() (*clientproto.Client, *protocol.Attached, error) {
+	cli, err := daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := cli.Hello("xerotty-gui"); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("hello: %w", err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach: %w", err)
+	}
+	select {
+	case attached := <-cli.Attached():
+		return cli, attached, nil
+	case <-time.After(5 * time.Second):
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach: no response from daemon")
+	}
+}
+
 // initDaemonSource ensures a local xerotty daemon is running,
 // connects to it, attaches, and wires the resulting Hub into App so
 // tabs.Manager.NewTab routes through it. Errors here are non-fatal
 // — caller logs + falls back to PTY tabs.
 func (a *App) initDaemonSource() error {
-	cli, err := daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket)
+	cli, attached, err := a.dialLocalDaemon()
 	if err != nil {
 		return err
-	}
-	if _, err := cli.Hello("xerotty-gui"); err != nil {
-		_ = cli.Close()
-		return fmt.Errorf("hello: %w", err)
-	}
-	go cli.Run()
-	// Attach with NewIfMissing=false: the GUI doesn't want an
-	// auto-tab from the daemon's default-tab-on-empty path; we'll
-	// create tabs ourselves via NewTab when the user asks.
-	if err := cli.Attach("", false); err != nil {
-		_ = cli.Close()
-		return fmt.Errorf("attach: %w", err)
-	}
-	// Capture the Attached frame so the next Window opened can
-	// adopt any pre-existing daemon tabs (the persistence story:
-	// reopen xerotty, see your shells exactly as you left them).
-	var attached *protocol.Attached
-	select {
-	case attached = <-cli.Attached():
-	case <-time.After(2 * time.Second):
-		_ = cli.Close()
-		return fmt.Errorf("attach: no response from daemon")
 	}
 	// Group tabs by their daemon-side window so the GUI can spawn
 	// one Window per daemon Window on reattach. tabs.Tab info is
@@ -928,6 +950,12 @@ func (a *App) initDaemonSource() error {
 		})
 	}
 	hub := daemonsource.NewHub(cli)
+	// Self-heal: a dropped/restarted local daemon is re-dialed by the
+	// hub itself (auto-spawning via EnsureLocalDaemon if the process
+	// died), keeping the same Source objects so the frozen tabs come
+	// back to life in place. dialLocalDaemon is idempotent + safe to
+	// call from the hub's router goroutine (no shared mutable state).
+	hub.SetRedial(a.dialLocalDaemon)
 	// Seed the topology-revision gate from the attach snapshot so
 	// later MsgTopologyChanged broadcasts are applied only when newer.
 	hub.SeedRevision(attached.Revision)
@@ -1389,14 +1417,14 @@ func guiMCPSocketPath() string {
 }
 
 // installSourceFactory builds the tabs.Manager.SourceFactory for a
-// Window. In daemon mode the closure does NOT capture a hub
-// pointer — it calls a.activeDaemonHub() per invocation so a
-// re-dialed hub (after SSH drop on a remote-default setup, or
-// auto-spawn restart locally) reaches new tabs without needing
-// every Window's factory to be re-installed.
+// Window. In daemon mode the closure does NOT capture a hub pointer —
+// it calls a.activeDaemonHub() per invocation. The hub itself
+// self-heals across connection drops (layer 4b), so the pointer is
+// stable; the per-invocation lookup just keeps the factory honest if
+// the default hub is ever swapped wholesale (e.g. mode reconfig).
 //
 // Falls back to in-process PTY when daemon mode isn't active OR
-// activeDaemonHub returns nil (unrecoverable connection loss).
+// activeDaemonHub returns nil.
 func (a *App) installSourceFactory(w *Window) {
 	// OSC 52 clipboard hooks — injected so tabs.Manager can wire
 	// them onto each source without the tabs package importing the
@@ -1426,32 +1454,16 @@ func (a *App) installSourceFactory(w *Window) {
 	}
 }
 
-// activeDaemonHub returns a.daemonHub if its underlying client is
-// still alive. If dead, re-runs the appropriate init path
-// (local or remote-default) to replace the hub, then returns the
-// new one. Returns nil on permanent failure.
+// activeDaemonHub returns the default daemon hub, or nil in PTY mode /
+// when startup init never produced one. The hub self-heals across
+// connection drops (layer 4b): its reconnect loop re-dials in place
+// keeping the same Sources, so callers no longer re-init on a dead
+// client. During the brief dial gap the hub's current client is the
+// closed one, so a NewTabIn through it returns a transient error rather
+// than hanging — acceptable; the user retries.
 func (a *App) activeDaemonHub() *daemonsource.Hub {
 	hub, _ := a.getDaemonHub()
-	if hub == nil {
-		return nil
-	}
-	select {
-	case <-hub.Client().Closed():
-		// Hub is dead — re-init based on the configured source
-		// string. Local daemon mode auto-respawns; remote mode
-		// re-dials via SSH. init* call setDaemonHub under the lock.
-		a.setDaemonHub(nil, "")
-		src := a.cfg.Tabs.Source
-		if src == "daemon" {
-			_ = a.initDaemonSource()
-		} else if strings.HasPrefix(src, "daemon:") {
-			_ = a.initRemoteDefaultSource(strings.TrimPrefix(src, "daemon:"))
-		}
-		h, _ := a.getDaemonHub()
-		return h
-	default:
-		return hub
-	}
+	return hub
 }
 
 // reapClosedWindows removes Windows the user closed this frame. All
@@ -3571,6 +3583,11 @@ func (a *Window) frame() {
 	// Resize overlay
 	a.renderResizeOverlay()
 
+	// "Reconnecting…" badge when the active tab's daemon connection is
+	// down and re-dialing (layer 4b). The last frame stays frozen
+	// underneath; this just signals it's stalled, not dead.
+	a.renderReconnectingOverlay()
+
 	// Push cell-width resize increments to the OS window each time
 	// the cell dimensions change (font zoom, metric refresh) AND
 	// once at startup when this Window's real popped-out SDL_Window
@@ -4974,6 +4991,60 @@ func (w *Window) renderResizeOverlay() {
 			fgColor,
 			primary,
 		)
+	}
+}
+
+// renderReconnectingOverlay dims the viewport and draws a small
+// "reconnecting…" badge when the active tab is a daemon-backed source
+// whose connection dropped and is re-dialing (layer 4b). The frozen
+// last frame stays visible underneath the dim so the user keeps context
+// (what was on screen) while seeing the link is stalled. Pure daemon
+// sources reconnect; in-process PTY tabs never match the assertion, so
+// this is a no-op for them.
+func (w *Window) renderReconnectingOverlay() {
+	tab := w.tabs.Active()
+	if tab == nil {
+		return
+	}
+	ds, ok := tab.Terminal.(*daemonsource.Source)
+	if !ok || !ds.IsReconnecting() {
+		return
+	}
+
+	var vpX, vpY float32
+	if vp := w.viewport(); vp != nil {
+		vpX, vpY = vp.Pos().X, vp.Pos().Y
+	}
+	dl := w.fgDrawList()
+	// Dim the whole content area so the frozen frame reads as inactive.
+	dl.AddRectFilledV(
+		imgui.Vec2{X: vpX, Y: vpY},
+		imgui.Vec2{X: vpX + float32(w.width), Y: vpY + float32(w.height)},
+		uint32(70)<<24, // ~27% black wash
+		0, 0,
+	)
+
+	label := "reconnecting…"
+	ts := imgui.CalcTextSize(label)
+	padX, padY := float32(14), float32(8)
+	boxW, boxH := ts.X+padX*2, ts.Y+padY*2
+	cx := vpX + float32(w.width)/2
+	cy := vpY + float32(w.height)/2
+	dl.AddRectFilledV(
+		imgui.Vec2{X: cx - boxW/2, Y: cy - boxH/2},
+		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
+		uint32(0xCC)<<24, // mostly-opaque black pill
+		6, 0,
+	)
+	dl.AddTextVec2(
+		imgui.Vec2{X: cx - ts.X/2, Y: cy - ts.Y/2},
+		0xFFFFFFFF,
+		label,
+	)
+	// Keep the loop awake so the badge stays painted while idle (the
+	// daemon sends no frames during a drop, so nothing else wakes us).
+	if w.app.idleWakeMs > 250 {
+		w.app.idleWakeMs = 250
 	}
 }
 

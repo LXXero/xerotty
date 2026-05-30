@@ -89,6 +89,14 @@ type Source struct {
 	// from a local child exit. The GUI force-removes vanished tabs
 	// regardless of on_child_exit: there's no local child to "hold".
 	vanished atomic.Bool
+
+	// reconnecting is set while the Hub's connection is down and
+	// re-dialing (layer 4b). The shadow emulator keeps its last frame
+	// (never cleared), so the GUI renders the frozen viewport — the
+	// renderer reads IsReconnecting to dim/badge it. Input is dropped
+	// (Write/Paste/Resize) since the remote PTY can't receive it. Cleared
+	// once the Hub reconnects and resyncs.
+	reconnecting atomic.Bool
 }
 
 // newSource is invoked by Hub. Don't call directly — call Hub.Adopt
@@ -130,7 +138,7 @@ func (s *Source) TabID() uint32 { return s.tabID }
 // per-tab focus / geometry messages that aren't on the Source's
 // own API. Mostly an escape hatch — most callers should use the
 // per-tab methods (Write, Paste, Resize, etc.).
-func (s *Source) HubClient() *clientproto.Client { return s.hub.c }
+func (s *Source) HubClient() *clientproto.Client { return s.hub.client() }
 
 // --- terminal.Source implementation ---
 
@@ -235,17 +243,25 @@ func (s *Source) Write(p []byte) (int, error) {
 	if s.closed.Load() {
 		return 0, nil
 	}
-	if err := s.hub.c.SendInput(s.tabID, p); err != nil {
+	if s.reconnecting.Load() {
+		// The daemon connection is down and re-dialing. Drop input
+		// rather than erroring or blocking: the remote shell can't
+		// receive it anyway, and the io.Writer contract wants a clean
+		// "wrote it all" so the caller (input layer) doesn't spam errors
+		// or retry. Honest loss — the bytes never reached a live PTY.
+		return len(p), nil
+	}
+	if err := s.hub.client().SendInput(s.tabID, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
 }
 
 func (s *Source) Paste(text string) {
-	if s.closed.Load() {
+	if s.closed.Load() || s.reconnecting.Load() {
 		return
 	}
-	_ = s.hub.c.SendPaste(s.tabID, []byte(text))
+	_ = s.hub.client().SendPaste(s.tabID, []byte(text))
 }
 
 func (s *Source) Resize(cols, rows int) {
@@ -254,14 +270,20 @@ func (s *Source) Resize(cols, rows int) {
 	s.rows = rows
 	s.emu.Resize(cols, rows)
 	s.mu.Unlock()
-	_ = s.hub.c.SendResize(s.tabID, uint16(cols), uint16(rows))
+	if s.reconnecting.Load() {
+		// Resize is replayed implicitly on reconnect: the daemon re-sends
+		// a CellFull at the live dims, and the GUI re-issues Resize from
+		// its current layout. Skip the send to a dead conn.
+		return
+	}
+	_ = s.hub.client().SendResize(s.tabID, uint16(cols), uint16(rows))
 }
 
 func (s *Source) Close() {
 	if !s.closed.CompareAndSwap(false, true) {
 		return
 	}
-	_ = s.hub.c.SendTabClose(s.tabID)
+	_ = s.hub.client().SendTabClose(s.tabID)
 	s.hub.unregister(s.tabID)
 	// Wake any DataChan reader so they can notice the close.
 	s.signalDirty()
@@ -298,6 +320,20 @@ func (s *Source) markVanished() {
 // topology (closed remotely). The GUI uses it to force-remove the tab
 // even under on_child_exit=hold — a vanished tab has no child to hold.
 func (s *Source) IsVanished() bool { return s.vanished.Load() }
+
+// IsReconnecting reports whether the daemon connection is currently down
+// and re-dialing. The renderer uses it to dim/badge the frozen last
+// frame so the user sees the tab is stalled, not dead.
+func (s *Source) IsReconnecting() bool { return s.reconnecting.Load() }
+
+// setReconnecting flips the reconnecting flag and wakes the render loop
+// so the frozen/dimmed frame (and any badge) repaints promptly. Called
+// by the Hub's reconnect loop for every Source on connect/disconnect.
+func (s *Source) setReconnecting(v bool) {
+	if s.reconnecting.Swap(v) != v {
+		s.signalDirty()
+	}
+}
 
 func (s *Source) IsClosed() bool { return s.closed.Load() || s.exited.Load() }
 
@@ -339,7 +375,7 @@ func (s *Source) ClearScrollback() {
 	s.mu.Lock()
 	s.scrollback = nil
 	s.mu.Unlock()
-	_ = s.hub.c.SendClearScrollback(s.tabID)
+	_ = s.hub.client().SendClearScrollback(s.tabID)
 	s.signalDirty()
 }
 
@@ -353,7 +389,7 @@ func (s *Source) PasteImage(mime, filename string, data []byte) error {
 	if s.closed.Load() {
 		return nil
 	}
-	return s.hub.c.SendImagePaste(s.tabID, mime, filename, data)
+	return s.hub.client().SendImagePaste(s.tabID, mime, filename, data)
 }
 
 // --- Frame application (called by Hub.router) ---

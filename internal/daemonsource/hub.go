@@ -37,7 +37,22 @@ const tabCreateTimeout = 10 * time.Second
 // per-tab Source instances. A GUI process needs ONE Hub for each
 // daemon it talks to (typically just one: the local daemon).
 type Hub struct {
-	c *clientproto.Client
+	// conn is the live daemon connection. It's an atomic pointer, not a
+	// plain field, because the reconnect loop SWAPS it for a fresh
+	// client after a drop (layer 4b) while Source.Write / router / RPC
+	// helpers read it concurrently. Every accessor goes through
+	// client(); Sources reach it via s.hub.client() too, so a swap is
+	// transparently picked up everywhere without re-pointing Sources.
+	conn atomic.Pointer[clientproto.Client]
+
+	// redial, if set, lets the Hub re-establish a dropped connection
+	// itself instead of the router just exiting. It returns a fresh
+	// client that has ALREADY completed Hello + Attach (with Run
+	// started) plus the Attached snapshot to resync topology from. The
+	// app injects it (local auto-spawn re-dial, or SSH re-dial). nil =
+	// no self-healing (tests / transient hubs); the router exits on
+	// disconnect as it did before layer 4b.
+	redial func() (*clientproto.Client, *protocol.Attached, error)
 
 	// scrollbackCap is the per-Source scrollback ring cap. Read by
 	// newSource. 0 = use the daemonsource default (10000). Set via
@@ -139,7 +154,6 @@ const pendingCap = 64
 // Stop to tear it down.
 func NewHub(c *clientproto.Client) *Hub {
 	h := &Hub{
-		c:              c,
 		sources:        make(map[uint32]*Source),
 		pending:        make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan *protocol.TabCreated),
@@ -147,8 +161,22 @@ func NewHub(c *clientproto.Client) *Hub {
 		createTimeout:        tabCreateTimeout,
 		stopCh:               make(chan struct{}),
 	}
+	h.conn.Store(c)
 	go h.router()
 	return h
+}
+
+// client returns the live daemon connection. Hot path (Source.Write
+// reads it per keystroke), so it's a lock-free atomic load.
+func (h *Hub) client() *clientproto.Client { return h.conn.Load() }
+
+// SetRedial installs the reconnect dialer (see Hub.redial). Call once,
+// right after NewHub, before a disconnect could happen. Without it the
+// Hub behaves as before layer 4b: the router exits on disconnect.
+func (h *Hub) SetRedial(fn func() (*clientproto.Client, *protocol.Attached, error)) {
+	h.mu.Lock()
+	h.redial = fn
+	h.mu.Unlock()
 }
 
 // Stop signals the router goroutine to exit. The underlying
@@ -177,7 +205,7 @@ func (h *Hub) SetProposalsCallback(fn func([]protocol.ProposalInfo)) {
 // ResolveProposal approves/drops a pending proposal by index over
 // this hub's connection.
 func (h *Hub) ResolveProposal(index uint32, approve bool) error {
-	return h.c.SendProposalResolve(index, approve)
+	return h.client().SendProposalResolve(index, approve)
 }
 
 // Sources returns a snapshot of all currently-registered Sources
@@ -205,7 +233,7 @@ func (h *Hub) SetScrollbackCap(rows int) {
 
 // Client returns the underlying clientproto.Client. Useful for
 // pushing one-off frames (e.g. clipboard sync) that aren't per-tab.
-func (h *Hub) Client() *clientproto.Client { return h.c }
+func (h *Hub) Client() *clientproto.Client { return h.client() }
 
 // register adds a Source to the routing table and drains any
 // buffered frames that arrived for this tab ID before the Source
@@ -314,7 +342,8 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 		h.createMu.Unlock()
 	}()
 
-	if err := h.c.SendTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", reqID); err != nil {
+	cli := h.client()
+	if err := cli.SendTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", reqID); err != nil {
 		return nil, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
 	}
 	// Wait for OUR ack (matched by ReqID in the router). Bail if the
@@ -327,7 +356,7 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 		// to MaxTabDim), not what we requested — otherwise the local
 		// emulator would be sized wrong and desync from the daemon.
 		return h.Adopt(tc.Info.ID, int(tc.Info.Cols), int(tc.Info.Rows)), nil
-	case <-h.c.Closed():
+	case <-cli.Closed():
 		return nil, fmt.Errorf("daemonsource: connection closed before TabCreated")
 	case <-h.stopCh:
 		return nil, fmt.Errorf("daemonsource: hub stopped before TabCreated")
@@ -393,13 +422,14 @@ func (h *Hub) CreateWindow(posX, posY, width, height int32) (uint32, error) {
 		h.createMu.Unlock()
 	}()
 
-	if err := h.c.SendWindowCreateReq(posX, posY, width, height, reqID); err != nil {
+	cli := h.client()
+	if err := cli.SendWindowCreateReq(posX, posY, width, height, reqID); err != nil {
 		return 0, fmt.Errorf("daemonsource: SendWindowCreate: %w", err)
 	}
 	select {
 	case wc := <-reply:
 		return wc.Info.ID, nil
-	case <-h.c.Closed():
+	case <-cli.Closed():
 		return 0, fmt.Errorf("daemonsource: connection closed before WindowCreated")
 	case <-h.stopCh:
 		return 0, fmt.Errorf("daemonsource: hub stopped before WindowCreated")
@@ -483,7 +513,28 @@ func (h *Hub) Adopt(tabID uint32, cols, rows int) *Source {
 // stopped draining: incoming frames just back-pressure the router,
 // which back-pressures the client.
 func (h *Hub) router() {
-	cli := h.c
+	for {
+		cli := h.client()
+		h.route(cli)
+		// route returned: the connection dropped or the hub is stopping.
+		// Stop wins; otherwise try to reconnect (no-op if no redial set).
+		select {
+		case <-h.stopCh:
+			return
+		default:
+		}
+		if !h.reconnect() {
+			return
+		}
+	}
+}
+
+// route demuxes frames from ONE client connection until that connection
+// closes or the hub stops, then returns so router() can decide whether
+// to reconnect. Reading cli's channels (not h.client()'s) is deliberate:
+// after a reconnect swap, router() calls route() again with the fresh
+// client, so this loop is always bound to a single connection's lifetime.
+func (h *Hub) route(cli *clientproto.Client) {
 	for {
 		select {
 		case <-h.stopCh:
@@ -575,6 +626,118 @@ func (h *Hub) router() {
 			// via the Source-free fallback so the user sees it.
 			_ = err // TODO: route to a Hub-level error sink
 		}
+	}
+}
+
+// Reconnect backoff bounds. Start fast (a daemon restart / SSH blip is
+// usually back within a second or two) and cap so a genuinely-down
+// target is retried cheaply forever rather than spinning. Mosh-style:
+// we never give up on our own; the user closing the tab is what stops it.
+const (
+	reconnectMinBackoff = 500 * time.Millisecond
+	reconnectMaxBackoff = 5 * time.Second
+)
+
+// reconnect freezes every Source (last frame held, input dropped), then
+// re-dials with capped backoff until it succeeds or the hub stops. On
+// success it swaps in the fresh client, resyncs topology from the new
+// Attached snapshot, clears the frozen state, and returns true so the
+// router resumes on the new connection. Returns false only when there's
+// no redial dialer or the hub is stopping.
+func (h *Hub) reconnect() bool {
+	h.mu.RLock()
+	redial := h.redial
+	h.mu.RUnlock()
+	if redial == nil {
+		return false
+	}
+	h.markAllReconnecting(true)
+	backoff := reconnectMinBackoff
+	for {
+		select {
+		case <-h.stopCh:
+			return false
+		default:
+		}
+		newCli, attached, err := redial()
+		if err != nil {
+			select {
+			case <-h.stopCh:
+				return false
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > reconnectMaxBackoff {
+				backoff = reconnectMaxBackoff
+			}
+			continue
+		}
+		old := h.conn.Swap(newCli)
+		if old != nil {
+			_ = old.Close()
+		}
+		h.resyncAfterReconnect(attached)
+		h.markAllReconnecting(false)
+		return true
+	}
+}
+
+// markAllReconnecting flips the reconnecting flag on every registered
+// Source. While set, a Source holds its last rendered frame (the shadow
+// emulator is never cleared) and drops input (the daemon can't receive
+// it). signalDirty wakes the render loop so the GUI repaints the frozen-
+// /dimmed frame + any "reconnecting" badge promptly.
+func (h *Hub) markAllReconnecting(v bool) {
+	h.mu.RLock()
+	srcs := make([]*Source, 0, len(h.sources))
+	for _, s := range h.sources {
+		srcs = append(srcs, s)
+	}
+	h.mu.RUnlock()
+	for _, s := range srcs {
+		s.setReconnecting(v)
+	}
+}
+
+// resyncAfterReconnect reconciles the Hub's adopted Sources against the
+// Attached snapshot from a freshly-reconnected daemon. Unlike
+// applyTopology it does NOT revision-gate — a new connection's snapshot
+// is authoritative, so the revision is reset to it. Tabs that survived
+// (same IDs — the daemon persisted the session across an SSH drop) are
+// re-adopted idempotently and will be repainted by the CellFull the
+// daemon re-sends on (re)subscribe; tabs that vanished (a daemon RESTART
+// lost them) are marked gone. The onTopology callback then lets the GUI
+// reconcile its tab bar.
+func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
+	h.mu.Lock()
+	h.lastRevision = att.Revision
+	want := make(map[uint32]bool, len(att.Tabs))
+	for _, ti := range att.Tabs {
+		want[ti.ID] = true
+	}
+	var vanished []*Source
+	for id, s := range h.sources {
+		if !want[id] {
+			vanished = append(vanished, s)
+		}
+	}
+	cb := h.onTopology
+	h.mu.Unlock()
+
+	for _, ti := range att.Tabs {
+		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
+	}
+	for _, s := range vanished {
+		s.markVanished()
+	}
+	if cb != nil {
+		cb(&protocol.TopologyChanged{
+			SessionName:  att.SessionName,
+			Revision:     att.Revision,
+			Windows:      att.Windows,
+			Tabs:         att.Tabs,
+			FocusedTabID: att.FocusedTabID,
+		})
 	}
 }
 
