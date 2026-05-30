@@ -44,6 +44,17 @@ func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) 
 		daemonCmd = "xerotty serve --stdio"
 	}
 	args := append([]string{}, extraSSHArgs...)
+	// Keepalive (Phase 10 layer 5): ask ssh to probe the server every
+	// 10s and give up after 3 unanswered probes, so a dead SSH path
+	// (peer powered off, NAT dropped the flow) is detected in ~30s and
+	// ssh exits — which closes our stdio conn and triggers the Hub's
+	// reconnect. This is a cheap EXTRA signal, not the correctness
+	// mechanism: the app-level heartbeat (layer 4d) + bounded writers
+	// (4a) are what actually guarantee detection (and they cover the
+	// daemon-hung-but-SSH-alive case keepalive can't see). Placed AFTER
+	// extraSSHArgs so a user-supplied -o ServerAlive* (which ssh honors
+	// first-match) still wins.
+	args = append(args, "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3")
 	// -T disables pseudo-tty allocation for stdin/stdout, which is
 	// critical: we're shipping binary msgpack frames and don't want
 	// ssh's tty layer translating CR/LF on us.
