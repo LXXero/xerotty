@@ -530,6 +530,61 @@ clear-scrollback on a held/exited tab notifies other clients.
 Multi-client is now directly exercisable (two GUI windows on one
 daemon, or MCP mutating while a GUI watches).
 
+### Phase 10 — connection resilience: dead/hung/slept clients [PLANNED]
+
+A client connection can go **half-open** with no signal to the daemon:
+a laptop attached over SSH suspends, a link drops, a client stops
+reading. Writes silently succeed into the kernel send buffer until it
+fills, then block — and the OS won't error the socket for minutes (TCP
+retransmit timeout) or never (a stdio pipe over dead SSH). Today the
+daemon can't tell a live client from a vanished one, and structural
+broadcasts run on the mutating goroutine, so one stuck client can stall
+the daemon.
+
+Two facts shape the design: (1) `internal/protocol/stdioconn.go`'s
+`SetRead/WriteDeadline` are no-ops, so socket timeouts DON'T work over
+the SSH-stdio transport — the main remote case; (2) the daemon persists
+sessions and Phase 9 gives snapshot+revision resync, so **a connection
+is disposable** — reaping a dead client is safe; it reconnects and
+re-syncs with zero loss. So the philosophy is: don't fight to preserve
+a stalled connection — detect it fast, reap it, let reconnect heal.
+
+Layered, in dependency order:
+
+1. **Per-client async bounded writers (prerequisite).** No broadcast
+   writes on a mutating goroutine. Each `clientConn` gets an outbound
+   writer goroutine + bounded queue; mutators enqueue and move on.
+   Topology is **latest-wins / coalesced** (a single pending-snapshot
+   slot); cell frames drop/coalesce to the next full/diff. Without
+   this, heartbeat doesn't help — the mutator still blocks in `Write`.
+2. **App-level heartbeat** — `Ping{nonce}` / `Pong{nonce}` control
+   frames. The daemon pings ~every 5s and reaps a client after ~3
+   missed pongs or ~15–20s with no inbound traffic (any inbound frame
+   counts as liveness). The client pings the daemon too, for fast GUI
+   "reconnecting" detection. This is the ONLY liveness detector that
+   works over the SSH-stdio transport.
+3. **Progress-based write deadlines (unix-socket transport).**
+   Heartbeat detects liveness; a deadline is what unblocks a stuck
+   writer goroutine. Use an idle-progress timeout: refresh a ~5s
+   deadline after each *successful partial write*, kill only if no
+   bytes move for the window — so a big-but-flowing write (a large
+   paste) is never killed, only a genuinely stalled one. No-op over
+   stdio (heartbeat carries detection there).
+4. **Reconnect UX.** Mark sources "reconnecting", freeze the last
+   render, never block the UI on a daemon RPC. **Local close removes
+   the GUI tab/window immediately** (no round-trip to a dead daemon).
+   Pitfall (codex): decide whether local-close means "hide locally" or
+   "kill the remote tab" — if kill, persist a **close tombstone** to
+   replay after reconnect, or the snapshot resync will **resurrect the
+   closed tab**.
+5. **SSH `ServerAliveInterval=10` / `ServerAliveCountMax=3`** — a cheap
+   extra signal on the SSH transport, but NOT the correctness
+   mechanism: it won't protect synchronous daemon broadcasts, and the
+   app-level heartbeat + bounded writers are still required.
+
+Supersedes the "broadcast back-pressure" open-question — layer 1 is
+that fix, generalized.
+
 ## Beyond the original phases (also shipped)
 
 - **terminal.Source interface** — the GUI multiplexer abstraction;
