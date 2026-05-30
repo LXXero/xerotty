@@ -283,6 +283,13 @@ func (s *Source) Close() {
 	if !s.closed.CompareAndSwap(false, true) {
 		return
 	}
+	// Close means "kill the remote tab" (unlike Detach). Tombstone it
+	// FIRST so the close survives a dead/dropping connection: if the
+	// SendTabClose below is lost, the Hub replays it on reconnect and
+	// the snapshot resync won't resurrect the tab. The GUI has already
+	// removed the tab (tabs.Manager.CloseTab drops it from the slice
+	// immediately), so this never waits on a daemon ack.
+	s.hub.addTombstone(s.tabID)
 	_ = s.hub.client().SendTabClose(s.tabID)
 	s.hub.unregister(s.tabID)
 	// Wake any DataChan reader so they can notice the close.

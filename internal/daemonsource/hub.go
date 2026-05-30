@@ -63,6 +63,19 @@ type Hub struct {
 	mu      sync.RWMutex
 	sources map[uint32]*Source
 
+	// tombstones records tab IDs the local user CLOSED (Source.Close,
+	// which means "kill the remote tab" — not Detach, which keeps it).
+	// They're replayed on every topology snapshot so a close that didn't
+	// reach the daemon (issued while the connection was down, or racing a
+	// drop) isn't undone by the snapshot resync resurrecting the tab —
+	// the documented Phase 10 pitfall. A tombstoned ID that's still
+	// present in a snapshot gets a fresh MsgTabClose; once it's gone from
+	// the snapshot (daemon confirmed the close) the tombstone is dropped.
+	// Guarded by its own mutex so Source.Close (UI goroutine) and the
+	// router's reconcile don't contend on h.mu.
+	tombMu     sync.Mutex
+	tombstones map[uint32]struct{}
+
 	// onClipboardSet fires when the daemon ships MsgClipboardSet
 	// (a remote PTY app wrote the clipboard). Clipboard is
 	// session-global so this is a hub-level callback, not per-tab.
@@ -155,6 +168,7 @@ const pendingCap = 64
 func NewHub(c *clientproto.Client) *Hub {
 	h := &Hub{
 		sources:        make(map[uint32]*Source),
+		tombstones:     make(map[uint32]struct{}),
 		pending:        make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan *protocol.TabCreated),
 		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
@@ -289,6 +303,74 @@ func (h *Hub) unregister(id uint32) {
 	h.mu.Lock()
 	delete(h.sources, id)
 	h.mu.Unlock()
+}
+
+// addTombstone records that the local user closed tab id (kill, not
+// detach). Called from Source.Close. The next topology snapshot that
+// still lists id will get a replayed MsgTabClose instead of resurrecting
+// the tab; one that omits id clears the tombstone.
+func (h *Hub) addTombstone(id uint32) {
+	h.tombMu.Lock()
+	h.tombstones[id] = struct{}{}
+	h.tombMu.Unlock()
+}
+
+// reconcileTombstones is the tombstone-replay step run before adopting
+// any snapshot (live broadcast OR reconnect resync). For each tombstoned
+// ID: if it's still in the snapshot, re-send MsgTabClose (the close
+// never landed); if it's gone, drop the tombstone (the daemon confirmed
+// it). Returns the snapshot's tab list with tombstoned entries filtered
+// out, so neither the Hub's own adopt loop nor the GUI callback ever
+// re-creates a tab the user already closed. Runs only on the router
+// goroutine; SendTabClose is issued outside tombMu.
+func (h *Hub) reconcileTombstones(tabs []protocol.TabInfo) []protocol.TabInfo {
+	h.tombMu.Lock()
+	if len(h.tombstones) == 0 {
+		h.tombMu.Unlock()
+		return tabs
+	}
+	present := make(map[uint32]bool, len(tabs))
+	for _, ti := range tabs {
+		present[ti.ID] = true
+	}
+	var replay []uint32
+	for id := range h.tombstones {
+		if present[id] {
+			replay = append(replay, id)
+		} else {
+			delete(h.tombstones, id)
+		}
+	}
+	tomb := make(map[uint32]bool, len(h.tombstones))
+	for id := range h.tombstones {
+		tomb[id] = true
+	}
+	h.tombMu.Unlock()
+
+	cli := h.client()
+	for _, id := range replay {
+		_ = cli.SendTabClose(id)
+	}
+	if len(tomb) == 0 {
+		return tabs
+	}
+	out := make([]protocol.TabInfo, 0, len(tabs))
+	for _, ti := range tabs {
+		if !tomb[ti.ID] {
+			out = append(out, ti)
+		}
+	}
+	return out
+}
+
+// topoWithTabs returns a shallow copy of t with Tabs replaced — used to
+// hand the GUI callback a tombstone-filtered snapshot without mutating
+// the original (Windows[].TabIDs may still reference a filtered tab, but
+// the GUI reconcile adopts off Tabs, so that's harmless).
+func topoWithTabs(t *protocol.TopologyChanged, tabs []protocol.TabInfo) *protocol.TopologyChanged {
+	cp := *t
+	cp.Tabs = tabs
+	return &cp
 }
 
 func (h *Hub) lookup(id uint32) *Source {
@@ -467,8 +549,16 @@ func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
 		return
 	}
 	h.lastRevision = topo.Revision
-	want := make(map[uint32]bool, len(topo.Tabs))
-	for _, ti := range topo.Tabs {
+	cb := h.onTopology
+	h.mu.Unlock()
+
+	// Replay locally-closed tabs + filter them out so the resync can't
+	// resurrect a tab the user already closed (the documented pitfall).
+	tabs := h.reconcileTombstones(topo.Tabs)
+
+	h.mu.Lock()
+	want := make(map[uint32]bool, len(tabs))
+	for _, ti := range tabs {
 		want[ti.ID] = true
 	}
 	var vanished []*Source
@@ -477,12 +567,11 @@ func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
 			vanished = append(vanished, s)
 		}
 	}
-	cb := h.onTopology
 	h.mu.Unlock()
 
 	// Adopt new tabs (Adopt locks h.mu internally, so call it outside
 	// the lock above). Idempotent for already-known IDs.
-	for _, ti := range topo.Tabs {
+	for _, ti := range tabs {
 		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
 	}
 	// Drop tabs that no longer exist on the daemon.
@@ -490,7 +579,7 @@ func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
 		s.markVanished()
 	}
 	if cb != nil {
-		cb(topo)
+		cb(topoWithTabs(topo, tabs))
 	}
 }
 
@@ -711,8 +800,17 @@ func (h *Hub) markAllReconnecting(v bool) {
 func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 	h.mu.Lock()
 	h.lastRevision = att.Revision
-	want := make(map[uint32]bool, len(att.Tabs))
-	for _, ti := range att.Tabs {
+	cb := h.onTopology
+	h.mu.Unlock()
+
+	// Same tombstone replay as the live path: a tab the user closed
+	// while the link was down is re-closed, not resurrected, by this
+	// authoritative snapshot.
+	tabs := h.reconcileTombstones(att.Tabs)
+
+	h.mu.Lock()
+	want := make(map[uint32]bool, len(tabs))
+	for _, ti := range tabs {
 		want[ti.ID] = true
 	}
 	var vanished []*Source
@@ -721,10 +819,9 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 			vanished = append(vanished, s)
 		}
 	}
-	cb := h.onTopology
 	h.mu.Unlock()
 
-	for _, ti := range att.Tabs {
+	for _, ti := range tabs {
 		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
 	}
 	for _, s := range vanished {
@@ -735,7 +832,7 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 			SessionName:  att.SessionName,
 			Revision:     att.Revision,
 			Windows:      att.Windows,
-			Tabs:         att.Tabs,
+			Tabs:         tabs,
 			FocusedTabID: att.FocusedTabID,
 		})
 	}
