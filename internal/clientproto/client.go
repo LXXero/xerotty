@@ -13,19 +13,92 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
+// clientWriteProgressWindow is the idle-progress write timeout for the
+// outbound writer goroutine (mirror of the daemon's layer-3 deadline).
+// After each SUCCESSFUL partial write the deadline is refreshed; the
+// conn is declared dead only if NO bytes move for the whole window — so
+// a big-but-flowing write (a large paste) is never killed, only a
+// genuinely stalled one. No-op over SSH-stdio (SetWriteDeadline is a
+// stub there); the client→daemon heartbeat (layer 4d) covers that
+// transport.
+const clientWriteProgressWindow = 5 * time.Second
+
+// outQueueCap bounds the per-client ordered send queue. Large enough to
+// absorb a normal burst (a paste, a flurry of keystrokes) without
+// back-pressuring the UI; a wedged daemon fills it and the writer's
+// deadline (or the heartbeat) tears the conn down, unblocking senders.
+const outQueueCap = 256
+
+// outFrame is one queued outbound frame for the writer goroutine.
+type outFrame struct {
+	typ  protocol.MsgType
+	body protocol.Msg
+}
+
+// deadlineWriter wraps the conn so each frame write is bounded by an
+// idle-progress deadline (see clientWriteProgressWindow). Only the
+// writer goroutine uses it, so it needs no lock. Identical in shape to
+// the daemon's deadlineWriter — duplicated rather than shared because
+// clientproto must not import the daemon package.
+type deadlineWriter struct {
+	conn   net.Conn
+	window time.Duration
+}
+
+func (w *deadlineWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		_ = w.conn.SetWriteDeadline(time.Now().Add(w.window))
+		n, err := w.conn.Write(p)
+		written += n
+		p = p[n:]
+		if err != nil {
+			// Bytes moved before the deadline → progress, not a stall:
+			// refresh the window and keep writing the rest. Only a
+			// zero-progress timeout (or any non-timeout error) is fatal.
+			if n > 0 && isTimeout(err) {
+				continue
+			}
+			return written, err
+		}
+	}
+	_ = w.conn.SetWriteDeadline(time.Time{}) // clear between frames
+	return written, nil
+}
+
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
 // Client wraps a single connection to a daemon. Concurrency-safe
-// for the write side (all Send* methods serialize through writeMu).
-// Callers must consume from the channels returned by On* methods
-// or back-pressure the read goroutine.
+// for the write side (all Send* methods enqueue onto the async
+// writer's bounded queue). Callers must consume from the channels
+// returned by On* methods or back-pressure the read goroutine.
 type Client struct {
 	conn   net.Conn
 	reader *protocol.FrameReader
 
-	writeMu sync.Mutex
+	// Outbound async writer (Phase 10 layer 4a). ALL frame writes go
+	// through the single writeLoop goroutine, so a UI-thread producer
+	// (a keystroke, a resize, a paste) NEVER blocks in a synchronous
+	// socket Write on a hung daemon — it enqueues and moves on. The
+	// writer is the sole owner of conn writes, replacing the old write
+	// mutex. send() blocks only while the bounded queue is full OR the
+	// conn is torn down; the writer's idle-progress deadline (and the
+	// heartbeat) guarantee one of those happens promptly.
+	outCh   chan outFrame
+	outDone chan struct{}
+	dw      *deadlineWriter
+	// closeOnce guards the shutdown() teardown (stop the writer + close
+	// the conn) so Close, a writer error, the heartbeat reaper, and the
+	// read loop can all call it without double-closing.
+	closeOnce sync.Once
 
 	// Inbound channels. Each is buffered to absorb a small burst
 	// before back-pressuring the daemon's send loop.
@@ -71,9 +144,12 @@ func Wrap(conn net.Conn) *Client {
 }
 
 func wrap(conn net.Conn) *Client {
-	return &Client{
+	c := &Client{
 		conn:       conn,
 		reader:     protocol.NewFrameReader(conn),
+		outCh:      make(chan outFrame, outQueueCap),
+		outDone:    make(chan struct{}),
+		dw:         &deadlineWriter{conn: conn, window: clientWriteProgressWindow},
 		cellFull:   make(chan *protocol.CellFull, 16),
 		cellDiff:   make(chan *protocol.CellDiff, 64),
 		cursor:     make(chan *protocol.Cursor, 64),
@@ -92,6 +168,40 @@ func wrap(conn net.Conn) *Client {
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
+	// Start the writer before any Send* (Hello sends, then reads the
+	// HelloAck synchronously off the reader — the writer must already
+	// be draining outCh for that send to flush).
+	go c.writeLoop()
+	return c
+}
+
+// writeLoop is the sole writer of the connection. It drains the FIFO
+// send queue, writing each frame through the idle-progress deadline.
+// Any write error tears the conn down (which unblocks the read loop and
+// any producer waiting on a full queue).
+func (c *Client) writeLoop() {
+	for {
+		select {
+		case <-c.outDone:
+			return
+		case f := <-c.outCh:
+			if err := protocol.WriteFrame(c.dw, f.typ, f.body); err != nil {
+				c.shutdown()
+				return
+			}
+		}
+	}
+}
+
+// shutdown stops the async writer and closes the connection. Idempotent
+// — called from Close, a writer error, the read loop's exit, and (layer
+// 4d) the heartbeat reaper. Closing outDone releases any producer
+// blocked on a full queue; closing the conn unblocks the read loop.
+func (c *Client) shutdown() {
+	c.closeOnce.Do(func() {
+		close(c.outDone)
+		_ = c.conn.Close()
+	})
 }
 
 // Hello performs the protocol handshake. Must be called before any
@@ -365,7 +475,8 @@ func (c *Client) ExitErr() error {
 
 // Close closes the connection. Idempotent.
 func (c *Client) Close() error {
-	return c.conn.Close()
+	c.shutdown()
+	return nil
 }
 
 // Run reads frames until the connection closes or errors. Dispatches
@@ -373,6 +484,10 @@ func (c *Client) Close() error {
 // after Hello + Attach are done.
 func (c *Client) Run() {
 	defer func() {
+		// Stop the writer when the read loop ends (peer closed the conn,
+		// or a frame errored) so its goroutine doesn't linger writing
+		// into a dead socket.
+		c.shutdown()
 		c.doneMu.Lock()
 		c.done = true
 		c.doneMu.Unlock()
@@ -533,7 +648,10 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 }
 
 func (c *Client) send(t protocol.MsgType, body protocol.Msg) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	return protocol.WriteFrame(c.conn, t, body)
+	select {
+	case c.outCh <- outFrame{typ: t, body: body}:
+		return nil
+	case <-c.outDone:
+		return net.ErrClosed
+	}
 }
