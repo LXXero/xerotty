@@ -502,6 +502,28 @@ func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
 	return id
 }
 
+// setLocalDaemonWindowID points this Window at a freshly-minted
+// server-side window on the LOCAL/default daemon hub, keeping BOTH the
+// legacy daemonWindowID field AND the per-hub daemonWindowIDs map in
+// sync. Updating only the field (as the original reseat did) left the
+// map holding the dead pre-restart window ID — and windowIDForHub
+// PREFERS the map, so later focus/move sent the stale ID to the new
+// daemon. It also primes the hub's default window so NewTab lands here.
+func (w *Window) setLocalDaemonWindowID(id uint32) {
+	w.daemonWindowID = id
+	w.daemonWindowIDsMu.Lock()
+	if w.daemonWindowIDs == nil {
+		w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+	}
+	if w.app.daemonHub != nil {
+		w.daemonWindowIDs[w.app.daemonHub] = id
+	}
+	w.daemonWindowIDsMu.Unlock()
+	if w.app.daemonHub != nil {
+		w.app.daemonHub.SetDefaultWindowID(id)
+	}
+}
+
 // sendDaemonMoveTab persists a tab move to the owning daemon.
 // Same-window reorder OR cross-window drag — both go through the
 // same MsgWindowMoveTab carrying (TabID, ToWindowID, Index).
@@ -3279,11 +3301,13 @@ func (a *Window) frame() {
 
 	// Check for closed tabs and handle on_child_exit policy
 	a.tabs.CheckClosed()
-	// Track WHY tabs closed this frame. A daemon-side VANISH (the daemon
-	// restarted, or a tab was closed by another client/MCP agent) is
-	// handled differently from a local child exit when it empties the
-	// window: see the Count()==0 block below.
-	daemonVanished := false
+	// Track WHY tabs closed this frame. A daemon-side VANISH splits two
+	// ways that the Count()==0 block treats very differently: a daemon
+	// RESTART (process died + came back, took the shells) must keep the
+	// window alive and reseat, whereas a remote close (another client /
+	// MCP agent closed the last tab on a still-LIVE daemon) is a
+	// legitimate close. Both still force-remove the dead tab here.
+	daemonRestartVanished := false
 	otherClose := false
 	for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
 		tab := a.tabs.Tabs[i]
@@ -3293,10 +3317,15 @@ func (a *Window) frame() {
 		// A daemon tab that vanished from the topology (closed by
 		// another client / MCP agent, or lost when the daemon process
 		// restarted) is GONE — there's no local child to "hold", so
-		// force-remove it regardless of on_child_exit.
+		// force-remove it regardless of on_child_exit. Only a
+		// restart-vanish counts toward the reseat decision below; a
+		// remote close leaves daemonRestartVanished false so the window
+		// closes normally.
 		if ds, ok := tab.Terminal.(*daemonsource.Source); ok && ds.IsVanished() {
+			if ds.VanishedByRestart() {
+				daemonRestartVanished = true
+			}
 			a.tabs.CloseTab(i)
-			daemonVanished = true
 			continue
 		}
 		switch a.app.cfg.Tabs.OnChildExit {
@@ -3319,15 +3348,16 @@ func (a *Window) frame() {
 
 	// No tabs left in this Window. Normally that closes the Window (and,
 	// if it's the last one, quits the app). But if the window emptied
-	// ONLY because its daemon-backed tabs VANISHED — the daemon process
-	// was restarted and took the shells with it, not the user closing
-	// them — closing the last window would call platform.Quit() and
-	// silently exit the whole GUI. A daemon is local infrastructure, not
-	// a quit request, so instead keep the Window alive and reseat a fresh
-	// tab on the reconnected daemon ("the server came back, here's a new
-	// shell"). The persistent flag retries across frames while the hub is
-	// still mid-redial; a genuine user/child-exit empty still closes.
-	if a.tabs.Count() == 0 && (a.daemonReseatPending || (daemonVanished && !otherClose)) && a.app.daemonHub != nil {
+	// ONLY because the daemon PROCESS restarted and took its shells with
+	// it (not the user closing them, and not another client closing the
+	// last tab on a still-live daemon), closing the last window would
+	// call platform.Quit() and silently exit the whole GUI. A daemon is
+	// local infrastructure, not a quit request, so instead keep the
+	// Window alive and reseat a fresh tab on the reconnected daemon ("the
+	// server came back, here's a new shell"). The persistent flag retries
+	// across frames while the hub is still mid-redial; a genuine
+	// user/child-exit/remote-close empty still closes.
+	if a.tabs.Count() == 0 && (a.daemonReseatPending || (daemonRestartVanished && !otherClose)) && a.app.daemonHub != nil {
 		a.daemonReseatPending = true
 		cols, rows := a.gridSize()
 		if cols < 2 || rows < 2 {
@@ -3335,14 +3365,29 @@ func (a *Window) frame() {
 		}
 		// The old daemonWindowID belonged to the dead daemon; mint a
 		// fresh daemon window for this GUI window before adding the tab
-		// (mirrors first-frame init). NewTab routes through the daemon
-		// SourceFactory, which uses this window's daemonWindowID.
-		if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
-			a.daemonWindowID = id
-			a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
+		// (mirrors first-frame init). Do this AT MOST ONCE per episode:
+		// CreateWindow is a synchronous hub RPC, and re-minting every
+		// retry frame (when NewTab fails after CreateWindow succeeds)
+		// leaked a daemon window per tick. setLocalDaemonWindowID keeps
+		// the legacy field, the per-hub map, and the hub default window
+		// all consistent so later focus/move use the NEW window ID.
+		if !a.daemonReseatMinted {
+			if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
+				a.setLocalDaemonWindowID(id)
+				a.daemonReseatMinted = true
+			}
 		}
-		if _, err := a.tabs.NewTab(cols, rows, ""); err == nil {
-			a.daemonReseatPending = false // got a tab; resume normal rendering
+		// Only retry the cheap part (NewTab) each frame. NewTab routes
+		// through the daemon SourceFactory, which uses this window's
+		// daemonWindowID. Requires the window to have been minted — if
+		// CreateWindow is still failing, retry it next frame instead of
+		// landing the tab in the daemon's default window.
+		if a.daemonReseatMinted {
+			if _, err := a.tabs.NewTab(cols, rows, ""); err == nil {
+				// Got a tab; episode over — resume normal rendering.
+				a.daemonReseatPending = false
+				a.daemonReseatMinted = false
+			}
 		}
 		if a.tabs.Count() == 0 {
 			// Hub still mid-reconnect — render an empty frame and retry

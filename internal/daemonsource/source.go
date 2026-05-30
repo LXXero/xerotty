@@ -89,6 +89,15 @@ type Source struct {
 	// from a local child exit. The GUI force-removes vanished tabs
 	// regardless of on_child_exit: there's no local child to "hold".
 	vanished atomic.Bool
+	// vanishedRestart distinguishes the TWO ways a tab can vanish: a
+	// remote close on a still-LIVE daemon (false) vs. the daemon process
+	// RESTARTING and losing every tab (true — the reattach saw a new
+	// InstanceID). The GUI removes the dead tab in both cases, but only a
+	// restart-vanish that empties the window triggers a reseat instead of
+	// a quit — a remote close emptying the window is a legitimate close.
+	// Always written BEFORE vanished so a reader that sees IsVanished()
+	// already sees the correct VanishedByRestart().
+	vanishedRestart atomic.Bool
 
 	// reconnecting is set while the Hub's connection is down and
 	// re-dialing (layer 4b). The shadow emulator keeps its last frame
@@ -311,11 +320,15 @@ func (s *Source) Detach() {
 }
 
 // markVanished is called by the Hub's topology reconcile when the
-// daemon reports this tab no longer exists (another client or an MCP
-// agent closed it). It flags the source closed+exited so the GUI
-// treats it as gone, and unregisters it from frame routing. No
-// MsgTabClose is sent — the tab is already gone on the daemon.
-func (s *Source) markVanished() {
+// daemon reports this tab no longer exists. It flags the source
+// closed+exited so the GUI treats it as gone, and unregisters it from
+// frame routing. No MsgTabClose is sent — the tab is already gone on
+// the daemon. restart distinguishes a daemon-process restart (lost
+// every tab) from a remote close on a still-live daemon; see
+// vanishedRestart. vanishedRestart is set FIRST so IsVanished()==true
+// always implies VanishedByRestart() is already accurate.
+func (s *Source) markVanished(restart bool) {
+	s.vanishedRestart.Store(restart)
 	s.vanished.Store(true)
 	s.exited.Store(true)
 	s.closed.Store(true)
@@ -327,6 +340,13 @@ func (s *Source) markVanished() {
 // topology (closed remotely). The GUI uses it to force-remove the tab
 // even under on_child_exit=hold — a vanished tab has no child to hold.
 func (s *Source) IsVanished() bool { return s.vanished.Load() }
+
+// VanishedByRestart reports whether the vanish was caused by the daemon
+// PROCESS restarting (new InstanceID on reattach) rather than a remote
+// close on a still-live daemon. The GUI reseats a fresh tab only on a
+// restart-vanish; a remote close that empties the window closes it
+// normally. Only meaningful once IsVanished() is true.
+func (s *Source) VanishedByRestart() bool { return s.vanishedRestart.Load() }
 
 // IsReconnecting reports whether the daemon connection is currently down
 // and re-dialing. The renderer uses it to dim/badge the frozen last

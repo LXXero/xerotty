@@ -337,17 +337,24 @@ func (h *Hub) SeedInstance(id string) {
 // Attached.InstanceID. It drops all tombstones only when the identity
 // CHANGES from a known baseline (a restarted/fresh daemon — its tab-id
 // space resets to 1, so old tombstones would suppress legit reused IDs).
+// Returns true when this reattach observed a genuine daemon RESTART (the
+// identity changed from a known non-empty baseline) — the caller uses
+// that to mark vanished Sources restart-vanished so the GUI reseats
+// rather than quits.
 // Cases:
-//   - id == "" (pre-v7 daemon): unknown identity → never drop (safe).
+//   - id == "" (pre-v7 daemon): unknown identity → never drop, not a
+//     detectable restart (return false).
 //   - no baseline yet (unseeded): record it, DON'T drop — clearing on a
 //     first same-daemon reconnect would wrongly discard a tombstone for
-//     a tab closed while disconnected.
-//   - id differs from baseline: a restart → drop tombstones, rebase.
-//   - id matches baseline: same daemon → keep tombstones.
-func (h *Hub) noteInstance(id string) {
+//     a tab closed while disconnected. Not a restart (return false).
+//   - id differs from baseline: a restart → drop tombstones, rebase,
+//     return true.
+//   - id matches baseline: same daemon → keep tombstones, return false.
+func (h *Hub) noteInstance(id string) bool {
 	if id == "" {
-		return
+		return false
 	}
+	restarted := false
 	h.tombMu.Lock()
 	switch {
 	case h.daemonInstance == "":
@@ -355,8 +362,10 @@ func (h *Hub) noteInstance(id string) {
 	case id != h.daemonInstance:
 		h.tombstones = make(map[uint32]struct{})
 		h.daemonInstance = id
+		restarted = true
 	}
 	h.tombMu.Unlock()
+	return restarted
 }
 
 // reconcileTombstones is the tombstone-replay step run before adopting
@@ -618,9 +627,11 @@ func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
 	for _, ti := range tabs {
 		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
 	}
-	// Drop tabs that no longer exist on the daemon.
+	// Drop tabs that no longer exist on the daemon. This is the LIVE
+	// path (a topology broadcast on a still-connected daemon), so any
+	// vanish here is a remote close, never a restart.
 	for _, s := range vanished {
-		s.markVanished()
+		s.markVanished(false)
 	}
 	if cb != nil {
 		cb(topoWithTabs(topo, tabs))
@@ -851,7 +862,10 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 	// tombstones first — they belonged to the dead daemon's tab-id space,
 	// which the fresh daemon reuses from 1. Must run BEFORE
 	// reconcileTombstones so a reused ID isn't suppressed / re-closed.
-	h.noteInstance(att.InstanceID)
+	// restarted also tells us how to mark any vanished Sources below: a
+	// restart-vanish lets the GUI reseat (the daemon came back), whereas
+	// a same-instance reattach that still dropped a tab is a remote close.
+	restarted := h.noteInstance(att.InstanceID)
 
 	// Same tombstone replay as the live path: a tab the user closed
 	// while the link was down is re-closed, not resurrected, by this
@@ -875,7 +889,7 @@ func (h *Hub) resyncAfterReconnect(att *protocol.Attached) {
 		h.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
 	}
 	for _, s := range vanished {
-		s.markVanished()
+		s.markVanished(restarted)
 	}
 	if cb != nil {
 		cb(&protocol.TopologyChanged{

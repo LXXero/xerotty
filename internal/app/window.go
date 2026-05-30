@@ -188,6 +188,14 @@ type Window struct {
 	// a transient error) we retry next frame instead of falling through to
 	// pendingClose. Cleared once a tab is successfully created.
 	daemonReseatPending bool
+	// daemonReseatMinted guards the daemon-window CreateWindow so it
+	// happens AT MOST ONCE per reseat episode. CreateWindow is a
+	// synchronous hub RPC; the original reseat re-minted it on every
+	// retry frame, so a CreateWindow-succeeds-but-NewTab-fails frame
+	// leaked a fresh daemon window each tick. Set when the window is
+	// minted, cleared (with daemonReseatPending) once NewTab finally
+	// succeeds — retries reuse the minted window and only redo NewTab.
+	daemonReseatMinted bool
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 	// pendingFocus asks the main loop to raise + key-focus this Window's
