@@ -379,6 +379,13 @@ func (s *Source) SetScrollbackFromConfig(*config.Config) {}
 // round-trip + next publish) and a future reattach won't pull
 // the same history back via backfill.
 func (s *Source) ClearScrollback() {
+	if s.reconnecting.Load() {
+		// Frozen: the connection is down. No-op entirely — don't wipe the
+		// frozen scrollback the user is still viewing, and don't fire a
+		// SendClearScrollback at a dead conn. Scrollback re-syncs on
+		// reconnect anyway.
+		return
+	}
 	s.mu.Lock()
 	s.scrollback = nil
 	s.mu.Unlock()
@@ -393,7 +400,9 @@ func (s *Source) ClearScrollback() {
 // whatever's running over SSH on the remote box) can open it
 // natively without base64/OSC52.
 func (s *Source) PasteImage(mime, filename string, data []byte) error {
-	if s.closed.Load() {
+	if s.closed.Load() || s.reconnecting.Load() {
+		// Frozen / closed: drop the (potentially large, chunked) image
+		// paste rather than streaming megabytes into a dead conn's queue.
 		return nil
 	}
 	return s.hub.client().SendImagePaste(s.tabID, mime, filename, data)
