@@ -530,7 +530,7 @@ clear-scrollback on a held/exited tab notifies other clients.
 Multi-client is now directly exercisable (two GUI windows on one
 daemon, or MCP mutating while a GUI watches).
 
-### Phase 10 — connection resilience: dead/hung/slept clients [PLANNED]
+### Phase 10 — connection resilience: dead/hung/slept clients [layers 1-3 SHIPPED · 4-5 NEXT]
 
 A client connection can go **half-open** with no signal to the daemon:
 a laptop attached over SSH suspends, a link drops, a client stops
@@ -584,6 +584,47 @@ Layered, in dependency order:
 
 Supersedes the "broadcast back-pressure" open-question — layer 1 is
 that fix, generalized.
+
+**As-built status** (tip `a567a01` on `spike/daemon`, all pushed):
+
+- **Layers 1-3: SHIPPED.** `0e16340` (layer 1 — per-client async
+  bounded writers), `c180d4d` (layer 2 — app-level heartbeat),
+  `5d81dfc` (layer 3 — progress-based write deadlines). `-race` clean.
+- **Heartbeat corrections: SHIPPED** (`2b72279`) — fixed three review
+  findings (codex): (1) don't false-reap a slow-but-flowing reader
+  whose pongs sit behind the outbound backlog — gate reap on writer
+  progress; (2) actually track ping↔pong staleness, not generic inbound
+  (a client that keeps sending but stops reading/ponging is now reaped);
+  (3) bound the pre-writer handshake so a hung handshake leaves no
+  zombie conn. Deliberate trade-off (flagged): a *fully-idle* zombie
+  with send-buffer room can be kept alive by tiny pings until the buffer
+  fills — but any real subscribed client fills it fast and the
+  pong-staleness check still catches a wedged one.
+- **Layers 4-5: NOT DONE** — next session.
+
+**Next steps — Layer 4 (reconnect UX, the interactive piece):**
+- GUI marks daemon-backed sources "reconnecting" (freeze last render,
+  never block the UI on a daemon RPC).
+- **Local close** removes the GUI tab/window immediately — no
+  round-trip to a possibly-dead daemon.
+- **Close tombstone**: persist locally-closed tab IDs and replay the
+  close after reconnect, so snapshot resync doesn't resurrect a tab the
+  user closed (the codex pitfall above).
+- Client→daemon pinging (the client side of layer 2) for fast
+  reconnect detection.
+- Then **Layer 5**: SSH `ServerAliveInterval=10`/`ServerAliveCountMax=3`.
+- Best validated live (sleep/kill a client, watch it reconnect) — not
+  headless-testable, so do it hands-on.
+
+**Related, shipped this arc (not Phase 10):** event-driven render loop
+(`a567a01`). The idle GUI now parks in `WaitEventTimeout` at ~0% CPU
+(was ~30-35% busy-looping at the frame cap); it renders only on SDL
+events / PTY+daemon wakes / a few "settle" frames after input, with the
+idle wait bounded by the cursor-blink interval. Verified live (~35% →
+~4% idle). Not yet statically reviewed — worth a codex pass when
+convenient. Also shipped nearby: tab-bar Enter-activation fix (Enter no
+longer "clicks" the nav-focused tab) and daemon-scrollback copy fix
+(selection reads via `terminal.Source`, not the bare viewport emulator).
 
 ## Beyond the original phases (also shipped)
 
