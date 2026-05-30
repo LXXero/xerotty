@@ -40,14 +40,10 @@ type wedgedAddr struct{}
 func (wedgedAddr) Network() string { return "wedged" }
 func (wedgedAddr) String() string  { return "wedged" }
 
-// TestClientHeartbeatReapsWedgedDaemon verifies the layer-4d dual-clock
-// reap (finding 2): when our writes stop making progress AND no pong
-// arrives for the window, the client tears its own connection down so
-// the Hub can re-dial. This is the SSH-stdio scenario (no write
-// deadline), so the heartbeat is the sole detector. A peer that still
-// DRAINS our writes is deliberately NOT reaped (write-progress fresh) —
-// that's the false-reap this fix avoids — so the dead peer here must
-// wedge writes, not merely go silent.
+// TestClientHeartbeatReapsWedgedDaemon verifies a reap when writes block
+// outright (full send buffer / dead link) and nothing comes back: no
+// inbound + no pong → reap. Complementary to the hung-but-writable case
+// below — these are the two distinct dead-peer failure modes.
 func TestClientHeartbeatReapsWedgedDaemon(t *testing.T) {
 	conn := newWedgedConn()
 	c := clientproto.Wrap(conn)
@@ -57,9 +53,58 @@ func TestClientHeartbeatReapsWedgedDaemon(t *testing.T) {
 
 	select {
 	case <-c.Closed():
-		// Reaped via the dual-clock — good.
+		// Reaped — good.
 	case <-time.After(3 * time.Second):
 		t.Fatalf("client did not reap a wedged daemon within the liveness window")
+	}
+	_ = conn.Close()
+}
+
+// hungWritableConn models the SIGSTOP'd / deadlocked-but-socket-open
+// daemon that the live test caught: WRITES SUCCEED (the kernel keeps
+// buffering our tiny pings — the buffer never fills at heartbeat volume),
+// but NO inbound ever arrives and NO pong is returned. The old reaper
+// keyed on write-progress, which these succeeding ping-writes refreshed
+// forever, so it NEVER fired. The fix keys on inbound+pong, both of which
+// stay stale here.
+type hungWritableConn struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newHungWritableConn() *hungWritableConn {
+	return &hungWritableConn{closed: make(chan struct{})}
+}
+
+func (c *hungWritableConn) Read(b []byte) (int, error)  { <-c.closed; return 0, io.EOF }
+func (c *hungWritableConn) Write(b []byte) (int, error) { return len(b), nil } // accept + discard
+func (c *hungWritableConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+func (c *hungWritableConn) LocalAddr() net.Addr                { return wedgedAddr{} }
+func (c *hungWritableConn) RemoteAddr() net.Addr               { return wedgedAddr{} }
+func (c *hungWritableConn) SetDeadline(t time.Time) error      { return nil }
+func (c *hungWritableConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *hungWritableConn) SetWriteDeadline(t time.Time) error { return nil }
+
+// TestClientHeartbeatReapsHungWritableDaemon is the regression for the
+// live-found bug: a hung-but-socket-open daemon whose buffer still
+// accepts our pings must still be reaped within ~window. Fails on the
+// old write-progress reaper (succeeding pings kept it asleep forever);
+// passes on the inbound+pong reaper.
+func TestClientHeartbeatReapsHungWritableDaemon(t *testing.T) {
+	conn := newHungWritableConn()
+	c := clientproto.Wrap(conn)
+	c.SetHeartbeat(20*time.Millisecond, 120*time.Millisecond)
+
+	go c.Run()
+
+	select {
+	case <-c.Closed():
+		// Reaped despite writes succeeding — the actual fix.
+	case <-time.After(3 * time.Second):
+		t.Fatalf("client did not reap a hung-but-writable daemon — our own pings kept the reaper asleep")
 	}
 	_ = conn.Close()
 }

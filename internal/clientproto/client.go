@@ -11,6 +11,7 @@ package clientproto
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -91,6 +92,25 @@ func isTimeout(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
+// inboundReader bumps the Client's lastInbound clock on every read that
+// returns bytes — at read granularity, BEFORE the bytes are framed and
+// dispatched. So a single large in-flight frame keeps the liveness clock
+// fresh (the daemon is clearly alive), and the heartbeat reaper only
+// fires when truly nothing arrives. This is the read-side half of the
+// fix for the hung-but-socket-open daemon: no bytes + no pong ⇒ reap.
+type inboundReader struct {
+	r io.Reader
+	c *Client
+}
+
+func (ir *inboundReader) Read(b []byte) (int, error) {
+	n, err := ir.r.Read(b)
+	if n > 0 {
+		ir.c.lastInbound.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
 // Client wraps a single connection to a daemon. Concurrency-safe
 // for the write side (all Send* methods enqueue onto the async
 // writer's bounded queue). Callers must consume from the channels
@@ -123,23 +143,28 @@ type Client struct {
 	// stuck behind queued input — which would delay our pong and let the
 	// daemon falsely reap us.
 	//
-	// Liveness uses the SAME dual-clock the daemon adopted (commit
-	// 2b72279): reap ONLY when BOTH are stale past the window —
-	//   - lastWriteProgress: a frame was successfully written to the
-	//     daemon (set by the writer). If our writes are landing, the
-	//     daemon IS draining our input → its read path is alive, so a
-	//     late pong (e.g. we're flushing a big backlog) must NOT reap it.
-	//   - lastPong: a Pong to OUR ping arrived (set by the read loop).
-	//     Only a real ping→pong counts; generic inbound doesn't, so a
-	//     daemon that streams output but stopped reading still gets
-	//     caught once our writes wedge and its pong goes stale.
-	coalesceCh        chan struct{}
-	pingPending       atomic.Bool
-	pingNonce         atomic.Uint64
-	pongPending       atomic.Bool
-	pongNonce         atomic.Uint64
-	lastWriteProgress atomic.Int64
-	lastPong          atomic.Int64
+	// Liveness reaps when BOTH are stale past the window:
+	//   - lastPong: a Pong to OUR ping arrived (set in the read loop).
+	//     This is the AUTHORITATIVE client-side signal — proof the daemon
+	//     received our ping and replied. (Write-progress is NOT used: the
+	//     client writes almost nothing, so a "successful" ping write only
+	//     means the kernel buffered our bytes — which a SIGSTOP'd /
+	//     hung-but-socket-open daemon does happily forever. Keying on
+	//     write-progress let our own pings keep the reaper asleep.)
+	//   - lastInbound: ANY bytes received from the daemon (set at
+	//     read-granularity in the conn wrapper, not per completed frame).
+	//     Guards against false-reaping when a pong is merely delayed
+	//     behind a large in-flight inbound frame — if bytes are still
+	//     arriving, the daemon is alive, so don't reap even if the pong
+	//     itself hasn't landed yet. With a SIGSTOP'd daemon NO bytes
+	//     arrive and NO pong returns → both stale → reap within ~window.
+	coalesceCh  chan struct{}
+	pingPending atomic.Bool
+	pingNonce   atomic.Uint64
+	pongPending atomic.Bool
+	pongNonce   atomic.Uint64
+	lastInbound atomic.Int64
+	lastPong    atomic.Int64
 	// heartbeatInterval / livenessWindow default to the package consts;
 	// SetHeartbeat overrides them (tests shorten them). Set before Run
 	// starts the heartbeat goroutine, so no synchronization is needed.
@@ -192,7 +217,6 @@ func Wrap(conn net.Conn) *Client {
 func wrap(conn net.Conn) *Client {
 	c := &Client{
 		conn:       conn,
-		reader:     protocol.NewFrameReader(conn),
 		outCh:      make(chan outFrame, outQueueCap),
 		outDone:    make(chan struct{}),
 		coalesceCh: make(chan struct{}, 1),
@@ -217,12 +241,17 @@ func wrap(conn net.Conn) *Client {
 		errCh:         make(chan *protocol.Error, 4),
 		closed:     make(chan struct{}),
 	}
+	// Wrap the reader so EVERY successful read bumps lastInbound at byte
+	// granularity (not just on completed frames) — a single long inbound
+	// frame still counts as the daemon being alive. Done after c exists
+	// so the wrapper can reference c.
+	c.reader = protocol.NewFrameReader(&inboundReader{r: conn, c: c})
 	// Start the writer before any Send* (Hello sends, then reads the
 	// HelloAck synchronously off the reader — the writer must already be
 	// draining outCh for that send to flush). Seed both liveness clocks
 	// to "now" so the window doesn't trip before the first round-trip.
 	now := time.Now().UnixNano()
-	c.lastWriteProgress.Store(now)
+	c.lastInbound.Store(now)
 	c.lastPong.Store(now)
 	go c.writeLoop()
 	return c
@@ -273,27 +302,27 @@ func (c *Client) flushPriority() error {
 	return nil
 }
 
-// writeFrameRaw writes one frame through the idle-progress deadline and,
-// on success, records write progress for the heartbeat's dual-clock.
-// Only the writeLoop goroutine calls it.
+// writeFrameRaw writes one frame through the idle-progress deadline.
+// Only the writeLoop goroutine calls it. (No write-progress bookkeeping:
+// the client reaper keys on inbound/pong, not outbound — see the
+// heartbeat field comment for why outbound progress is meaningless here.)
 func (c *Client) writeFrameRaw(t protocol.MsgType, body protocol.Msg) error {
-	if err := protocol.WriteFrame(c.dw, t, body); err != nil {
-		return err
-	}
-	c.lastWriteProgress.Store(time.Now().UnixNano())
-	return nil
+	return protocol.WriteFrame(c.dw, t, body)
 }
 
 // heartbeatLoop pings the daemon periodically and reaps the connection
-// when it's both unable to SEND (no write progress for a window) AND
-// unanswered (no pong for a window) — the dual-clock the daemon proved
-// out in commit 2b72279, mirrored here. Either clock fresh keeps the
-// conn alive, so a client flushing a big backlog (writes progressing)
-// isn't reaped for a late pong, and a daemon that streams output but
-// stopped reading is still caught once our writes wedge + pong goes
-// stale. The only fast detector over SSH-stdio (write deadlines are
-// no-ops there). Started by Run (AFTER the Hello handshake, so a ping
-// never jumps ahead of Hello). Exits when the conn is torn down.
+// when it's both UNANSWERED (no pong for a window) AND SILENT (no inbound
+// bytes for a window). Pong is the authoritative liveness signal; the
+// inbound guard prevents a false reap when a pong is merely delayed
+// behind a large in-flight frame (bytes still arriving ⇒ daemon alive).
+//
+// This is the ONLY fast detector over SSH-stdio (write deadlines are
+// no-ops there) AND the only thing that catches a hung-but-socket-open
+// daemon (SIGSTOP'd / deadlocked): the kernel keeps accepting our tiny
+// pings into its send buffer forever, so outbound progress proves
+// nothing — only the absence of any reply + any data does. Started by
+// Run (AFTER the Hello handshake, so a ping never jumps ahead of Hello).
+// Exits when the conn is torn down.
 func (c *Client) heartbeatLoop() {
 	ticker := time.NewTicker(c.heartbeatInterval)
 	defer ticker.Stop()
@@ -302,9 +331,9 @@ func (c *Client) heartbeatLoop() {
 		case <-c.outDone:
 			return
 		case <-ticker.C:
-			writeIdle := time.Since(time.Unix(0, c.lastWriteProgress.Load()))
 			pongIdle := time.Since(time.Unix(0, c.lastPong.Load()))
-			if writeIdle > c.livenessWindow && pongIdle > c.livenessWindow {
+			inboundIdle := time.Since(time.Unix(0, c.lastInbound.Load()))
+			if pongIdle > c.livenessWindow && inboundIdle > c.livenessWindow {
 				c.shutdown()
 				return
 			}
@@ -792,9 +821,9 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		}
 		c.requestPong(msg.Nonce)
 	case protocol.MsgPong:
-		// Reply to OUR heartbeat ping — the only thing that proves the
-		// daemon's read+respond path is alive (the pong clock of the
-		// dual-clock liveness check). Generic inbound doesn't count.
+		// Reply to OUR heartbeat ping — the authoritative proof the
+		// daemon's read+respond path is alive. Refreshes the pong clock;
+		// the reaper needs this OR fresh inbound to stay asleep.
 		c.lastPong.Store(time.Now().UnixNano())
 	default:
 		// Unknown message — skip, log to stderr eventually. For
