@@ -186,6 +186,14 @@ type App struct {
 	// to be a window-drag gesture rather than a content click.
 	anyWindowMovingThisFrame bool
 
+	// idleWakeMs is the shortest time (ms) until the render loop next
+	// NEEDS to wake while idle — reset to idleSafetyNetMs at the top of
+	// wrappedFrame and lowered to the next cursor-blink toggle while
+	// drawing a blinking cursor. Pushed to the platform via
+	// SetIdleTimeout at the end of the frame so an idle screen parks at
+	// ~0% CPU yet a blinking cursor keeps ticking.
+	idleWakeMs int
+
 	// mirrorPendingDown is set on the OS button-down edge — but
 	// instead of injecting the synthetic DOWN immediately we wait
 	// a few frames. If the window starts moving OR the cursor
@@ -1121,6 +1129,9 @@ func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
 		}
 		a.pendingProposals = kept
 		a.proposalsMu.Unlock()
+		// Wake the (event-driven) render loop so the approval banner
+		// appears/updates without waiting out the idle timeout.
+		platform.PostWake()
 	})
 	// Topology snapshots (a tab/window created/closed/moved by another
 	// client or an MCP agent) → reconcile the GUI tab bar. Stash the
@@ -1942,6 +1953,13 @@ func (w *Window) initialWindowSize() (int, int) {
 	return wp, hp
 }
 
+// idleSafetyNetMs bounds how long the render loop parks when nothing is
+// animating (no blinking cursor). It's a safety net, NOT a real timer:
+// every async state change (PTY/daemon data, topology, proposals, …)
+// wakes the loop immediately, so this only catches a wake we forgot —
+// 1 fps idle is ~0% CPU but never lets the UI freeze for over a second.
+const idleSafetyNetMs = 1000
+
 // Run starts the application main loop.
 func (a *App) Run() error {
 	w := a.active // initial Window allocated by New()
@@ -2052,6 +2070,11 @@ func (a *App) Run() error {
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
+		// Start each frame assuming nothing animates: the loop may park
+		// up to idleSafetyNetMs. The cursor-blink draw lowers this to
+		// the next toggle when a focused cursor is blinking; the safety
+		// net (not an infinite block) bounds any missed wake.
+		a.idleWakeMs = idleSafetyNetMs
 		// (Modifier resync is in beforeRender — it has to run BEFORE
 		// imgui.NewFrame consumes the input queue, otherwise the
 		// re-asserted modifier state only takes effect next frame
@@ -2303,6 +2326,9 @@ func (a *App) Run() error {
 		// goroutine now that this frame's window/tab mutations are
 		// settled (see publishFocusedSources).
 		a.publishFocusedSources()
+		// Tell the render loop how long it may park before the next
+		// forced frame (next blink toggle, or the safety net).
+		platform.SetIdleTimeout(a.idleWakeMs)
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
@@ -2311,6 +2337,11 @@ func (a *App) Run() error {
 	// (cursor blink etc.) and the user sees up to ~500ms latency on
 	// incoming bytes.
 	terminal.Wake = platform.PostWake
+	// Same for daemon-backed tabs: the Hub router applies cell/cursor/
+	// title/bell frames on its own goroutine; without this the now
+	// event-driven loop wouldn't repaint remote output until its next
+	// idle timeout.
+	daemonsource.Wake = platform.PostWake
 
 	stopMouseWakePoller := a.startMouseMirrorWakePoller()
 	defer stopMouseWakePoller()
@@ -3383,7 +3414,16 @@ func (a *Window) frame() {
 					if rate <= 0 {
 						rate = 0.53
 					}
-					showCursor = int(imgui.Time()/rate)%2 == 0
+					now := imgui.Time()
+					showCursor = int(now/rate)%2 == 0
+					// This (active-tab) cursor is blinking, so the render
+					// loop must wake to toggle it. Lower the idle wait to
+					// the next toggle — at most 2 renders/blink-period
+					// instead of the old full frame cap.
+					nextToggle := float64(int(now/rate)+1) * rate
+					if ms := int((nextToggle - now) * 1000); ms >= 1 && ms < a.app.idleWakeMs {
+						a.app.idleWakeMs = ms
+					}
 				}
 				if showCursor {
 					pos := tab.Terminal.Emulator().CursorPosition()

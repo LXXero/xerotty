@@ -113,6 +113,12 @@ void platform_set_window_icon(unsigned long window_id,
 // so the next frame renders without waiting out the frame-cap window.
 void platform_post_wake(void);
 
+// platform_set_idle_timeout_ms bounds the idle render wait (ms). Called
+// each frame by Go with the time until the next cursor-blink toggle (or
+// a safety-net) so an idle UI parks at ~0% CPU yet a blinking cursor
+// keeps ticking and a missed wake can't freeze the UI.
+void platform_set_idle_timeout_ms(int ms);
+
 #ifdef __cplusplus
 }
 #endif

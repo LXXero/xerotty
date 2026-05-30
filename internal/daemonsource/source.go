@@ -531,13 +531,25 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 	}
 }
 
-// signalDirty wakes whoever's reading DataChan. Buffered cap=1 +
-// non-blocking select: coalesces bursts so we never block the
-// router on a slow GUI.
+// Wake, if set, is called whenever a Source's visible state changes
+// (cells, cursor, title, bell, …). The GUI sets it to platform.PostWake
+// so the now event-driven render loop breaks out of its idle wait and
+// renders — the daemon-source analogue of terminal.Wake for in-process
+// PTYs. nil (headless / tests) makes signalDirty a pure DataChan signal.
+// The daemon only sends frames on real activity, so an idle tab never
+// wakes the loop.
+var Wake func()
+
+// signalDirty wakes whoever's reading DataChan AND nudges the GUI's
+// render loop (via Wake) so it repaints. Buffered cap=1 + non-blocking
+// select: coalesces bursts so we never block the router on a slow GUI.
 func (s *Source) signalDirty() {
 	select {
 	case s.dataCh <- struct{}{}:
 	default:
+	}
+	if Wake != nil {
+		Wake()
 	}
 }
 

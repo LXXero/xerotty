@@ -54,6 +54,25 @@ char          g_err[512] = {0};
 Uint64        g_target_frame_ns = 1000000000ull / 60;  // updated in init
 float         g_bg_r = 0.10f, g_bg_g = 0.10f, g_bg_b = 0.12f, g_bg_a = 1.0f;
 
+// Render-on-demand state. The loop only renders when there's a reason
+// to (an SDL event, a PTY/daemon wake, or a requested settle frame);
+// when idle it parks in SDL_WaitEventTimeout at ~0% CPU instead of
+// re-rendering at the frame cap. g_render_credits is the number of
+// frames still owed: any event refills it to RENDER_SETTLE so ImGui's
+// hover/active state animates a beat after the last input before the
+// loop idles. g_idle_timeout_ms is the longest the idle wait will
+// block — set by Go each frame to the next cursor-blink toggle (so a
+// blinking cursor still ticks) or a long safety-net otherwise, so a
+// missed wake can't freeze the UI for more than that.
+//
+// RENDER_SETTLE: frames to draw after the LAST input so ImGui finishes
+// its hover/active transitions before idling. INIT is larger so the
+// first frames (font/layout settle) always render.
+const int     RENDER_SETTLE      = 3;
+const int     RENDER_SETTLE_INIT = 8;
+int           g_render_credits = RENDER_SETTLE_INIT;
+int           g_idle_timeout_ms = 250;
+
 void set_err(const char* prefix) {
     const char* sdl = SDL_GetError();
     std::snprintf(g_err, sizeof(g_err), "%s: %s",
@@ -198,10 +217,13 @@ extern "C" const char* platform_video_driver(void) {
 }
 
 // Drain all currently queued SDL events into ImGui + our quit flag.
-// Doesn't block. Returns nothing — quit state goes through g_quit.
-static void drain_events() {
+// Doesn't block. Returns the number of events processed so the caller
+// can decide whether anything happened that warrants a render.
+static int drain_events() {
     SDL_Event e;
+    int n = 0;
     while (SDL_PollEvent(&e)) {
+        n++;
         ImGui_ImplSDL3_ProcessEvent(&e);
         switch (e.type) {
             case SDL_EVENT_QUIT:
@@ -215,32 +237,56 @@ static void drain_events() {
                 break;
         }
     }
+    return n;
 }
 
 extern "C" int platform_begin_frame(void) {
-    // Cadence: render exactly once per display frame. While waiting for
-    // the next render deadline, keep draining events as they arrive so
-    // ImGui always sees the latest mouse position when we do render.
-    // Earlier version slept-or-rendered per event, which on X11 (no
-    // compositor throttle) let drag-spawned motion events burst FPS
-    // way above the cap and made movement visibly jittery.
+    // Render-on-demand with a frame cap.
+    //
+    // ACTIVE (we owe render credits — recent input/wake): pace to the
+    // 4x-refresh cap while draining events, so a mouse-motion flood
+    // can't burst FPS above the cap (jittery on X11) but drag still
+    // tracks at mouse-poll rate.
+    //
+    // IDLE (no credits): block in SDL_WaitEventTimeout until an event
+    // arrives or the Go-set idle timeout (next cursor-blink toggle, or
+    // a safety-net) elapses — so a static screen parks at ~0% CPU
+    // instead of re-rendering the whole UI at the cap.
     static Uint64 next_render_ns = 0;
     if (next_render_ns == 0) next_render_ns = SDL_GetTicksNS();
 
-    drain_events();
+    if (drain_events() > 0) g_render_credits = RENDER_SETTLE;
     if (g_quit) return 0;
 
-    while (!g_quit) {
-        Uint64 now = SDL_GetTicksNS();
-        if (now >= next_render_ns) break;
-        // Round up so we don't busy-spin on sub-ms residuals — better
-        // to sleep ~1ms long than to wake with timeout=0 and not wait.
-        Sint32 ms_left = (Sint32)((next_render_ns - now + 999999ull) / 1000000ull);
-        if (ms_left <= 0) break;
-        SDL_WaitEventTimeout(nullptr, ms_left);
-        drain_events();
+    if (g_render_credits <= 0) {
+        // Idle: park until something happens. Loop so a wake that
+        // produced no events (e.g. an irrelevant queued event) doesn't
+        // force a render — except a blink-timeout wake, which renders
+        // exactly one frame to toggle the cursor.
+        for (;;) {
+            int to = g_idle_timeout_ms;
+            if (to > 0) SDL_WaitEventTimeout(nullptr, to);
+            else        SDL_WaitEvent(nullptr);
+            int got = drain_events();
+            if (g_quit) return 0;
+            if (got > 0) { g_render_credits = RENDER_SETTLE; break; }
+            if (to > 0)  { g_render_credits = 1; break; } // blink/safety tick
+        }
+        // Reset pacing so the first post-idle frame isn't throttled.
+        next_render_ns = SDL_GetTicksNS();
+    } else {
+        // Active: wait out the frame-cap window, draining as we go.
+        while (!g_quit) {
+            Uint64 now = SDL_GetTicksNS();
+            if (now >= next_render_ns) break;
+            // Round up so we don't busy-spin on sub-ms residuals.
+            Sint32 ms_left = (Sint32)((next_render_ns - now + 999999ull) / 1000000ull);
+            if (ms_left <= 0) break;
+            SDL_WaitEventTimeout(nullptr, ms_left);
+            if (drain_events() > 0) g_render_credits = RENDER_SETTLE;
+        }
+        if (g_quit) return 0;
     }
-    if (g_quit) return 0;
 
     // Advance deadline. If a frame ran long, snap forward instead of
     // accumulating "owed" frames (would cause a catch-up burst once
@@ -249,10 +295,21 @@ extern "C" int platform_begin_frame(void) {
     Uint64 now = SDL_GetTicksNS();
     if (next_render_ns < now) next_render_ns = now + g_target_frame_ns;
 
+    if (g_render_credits > 0) g_render_credits--;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     // Caller (Go) calls ImGui::NewFrame via cimgui-go next.
     return 1;
+}
+
+// platform_set_idle_timeout_ms sets the longest the idle render wait
+// will block before forcing a frame. Go calls this each frame: the ms
+// until the next cursor-blink toggle when a focused cursor is blinking
+// (so the blink keeps ticking), else a longer safety-net. <=0 would
+// block indefinitely; callers pass a finite safety-net instead so a
+// missed wake can't freeze the UI.
+extern "C" void platform_set_idle_timeout_ms(int ms) {
+    g_idle_timeout_ms = ms;
 }
 
 extern "C" void platform_end_frame(void) {

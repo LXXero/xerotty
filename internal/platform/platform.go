@@ -110,6 +110,15 @@ func PostWake() {
 	C.platform_post_wake()
 }
 
+// SetIdleTimeout bounds how long the render loop parks when idle (in
+// milliseconds) before forcing a frame. The app calls this each frame:
+// the time until the next cursor-blink toggle when a focused cursor is
+// blinking (so the blink keeps ticking), otherwise a longer safety-net.
+// Pass a finite value — never 0 — so a missed wake can't freeze the UI.
+func SetIdleTimeout(ms int) {
+	C.platform_set_idle_timeout_ms(C.int(ms))
+}
+
 // Quit signals the main loop to exit on its next iteration. Thread-safe.
 // Replaces sdlQuit() in internal/app/sdl_helpers.go.
 func Quit() { C.platform_request_quit() }
