@@ -72,6 +72,27 @@ var prefMenuActions = []string{
 	"_remote_hosts",
 }
 
+// menuKindSubmenu is an editor-only sentinel in the Add combo: picking
+// it makes "Add Item" / a submenu's "+" create a new EMPTY submenu
+// container (an explicitly-named parent) rather than an action item. It
+// is never a real config action — newMenuEditorItem maps it to an
+// isSubmenu entry.
+const menuKindSubmenu = "_submenu"
+
+// prefMenuAddOptions is the Add combo's option list: every action plus
+// the "make a submenu" sentinel. d.addActionIdx indexes into THIS slice.
+var prefMenuAddOptions = append(append([]string{}, prefMenuActions...), menuKindSubmenu)
+
+// newMenuEditorItem builds the entry the Add combo's current selection
+// describes — a named empty submenu for the sentinel, otherwise an
+// action item with its default label.
+func newMenuEditorItem(kind string) menuEditorItem {
+	if kind == menuKindSubmenu {
+		return menuEditorItem{label: "Submenu", isSubmenu: true}
+	}
+	return menuEditorItem{label: prefMenuLabels[kind], action: kind}
+}
+
 var prefMenuLabels = map[string]string{
 	"separator":        "---",
 	"_remote_hosts":    "Remote (expands per host)",
@@ -189,34 +210,45 @@ type configDialog struct {
 	addActionIdx int32
 }
 
+// menuEditorItem is the editor's view of one menu entry. An entry is
+// exactly ONE of three kinds: a separator (action == "separator"), a
+// submenu (isSubmenu — a named container holding `submenu` children, no
+// action of its own), or an action (everything else — fires `action`).
 type menuEditorItem struct {
 	label    string
 	action   string
 	shortcut string
 	enabled  string
 	checked  string
-	// submenu mirrors config.MenuItem.Submenu so the editor round-trips
-	// nested menus instead of dropping them on save. An item with a
-	// non-empty submenu renders (and is treated by the engine) as a
-	// submenu parent — its label becomes the submenu title and its own
-	// action is ignored (see menu.renderItems).
-	submenu []menuEditorItem
+	// isSubmenu marks a named-container entry. It's tracked explicitly
+	// (rather than inferred from len(submenu)>0) so a freshly-created
+	// EMPTY submenu still shows its add-child button — config.MenuItem
+	// can't express an empty submenu, so we can't round-trip through
+	// len()>0 alone.
+	isSubmenu bool
+	submenu   []menuEditorItem
 }
 
 // menuItemsToEditor / editorToMenuItems convert between the config and
 // editor representations recursively, so hand-authored [[menu.items.submenu]]
-// trees survive a prefs open + save round-trip. They preserve nil vs empty
-// (a leaf's nil Submenu stays nil) so an untouched config re-encodes
-// identically.
+// trees survive a prefs open + save round-trip. config.MenuItem infers
+// "is a submenu" from len(Submenu)>0; the editor tracks it explicitly.
 func menuItemsToEditor(items []config.MenuItem) []menuEditorItem {
 	var out []menuEditorItem
 	for _, item := range items {
-		out = append(out, menuEditorItem{
-			label: item.Label, action: item.Action,
-			shortcut: item.Shortcut, enabled: item.Enabled,
-			checked: item.Checked,
-			submenu: menuItemsToEditor(item.Submenu),
-		})
+		ed := menuEditorItem{
+			label: item.Label, shortcut: item.Shortcut,
+			enabled: item.Enabled, checked: item.Checked,
+		}
+		if len(item.Submenu) > 0 {
+			// Submenu container: a named parent, no action of its own
+			// (the engine ignores Action when Submenu is non-empty).
+			ed.isSubmenu = true
+			ed.submenu = menuItemsToEditor(item.Submenu)
+		} else {
+			ed.action = item.Action
+		}
+		out = append(out, ed)
 	}
 	return out
 }
@@ -224,12 +256,20 @@ func menuItemsToEditor(items []config.MenuItem) []menuEditorItem {
 func editorToMenuItems(items []menuEditorItem) []config.MenuItem {
 	var out []config.MenuItem
 	for _, item := range items {
-		out = append(out, config.MenuItem{
-			Label: item.label, Action: item.action,
-			Shortcut: item.shortcut, Enabled: item.enabled,
-			Checked: item.checked,
-			Submenu: editorToMenuItems(item.submenu),
-		})
+		mi := config.MenuItem{
+			Label: item.label, Shortcut: item.shortcut,
+			Enabled: item.enabled, Checked: item.checked,
+		}
+		if item.isSubmenu {
+			// A submenu serializes via its children. An EMPTY submenu
+			// can't be expressed in config (len(Submenu)==0 reads back
+			// as a leaf), so it degrades to a leaf-with-label, no action
+			// — acceptable since an empty submenu is meaningless.
+			mi.Submenu = editorToMenuItems(item.submenu)
+		} else {
+			mi.Action = item.action
+		}
+		out = append(out, mi)
 	}
 	return out
 }
@@ -1242,38 +1282,81 @@ func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
 
 	imgui.Text("Context Menu Items")
+	imgui.TextDisabled("  edit a label inline · ^/v reorder within a level · + (submenus only) adds a child · X removes")
 	imgui.Separator()
+
+	a.renderMenuLevel(&d.menuItems, 0, "m")
+
+	// The combo picks what the next Add creates: an action item, a
+	// separator, or (via the _submenu sentinel) a new empty submenu.
+	imgui.Separator()
+	if imgui.Button("Add Item") {
+		d.menuItems = append(d.menuItems, newMenuEditorItem(prefMenuAddOptions[d.addActionIdx]))
+	}
+	imgui.SameLineV(0, 8)
+	imgui.SetNextItemWidth(200)
+	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuAddOptions, int32(len(prefMenuAddOptions)))
+}
+
+// renderMenuLevel draws one level of the menu editor and recurses into
+// each submenu, indented. The label is an inline InputText so the user
+// can name a submenu / rename any item; action items also get a shortcut
+// field. Structural edits (reorder / remove / add-child) are recorded
+// during the loop and applied after it so the slice isn't mutated
+// mid-iteration. Widget IDs are derived from idp+index so they stay
+// unique across the whole nested tree — colliding ImGui IDs would make
+// sibling widgets share state. The + button (add a child, of the kind
+// the Add combo currently selects) shows ONLY on submenu rows; an action
+// or separator can't hold children.
+func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string) {
+	d := &a.prefDialog
+	list := *items
+	n := len(list)
 
 	removeIdx := -1
 	swapA, swapB := -1, -1
-	n := len(d.menuItems)
+	addChildIdx := -1
 
-	for i := range d.menuItems {
-		item := &d.menuItems[i]
+	indentX := 8 + float32(depth)*18
 
-		// Label column.
-		if item.action == "separator" {
-			imgui.Text("  ----------------")
-		} else {
-			label := item.label
-			if label == "" {
-				label = item.action
-			}
-			text := label
-			if item.shortcut != "" {
-				text += "  (" + item.shortcut + ")"
-			}
-			imgui.Text("  " + text)
+	for i := range list {
+		item := &list[i]
+		id := fmt.Sprintf("%s_%d", idp, i)
+		isSep := item.action == "separator"
+
+		imgui.SetCursorPosX(indentX)
+
+		switch {
+		case isSep:
+			imgui.AlignTextToFramePadding()
+			imgui.Text("──────────  (separator)")
+		case item.isSubmenu:
+			imgui.AlignTextToFramePadding()
+			imgui.Text("▸")
+			imgui.SameLineV(0, 6)
+			imgui.SetNextItemWidth(200)
+			imgui.InputTextWithHint("##lbl"+id, "submenu name", &item.label, 0, nil)
+		default:
+			imgui.AlignTextToFramePadding()
+			imgui.Text("•")
+			imgui.SameLineV(0, 6)
+			imgui.SetNextItemWidth(200)
+			imgui.InputTextWithHint("##lbl"+id, item.action, &item.label, 0, nil)
+			imgui.SameLineV(0, 6)
+			imgui.SetNextItemWidth(110)
+			imgui.InputTextWithHint("##sc"+id, "shortcut", &item.shortcut, 0, nil)
 		}
 
-		// Buttons aligned to right side.
-		imgui.SameLineV(imgui.WindowWidth()-80, 0)
+		// Button column, right-aligned: ^ v [+|spacer] X. The + slot is
+		// always reserved (real button on submenus, blank dummy elsewhere)
+		// so the X column lines up across every row.
+		imgui.SameLineV(imgui.WindowWidth()-104, 0)
 
 		dis := i == 0
 		if dis {
 			imgui.BeginDisabled()
 		}
-		if imgui.ButtonV(fmt.Sprintf("^##mu%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if imgui.ButtonV("^##up"+id, imgui.Vec2{X: 22, Y: 0}) {
 			swapA, swapB = i, i-1
 		}
 		if dis {
@@ -1286,7 +1369,7 @@ func (a *Window) renderPrefMenu() {
 		if dis {
 			imgui.BeginDisabled()
 		}
-		if imgui.ButtonV(fmt.Sprintf("v##md%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if imgui.ButtonV("v##dn"+id, imgui.Vec2{X: 22, Y: 0}) {
 			swapA, swapB = i, i+1
 		}
 		if dis {
@@ -1295,30 +1378,40 @@ func (a *Window) renderPrefMenu() {
 
 		imgui.SameLineV(0, 2)
 
-		if imgui.ButtonV(fmt.Sprintf("X##mx%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if item.isSubmenu {
+			if imgui.ButtonV("+##add"+id, imgui.Vec2{X: 22, Y: 0}) {
+				addChildIdx = i
+			}
+		} else {
+			imgui.Dummy(imgui.Vec2{X: 22, Y: 0})
+		}
+
+		imgui.SameLineV(0, 2)
+
+		if imgui.ButtonV("X##rm"+id, imgui.Vec2{X: 22, Y: 0}) {
 			removeIdx = i
+		}
+
+		// Recurse into the submenu's children, indented one level deeper.
+		// Edits inside mutate list[i].submenu in place via the pointer,
+		// independent of this level's index shifts.
+		if item.isSubmenu {
+			a.renderMenuLevel(&item.submenu, depth+1, id)
 		}
 	}
 
 	// Apply modifications after iteration.
 	if swapA >= 0 && swapB >= 0 {
-		d.menuItems[swapA], d.menuItems[swapB] = d.menuItems[swapB], d.menuItems[swapA]
+		list[swapA], list[swapB] = list[swapB], list[swapA]
+	}
+	if addChildIdx >= 0 {
+		list[addChildIdx].submenu = append(list[addChildIdx].submenu,
+			newMenuEditorItem(prefMenuAddOptions[d.addActionIdx]))
 	}
 	if removeIdx >= 0 {
-		d.menuItems = append(d.menuItems[:removeIdx], d.menuItems[removeIdx+1:]...)
+		list = append(list[:removeIdx], list[removeIdx+1:]...)
 	}
-
-	imgui.Separator()
-	if imgui.Button("Add Item") {
-		action := prefMenuActions[d.addActionIdx]
-		label := prefMenuLabels[action]
-		d.menuItems = append(d.menuItems, menuEditorItem{
-			label: label, action: action,
-		})
-	}
-	imgui.SameLineV(0, 8)
-	imgui.SetNextItemWidth(200)
-	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuActions, int32(len(prefMenuActions)))
+	*items = list
 }
 
 func (a *Window) renderPrefWindow() {
