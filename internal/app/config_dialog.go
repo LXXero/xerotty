@@ -1340,11 +1340,22 @@ func (a *Window) renderPrefMenu() {
 	// maps the chosen index back to the real action.
 	imgui.Separator()
 	if imgui.Button("Add Item") {
-		d.menuItems = append(d.menuItems, newMenuEditorItem(menuAddSelection(d.addActionIdx)))
+		d.menuItems = append(d.menuItems, newMenuEditorItem(d.selectedAddAction()))
 	}
 	imgui.SameLineV(0, 8)
 	imgui.SetNextItemWidth(200)
 	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuAddLabels, int32(len(prefMenuAddLabels)))
+}
+
+// selectedAddAction is the single source of truth for what the Add combo
+// will create. The combo renders prefMenuAddSorted's labels, so the
+// selection MUST be mapped back through the SAME sorted slice — indexing
+// the unsorted prefMenuActions/prefMenuAddOptions with d.addActionIdx
+// would add the wrong item (the bug always landed on "Reset Terminal").
+// Both consumers — top-level "Add Item" and a submenu's "+" — go through
+// here.
+func (d *configDialog) selectedAddAction() string {
+	return menuAddSelection(d.addActionIdx)
 }
 
 // menuAddSelection maps the Add combo's selected index (into the
@@ -1474,7 +1485,7 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 	}
 	if addChildIdx >= 0 {
 		list[addChildIdx].submenu = append(list[addChildIdx].submenu,
-			newMenuEditorItem(menuAddSelection(d.addActionIdx)))
+			newMenuEditorItem(d.selectedAddAction()))
 	}
 	if removeIdx >= 0 {
 		list = append(list[:removeIdx], list[removeIdx+1:]...)

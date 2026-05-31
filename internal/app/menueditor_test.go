@@ -76,6 +76,45 @@ func TestMenuAddSortedMapping(t *testing.T) {
 	}
 }
 
+// TestSelectedAddActionCreatesCorrectItem is the BUG 1 regression:
+// selecting a sorted combo label must create the item that label names,
+// not whatever the same index would hit in the UNSORTED action list
+// (which always produced "Reset Terminal"). Drives the exact path the
+// "Add Item" button and a submenu's "+" use: pick a label → set
+// addActionIdx → selectedAddAction() → newMenuEditorItem().
+func TestSelectedAddActionCreatesCorrectItem(t *testing.T) {
+	idxOf := func(label string) int32 {
+		for i, l := range prefMenuAddLabels {
+			if l == label {
+				return int32(i)
+			}
+		}
+		t.Fatalf("combo label %q not found", label)
+		return -1
+	}
+
+	d := &configDialog{}
+
+	// "Submenu" → an empty, named submenu container (no action).
+	d.addActionIdx = idxOf("Submenu")
+	if got := newMenuEditorItem(d.selectedAddAction()); !got.isSubmenu || got.action != "" {
+		t.Fatalf(`label "Submenu" created %+v, want isSubmenu=true action=""`, got)
+	}
+
+	// "Copy" → the copy action, not a submenu.
+	d.addActionIdx = idxOf("Copy")
+	if got := newMenuEditorItem(d.selectedAddAction()); got.isSubmenu || got.action != "copy" {
+		t.Fatalf(`label "Copy" created %+v, want action="copy"`, got)
+	}
+
+	// "Reset Terminal" → reset_terminal ONLY (the old bug's victim value:
+	// it must come from picking that label, never as a misindex default).
+	d.addActionIdx = idxOf("Reset Terminal")
+	if got := newMenuEditorItem(d.selectedAddAction()); got.isSubmenu || got.action != "reset_terminal" {
+		t.Fatalf(`label "Reset Terminal" created %+v, want action="reset_terminal"`, got)
+	}
+}
+
 // TestMenuEditorSubmenuKind checks that loading a config submenu marks
 // the editor entry as a submenu (isSubmenu) with no action, while a leaf
 // stays an action — the editor's three-kinds model must match what the
