@@ -18,6 +18,9 @@ type Context struct {
 	Link         string
 	CWD          string
 	TabTitle     string
+	// ForceOpaque reflects the live opacity-toggle state so a menu item
+	// with Checked == "force_opaque" can show whether it's currently on.
+	ForceOpaque bool
 }
 
 // Render draws the context menu at desktop coordinates (x, y). Caller
@@ -103,6 +106,7 @@ func RenderItemsOnly(items []config.MenuItem, ctx *Context) string {
 func renderItems(items []config.MenuItem, ctx *Context) string {
 	for _, item := range items {
 		enabled := checkEnabled(item.Enabled, ctx)
+		checked := checkChecked(item.Checked, ctx)
 
 		if item.Action == "separator" {
 			imgui.Separator()
@@ -144,7 +148,7 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 		if !enabled {
 			flags |= imgui.SelectableFlagsDisabled
 		}
-		sel := imgui.SelectableBoolV(item.Label, false, flags, imgui.Vec2{X: 0, Y: 0})
+		sel := imgui.SelectableBoolV(item.Label, checked, flags, imgui.Vec2{X: 0, Y: 0})
 		if item.Shortcut != "" {
 			sw := imgui.CalcTextSize(item.Shortcut).X
 			var col uint32
@@ -176,6 +180,17 @@ func checkEnabled(condition string, ctx *Context) bool {
 		return true
 	}
 	return true
+}
+
+// checkChecked resolves a menu item's Checked predicate to its live
+// on/off state, so renderItems can show the item as toggled on. Empty
+// or unknown predicates are never checked.
+func checkChecked(condition string, ctx *Context) bool {
+	switch condition {
+	case "force_opaque":
+		return ctx.ForceOpaque
+	}
+	return false
 }
 
 // ExecAction executes a shell hook action (exec:command).

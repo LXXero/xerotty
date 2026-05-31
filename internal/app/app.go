@@ -4852,6 +4852,7 @@ func (w *Window) menuContext() *menu.Context {
 	ctx := &menu.Context{
 		HasSelection: w.sel.active,
 		Selection:    w.selectedText(),
+		ForceOpaque:  w.app.forceOpaque.Load(),
 	}
 	if tab := w.tabs.Active(); tab != nil {
 		ctx.TabTitle = tab.DisplayTitle()

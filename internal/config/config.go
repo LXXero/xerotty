@@ -110,7 +110,11 @@ type MenuItem struct {
 	Action   string     `toml:"action"`
 	Shortcut string     `toml:"shortcut"`
 	Enabled  string     `toml:"enabled"`
-	Submenu  []MenuItem `toml:"submenu"`
+	// Checked is an optional state predicate (like Enabled). When it
+	// evaluates true the item renders with a "toggled on" highlight —
+	// e.g. "force_opaque" for the opacity toggle. Empty = never checked.
+	Checked string     `toml:"checked"`
+	Submenu []MenuItem `toml:"submenu"`
 }
 
 // ScrollbackConfig controls scrollback buffer behavior.
@@ -463,7 +467,7 @@ func defaultMenuLinux() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Ctrl+Shift+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
-			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Ctrl+Shift+O"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Ctrl+Shift+O", Checked: "force_opaque"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
@@ -490,7 +494,7 @@ func defaultMenuDarwin() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
-			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+Shift+O"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+Shift+O", Checked: "force_opaque"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},
