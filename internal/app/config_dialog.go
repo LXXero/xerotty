@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
@@ -1434,9 +1435,24 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 				imgui.WindowFlagsNoCollapse
 			var res platform.PopupMenuDrawResult
 			if imgui.BeginV("##addactionpopup", nil, flags) {
+				// Type-to-jump: move keyboard focus to the first label
+				// matching what the user typed this frame.
+				tmTarget := -1
+				if imgui.IsWindowFocusedV(imgui.FocusedFlagsNone) {
+					tmTarget = addChooserTypematchTarget()
+				}
 				for i, opt := range prefMenuAddSorted {
 					selected := int32(i) == d.addActionIdx
-					if imgui.SelectableBoolV(opt.label+fmt.Sprintf("##ao%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0}) {
+					if i == tmTarget {
+						imgui.SetKeyboardFocusHereV(0)
+					}
+					clicked := imgui.SelectableBoolV(opt.label+fmt.Sprintf("##ao%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0})
+					// Anchor initial keyboard focus on the current
+					// selection so Up/Down start from there.
+					if selected {
+						imgui.SetItemDefaultFocus()
+					}
+					if clicked {
 						d.addActionIdx = int32(i)
 						res.Close = true
 					}
@@ -1452,6 +1468,47 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 			return res
 		})
 	platform.PostWake()
+}
+
+// Type-to-jump state for the add-action popup. One popup is open at a
+// time (RunImGuiPopup blocks), so package-level state is safe; the
+// prefix resets after a short idle.
+var (
+	addChooserTMPrefix   string
+	addChooserTMLastNano int64
+)
+
+// addChooserTypematchTarget consumes characters typed this frame and
+// returns the index into prefMenuAddSorted of the first label matching
+// the accumulated prefix (prefix-match preferred, substring fallback),
+// or -1 when nothing was typed this frame / nothing matches.
+func addChooserTypematchTarget() int {
+	nowNano := time.Now().UnixNano()
+	if nowNano-addChooserTMLastNano > int64(700*time.Millisecond) {
+		addChooserTMPrefix = ""
+	}
+	var typed string
+	for _, ch := range imgui.CurrentIO().InputQueueCharacters().Slice() {
+		if ch >= 0x20 && ch < 0x7f { // printable ASCII
+			typed += string(rune(ch))
+		}
+	}
+	if typed == "" {
+		return -1
+	}
+	addChooserTMLastNano = nowNano
+	addChooserTMPrefix += strings.ToLower(typed)
+	for i, o := range prefMenuAddSorted {
+		if strings.HasPrefix(strings.ToLower(o.label), addChooserTMPrefix) {
+			return i
+		}
+	}
+	for i, o := range prefMenuAddSorted {
+		if strings.Contains(strings.ToLower(o.label), addChooserTMPrefix) {
+			return i
+		}
+	}
+	return -1
 }
 
 // selectedAddAction is the single source of truth for what the Add combo

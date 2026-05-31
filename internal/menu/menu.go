@@ -5,10 +5,62 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 )
+
+// Type-to-jump state for the context menu. One menu is ever open at a
+// time (RunImGuiPopup blocks), so package-level state is safe. The
+// prefix accumulates typed letters and resets after a short idle so a
+// fresh keystroke starts a new search rather than extending a stale one.
+var (
+	menuTMPrefix   string
+	menuTMLastNano int64
+)
+
+const menuTypematchIdle = 700 * time.Millisecond
+
+// menuTypematchTarget consumes characters typed this frame and returns
+// the index of the first item whose label matches the accumulated prefix
+// (prefix-match preferred, substring as fallback), or -1 when nothing
+// was typed this frame / nothing matches. Separators and unlabeled items
+// are skipped. Only call it for the focused menu level so nested levels
+// don't both consume the same characters.
+func menuTypematchTarget(items []config.MenuItem) int {
+	nowNano := time.Now().UnixNano()
+	if nowNano-menuTMLastNano > int64(menuTypematchIdle) {
+		menuTMPrefix = ""
+	}
+	var typed string
+	for _, ch := range imgui.CurrentIO().InputQueueCharacters().Slice() {
+		if ch >= 0x20 && ch < 0x7f { // printable ASCII
+			typed += string(rune(ch))
+		}
+	}
+	if typed == "" {
+		return -1
+	}
+	menuTMLastNano = nowNano
+	menuTMPrefix += strings.ToLower(typed)
+
+	match := func(pred func(label, prefix string) bool) int {
+		for i, it := range items {
+			if it.Action == "separator" || it.Label == "" {
+				continue
+			}
+			if pred(strings.ToLower(it.Label), menuTMPrefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	if i := match(strings.HasPrefix); i >= 0 {
+		return i
+	}
+	return match(strings.Contains)
+}
 
 // Context holds runtime state for menu condition evaluation.
 type Context struct {
@@ -110,6 +162,15 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 	// hover+click state. The index disambiguates them. Every return /
 	// continue / end-of-iteration path must PopID to keep the ID stack
 	// balanced.
+	// Type-to-jump: only the focused level consumes the typed chars, so a
+	// parent and an open submenu don't both react. tmTarget is the index
+	// to move keyboard focus to this frame (-1 = none).
+	tmTarget := -1
+	if imgui.IsWindowFocusedV(imgui.FocusedFlagsNone) {
+		tmTarget = menuTypematchTarget(items)
+	}
+	defaultFocusSet := false
+
 	for i, item := range items {
 		imgui.PushIDInt(int32(i))
 		enabled := checkEnabled(item.Enabled, ctx)
@@ -121,9 +182,23 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 			continue
 		}
 
+		// Type-to-jump landed on this item: focus the NEXT submitted
+		// widget (this row), which also scrolls it into view.
+		if i == tmTarget {
+			imgui.SetKeyboardFocusHereV(0)
+		}
+
 		// Submenu
 		if len(item.Submenu) > 0 {
-			if imgui.BeginMenu(item.Label) {
+			opened := imgui.BeginMenu(item.Label)
+			// Default keyboard focus to the first enabled item so Up/Down
+			// have an anchor (only safe when the submenu isn't open —
+			// once open the current window is the child, not this header).
+			if enabled && !defaultFocusSet && !opened {
+				imgui.SetItemDefaultFocus()
+				defaultFocusSet = true
+			}
+			if opened {
 				if action := renderItems(item.Submenu, ctx); action != "" {
 					imgui.EndMenu()
 					imgui.PopID()
@@ -159,6 +234,10 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 			flags |= imgui.SelectableFlagsDisabled
 		}
 		sel := imgui.SelectableBoolV(item.Label, checked, flags, imgui.Vec2{X: 0, Y: 0})
+		if enabled && !defaultFocusSet {
+			imgui.SetItemDefaultFocus()
+			defaultFocusSet = true
+		}
 		if item.Shortcut != "" {
 			sw := imgui.CalcTextSize(item.Shortcut).X
 			var col uint32

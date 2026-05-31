@@ -74,6 +74,13 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
         return -1;
     }
     SDL_StartTextInput(popup);
+    // On Wayland the popup typically never gets wl_keyboard focus — key
+    // and text events keep landing on the PARENT surface. Without text
+    // input started on the parent too, parent-focused SDL emits key
+    // events but no SDL_EVENT_TEXT_INPUT, which would break type-to-jump.
+    // We rewrite parent-delivered key/text events onto the popup in the
+    // event loop below; this makes sure the text events actually fire.
+    SDL_StartTextInput(parent);
 
     const char* drv = SDL_GetCurrentVideoDriver();
     SDL_PropertiesID props = SDL_GetWindowProperties(popup);
@@ -102,6 +109,15 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
     ImGuiContext* main_ctx  = ImGui::GetCurrentContext();
     ImGuiContext* popup_ctx = ImGui::CreateContext(nullptr);
     ImGui::SetCurrentContext(popup_ctx);
+    {
+        // Configure the popup context like the main one so keyboard nav
+        // (Up/Down/Enter) works. AddFocusEvent(true) tells ImGui the
+        // window is focused even though on Wayland the popup may not hold
+        // real wl_keyboard focus — without it, nav input is ignored.
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.AddFocusEvent(true);
+    }
     ImGui::GetIO().Fonts->AddFontDefault();
     ImGui::StyleColorsDark();
 
@@ -116,9 +132,10 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
     }
 
     {
-        SDL_WindowID popup_id = SDL_GetWindowID(popup);
-        bool         done     = false;
-        bool         dirty    = true;
+        SDL_WindowID popup_id  = SDL_GetWindowID(popup);
+        SDL_WindowID parent_id = SDL_GetWindowID(parent);
+        bool         done      = false;
+        bool         dirty     = true;
 
         while (!done && !g_quit) {
             if (dirty) {
@@ -153,6 +170,25 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
                 continue;
             }
             do {
+                // On Wayland the popup rarely gets wl_keyboard focus, so
+                // key/text events arrive tagged with the PARENT's
+                // windowID and ImGui_ImplSDL3_ProcessEvent would drop
+                // them (wrong window). Rewrite parent-delivered keyboard
+                // and text events onto the popup so they reach this
+                // context's nav/typematch. Mouse events are left
+                // window-specific: a parent mouse-down is the
+                // click-outside dismiss path below, NOT popup input.
+                switch (e.type) {
+                    case SDL_EVENT_KEY_DOWN:
+                    case SDL_EVENT_KEY_UP:
+                        if (e.key.windowID == parent_id) e.key.windowID = popup_id;
+                        break;
+                    case SDL_EVENT_TEXT_INPUT:
+                        if (e.text.windowID == parent_id) e.text.windowID = popup_id;
+                        break;
+                    default:
+                        break;
+                }
                 ImGui_ImplSDL3_ProcessEvent(&e);
                 switch (e.type) {
                     case SDL_EVENT_QUIT:
@@ -166,6 +202,12 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
                         break;
                     case SDL_EVENT_KEY_DOWN:
                         if (e.key.key == SDLK_ESCAPE) done = true;
+                        // Redraw immediately so the nav highlight tracks
+                        // arrow keys without waiting for the idle timeout.
+                        dirty = true;
+                        break;
+                    case SDL_EVENT_KEY_UP:
+                        dirty = true;
                         break;
                     case SDL_EVENT_MOUSE_BUTTON_DOWN:
                         // Click on a window OTHER than the popup
