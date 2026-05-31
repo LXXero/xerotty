@@ -38,6 +38,44 @@ func TestMenuEditorRoundTrip(t *testing.T) {
 	}
 }
 
+// TestMenuAddSortedMapping guards the CRITICAL Add-combo invariant: the
+// combo displays friendly labels sorted alphabetically, but the selected
+// index must still map back to the correct action. A reorder bug here
+// would silently add the wrong menu item.
+func TestMenuAddSortedMapping(t *testing.T) {
+	// Labels must be sorted ascending.
+	for i := 1; i < len(prefMenuAddLabels); i++ {
+		if prefMenuAddLabels[i-1] > prefMenuAddLabels[i] {
+			t.Fatalf("combo labels not sorted: %q before %q", prefMenuAddLabels[i-1], prefMenuAddLabels[i])
+		}
+	}
+	// labels[i] must be the friendly label of the action menuAddSelection(i) returns.
+	if len(prefMenuAddLabels) != len(prefMenuAddSorted) {
+		t.Fatalf("label/option length mismatch: %d vs %d", len(prefMenuAddLabels), len(prefMenuAddSorted))
+	}
+	for i := range prefMenuAddSorted {
+		action := menuAddSelection(int32(i))
+		if menuAddLabel(action) != prefMenuAddLabels[i] {
+			t.Fatalf("index %d shows %q but maps to action %q (label %q)",
+				i, prefMenuAddLabels[i], action, menuAddLabel(action))
+		}
+	}
+	// Every original option (incl. the _submenu sentinel) is still reachable.
+	got := map[string]bool{}
+	for i := range prefMenuAddSorted {
+		got[menuAddSelection(int32(i))] = true
+	}
+	for _, a := range prefMenuAddOptions {
+		if !got[a] {
+			t.Fatalf("action %q dropped from the sorted Add combo", a)
+		}
+	}
+	// Out-of-range never yields a wrong/garbage action.
+	if menuAddSelection(-1) != prefMenuAddSorted[0].action || menuAddSelection(9999) != prefMenuAddSorted[0].action {
+		t.Fatalf("out-of-range index did not fall back to the first option")
+	}
+}
+
 // TestMenuEditorSubmenuKind checks that loading a config submenu marks
 // the editor entry as a submenu (isSubmenu) with no action, while a leaf
 // stays an action — the editor's three-kinds model must match what the

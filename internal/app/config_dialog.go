@@ -115,7 +115,44 @@ var prefMenuLabels = map[string]string{
 	"font_size_up":     "Font Size Up",
 	"font_size_down":   "Font Size Down",
 	"font_size_reset":  "Font Size Reset",
+	"_submenu":         "Submenu",
 }
+
+// menuAddOption pairs a friendly display label with the action (or
+// sentinel) it adds. The Add combo shows the labels alphabetically;
+// d.addActionIdx indexes into prefMenuAddSorted, and .action maps the
+// selected index back to what newMenuEditorItem consumes — so reordering
+// the display never changes which item gets added.
+type menuAddOption struct {
+	label  string
+	action string
+}
+
+func menuAddLabel(action string) string {
+	if l, ok := prefMenuLabels[action]; ok && l != "" {
+		return l
+	}
+	return action
+}
+
+func buildMenuAddSorted() ([]menuAddOption, []string) {
+	opts := make([]menuAddOption, 0, len(prefMenuAddOptions))
+	for _, a := range prefMenuAddOptions {
+		opts = append(opts, menuAddOption{label: menuAddLabel(a), action: a})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].label < opts[j].label })
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return opts, labels
+}
+
+// prefMenuAddSorted / prefMenuAddLabels are the Add combo's options
+// sorted by friendly label, built once at init. Go orders package-var
+// initialization by dependency, so this safely reads prefMenuAddOptions
+// + prefMenuLabels.
+var prefMenuAddSorted, prefMenuAddLabels = buildMenuAddSorted()
 
 // configDialog holds state for the preferences window.
 type configDialog struct {
@@ -730,6 +767,16 @@ func (a *Window) renderPreferences() {
 				vp.SetPlatformRequestClose(false)
 			}
 		}
+		// Keep SDL text input asserted on the prefs window every frame.
+		// The ImGui SDL3 backend SDL_StopTextInput's the window when an
+		// InputText deactivates, so opening the Add combo (not an
+		// InputText) would otherwise leave text input OFF — io.InputQueue
+		// stays empty and combo type-ahead (jump-to-letter) never fires.
+		// EnsureTextInput is a no-op when input is already on, so it
+		// doesn't disturb the label InputText fields.
+		if vp := imgui.WindowViewport(); vp != nil {
+			platform.EnsureTextInput(vp.PlatformHandle())
+		}
 		// Reserve space for bottom separator + button row.
 		// Negative Y in BeginChildStrV means "fill, but leave -Y at the bottom".
 		bottomReserve := imgui.FrameHeightWithSpacing() + 12
@@ -1289,13 +1336,25 @@ func (a *Window) renderPrefMenu() {
 
 	// The combo picks what the next Add creates: an action item, a
 	// separator, or (via the _submenu sentinel) a new empty submenu.
+	// It shows friendly labels sorted alphabetically; menuAddSelection
+	// maps the chosen index back to the real action.
 	imgui.Separator()
 	if imgui.Button("Add Item") {
-		d.menuItems = append(d.menuItems, newMenuEditorItem(prefMenuAddOptions[d.addActionIdx]))
+		d.menuItems = append(d.menuItems, newMenuEditorItem(menuAddSelection(d.addActionIdx)))
 	}
 	imgui.SameLineV(0, 8)
 	imgui.SetNextItemWidth(200)
-	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuAddOptions, int32(len(prefMenuAddOptions)))
+	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuAddLabels, int32(len(prefMenuAddLabels)))
+}
+
+// menuAddSelection maps the Add combo's selected index (into the
+// label-sorted prefMenuAddSorted) back to the action/sentinel it adds.
+// Out-of-range falls back to the first option, never a wrong action.
+func menuAddSelection(idx int32) string {
+	if idx < 0 || int(idx) >= len(prefMenuAddSorted) {
+		return prefMenuAddSorted[0].action
+	}
+	return prefMenuAddSorted[idx].action
 }
 
 // renderMenuLevel draws one level of the menu editor and recurses into
@@ -1406,7 +1465,7 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 	}
 	if addChildIdx >= 0 {
 		list[addChildIdx].submenu = append(list[addChildIdx].submenu,
-			newMenuEditorItem(prefMenuAddOptions[d.addActionIdx]))
+			newMenuEditorItem(menuAddSelection(d.addActionIdx)))
 	}
 	if removeIdx >= 0 {
 		list = append(list[:removeIdx], list[removeIdx+1:]...)
