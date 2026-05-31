@@ -104,12 +104,20 @@ func RenderItemsOnly(items []config.MenuItem, ctx *Context) string {
 }
 
 func renderItems(items []config.MenuItem, ctx *Context) string {
-	for _, item := range items {
+	// PushIDInt per index: two items with the same Label (e.g. two
+	// "New Tab" entries, or duplicate exec hooks) would otherwise hash to
+	// the same ImGui ID and trigger a "conflicting ID" assert / merged
+	// hover+click state. The index disambiguates them. Every return /
+	// continue / end-of-iteration path must PopID to keep the ID stack
+	// balanced.
+	for i, item := range items {
+		imgui.PushIDInt(int32(i))
 		enabled := checkEnabled(item.Enabled, ctx)
 		checked := checkChecked(item.Checked, ctx)
 
 		if item.Action == "separator" {
 			imgui.Separator()
+			imgui.PopID()
 			continue
 		}
 
@@ -118,10 +126,12 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 			if imgui.BeginMenu(item.Label) {
 				if action := renderItems(item.Submenu, ctx); action != "" {
 					imgui.EndMenu()
+					imgui.PopID()
 					return action
 				}
 				imgui.EndMenu()
 			}
+			imgui.PopID()
 			continue
 		}
 
@@ -162,8 +172,10 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 				col, item.Shortcut)
 		}
 		if sel {
+			imgui.PopID()
 			return item.Action
 		}
+		imgui.PopID()
 	}
 	return ""
 }
