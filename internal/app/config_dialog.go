@@ -195,6 +195,43 @@ type menuEditorItem struct {
 	shortcut string
 	enabled  string
 	checked  string
+	// submenu mirrors config.MenuItem.Submenu so the editor round-trips
+	// nested menus instead of dropping them on save. An item with a
+	// non-empty submenu renders (and is treated by the engine) as a
+	// submenu parent — its label becomes the submenu title and its own
+	// action is ignored (see menu.renderItems).
+	submenu []menuEditorItem
+}
+
+// menuItemsToEditor / editorToMenuItems convert between the config and
+// editor representations recursively, so hand-authored [[menu.items.submenu]]
+// trees survive a prefs open + save round-trip. They preserve nil vs empty
+// (a leaf's nil Submenu stays nil) so an untouched config re-encodes
+// identically.
+func menuItemsToEditor(items []config.MenuItem) []menuEditorItem {
+	var out []menuEditorItem
+	for _, item := range items {
+		out = append(out, menuEditorItem{
+			label: item.Label, action: item.Action,
+			shortcut: item.Shortcut, enabled: item.Enabled,
+			checked: item.Checked,
+			submenu: menuItemsToEditor(item.Submenu),
+		})
+	}
+	return out
+}
+
+func editorToMenuItems(items []menuEditorItem) []config.MenuItem {
+	var out []config.MenuItem
+	for _, item := range items {
+		out = append(out, config.MenuItem{
+			Label: item.label, Action: item.action,
+			Shortcut: item.shortcut, Enabled: item.enabled,
+			Checked: item.checked,
+			Submenu: editorToMenuItems(item.submenu),
+		})
+	}
+	return out
 }
 
 func prefIndexOf(items []string, val string) int32 {
@@ -361,14 +398,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.winTitle = cfg.Window.Title
 	d.winFS = cfg.Window.Fullscreen
 
-	d.menuItems = nil
-	for _, item := range cfg.Menu.Items {
-		d.menuItems = append(d.menuItems, menuEditorItem{
-			label: item.Label, action: item.Action,
-			shortcut: item.Shortcut, enabled: item.Enabled,
-			checked: item.Checked,
-		})
-	}
+	d.menuItems = menuItemsToEditor(cfg.Menu.Items)
 	d.addActionIdx = 0
 }
 
@@ -471,14 +501,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Window.Title = d.winTitle
 	cfg.Window.Fullscreen = d.winFS
 
-	cfg.Menu.Items = nil
-	for _, item := range d.menuItems {
-		cfg.Menu.Items = append(cfg.Menu.Items, config.MenuItem{
-			Label: item.label, Action: item.action,
-			Shortcut: item.shortcut, Enabled: item.enabled,
-			Checked: item.checked,
-		})
-	}
+	cfg.Menu.Items = editorToMenuItems(d.menuItems)
 }
 
 // openPreferences loads current config into dialog and shows it.
