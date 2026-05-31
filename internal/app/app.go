@@ -3807,6 +3807,19 @@ func (w *Window) processKeys() {
 		return
 	}
 
+	// Prefs dialog open: ImGui owns the keyboard for this Window — its
+	// InputText label fields and the Add combo's type-ahead read ImGui's
+	// char queue. Forwarding to the PTY here would leak every typed char
+	// into the shell behind the dialog (and steal the combo's letters).
+	// Gate on the dialog being open, NOT WantCaptureKeyboard: with
+	// NavEnableKeyboard set (sdl3.cpp), WantCaptureKeyboard is true even
+	// on plain terminal focus, so it would suppress normal typing. The
+	// prefs window's own EnsureTextInput (config_dialog.go) keeps feeding
+	// chars to ImGui, so combo type-ahead still works.
+	if w.prefDialog.open {
+		return
+	}
+
 	// Yield to ImGui only when a text-entry widget is actually wanting chars
 	// (prefs InputText, etc). WantCaptureKeyboard is too broad — it also flips
 	// true when a non-text window has plain focus, so e.g. clicking a tab or
