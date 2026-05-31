@@ -186,6 +186,12 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 		// widget (this row), which also scrolls it into view.
 		if i == tmTarget {
 			imgui.SetKeyboardFocusHereV(0)
+			// If the mouse just moved over the menu, ImGui flipped to
+			// mouse-nav and hid the keyboard-nav cursor — which would
+			// suppress this typed jump until an arrow key re-engages.
+			// Re-assert keyboard nav so the letter takes effect now.
+			imgui.InternalSetNavCursorVisibleAfterMove()
+			imgui.CurrentContext().SetNavInputSource(imgui.InputSourceKeyboard)
 		}
 
 		// Submenu

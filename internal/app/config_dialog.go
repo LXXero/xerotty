@@ -1445,6 +1445,12 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 					selected := int32(i) == d.addActionIdx
 					if i == tmTarget {
 						imgui.SetKeyboardFocusHereV(0)
+						// If the mouse just moved over the popup, ImGui
+						// flipped to mouse-nav and hid the keyboard-nav
+						// cursor, suppressing this typed jump until an
+						// arrow re-engages. Re-assert keyboard nav now.
+						imgui.InternalSetNavCursorVisibleAfterMove()
+						imgui.CurrentContext().SetNavInputSource(imgui.InputSourceKeyboard)
 					}
 					clicked := imgui.SelectableBoolV(opt.label+fmt.Sprintf("##ao%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0})
 					// Anchor initial keyboard focus on the current
