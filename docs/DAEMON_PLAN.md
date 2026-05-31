@@ -530,7 +530,7 @@ clear-scrollback on a held/exited tab notifies other clients.
 Multi-client is now directly exercisable (two GUI windows on one
 daemon, or MCP mutating while a GUI watches).
 
-### Phase 10 — connection resilience: dead/hung/slept clients [layers 1-3 SHIPPED · 4-5 NEXT]
+### Phase 10 — connection resilience: dead/hung/slept clients [SHIPPED · live-validated]
 
 A client connection can go **half-open** with no signal to the daemon:
 a laptop attached over SSH suspends, a link drops, a client stops
@@ -585,46 +585,84 @@ Layered, in dependency order:
 Supersedes the "broadcast back-pressure" open-question — layer 1 is
 that fix, generalized.
 
-**As-built status** (tip `a567a01` on `spike/daemon`, all pushed):
+**As-built status** (all SHIPPED + pushed on `spike/daemon`; `-race`
+clean, GUI + headless build):
 
 - **Layers 1-3: SHIPPED.** `0e16340` (layer 1 — per-client async
   bounded writers), `c180d4d` (layer 2 — app-level heartbeat),
-  `5d81dfc` (layer 3 — progress-based write deadlines). `-race` clean.
+  `5d81dfc` (layer 3 — progress-based write deadlines).
 - **Heartbeat corrections: SHIPPED** (`2b72279`) — fixed three review
-  findings (codex): (1) don't false-reap a slow-but-flowing reader
-  whose pongs sit behind the outbound backlog — gate reap on writer
-  progress; (2) actually track ping↔pong staleness, not generic inbound
-  (a client that keeps sending but stops reading/ponging is now reaped);
-  (3) bound the pre-writer handshake so a hung handshake leaves no
-  zombie conn. Deliberate trade-off (flagged): a *fully-idle* zombie
-  with send-buffer room can be kept alive by tiny pings until the buffer
-  fills — but any real subscribed client fills it fast and the
-  pong-staleness check still catches a wedged one.
-- **Layers 4-5: NOT DONE** — next session.
+  findings (codex): (1) don't false-reap a slow-but-flowing reader whose
+  pongs sit behind the outbound backlog — gate reap on writer progress;
+  (2) track ping↔pong staleness, not generic inbound; (3) bound the
+  pre-writer handshake so a hung handshake leaves no zombie.
+- **Layer 4: SHIPPED.** `c20cc31` (4a — async bounded client writer,
+  non-blocking UI), `9fd8706` (4b — self-healing hub: `Hub.conn` is an
+  atomic pointer the reconnect loop swaps, freezing the same Sources and
+  resyncing from the new snapshot, + "reconnecting…" dim/badge overlay),
+  `759418a` (4c — close tombstones), `c85981d` (4d — client→daemon
+  heartbeat).
+- **Layer 5: SHIPPED.** `d2e2555` — SSH `ServerAliveInterval=10`/
+  `ServerAliveCountMax=3` (placed after user args so they can override).
+- **L4/L5 review fixes (codex): SHIPPED.** `2cce16b` (#1 HIGH —
+  close-tombstones scoped to a per-process daemon identity:
+  `Attached.InstanceID` nonce, ProtocolVersion 6→7, so a daemon restart
+  drops stale tombstones and a reused tab ID isn't suppressed forever),
+  `cd248f3` (#2/#3 — client dual-clock heartbeat + out-of-band Pong),
+  `ecf9301` (#4 — gate PasteImage/ClearScrollback on the reconnect
+  freeze).
 
-**Next steps — Layer 4 (reconnect UX, the interactive piece):**
-- GUI marks daemon-backed sources "reconnecting" (freeze last render,
-  never block the UI on a daemon RPC).
-- **Local close** removes the GUI tab/window immediately — no
-  round-trip to a possibly-dead daemon.
-- **Close tombstone**: persist locally-closed tab IDs and replay the
-  close after reconnect, so snapshot resync doesn't resurrect a tab the
-  user closed (the codex pitfall above).
-- Client→daemon pinging (the client side of layer 2) for fast
-  reconnect detection.
-- Then **Layer 5**: SSH `ServerAliveInterval=10`/`ServerAliveCountMax=3`.
-- Best validated live (sleep/kill a client, watch it reconnect) — not
-  headless-testable, so do it hands-on.
+**Bugs LIVE testing caught that static review + unit tests structurally
+could NOT — all fixed.** They only manifest against a real socket that
+buffers, or a real daemon process dying under a live GUI:
+
+1. **Hung daemon never detected** (`63a6107`). The client reaper's
+   dual-clock gated on `lastWriteProgress`, which our OWN 5s heartbeat
+   pings kept refreshing — the kernel accepts the tiny ping into the
+   send buffer even when the peer is comatose — so a `kill -STOP`'d
+   daemon was never reaped and no reconnect fired. Fix: client reaps on
+   `noPong && noInbound` (inbound at read-byte granularity); drop
+   write-progress from the *client* reaper (the client writes too little
+   for it to say anything about the daemon).
+2. **Idle-zombie client never reaped** (`ba439c3`) — the symmetric bug
+   daemon-side: on an idle session the daemon's own pings self-refreshed
+   its write-progress, so a hung idle client lived forever. Fix: exclude
+   Ping/Pong from `lastWriteProgress`.
+3. **A daemon restart silently quit the whole GUI** — the reseat saga.
+   Kill the local daemon → reconnect to the fresh (empty) daemon → every
+   Source marked vanished → tabs force-removed → last window empties →
+   the "last window closed = quit" path fires → clean `os.Exit` (no
+   panic, no core — looked like a crash, was the app quitting itself).
+   Fixed over three codex rounds: `c3a5a0e` (reseat a fresh tab instead
+   of quitting), `aea352c` (reseat only on a REAL restart — InstanceID
+   change, not a remote tab-close — + mint the reseat window once),
+   `f9cc93c` (restart resync stops matching old Sources by reused tab ID;
+   mint scoped to the daemon instance for the double-restart case),
+   `763dd49` (gate NewTab on a window minted for the CURRENT instance +
+   tighten the resync test). Each fix carries a teeth-verified regression
+   test (proven to fail on the pre-fix path).
+
+**Live validation** (local, hands-on — not headless-testable): `kill
+-STOP` daemon → GUI freezes + "reconnecting…" badge within the liveness
+window → `-CONT` → resyncs in place (verified via the daemon's re-attach
+timestamp vs GUI start time). 3-min idle soak → no false reap. `kill -9`
+daemon → GUI survives + reseats a working interactive tab (the original
+crash). **Remote `daemon:<host>` / SSH-keepalive (L5) drop NOT yet tested
+live** — needs a fleet box up.
 
 **Related, shipped this arc (not Phase 10):** event-driven render loop
-(`a567a01`). The idle GUI now parks in `WaitEventTimeout` at ~0% CPU
-(was ~30-35% busy-looping at the frame cap); it renders only on SDL
-events / PTY+daemon wakes / a few "settle" frames after input, with the
-idle wait bounded by the cursor-blink interval. Verified live (~35% →
-~4% idle). Not yet statically reviewed — worth a codex pass when
-convenient. Also shipped nearby: tab-bar Enter-activation fix (Enter no
-longer "clicks" the nav-focused tab) and daemon-scrollback copy fix
-(selection reads via `terminal.Source`, not the bare viewport emulator).
+(`a567a01`, reviewed). The idle GUI parks in `WaitEventTimeout` at ~0%
+CPU (was ~30-35% busy-looping at the frame cap); renders only on SDL
+events / PTY+daemon wakes / a few "settle" frames after input, idle wait
+bounded by the cursor-blink interval. Verified live (~35% → ~4% idle).
+Codex review found one Low — a sub-ms blink interval floored to 0 and
+fell back to the 1s safety net, freezing the cursor up to a second —
+fixed by clamping to a 1ms floor (`23971ba`). Also shipped nearby:
+tab-bar Enter-activation fix and daemon-scrollback copy fix. Plus
+unrelated GUI work: window opacity re-wired (`d7d9321` — the SDL2→SDL3
+migration had dropped the `SDL_SetWindowOpacity` call) + a
+`toggle_opacity` action/keybind/menu (`7900c6d`, `2cc6392`) for
+screenshot-safe opaque snapping.
 
 ## Beyond the original phases (also shipped)
 
