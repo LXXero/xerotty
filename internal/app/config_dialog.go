@@ -1329,7 +1329,7 @@ func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
 
 	imgui.Text("Context Menu Items")
-	imgui.TextDisabled("  edit a label inline · ^/v reorder within a level · + (submenus only) adds a child · X removes")
+	imgui.TextDisabled("  submenu names are editable · ^/v reorder within a level · + (submenus only) adds a child · X removes")
 	imgui.Separator()
 
 	a.renderMenuLevel(&d.menuItems, 0, "m")
@@ -1358,9 +1358,11 @@ func menuAddSelection(idx int32) string {
 }
 
 // renderMenuLevel draws one level of the menu editor and recurses into
-// each submenu, indented. The label is an inline InputText so the user
-// can name a submenu / rename any item; action items also get a shortcut
-// field. Structural edits (reorder / remove / add-child) are recorded
+// each submenu, indented. Only submenu rows expose an editable name
+// InputText (a submenu's name is its identity); action and separator
+// rows are read-only Text so the action's identity stays visible and
+// can't be blanked into a mystery row. Structural edits (reorder /
+// remove / add-child) are recorded
 // during the loop and applied after it so the slice isn't mutated
 // mid-iteration. Widget IDs are derived from idp+index so they stay
 // unique across the whole nested tree — colliding ImGui IDs would make
@@ -1390,20 +1392,27 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 			imgui.AlignTextToFramePadding()
 			imgui.Text("──────────  (separator)")
 		case item.isSubmenu:
+			// A submenu's name IS its identity, so it stays editable.
 			imgui.AlignTextToFramePadding()
 			imgui.Text("▸")
 			imgui.SameLineV(0, 6)
 			imgui.SetNextItemWidth(200)
 			imgui.InputTextWithHint("##lbl"+id, "submenu name", &item.label, 0, nil)
 		default:
+			// Action rows are READ-ONLY: the action's identity must
+			// always be visible. Renaming/blanking the label here would
+			// leave an anonymous mystery row (the editor shows the label,
+			// not the action id). Show the friendly label + shortcut hint.
+			label := item.label
+			if label == "" {
+				label = menuAddLabel(item.action)
+			}
+			text := "  " + label
+			if item.shortcut != "" {
+				text += "  (" + item.shortcut + ")"
+			}
 			imgui.AlignTextToFramePadding()
-			imgui.Text("•")
-			imgui.SameLineV(0, 6)
-			imgui.SetNextItemWidth(200)
-			imgui.InputTextWithHint("##lbl"+id, item.action, &item.label, 0, nil)
-			imgui.SameLineV(0, 6)
-			imgui.SetNextItemWidth(110)
-			imgui.InputTextWithHint("##sc"+id, "shortcut", &item.shortcut, 0, nil)
+			imgui.Text(text)
 		}
 
 		// Button column, right-aligned: ^ v [+|spacer] X. The + slot is
