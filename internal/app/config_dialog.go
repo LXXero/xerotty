@@ -194,6 +194,7 @@ type menuEditorItem struct {
 	action   string
 	shortcut string
 	enabled  string
+	checked  string
 }
 
 func prefIndexOf(items []string, val string) int32 {
@@ -365,6 +366,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 		d.menuItems = append(d.menuItems, menuEditorItem{
 			label: item.Label, action: item.Action,
 			shortcut: item.Shortcut, enabled: item.Enabled,
+			checked: item.Checked,
 		})
 	}
 	d.addActionIdx = 0
@@ -474,6 +476,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Menu.Items = append(cfg.Menu.Items, config.MenuItem{
 			Label: item.label, Action: item.action,
 			Shortcut: item.shortcut, Enabled: item.enabled,
+			Checked: item.checked,
 		})
 	}
 }
@@ -644,7 +647,15 @@ func (a *Window) renderPreferences() {
 	// only thing the user has to drag/close with.
 	prefFlags := imgui.WindowFlagsNoDocking
 	if multiViewport {
-		prefFlags |= imgui.WindowFlagsNoTitleBar
+		// OS chrome (the title bar) moves the window under multi-viewport,
+		// so also disable ImGui's own move-by-dragging-the-body. Without
+		// NoMove, clicking the inert background between widgets — e.g. the
+		// menu editor's Text rows — and twitching starts an ImGui
+		// window-move; on Wayland that move's mouse-up can be dropped
+		// during the viewport position/focus shuffle, leaving
+		// g.MovingWindow stuck so the whole dialog goes unclickable until
+		// it's closed and reopened.
+		prefFlags |= imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoMove
 	}
 	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, prefFlags) {
 		// OS close-button: under multi-viewport ImGui's &open bool
