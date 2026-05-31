@@ -252,6 +252,14 @@ type configDialog struct {
 	// Menu editor
 	menuItems    []menuEditorItem
 	addActionIdx int32
+	// Add-action chooser. ImGui combo dropdowns use BeginPopup, which is
+	// broken on this Wayland multi-viewport setup (the same reason
+	// menu.go hand-rolls its own menu) — the dropdown floated mid-window
+	// and was unclickable. So the chooser is an inline expand-in-place
+	// list instead of a combo: addChooserOpen toggles it, addChooserFilter
+	// is the type-to-filter text. addActionIdx still indexes prefMenuAddSorted.
+	addChooserOpen   bool
+	addChooserFilter string
 }
 
 // menuEditorItem is the editor's view of one menu entry. An entry is
@@ -484,6 +492,8 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 
 	d.menuItems = menuItemsToEditor(cfg.Menu.Items)
 	d.addActionIdx = 0
+	d.addChooserOpen = false
+	d.addChooserFilter = ""
 }
 
 func (d *configDialog) applyTo(cfg *config.Config) {
@@ -853,9 +863,14 @@ func (a *Window) renderPreferences() {
 			if imgui.BeginTabItem("Menu") {
 				// Shorten the scroll child by the footer's height so the
 				// Add controls (rendered AFTER EndChild, outside the
-				// scroll region — see renderPrefMenuAddFooter) have room
-				// and their combo dropdown positions correctly.
+				// scroll region — see renderPrefMenuAddFooter) have room.
+				// When the inline action chooser is open the footer grows
+				// by the filter field + list height; without reserving it
+				// the chooser would overlap the Apply/OK row.
 				footerH := imgui.FrameHeightWithSpacing() + 12
+				if a.prefDialog.addChooserOpen {
+					footerH += imgui.FrameHeightWithSpacing() + menuAddChooserListHeight() + 8
+				}
 				if imgui.BeginChildStrV("##menusc", imgui.Vec2{X: 0, Y: tabH - footerH}, 0, 0) {
 					a.renderPrefMenu()
 				}
@@ -1360,11 +1375,14 @@ func (a *Window) renderPrefMenu() {
 	a.renderMenuLevel(&d.menuItems, 0, "m")
 }
 
-// renderPrefMenuAddFooter draws the "Add Item" button + action combo as
-// a fixed footer below the scrollable list. The combo picks what the
-// next Add creates: an action item, a separator, or (via the _submenu
-// sentinel) a new empty submenu. It shows friendly labels sorted
-// alphabetically; selectedAddAction maps the choice back to the action.
+// renderPrefMenuAddFooter draws the "Add Item" button + the action
+// chooser as a fixed footer below the scrollable list. The chooser is an
+// INLINE expand-in-place list, NOT an ImGui combo: combo dropdowns use
+// BeginPopup, which is broken on this Wayland multi-viewport setup (same
+// reason menu.go hand-rolls its menu) — the dropdown floated mid-window
+// and was unclickable. Clicking the preview button toggles the inline
+// list; a filter field type-filters the sorted labels. selectedAddAction
+// maps d.addActionIdx (into prefMenuAddSorted) back to the action.
 func (a *Window) renderPrefMenuAddFooter() {
 	d := &a.prefDialog
 
@@ -1373,8 +1391,48 @@ func (a *Window) renderPrefMenuAddFooter() {
 		d.menuItems = append(d.menuItems, newMenuEditorItem(d.selectedAddAction()))
 	}
 	imgui.SameLineV(0, 8)
+
+	// Preview/toggle button showing the current selection.
+	preview := "(choose)"
+	if int(d.addActionIdx) >= 0 && int(d.addActionIdx) < len(prefMenuAddLabels) {
+		preview = prefMenuAddLabels[d.addActionIdx]
+	}
+	if imgui.ButtonV(preview+"##addchooser", imgui.Vec2{X: 200, Y: 0}) {
+		d.addChooserOpen = !d.addChooserOpen
+		d.addChooserFilter = ""
+	}
+
+	if !d.addChooserOpen {
+		return
+	}
+
+	// Inline chooser: filter field + scrollable bordered list. No popup.
 	imgui.SetNextItemWidth(200)
-	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuAddLabels, int32(len(prefMenuAddLabels)))
+	imgui.InputTextWithHint("##addfilter", "type to filter", &d.addChooserFilter, 0, nil)
+
+	filter := strings.ToLower(strings.TrimSpace(d.addChooserFilter))
+	listH := menuAddChooserListHeight()
+	if imgui.BeginChildStrV("##addaction_list", imgui.Vec2{X: 300, Y: listH}, imgui.ChildFlagsBorders, 0) {
+		for i, opt := range prefMenuAddSorted {
+			if filter != "" && !strings.Contains(strings.ToLower(opt.label), filter) {
+				continue
+			}
+			selected := int32(i) == d.addActionIdx
+			if imgui.SelectableBoolV(opt.label+fmt.Sprintf("##addopt%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0}) {
+				d.addActionIdx = int32(i)
+				d.addChooserOpen = false
+				d.addChooserFilter = ""
+			}
+		}
+	}
+	imgui.EndChild()
+}
+
+// menuAddChooserListHeight is the fixed height of the inline chooser's
+// scroll list (filter field height is added separately by the footer
+// sizing). ~7 rows; the list scrolls past that.
+func menuAddChooserListHeight() float32 {
+	return imgui.FrameHeightWithSpacing() * 7
 }
 
 // selectedAddAction is the single source of truth for what the Add combo
