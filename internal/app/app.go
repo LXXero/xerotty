@@ -3788,6 +3788,24 @@ func (w *Window) popupActive() bool {
 	return w.renamingTab || w.pendingPaste != "" || w.connectingHost
 }
 
+// inputOwnedByDialog reports whether a preferences dialog on ANY window
+// currently holds focus. processKeys runs only for a.active and the old
+// gate checked just that window's prefDialog — so with prefs focused on
+// Window A but Window B active, B still drained the global character
+// queue into its PTY (the combo type-ahead / label keystrokes leaked
+// behind the dialog). Scanning every window closes that multi-window
+// gap. The focus check (not just .open) avoids over-gating: if prefs is
+// open but the user clicked back to a terminal, the dialog isn't focused
+// and terminal input flows normally.
+func (a *App) inputOwnedByDialog() bool {
+	for _, w := range a.windows {
+		if w.prefDialog.open && w.prefDialog.focused {
+			return true
+		}
+	}
+	return false
+}
+
 func (w *Window) processKeys() {
 	// Only the focused Window consumes keyboard input. ImGui's IsKeyPressed
 	// is global, so without this gate every Window's frame() would see the
@@ -3807,16 +3825,19 @@ func (w *Window) processKeys() {
 		return
 	}
 
-	// Prefs dialog open: ImGui owns the keyboard for this Window — its
-	// InputText label fields and the Add combo's type-ahead read ImGui's
-	// char queue. Forwarding to the PTY here would leak every typed char
-	// into the shell behind the dialog (and steal the combo's letters).
-	// Gate on the dialog being open, NOT WantCaptureKeyboard: with
-	// NavEnableKeyboard set (sdl3.cpp), WantCaptureKeyboard is true even
-	// on plain terminal focus, so it would suppress normal typing. The
-	// prefs window's own EnsureTextInput (config_dialog.go) keeps feeding
-	// chars to ImGui, so combo type-ahead still works.
-	if w.prefDialog.open {
+	// A prefs dialog on ANY window owns the keyboard — its InputText
+	// label fields and the Add combo's type-ahead read ImGui's char
+	// queue. Forwarding to the PTY here would leak every typed char into
+	// the shell behind the dialog (and steal the combo's letters). Gate
+	// at the app level (not just this active window's prefDialog) so the
+	// multi-window case — prefs focused on Window A while Window B is
+	// active — doesn't leak A's keystrokes into B's PTY. This single
+	// early-return covers BOTH the translated-key path and the
+	// character-queue path below. NOT gated on WantCaptureKeyboard: with
+	// NavEnableKeyboard set (sdl3.cpp) that's true even on plain terminal
+	// focus, which would suppress normal typing. The prefs window's own
+	// EnsureTextInput keeps feeding chars to ImGui, so type-ahead works.
+	if w.app.inputOwnedByDialog() {
 		return
 	}
 

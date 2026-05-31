@@ -157,6 +157,13 @@ var prefMenuAddSorted, prefMenuAddLabels = buildMenuAddSorted()
 // configDialog holds state for the preferences window.
 type configDialog struct {
 	open       bool
+	// focused mirrors whether the prefs window (or its children/combo
+	// popup) holds ImGui focus this frame. App.inputOwnedByDialog reads
+	// it across ALL windows so the terminal input path can tell "a prefs
+	// dialog is being typed into" from "prefs is open but the user
+	// clicked back to a terminal" — even when the focused dialog belongs
+	// to a window that isn't app.active.
+	focused    bool
 	themeNames []string
 
 	// Appearance
@@ -757,7 +764,14 @@ func (a *Window) renderPreferences() {
 		// it's closed and reopened.
 		prefFlags |= imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoMove
 	}
+	// Reset each frame; set true below only while the prefs window
+	// actually holds focus (used by App.inputOwnedByDialog to gate
+	// terminal input across all windows).
+	a.prefDialog.focused = false
 	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, prefFlags) {
+		// RootAndChildWindows so the tab content, the menu editor's
+		// child, and the Add combo's popup all count as "prefs focused".
+		a.prefDialog.focused = imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows)
 		// OS close-button: under multi-viewport ImGui's &open bool
 		// doesn't propagate the WM's close — viewport.PlatformRequestClose
 		// does. Mirror it back to our open state.
