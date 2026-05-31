@@ -837,10 +837,16 @@ func (a *Window) renderPreferences() {
 				imgui.EndTabItem()
 			}
 			if imgui.BeginTabItem("Menu") {
-				if imgui.BeginChildStrV("##menusc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+				// Shorten the scroll child by the footer's height so the
+				// Add controls (rendered AFTER EndChild, outside the
+				// scroll region — see renderPrefMenuAddFooter) have room
+				// and their combo dropdown positions correctly.
+				footerH := imgui.FrameHeightWithSpacing() + 12
+				if imgui.BeginChildStrV("##menusc", imgui.Vec2{X: 0, Y: tabH - footerH}, 0, 0) {
 					a.renderPrefMenu()
 				}
 				imgui.EndChild()
+				a.renderPrefMenuAddFooter()
 				imgui.EndTabItem()
 			}
 			if imgui.BeginTabItem("Window") {
@@ -1325,6 +1331,11 @@ func (a *Window) renderPrefKeys() {
 	imgui.ComboStrarr("##shenter", &d.shEnIdx, prefShiftEnters, int32(len(prefShiftEnters)))
 }
 
+// renderPrefMenu draws the scrollable item list. The Add controls are
+// NOT here — they render as a fixed footer (renderPrefMenuAddFooter)
+// OUTSIDE the scrolling child. Inside the scroll region the combo's
+// dropdown was positioned relative to clipped/scrolled content, so on
+// Wayland it floated mid-window and couldn't be clicked.
 func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
 
@@ -1333,11 +1344,16 @@ func (a *Window) renderPrefMenu() {
 	imgui.Separator()
 
 	a.renderMenuLevel(&d.menuItems, 0, "m")
+}
 
-	// The combo picks what the next Add creates: an action item, a
-	// separator, or (via the _submenu sentinel) a new empty submenu.
-	// It shows friendly labels sorted alphabetically; menuAddSelection
-	// maps the chosen index back to the real action.
+// renderPrefMenuAddFooter draws the "Add Item" button + action combo as
+// a fixed footer below the scrollable list. The combo picks what the
+// next Add creates: an action item, a separator, or (via the _submenu
+// sentinel) a new empty submenu. It shows friendly labels sorted
+// alphabetically; selectedAddAction maps the choice back to the action.
+func (a *Window) renderPrefMenuAddFooter() {
+	d := &a.prefDialog
+
 	imgui.Separator()
 	if imgui.Button("Add Item") {
 		d.menuItems = append(d.menuItems, newMenuEditorItem(d.selectedAddAction()))
