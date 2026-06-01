@@ -6,7 +6,7 @@ to one or more daemons over a structured protocol — plus an **MCP
 socket** so AI agents (Claude Code, Xyphia, custom orchestrators)
 read/write sessions as first-class clients alongside the UI.
 
-**Status: shipped on `spike/daemon`.** This doc is the design +
+**Status: shipped (merged to `main`).** This doc is the design +
 rationale; the "Phased delivery" section near the bottom tracks
 exactly what landed. `docs/DAEMON_STATUS.md` is the
 where-the-code-lives + how-to-verify companion.
@@ -585,7 +585,7 @@ Layered, in dependency order:
 Supersedes the "broadcast back-pressure" open-question — layer 1 is
 that fix, generalized.
 
-**As-built status** (all SHIPPED + pushed on `spike/daemon`; `-race`
+**As-built status** (all SHIPPED; `-race`
 clean, GUI + headless build):
 
 - **Layers 1-3: SHIPPED.** `0e16340` (layer 1 — per-client async

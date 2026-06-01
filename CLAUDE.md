@@ -42,7 +42,7 @@ headless daemon. ONE binary, three roles via subcommand:
   wire-protocol socket, and the MCP socket.
 - `xerotty connect` — CLI thin client.
 
-Shipped on `spike/daemon`. See `docs/DAEMON_PLAN.md` (design +
+Shipped (merged to `main`). See `docs/DAEMON_PLAN.md` (design +
 phase history) and `docs/DAEMON_STATUS.md` (package map +
 how-to-verify). Two protocols: msgpack wire (`internal/protocol`)
 for the terminal data plane, JSON-RPC/MCP (`internal/mcp` +

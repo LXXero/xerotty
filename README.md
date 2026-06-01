@@ -22,7 +22,7 @@ The rest follows from "no, you don't have to fight your terminal":
 
 ## Status
 
-Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize render, OSC preprocessor, mouse mirror, clipboard via SDL native), runtime glyph cache replacing ImGui's static atlas for terminal cells, iTerm2-style word/line drag selection. See `TODO.md` for what's done and what's open.
+Working daily-driver. Recent arcs: the SDL2→SDL3 platform migration, and an optional headless **daemon** that owns terminal sessions so the GUI can detach/reattach, attach to remote hosts over SSH, and expose sessions to AI agents over MCP — all opt-in; in-process by default. Earlier focus: macOS support (cell-snap resize, live-resize render, OSC preprocessor, mouse mirror, clipboard via SDL native), runtime glyph cache replacing ImGui's static atlas for terminal cells, iTerm2-style word/line drag selection. See `TODO.md` for what's done and what's open.
 
 ## Features
 
@@ -54,6 +54,15 @@ Working daily-driver. Recent focus: macOS support (cell-snap resize, live-resize
 - Right-click menu — fully driven from TOML, supports nested submenus, action conditions (`enabled = "has_selection"`), shell-exec actions with `$XEROTTY_SELECTION` / `$XEROTTY_CWD`
 - Keybinds — every action rebindable, including a separate `Cmd+...` set for macOS
 - Themes — bundled (Dracula, Gruvbox Dark, Monokai, Solarized Dark/Light, Tango); load any iTerm2 `.itermcolors` via `tools/iterm2-import.go`
+
+### Daemon / remote / AI control (optional)
+- In-process by default — no daemon, no server, no phone-home. Everything below is strictly opt-in.
+- `xerotty serve` — headless daemon that owns PTYs, scrollback, and the wire protocol; the GUI can close and reattach with tabs + scrollback intact (`source = "daemon"` under `[tabs]`)
+- Remote attach over SSH — drive terminal sessions running on another host from the local GUI
+- `xerotty connect` — CLI thin client to a local or remote daemon
+- AI control via MCP — agents (Claude Code, custom orchestrators) read/write sessions as first-class clients over a JSON-RPC/MCP socket, alongside the GUI; trust-gated (`default_mode` / approval tokens)
+- `./build.sh headless` produces a lean `serve` + `connect` binary with no SDL3/GL/ImGui linked, for server installs
+- Design + code map: [`docs/DAEMON_PLAN.md`](docs/DAEMON_PLAN.md), [`docs/DAEMON_STATUS.md`](docs/DAEMON_STATUS.md)
 
 ## Build
 
@@ -94,30 +103,40 @@ go run ./tools/iterm2-import.go path/to/Theme.itermcolors > ~/.config/xerotty/th
 ## Architecture
 
 ```
-PTY (creack/pty)  →  SafeEmulator (charmbracelet/x/vt)  →  ImDrawList (cimgui-go SDL2 backend)
+PTY (creack/pty)  →  SafeEmulator (charmbracelet/x/vt)  →  ImDrawList (SDL3 + Dear ImGui)
      ↑                                                              ↓
-  keyboard / mouse  ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←  SDL2 window
+  keyboard / mouse  ←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←←  SDL3 window
 ```
 
-Two goroutines per terminal (PTY reader, emulator-response reader); main thread locked to the OS thread for SDL2/OpenGL drives the ImGui frame loop. "New Window" spawns an additional in-process OS window via ImGui multi-viewport — one process, one ImGui context, N visible windows sharing font caches and config. See [`docs/MULTI_WINDOW_REFACTOR.md`](docs/MULTI_WINDOW_REFACTOR.md) for the architecture.
+Two goroutines per terminal (PTY reader, emulator-response reader); main thread locked to the OS thread for SDL3/OpenGL drives the ImGui frame loop. "New Window" spawns an additional in-process OS window via ImGui multi-viewport — one process, one ImGui context, N visible windows sharing font caches and config. See [`docs/MULTI_WINDOW_REFACTOR.md`](docs/MULTI_WINDOW_REFACTOR.md) for the architecture.
+
+Tabs run in-process by default. With `source = "daemon"` they instead live in a headless `xerotty serve` process over a msgpack wire protocol, so the GUI is a thin client that can detach, reattach, and span local + remote daemons; a JSON-RPC/MCP socket lets AI agents drive the same sessions. See [`docs/DAEMON_PLAN.md`](docs/DAEMON_PLAN.md).
 
 Full architecture, package responsibilities, and rendering pipeline detail in [`SPEC.md`](SPEC.md).
 
 ## Repository layout
 
 ```
-cmd/xerotty/         entry point
-internal/app/        SDL2/ImGui lifecycle, main loop, keybind dispatch
+cmd/xerotty/         entry point (xerotty / serve / connect)
+internal/app/        main loop, window/tab lifecycle, keybind dispatch, prefs
 internal/config/     TOML parsing, defaults
-internal/terminal/   SafeEmulator + PTY
+internal/terminal/   SafeEmulator + PTY, disk scrollback, Source interface
 internal/renderer/   cell grid → ImDrawList
 internal/fontsys/    OS font discovery (CoreText / fontconfig)
 internal/glyphcache/ per-codepoint GPU texture cache
-internal/sdlhack/    SDL2 platform-quirk workarounds
+internal/platform/   SDL3 + Dear ImGui backend (cgo glue)
 internal/menu/       config-driven right-click menu
 internal/themes/     theme loading
 internal/scrollback/ buffer / search / disk swap
-docs/                planning notes (resize, original architecture)
+# daemon / remote / MCP arc:
+internal/protocol/   msgpack wire format (codegen via msgp)
+internal/daemon/     session + tab + window mgmt, client registry
+internal/runner/     serve / connect / stdio-bridge subcommands
+internal/clientproto/  client side of the wire protocol
+internal/daemonsource/ Hub + Source for daemon-backed GUI tabs
+internal/mcp/        per-daemon JSON-RPC/MCP server
+internal/guimcp/     GUI's aggregating MCP server (one socket, all daemons)
+docs/                planning notes (daemon, SDL3, resize, multi-window)
 themes/              bundled palettes
 tools/               iterm2-import, glyph-dump diagnostic
 ```

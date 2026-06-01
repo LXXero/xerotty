@@ -1,6 +1,6 @@
 # Daemon — current state + where the code lives
 
-The daemon arc is **shipped on `spike/daemon`**. This is the
+The daemon arc is **shipped (merged to `main`)**. This is the
 orientation doc: what exists, where, how to verify. `DAEMON_PLAN.md`
 is the design + rationale + phase history.
 
@@ -17,7 +17,7 @@ No separate `xerottyd` executable; socket filenames keep the
 
 Two protocols, two sockets:
 - **Wire** (GUI/CLI ↔ daemon): msgpack, `internal/protocol`.
-  `[u32 len BE][u8 type][msgpack body]`, `ProtocolVersion = 3`.
+  `[u32 len BE][u8 type][msgpack body]`, `ProtocolVersion = 7`.
 - **MCP** (agents ↔ daemon, GUI ↔ agents): line-delimited
   JSON-RPC 2.0, `internal/mcp` + `internal/guimcp`.
 
@@ -80,9 +80,11 @@ your config, launch `xerotty`. It auto-spawns `xerotty serve`
 
 - Multi-attach input is last-writer-wins, not collaborative
   cursor-sharing.
-- `xerotty serve` links SDL3/ImGui even though it never renders;
-  a build tag to strip them for minimal headless installs isn't
-  done.
+- The default GUI build's `xerotty serve` links SDL3/ImGui even
+  though it never renders. For minimal server installs, build the
+  lean artifact with `./build.sh headless` (the `-tags headless`
+  build strips SDL3/GL/ImGui/freetype/fontconfig — `serve` +
+  `connect` only) and install it as `xerotty`.
 - `guimcp` is ungated (it's the user's own trusted GUI process)
   and covers daemon-backed tabs only — which is all tabs in
   daemon mode; pure in-process PTY mode has no MCP by design.

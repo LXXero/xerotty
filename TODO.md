@@ -44,12 +44,30 @@
 - [x] cell-snap window resize (`NSWindow.setContentResizeIncrements:`)
 - [x] live-resize render — SDL event watch drives a full ImGui frame from inside AppKit's tracking mode
 
+### SDL3 platform migration
+- [x] SDL2 → SDL3 + Dear ImGui's official SDL3 backend, via the `internal/platform` cgo layer (`docs/SDL3_PLAN.md`)
+- [x] native Wayland popups (`SDL_CreatePopupWindow` + `wlgrab`) replacing the broken multi-viewport ImGui popups; keyboard-navigable right-click menu + prefs choosers
+- [x] tab drag, disk scrollback, snap-resize ported onto SDL3
+
+### Daemon / remote / MCP (`docs/DAEMON_PLAN.md`, `docs/DAEMON_STATUS.md`)
+- [x] one binary, three roles — `xerotty` (GUI) / `xerotty serve` (headless daemon) / `xerotty connect` (CLI client)
+- [x] msgpack wire protocol (`internal/protocol`, codegen via msgp); daemon owns PTYs + scrollback
+- [x] detach / reattach — close the GUI, reopen, tabs + scrollback survive (`source = "daemon"`, auto-spawns the daemon)
+- [x] SSH remote attach — drive sessions on another host from the local GUI
+- [x] structured paste + OSC 52 clipboard sync over the wire
+- [x] MCP control — per-daemon JSON-RPC/MCP server + GUI-aggregating socket (host-namespaced tab IDs); trust model (`default_mode` / approval tokens)
+- [x] multi-attach + topology broadcast + snapshot/revision resync
+- [x] connection resilience — dead/hung/slept client detection (async bounded writers, app heartbeat, write deadlines, SSH keepalive); live-validated
+- [x] `./build.sh headless` — lean `serve` + `connect` binary, no SDL3/GL/ImGui linked, for server installs
+
 ## Open
 
 ### Low priority / later
 - [ ] image paste / Kitty graphics protocol — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
 - [ ] Tmux helpers (SPEC §6.13) — explicitly last per original plan
 - [ ] iTerm2-style "smart selection" — URL / path / IP / git-hash auto-detect on quad-click or modifier-drag
+- [ ] daemon: SHM local cell-grid transport (Plan Phase 8) — deferred; msgpack is fast enough so far
+- [ ] daemon: per-host color badges + destructive-command gate for remote sessions (Plan Phase 6 future)
 
 ## Notes
 
