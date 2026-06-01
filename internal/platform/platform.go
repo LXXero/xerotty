@@ -110,6 +110,15 @@ func PostWake() {
 	C.platform_post_wake()
 }
 
+// SetIdleTimeout bounds how long the render loop parks when idle (in
+// milliseconds) before forcing a frame. The app calls this each frame:
+// the time until the next cursor-blink toggle when a focused cursor is
+// blinking (so the blink keeps ticking), otherwise a longer safety-net.
+// Pass a finite value — never 0 — so a missed wake can't freeze the UI.
+func SetIdleTimeout(ms int) {
+	C.platform_set_idle_timeout_ms(C.int(ms))
+}
+
 // Quit signals the main loop to exit on its next iteration. Thread-safe.
 // Replaces sdlQuit() in internal/app/sdl_helpers.go.
 func Quit() { C.platform_request_quit() }
@@ -149,6 +158,28 @@ func SetWindowIcon(windowID uintptr, pixels []byte, width, height int) {
 // macOS hasn't transitioned focus yet.
 func RaiseWindow(windowID uintptr) {
 	C.platform_raise_window(C.ulong(windowID))
+}
+
+// SetWindowOpacity sets whole-window opacity (0..1) on the SDL_Window
+// with the given ID (a viewport PlatformHandle). Restores the documented
+// `opacity` config the SDL2→SDL3 migration dropped.
+func SetWindowOpacity(windowID uintptr, opacity float32) {
+	C.platform_set_window_opacity(C.ulong(windowID), C.float(opacity))
+}
+
+// EnsureTextInput re-asserts SDL text input on the window so the
+// terminal keeps receiving typed characters (SDL_EVENT_TEXT_INPUT →
+// io.InputQueueCharacters). The ImGui SDL3 backend calls
+// SDL_StopTextInput on a window when an InputText there deactivates,
+// so any dialog pinned to the terminal's viewport (rename, connect,
+// search) silently kills terminal typing on close. Called every frame
+// the terminal owns keyboard input; a no-op (guarded by
+// SDL_TextInputActive) when already active. windowID 0 is ignored.
+func EnsureTextInput(windowID uintptr) {
+	if windowID == 0 {
+		return
+	}
+	C.platform_ensure_text_input(C.ulong(windowID))
 }
 
 // MouseFocusWindowID returns the SDL_WindowID of the window the OS

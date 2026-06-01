@@ -23,8 +23,40 @@ type Config struct {
 	Links      LinksConfig      `toml:"links"`
 	Clipboard  ClipboardConfig  `toml:"clipboard"`
 	Env        map[string]string `toml:"env"`
-	Tabs       TabConfig  `toml:"tabs"`
+	Tabs       TabConfig    `toml:"tabs"`
+	Hosts      []RemoteHost `toml:"hosts"`
 	Window     WindowConfig `toml:"window"`
+	MCP        MCPConfig    `toml:"mcp"`
+}
+
+// MCPConfig controls the AI-agent control socket's trust model.
+//
+// The default (observe, mode changes allowed) is fine for a local
+// trusted setup where you run the agent yourself. To turn the
+// propose queue into a real human-approval gate:
+//
+//	[mcp]
+//	default_mode = "propose"   # agents land here
+//	allow_mode_change = false  # ...and can't elevate themselves
+//	approval_token = "secret"  # your review tool authenticates
+//	                           # with this to gain auto authority
+//
+// With that, a propose-mode agent can queue writes but can't
+// approve them; only a connection that presented approval_token
+// (via the agent/authenticate method) can approve/drop.
+type MCPConfig struct {
+	// DefaultMode is the mode every new MCP connection starts in.
+	// "observe" (default) | "propose" | "auto".
+	DefaultMode string `toml:"default_mode"`
+	// AllowModeChange lets connections call agent/mode to change
+	// their own mode. Default true. Set false to pin connections
+	// at DefaultMode (except token-authenticated ones).
+	AllowModeChange bool `toml:"allow_mode_change"`
+	// ApprovalToken, when non-empty, is the shared secret a
+	// connection presents via agent/authenticate to gain
+	// approval authority (auto mode) even when AllowModeChange
+	// is false. Empty = no token auth.
+	ApprovalToken string `toml:"approval_token"`
 }
 
 // Appearance controls visual settings.
@@ -78,7 +110,11 @@ type MenuItem struct {
 	Action   string     `toml:"action"`
 	Shortcut string     `toml:"shortcut"`
 	Enabled  string     `toml:"enabled"`
-	Submenu  []MenuItem `toml:"submenu"`
+	// Checked is an optional state predicate (like Enabled). When it
+	// evaluates true the item renders with a "toggled on" highlight —
+	// e.g. "force_opaque" for the opacity toggle. Empty = never checked.
+	Checked string     `toml:"checked"`
+	Submenu []MenuItem `toml:"submenu"`
 }
 
 // ScrollbackConfig controls scrollback buffer behavior.
@@ -122,10 +158,39 @@ type UnsafePasteConfig struct {
 }
 
 // TabConfig controls tab behavior.
+// RemoteHost is one entry in the user's host registry. Tabs can be
+// opened against a named host via the menu action "new_tab_remote:<name>"
+// or by setting cfg.Tabs.Source = "daemon:<name>". xerotty connects
+// to that host via SSH and routes the tab's PTY through the remote
+// daemon. The connection is persistent (auto-spawned remote daemon
+// stays up across SSH disconnects) so tab survival works
+// cross-machine.
+type RemoteHost struct {
+	Name      string   `toml:"name"`       // referenced by menu actions / cfg.Tabs.Source
+	SSHDest   string   `toml:"ssh_dest"`   // anything ssh(1) accepts: "user@host", "host", an alias
+	SSHArgs   []string `toml:"ssh_args"`   // optional extra args before <dest>: -i, -p, ...
+	RemoteCmd string   `toml:"remote_cmd"` // override; default "xerotty serve --stdio"
+}
+
 type TabConfig struct {
 	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
 	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
 	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
+
+	// Source picks where new tabs get their PTY:
+	//   "pty"    (default) — in-process PTY, no daemon needed.
+	//   "daemon" — talk to an xerotty daemon (xerotty serve). If
+	//              one isn't running on the local socket, xerotty
+	//              forks one in the background at GUI startup
+	//              ("auto-spawn"). Lets tabs survive the GUI
+	//              crashing and lets you reattach from another
+	//              machine via xerotty connect --ssh.
+	Source string `toml:"source"`
+
+	// DaemonSocket overrides the unix-socket path xerotty connects
+	// to when Source == "daemon". Empty = default
+	// $XDG_RUNTIME_DIR/xerottyd.sock.
+	DaemonSocket string `toml:"daemon_socket"`
 }
 
 // WindowConfig controls initial window state.
@@ -207,6 +272,10 @@ func Default() Config {
 			Columns: 80,
 			Rows:    24,
 			Title:   "xerotty",
+		},
+		MCP: MCPConfig{
+			DefaultMode:     "observe",
+			AllowModeChange: true,
 		},
 	}
 }
@@ -329,6 +398,7 @@ func defaultKeybindsLinux() map[string]string {
 		"Shift+Home":       "scroll_top",
 		"Shift+End":        "scroll_bottom",
 		"Ctrl+Comma":       "preferences",
+		"Ctrl+Shift+O":     "toggle_opacity",
 	}
 }
 
@@ -366,6 +436,7 @@ func defaultKeybindsDarwin() map[string]string {
 		"Shift+Home":      "scroll_top",
 		"Shift+End":       "scroll_bottom",
 		"Ctrl+Comma":      "preferences",
+		"Ctrl+Shift+O":    "toggle_opacity",
 	}
 }
 
@@ -381,6 +452,12 @@ func defaultMenuLinux() MenuConfig {
 		Items: []MenuItem{
 			{Label: "New Tab", Action: "new_tab", Shortcut: "Ctrl+Shift+T"},
 			{Label: "New Window", Action: "new_window", Shortcut: "Ctrl+Shift+N"},
+			// "_remote_hosts" is a placeholder action expanded at
+			// render time into a "Remote" submenu with per-host
+			// new-tab / reattach items, one pair per [[hosts]]
+			// entry. Collapses to nothing when no hosts are
+			// configured.
+			{Action: "_remote_hosts"},
 			{Action: "separator"},
 			{Label: "Copy", Action: "copy", Shortcut: "Ctrl+Shift+C", Enabled: "has_selection"},
 			{Label: "Paste", Action: "paste", Shortcut: "Ctrl+Shift+V"},
@@ -390,6 +467,7 @@ func defaultMenuLinux() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Ctrl+Shift+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Ctrl+Shift+O", Checked: "force_opaque"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
@@ -403,6 +481,10 @@ func defaultMenuDarwin() MenuConfig {
 		Items: []MenuItem{
 			{Label: "New Tab", Action: "new_tab", Shortcut: "Cmd+T"},
 			{Label: "New Window", Action: "new_window", Shortcut: "Cmd+N"},
+			// _remote_hosts expands to per-host new/reattach
+			// entries at render time (see app.expandMenu).
+			// Collapses when cfg.Hosts is empty.
+			{Action: "_remote_hosts"},
 			{Action: "separator"},
 			{Label: "Copy", Action: "copy", Shortcut: "Cmd+C", Enabled: "has_selection"},
 			{Label: "Paste", Action: "paste", Shortcut: "Cmd+V"},
@@ -412,6 +494,7 @@ func defaultMenuDarwin() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+Shift+O", Checked: "force_opaque"},
 			{Action: "separator"},
 			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+Shift+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},

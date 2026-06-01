@@ -4,12 +4,16 @@ package app
 import (
 	"fmt"
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/guimcp"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/menu"
 	"github.com/LXXero/xerotty/internal/platform"
+	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
@@ -18,10 +22,13 @@ import (
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -50,8 +57,114 @@ type App struct {
 	baseCellH       float32 // cell height at base font size
 	pendingFontFace bool    // rebuild font atlas at start of next frame
 
+	// forceOpaque overrides cfg.Appearance.Opacity to 1.0 while set.
+	// Toggled by the "toggle_opacity" action (keybind / menu) so the
+	// window can be made provably leak-free before a screenshot — a
+	// translucent window blends whatever's behind it. Read each frame by
+	// the per-Window opacity apply in Run().
+	forceOpaque atomic.Bool
+
+	// menuActivityFrame is the main-loop FrameCount on which some
+	// Window opened its context menu. Opening a menu runs a blocking
+	// popup that grabs the OS pointer, so by the time the NEXT Window's
+	// frame() checks MouseFocusWindowID (same main frame — the popup
+	// uses a separate ImGui context, FrameCount unchanged) the focus
+	// has moved to it and it would open a second menu. Gating opens on
+	// "FrameCount != menuActivityFrame" keeps it one-menu-per-frame.
+	menuActivityFrame int
+
+	// Daemon-source plumbing — only populated when cfg.Tabs.Source
+	// == "daemon". hub owns the connection + frame router; each
+	// Window builds its own tabs.Manager.SourceFactory via
+	// installSourceFactory so multi-window setups route NewTab
+	// calls to the right daemon window.
+	//
+	// daemonMu guards daemonHub + daemonHubName + guiMCP: read
+	// from the guimcp server's request goroutines (ListTabs /
+	// SourceFor) and written from init/reconnect paths
+	// (activeDaemonHub re-dial). daemonHubName is the default
+	// hub's host namespace ("local", or a cfg.Hosts name in
+	// daemon:<name> mode) — so the aggregated MCP doesn't list a
+	// remote-default daemon's tabs as both "local:" and "<host>:".
+	daemonMu      sync.Mutex
+	daemonHub     *daemonsource.Hub
+	daemonHubName string
+
+	// daemonAdoptQueue holds windows + their tabs the daemon
+	// reported at Attach time, in the order they came back. Each
+	// GUI Window that opens in daemon mode drains one entry —
+	// adopting its tabs AND remembering its daemon-window ID so
+	// future tab creates / geometry / focus updates target the
+	// right server-side window. Empty queue → new GUI windows
+	// spawn fresh daemon windows via SendWindowCreate.
+	daemonAdoptQueue []daemonWindowSnapshot
+
+	// remoteHubs is the lazy-built per-host registry of SSH-backed
+	// daemon hubs. Keyed by RemoteHost.Name. Populated on the
+	// first menu action / tab creation that targets a named host;
+	// reused for subsequent tabs to that same host so a single SSH
+	// connection serves many tabs.
+	remoteHubsMu sync.Mutex
+	remoteHubs   map[string]*remoteHubEntry
+
+	// adhocHosts holds ad-hoc "Connect to host…" targets the user
+	// typed this session — connections NOT backed by a [[hosts]]
+	// bookmark. Keyed by the same string used as the hub registry
+	// key + Tab.Host badge (the typed destination, e.g. "user@kh").
+	// resolveRemote consults this so re-dials after an SSH drop can
+	// recover the dest/args without a cfg entry. Main-thread only
+	// (touched from the connect dialog + remoteHubFor, both on the
+	// UI goroutine), so it shares no lock with remoteHubs.
+	adhocHosts map[string]config.RemoteHost
+
+	// suppressInitialTab tells spawnWindowImpl to skip ALL tab
+	// creation for the next spawn — used by spawnEmptyWindow when
+	// the caller will adopt tabs into the window itself (remote
+	// reattach). Reset to false right after.
+	suppressInitialTab bool
+
+	// pendingProposals is the propose-mode queue across ALL hubs,
+	// each entry tagged with its originating hub + host name so
+	// Approve/Drop resolves against the RIGHT daemon (not just the
+	// local/default one). Guarded by proposalsMu (written from hub
+	// router goroutines, read from the render thread).
+	proposalsMu      sync.Mutex
+	pendingProposals []guiProposal
+
+	// Clipboard-push throttle: a remote PTY's OSC 52 GET is
+	// answered server-side from the session clipboard, which is
+	// only fresh if the GUI pushed recent clipboard contents. We
+	// poll the OS clipboard on a slow timer and push on change so
+	// "copied in another app → OSC 52 read in a remote shell"
+	// returns current data, not just what xerotty itself copied.
+	lastClipboardPush string
+	lastClipboardPoll time.Time
+
+	// guiMCP is the GUI's aggregating MCP server (one socket
+	// covering every daemon hub). Started lazily the first time a
+	// daemon hub comes up. nil in PTY mode.
+	guiMCP *guimcp.Server
+
 	windows []*Window // every OS window currently open in this process
 	active  *Window   // the window with input focus, or windows[0] if none
+
+	// focusedSources is a snapshot of the daemon Sources that are the
+	// active tab of some window, republished once per frame on the
+	// main thread. The guimcp Backend (a separate goroutine) reads it
+	// via an atomic load instead of walking a.windows / each window's
+	// tabs.Manager — both of which are main-thread-only structures
+	// (public Tabs/ActiveIdx fields, no internal lock) that the UI
+	// mutates without synchronization. Publishing a snapshot keeps
+	// those structures single-threaded and gives MCP a race-free read.
+	focusedSources atomic.Pointer[map[*daemonsource.Source]bool]
+
+	// pendingTopo holds the latest topology snapshot per hub awaiting a
+	// main-thread reconcile. The Hub fires SetTopologyCallback on its
+	// router goroutine; GUI tab/window mutation must happen on the main
+	// thread, so the callback just stashes here (latest wins) + wakes
+	// the loop, and applyPendingTopology drains it each frame.
+	topoMu      sync.Mutex
+	pendingTopo map[*daemonsource.Hub]pendingTopoSnap
 
 	// dragTab is the process-wide state for an in-progress drag of a
 	// tab across windows. nil when no drag is happening. Set when the
@@ -80,6 +193,14 @@ type App struct {
 	// to be a window-drag gesture rather than a content click.
 	anyWindowMovingThisFrame bool
 
+	// idleWakeMs is the shortest time (ms) until the render loop next
+	// NEEDS to wake while idle — reset to idleSafetyNetMs at the top of
+	// wrappedFrame and lowered to the next cursor-blink toggle while
+	// drawing a blinking cursor. Pushed to the platform via
+	// SetIdleTimeout at the end of the frame so an idle screen parks at
+	// ~0% CPU yet a blinking cursor keeps ticking.
+	idleWakeMs int
+
 	// mirrorPendingDown is set on the OS button-down edge — but
 	// instead of injecting the synthetic DOWN immediately we wait
 	// a few frames. If the window starts moving OR the cursor
@@ -106,7 +227,7 @@ type App struct {
 // implicit pointer grab can keep it stuck on the source Window, so a
 // Wayland data-device drop target or geometry hit-test wins first.
 type tabDrag struct {
-	Term               *terminal.Terminal
+	Term               terminal.Source
 	Label              string  // for floating-preview rendering
 	From               *Window // window the tab originated in; used to reject stale source focus
 	LastFocus          uintptr // SDL_WindowID last seen under the cursor during the drag
@@ -121,10 +242,1280 @@ type tabDrag struct {
 // initialized.
 func New(cfg config.Config) *App {
 	a := &App{cfg: cfg}
+	// Tab-source modes:
+	//   "" / "pty"      — in-process PTY (default)
+	//   "daemon"        — local auto-spawned daemon
+	//   "daemon:<name>" — remote daemon from cfg.Hosts[<name>]
+	src := cfg.Tabs.Source
+	switch {
+	case src == "daemon":
+		if err := a.initDaemonSource(); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: daemon mode requested but unavailable, falling back to in-process PTY: %v\n", err)
+		}
+	case strings.HasPrefix(src, "daemon:"):
+		host := strings.TrimPrefix(src, "daemon:")
+		if err := a.initRemoteDefaultSource(host); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: daemon:%s requested but unavailable, falling back to in-process PTY: %v\n", host, err)
+		}
+	}
 	w := newWindow(a)
 	a.windows = append(a.windows, w)
 	a.active = w
 	return a
+}
+
+// initRemoteDefaultSource is like initDaemonSource but uses a
+// remote hub (lazily SSH-dialed via cfg.Hosts) as the app-wide
+// daemonHub. Every new window's source factory routes through it,
+// so default-tab creation lands on the remote box. Used when the
+// user sets cfg.Tabs.Source = "daemon:<name>".
+//
+// Unlike the local daemon path, no daemon auto-spawn happens
+// locally — the remote box is expected to have xerotty serve
+// reachable (the SSH bridge auto-spawns its persistent daemon).
+func (a *App) initRemoteDefaultSource(name string) error {
+	entry, err := a.remoteHubFor(name)
+	if err != nil {
+		return err
+	}
+	// Move the remote's window snapshots into the app-wide adopt
+	// queue. spawnWindowImpl drains it on each new GUI window so
+	// multi-window remote layouts restore properly.
+	a.remoteHubsMu.Lock()
+	a.daemonAdoptQueue = append(a.daemonAdoptQueue, entry.reattachQueue...)
+	entry.reattachQueue = nil
+	a.remoteHubsMu.Unlock()
+
+	// Key the default hub by the host name, NOT "local" — in
+	// daemon:<name> mode the default daemon IS the remote, and
+	// the aggregated MCP must list its tabs once (as "<host>:"),
+	// not also as "local:".
+	a.setDaemonHub(entry.hub, name)
+	// Scrollback cap mirrors local-daemon path.
+	cap := a.cfg.Scrollback.Lines
+	if a.cfg.Scrollback.Mode == "unlimited" {
+		cap = 1_000_000
+	}
+	if cap > 0 {
+		entry.hub.SetScrollbackCap(cap)
+	}
+	return nil
+}
+
+// remoteHubEntry pairs a per-host Hub with any windows+tabs the
+// remote daemon reported at attach time but the GUI hasn't adopted
+// yet. reattachQueue preserves the daemon's window grouping +
+// per-window tab order + FocusedTabID so the user's remote layout
+// reappears intact (not flattened into one undifferentiated list).
+type remoteHubEntry struct {
+	hub           *daemonsource.Hub
+	reattachQueue []daemonWindowSnapshot
+}
+
+// pollClipboardForDaemons reads the OS clipboard at most once a
+// second and, when it changed since the last push, broadcasts it
+// to every daemon. Keeps the daemon-side session clipboard fresh
+// enough that a remote PTY app's OSC 52 GET returns what's
+// actually on the user's clipboard — including text copied in a
+// different app — not just xerotty's own last copy. No-op when no
+// daemon hub is active. Called from the render loop; the time
+// gate keeps the SDL clipboard read off the per-frame hot path.
+func (a *App) pollClipboardForDaemons() {
+	now := time.Now()
+	if now.Sub(a.lastClipboardPoll) < time.Second {
+		return
+	}
+	a.lastClipboardPoll = now
+	// Any hub (default OR ad-hoc remote) wants fresh clipboard for
+	// OSC 52 GET — broadcastClipboard pushes to all of them. Don't
+	// gate on the default hub alone, or PTY-default mode with
+	// ad-hoc remote tabs would never push.
+	if len(a.hubsByName()) == 0 {
+		return
+	}
+	text, err := input.ClipboardRead()
+	if err != nil || text == "" {
+		return
+	}
+	if text == a.lastClipboardPush {
+		return
+	}
+	a.lastClipboardPush = text
+	a.broadcastClipboard(text)
+}
+
+// broadcastClipboard pushes the given text to every daemon Hub
+// this app talks to (local + every remote in remoteHubs).
+// Daemon's MCP get_clipboard returns the most recently received
+// text per session; broadcasting keeps copy/paste consistent
+// across local + remote tabs.
+func (a *App) broadcastClipboard(text string) {
+	if a.daemonHub != nil {
+		_ = a.daemonHub.Client().SendClipboardData(text)
+	}
+	a.remoteHubsMu.Lock()
+	hubs := make([]*daemonsource.Hub, 0, len(a.remoteHubs))
+	for _, e := range a.remoteHubs {
+		hubs = append(hubs, e.hub)
+	}
+	a.remoteHubsMu.Unlock()
+	for _, h := range hubs {
+		_ = h.Client().SendClipboardData(text)
+	}
+}
+
+// cursorStyleName maps the vt cursor shape enum (0=block,
+// 1=underline, 2=bar) to the renderer's cursor-style string.
+// This is the vt/protocol enum, NOT raw DECSCUSR codes — the
+// daemon + terminal both normalize to the vt enum before it
+// reaches here.
+func cursorStyleName(style uint8) string {
+	switch style {
+	case 1:
+		return "underline"
+	case 2:
+		return "bar"
+	default: // 0 = block
+		return "block"
+	}
+}
+
+// expandMenu walks the configured menu items and replaces magic
+// placeholders with synthesized items:
+//
+//   "_remote_hosts" — expands into a "Remote Hosts" submenu
+//                     listing each cfg.Hosts entry with two child
+//                     items: "New tab on <host>" and "Reattach
+//                     <host>". If cfg.Hosts is empty the
+//                     placeholder collapses to nothing so the
+//                     menu doesn't show a useless empty entry.
+//
+// Other items pass through untouched. Default menu config
+// includes the placeholder so users get host entries
+// automatically once they add [[hosts]] to their config.
+func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
+	out := make([]config.MenuItem, 0, len(items))
+	for _, item := range items {
+		if item.Action == "_remote_hosts" {
+			submenu := make([]config.MenuItem, 0, len(a.cfg.Hosts)*2+2)
+			// Ad-hoc connect is always offered, even with no
+			// [[hosts]] bookmarks — the GUI no longer requires a
+			// config entry to reach a remote box.
+			submenu = append(submenu, config.MenuItem{
+				Label:  "Connect to host...",
+				Action: "connect_remote",
+			})
+			// New tab / window on the host of the CURRENT remote tab —
+			// "give me another shell on the box I'm already in". Act on
+			// the active tab's host at dispatch time, so they need no
+			// per-host entries and work for ad-hoc connections too.
+			submenu = append(submenu, config.MenuItem{
+				Label:  "New Tab (current host)",
+				Action: "remote_new_tab",
+			})
+			submenu = append(submenu, config.MenuItem{
+				Label:  "New Window (current host)",
+				Action: "remote_new_window",
+			})
+			for _, h := range a.cfg.Hosts {
+				submenu = append(submenu, config.MenuItem{Action: "separator"})
+				submenu = append(submenu, config.MenuItem{
+					Label:  "New tab on " + h.Name,
+					Action: "new_tab_remote:" + h.Name,
+				})
+				submenu = append(submenu, config.MenuItem{
+					Label:  "Reattach " + h.Name,
+					Action: "attach_remote:" + h.Name,
+				})
+			}
+			out = append(out, config.MenuItem{
+				Label:   "Remote",
+				Submenu: submenu,
+			})
+			continue
+		}
+		// Recurse so submenus can include the placeholder too.
+		if len(item.Submenu) > 0 {
+			cp := item
+			cp.Submenu = a.expandMenu(item.Submenu)
+			out = append(out, cp)
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// windowIDForHub returns this Window's daemon-window ID on the
+// given hub, lazily creating a daemon window via SendWindowCreate
+// if no association exists yet. Returns 0 + false on failure
+// (hub closed, no response within timeout). Callers use 0 as
+// "use the daemon's default window" so a partial-failure mode is
+// graceful.
+//
+// Solves the cross-hub ID confusion: when a window contains tabs
+// daemonWindowForHub returns this Window's known daemon-window ID on
+// the given hub WITHOUT creating one (0 if unknown). Read-only
+// counterpart to windowIDForHub, used by topology placement to match
+// a snapshot window to a GUI window.
+func (w *Window) daemonWindowForHub(hub *daemonsource.Hub) uint32 {
+	w.daemonWindowIDsMu.Lock()
+	defer w.daemonWindowIDsMu.Unlock()
+	if id, ok := w.daemonWindowIDs[hub]; ok {
+		return id
+	}
+	if hub == w.app.daemonHub {
+		return w.daemonWindowID
+	}
+	return 0
+}
+
+// from multiple daemons, focus/reorder operations need to send
+// the WINDOW ID FOR THAT TAB'S DAEMON, not the primary one.
+func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
+	if hub == nil {
+		return 0
+	}
+	w.daemonWindowIDsMu.Lock()
+	if id, ok := w.daemonWindowIDs[hub]; ok {
+		w.daemonWindowIDsMu.Unlock()
+		return id
+	}
+	// Local-daemon primary path: if the hub is the app's
+	// daemonHub AND we already know a daemonWindowID, reuse it.
+	if hub == w.app.daemonHub && w.daemonWindowID != 0 {
+		if w.daemonWindowIDs == nil {
+			w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+		}
+		w.daemonWindowIDs[hub] = w.daemonWindowID
+		w.daemonWindowIDsMu.Unlock()
+		return w.daemonWindowID
+	}
+	w.daemonWindowIDsMu.Unlock()
+
+	// Otherwise mint a fresh daemon window on this hub. CreateWindow
+	// correlates the reply by ReqID (router-demuxed), so a late ack
+	// from a previous timed-out create can't be adopted here.
+	id, err := hub.CreateWindow(0, 0, int32(w.width), int32(w.height))
+	if err != nil {
+		return 0
+	}
+	w.daemonWindowIDsMu.Lock()
+	if w.daemonWindowIDs == nil {
+		w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+	}
+	w.daemonWindowIDs[hub] = id
+	w.daemonWindowIDsMu.Unlock()
+	return id
+}
+
+// setLocalDaemonWindowID points this Window at a freshly-minted
+// server-side window on the LOCAL/default daemon hub, keeping BOTH the
+// legacy daemonWindowID field AND the per-hub daemonWindowIDs map in
+// sync. Updating only the field (as the original reseat did) left the
+// map holding the dead pre-restart window ID — and windowIDForHub
+// PREFERS the map, so later focus/move sent the stale ID to the new
+// daemon. It also primes the hub's default window so NewTab lands here.
+func (w *Window) setLocalDaemonWindowID(id uint32) {
+	w.daemonWindowID = id
+	w.daemonWindowIDsMu.Lock()
+	if w.daemonWindowIDs == nil {
+		w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+	}
+	if w.app.daemonHub != nil {
+		w.daemonWindowIDs[w.app.daemonHub] = id
+	}
+	w.daemonWindowIDsMu.Unlock()
+	if w.app.daemonHub != nil {
+		w.app.daemonHub.SetDefaultWindowID(id)
+	}
+}
+
+// reseatNeedsMint decides whether a reseat episode must (re)mint a fresh
+// daemon window. Factored out of frame() (which isn't unit-testable —
+// it drives ImGui) so the second-restart-mid-reseat logic can be tested
+// directly. Returns true when:
+//   - nothing has been minted yet this episode (minted == false), OR
+//   - the daemon instance CHANGED since the mint (a second restart while
+//     the first reseat was still pending) — the prior window ID lived in
+//     the dead intermediate daemon's id-space and is stale, so re-mint.
+//
+// When currentInstance is "" (pre-v7 / unknown) we can't detect a
+// restart, so a minted window is kept as-is — the same safe degradation
+// the rest of the instance-scoped logic uses.
+func reseatNeedsMint(minted bool, mintedInstance, currentInstance string) bool {
+	if !minted {
+		return true
+	}
+	return currentInstance != "" && currentInstance != mintedInstance
+}
+
+// sendDaemonMoveTab persists a tab move to the owning daemon.
+// Same-window reorder OR cross-window drag — both go through the
+// same MsgWindowMoveTab carrying (TabID, ToWindowID, Index).
+// No-op when the tab isn't daemon-backed.
+//
+// The destination window ID is looked up PER-HUB via
+// windowIDForHub so a remote tab's reorder always goes to the
+// remote daemon with the remote-side window ID — never the local
+// daemon's window ID (which would refer to a different window
+// or be invalid).
+func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, _ /*ignored*/ uint32, idx int32) {
+	if tab == nil || tab.Terminal == nil {
+		return
+	}
+	ds, ok := tab.Terminal.(*daemonsource.Source)
+	if !ok {
+		return
+	}
+	hub := w.app.findHubForClient(ds.HubClient())
+	if hub == nil {
+		return
+	}
+	id := w.windowIDForHub(hub)
+	if id == 0 {
+		return
+	}
+	_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), id, idx)
+}
+
+// openRemoteTab spawns a NEW tab whose source is a daemon on a
+// remote host. hostName is a hub-registry key: a cfg.Hosts bookmark
+// name, an ad-hoc destination from the connect dialog, or a bare SSH
+// dest — all resolved by remoteHubFor. For "show me what's already
+// running over there" use openRemoteReattach instead. Both share
+// the per-host Hub so they use one SSH connection.
+func (w *Window) openRemoteTab(hostName string) error {
+	entry, err := w.app.remoteHubFor(hostName)
+	if err != nil {
+		return err
+	}
+	cols, rows := w.gridSize()
+	// Bind the new remote tab to THIS GUI window's dedicated
+	// window on the remote daemon (lazily minted). Using 0
+	// ("daemon default window") meant every GUI window's remote
+	// tabs piled into the same remote window, so reorder/focus
+	// later targeted the wrong window.
+	winID := w.windowIDForHub(entry.hub)
+	src, err := entry.hub.NewTabIn(winID, cols, rows, "")
+	if err != nil {
+		return fmt.Errorf("hub.NewTabIn on %s: %w", hostName, err)
+	}
+	tab := w.tabs.AdoptTab(src)
+	tab.Host = hostName
+	w.tabSwitchReq = tab.ID
+	return nil
+}
+
+// openRemoteWindow spawns a NEW GUI window and opens a fresh remote
+// tab for hostName inside it. The window starts empty (no stray local
+// PTY tab) and gets its own daemon-side window on the host's hub, so
+// its tabs/focus/reorder stay independent of the spawning window's.
+func (w *Window) openRemoteWindow(hostName string) error {
+	nw := w.app.spawnEmptyWindow()
+	if nw == nil {
+		return fmt.Errorf("spawn window for %s failed", hostName)
+	}
+	return nw.openRemoteTab(hostName)
+}
+
+// openRemoteReattach drains UNADOPTED daemon windows the remote
+// reported at attach time. Each call pulls the first pending
+// window into THIS GUI window (adopting all its tabs, honoring
+// the daemon's per-window focus); subsequent calls handle further
+// pending windows by spawning new GUI windows. The typical UX is
+// "open host kh" → see every shell you had open there in the
+// same layout (number-of-windows + per-window-tab-grouping
+// matches what kh's daemon remembers).
+//
+// No-op when nothing's pending falls through to openRemoteTab
+// so the action isn't confusingly silent.
+func (w *Window) openRemoteReattach(hostName string) error {
+	entry, err := w.app.remoteHubFor(hostName)
+	if err != nil {
+		return err
+	}
+	cols, rows := w.gridSize()
+
+	w.app.remoteHubsMu.Lock()
+	pending := entry.reattachQueue
+	entry.reattachQueue = nil
+	w.app.remoteHubsMu.Unlock()
+
+	if len(pending) == 0 {
+		return w.openRemoteTab(hostName)
+	}
+
+	// First daemon-window's tabs land in the CURRENT GUI window.
+	adoptIntoWindow(w, hostName, entry.hub, pending[0], cols, rows)
+
+	// Extra daemon windows → spawn extra EMPTY GUI windows and
+	// adopt into each. spawnEmptyWindow skips the default-tab
+	// creation that plain spawnWindow does, so we don't leave a
+	// stray local PTY tab in each new window.
+	for _, snap := range pending[1:] {
+		nw := w.app.spawnEmptyWindow()
+		if nw == nil {
+			continue
+		}
+		nCols, nRows := nw.gridSize()
+		if nCols < 2 || nRows < 2 {
+			nCols, nRows = cols, rows
+		}
+		adoptIntoWindow(nw, hostName, entry.hub, snap, nCols, nRows)
+	}
+	return nil
+}
+
+// adoptIntoWindow is shared by openRemoteReattach (and any future
+// "pull this remote window into this GUI window" path). Wires the
+// tabs from a daemonWindowSnapshot into the GUI window, sets the
+// Host badge, restores per-window focus.
+func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap daemonWindowSnapshot, cols, rows int) {
+	// Seed the per-hub window mapping so future tab creates /
+	// focus / reorder for this hub target the SAME remote window
+	// we just adopted from — not a freshly-minted one. Without
+	// this, windowIDForHub would SendWindowCreate a new remote
+	// window on first focus and the user's tabs would split
+	// across two remote windows on reattach.
+	if snap.WindowID != 0 {
+		w.daemonWindowIDsMu.Lock()
+		if w.daemonWindowIDs == nil {
+			w.daemonWindowIDs = make(map[*daemonsource.Hub]uint32)
+		}
+		w.daemonWindowIDs[hub] = snap.WindowID
+		w.daemonWindowIDsMu.Unlock()
+	}
+	var focusIdx = -1
+	startIdx := len(w.tabs.Tabs)
+	for i, ts := range snap.Tabs {
+		src := hub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
+		tab := w.tabs.AdoptTab(src)
+		tab.Host = hostName
+		if ts.Title != "" {
+			tab.SetTitle(ts.Title)
+		}
+		if cols > 1 && rows > 1 {
+			src.Resize(cols, rows)
+		}
+		if ts.ID == snap.FocusedTabID {
+			focusIdx = startIdx + i
+		}
+	}
+	if focusIdx >= 0 && focusIdx < len(w.tabs.Tabs) {
+		w.tabs.ActiveIdx = focusIdx
+		w.tabSwitchReq = w.tabs.Tabs[focusIdx].ID
+	} else if last := w.tabs.Active(); last != nil {
+		w.tabSwitchReq = last.ID
+	}
+}
+
+// dialRemoteDaemon SSH-dials the given resolved host, completes the
+// Hello + Attach handshake, starts the read loop, and returns the
+// connected client + Attached snapshot. Takes the already-resolved host
+// (not a name to re-resolve) so it's safe to call from the Hub's
+// reconnect goroutine without racing the main-thread-only a.adhocHosts.
+func (a *App) dialRemoteDaemon(name string, host config.RemoteHost) (*clientproto.Client, *protocol.Attached, error) {
+	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
+	if err != nil {
+		return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
+	}
+	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach to %s: %w", name, err)
+	}
+	select {
+	case attached := <-cli.Attached():
+		return cli, attached, nil
+	case <-time.After(5 * time.Second):
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("no Attached response from %s within 5s", name)
+	}
+}
+
+// remoteHubFor returns the registry entry for the named host,
+// lazily building it (SSH-dial + hello + attach) on first request.
+// Subsequent calls reuse the same Hub so one SSH connection serves
+// many tabs on that host. name is resolved by resolveRemote (a
+// cfg.Hosts bookmark, a session ad-hoc target, or a bare SSH dest),
+// so a config entry is NOT required. Returns an error if the name is
+// blank or the SSH connection fails.
+//
+// The Attached frame is captured into the entry's reattachQueue so
+// openRemoteReattach can later adopt any pre-existing remote tabs.
+func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
+	a.remoteHubsMu.Lock()
+	if e, ok := a.remoteHubs[name]; ok {
+		// The cached hub self-heals (layer 4b): a dropped SSH path /
+		// killed remote daemon is re-dialed by the hub's own reconnect
+		// loop, keeping the same Sources. So always hand it back — never
+		// tear it down + re-dial, which would orphan the live tabs.
+		a.remoteHubsMu.Unlock()
+		return e, nil
+	}
+	a.remoteHubsMu.Unlock()
+
+	host, ok := a.resolveRemote(name)
+	if !ok {
+		return nil, fmt.Errorf("remote host %q: empty destination", name)
+	}
+
+	cli, attached, err := a.dialRemoteDaemon(name, host)
+	if err != nil {
+		return nil, err
+	}
+	hub := daemonsource.NewHub(cli)
+	// Self-heal over SSH. Capture the resolved host (NOT a re-resolve
+	// inside the closure) so the reconnect dialer never touches
+	// a.adhocHosts off the main goroutine — SSH params don't change
+	// mid-session anyway.
+	hub.SetRedial(func() (*clientproto.Client, *protocol.Attached, error) {
+		return a.dialRemoteDaemon(name, host)
+	})
+	hub.SeedRevision(attached.Revision)
+	hub.SeedInstance(attached.InstanceID)
+	a.wireHubCallbacks(name, hub)
+
+	entry := &remoteHubEntry{hub: hub}
+	// Group tabs by their daemon-side window so reattach preserves
+	// the user's remote layout. Same shape used for the local
+	// daemon's daemonAdoptQueue.
+	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
+	for _, ti := range attached.Tabs {
+		tabByID[ti.ID] = daemonTabSnapshot{
+			ID:    ti.ID,
+			Title: ti.Title,
+			Cols:  ti.Cols,
+			Rows:  ti.Rows,
+		}
+	}
+	for _, wi := range attached.Windows {
+		snap := daemonWindowSnapshot{
+			WindowID:     wi.ID,
+			PosX:         wi.PosX,
+			PosY:         wi.PosY,
+			Width:        wi.Width,
+			Height:       wi.Height,
+			FocusedTabID: wi.FocusedTabID,
+		}
+		for _, tid := range wi.TabIDs {
+			if t, ok := tabByID[tid]; ok {
+				snap.Tabs = append(snap.Tabs, t)
+				delete(tabByID, tid)
+			}
+		}
+		if len(snap.Tabs) > 0 {
+			entry.reattachQueue = append(entry.reattachQueue, snap)
+		}
+	}
+	if len(tabByID) > 0 {
+		// Sweep orphans (tabs not in any window) into a synthetic
+		// snapshot so they're not silently dropped.
+		var orphans []daemonTabSnapshot
+		for _, t := range tabByID {
+			orphans = append(orphans, t)
+		}
+		entry.reattachQueue = append(entry.reattachQueue, daemonWindowSnapshot{Tabs: orphans})
+	}
+
+	a.remoteHubsMu.Lock()
+	if a.remoteHubs == nil {
+		a.remoteHubs = make(map[string]*remoteHubEntry)
+	}
+	a.remoteHubs[name] = entry
+	a.remoteHubsMu.Unlock()
+	return entry, nil
+}
+
+// resolveRemote maps a hub-registry key to the SSH connection params
+// to dial it. Three sources, in priority order:
+//
+//  1. a [[hosts]] bookmark whose Name matches — the configured path.
+//  2. an ad-hoc target the user typed via "Connect to host…" this
+//     session (a.adhocHosts).
+//  3. fallback: treat the key ITSELF as a bare SSH destination
+//     (normalized) with the default remote command. This is what
+//     makes `ssh user@host`-style connections work without any
+//     config entry — the GUI no longer requires a bookmark.
+//
+// ok is false only for an empty/blank key, which can't be dialed.
+func (a *App) resolveRemote(name string) (config.RemoteHost, bool) {
+	for i := range a.cfg.Hosts {
+		if a.cfg.Hosts[i].Name == name {
+			return a.cfg.Hosts[i], true
+		}
+	}
+	if h, ok := a.adhocHosts[name]; ok {
+		return h, true
+	}
+	dest := normalizeSSHDest(name)
+	if dest == "" {
+		return config.RemoteHost{}, false
+	}
+	return config.RemoteHost{Name: name, SSHDest: dest}, true
+}
+
+// normalizeSSHDest cleans a user-typed destination into something
+// ssh(1) accepts. Plain `ssh user@host:2222` does NOT work — bare
+// `host:port` is parsed as a hostname, not a port — but the URI form
+// `ssh://[user@]host:port` does. So a trailing numeric `:port` with
+// no scheme is rewritten to the ssh:// form; everything else (plain
+// "user@host", an ~/.ssh/config alias, an already-ssh:// URI) passes
+// through untouched.
+func normalizeSSHDest(in string) string {
+	s := strings.TrimSpace(in)
+	if s == "" || strings.Contains(s, "://") {
+		return s
+	}
+	// Only treat the LAST colon as a port separator, and only when
+	// what follows is all digits — leaves IPv6 literals and aliases
+	// containing colons alone.
+	if i := strings.LastIndex(s, ":"); i > 0 && i < len(s)-1 {
+		port := s[i+1:]
+		allDigits := true
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return "ssh://" + s
+		}
+	}
+	return s
+}
+
+// daemonTabSnapshot is one tab the daemon reported at attach time —
+// queued for adoption by the next GUI window that opens.
+type daemonTabSnapshot struct {
+	ID    uint32
+	Title string
+	Cols  uint16
+	Rows  uint16
+}
+
+// daemonWindowSnapshot pairs a daemon-side window ID + geometry hint
+// with the tabs that live in it. Drained one-per-GUI-Window during
+// the reattach restore path. FocusedTabID is the daemon's record of
+// which tab was front; the GUI honors it during adoption so reattach
+// puts focus where the user left it, not on whatever happens to be
+// last in the slice.
+type daemonWindowSnapshot struct {
+	WindowID     uint32
+	PosX         int32
+	PosY         int32
+	Width        int32
+	Height       int32
+	Tabs         []daemonTabSnapshot
+	FocusedTabID uint32
+}
+
+// dialLocalDaemon ensures the local daemon is reachable (auto-spawning
+// it if needed), completes the Hello + Attach handshake, starts the
+// client read loop, and returns the connected client + its Attached
+// snapshot. Shared by the initial connect and the Hub's reconnect
+// dialer (SetRedial), so both paths are identical — a reconnect after a
+// daemon restart re-spawns and re-attaches exactly like first launch.
+// Attach uses NewIfMissing=false: the GUI creates tabs itself via
+// NewTab, it doesn't want the daemon's default-tab-on-empty behavior.
+func (a *App) dialLocalDaemon() (*clientproto.Client, *protocol.Attached, error) {
+	cli, err := daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := cli.Hello("xerotty-gui"); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("hello: %w", err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach: %w", err)
+	}
+	select {
+	case attached := <-cli.Attached():
+		return cli, attached, nil
+	case <-time.After(5 * time.Second):
+		_ = cli.Close()
+		return nil, nil, fmt.Errorf("attach: no response from daemon")
+	}
+}
+
+// initDaemonSource ensures a local xerotty daemon is running,
+// connects to it, attaches, and wires the resulting Hub into App so
+// tabs.Manager.NewTab routes through it. Errors here are non-fatal
+// — caller logs + falls back to PTY tabs.
+func (a *App) initDaemonSource() error {
+	cli, attached, err := a.dialLocalDaemon()
+	if err != nil {
+		return err
+	}
+	// Group tabs by their daemon-side window so the GUI can spawn
+	// one Window per daemon Window on reattach. tabs.Tab info is
+	// keyed by ID; window info has TabIDs ordering.
+	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
+	for _, ti := range attached.Tabs {
+		tabByID[ti.ID] = daemonTabSnapshot{
+			ID:    ti.ID,
+			Title: ti.Title,
+			Cols:  ti.Cols,
+			Rows:  ti.Rows,
+		}
+	}
+	for _, wi := range attached.Windows {
+		snap := daemonWindowSnapshot{
+			WindowID:     wi.ID,
+			PosX:         wi.PosX,
+			PosY:         wi.PosY,
+			Width:        wi.Width,
+			Height:       wi.Height,
+			FocusedTabID: wi.FocusedTabID,
+		}
+		for _, tid := range wi.TabIDs {
+			if t, ok := tabByID[tid]; ok {
+				snap.Tabs = append(snap.Tabs, t)
+				delete(tabByID, tid)
+			}
+		}
+		if len(snap.Tabs) > 0 {
+			a.daemonAdoptQueue = append(a.daemonAdoptQueue, snap)
+		}
+	}
+	// Sweep any orphan tabs (in tabByID but not in any window's
+	// TabIDs) into a synthetic window snapshot so they aren't lost.
+	if len(tabByID) > 0 {
+		var orphans []daemonTabSnapshot
+		for _, t := range tabByID {
+			orphans = append(orphans, t)
+		}
+		a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonWindowSnapshot{
+			Tabs: orphans,
+		})
+	}
+	hub := daemonsource.NewHub(cli)
+	// Self-heal: a dropped/restarted local daemon is re-dialed by the
+	// hub itself (auto-spawning via EnsureLocalDaemon if the process
+	// died), keeping the same Source objects so the frozen tabs come
+	// back to life in place. dialLocalDaemon is idempotent + safe to
+	// call from the hub's router goroutine (no shared mutable state).
+	hub.SetRedial(a.dialLocalDaemon)
+	// Seed the topology-revision gate from the attach snapshot so
+	// later MsgTopologyChanged broadcasts are applied only when newer.
+	hub.SeedRevision(attached.Revision)
+	// Seed the daemon identity so the first reconnect can distinguish a
+	// same-daemon resync from a restarted-daemon one (tombstone scoping).
+	hub.SeedInstance(attached.InstanceID)
+	// Mirror the GUI's scrollback config so daemon-backed tabs
+	// have the same history depth as in-process ones. "unlimited"
+	// mode → use a large fixed cap (the client still bounds memory
+	// — daemon-side has the disk-backed real unlimited; client
+	// just keeps the recent tail).
+	cap := a.cfg.Scrollback.Lines
+	if a.cfg.Scrollback.Mode == "unlimited" {
+		cap = 1_000_000
+	}
+	if cap > 0 {
+		hub.SetScrollbackCap(cap)
+	}
+	a.wireHubCallbacks("local", hub)
+	a.setDaemonHub(hub, "local")
+	// NOTE: tabSourceFactory is set per-Window by
+	// installSourceFactory() so multi-window setups don't all
+	// share Hub.defaultWindowID. App-level default is nil;
+	// installSourceFactory falls back to terminal.New if no
+	// daemon-window association exists yet.
+	return nil
+}
+
+// --- guimcp.Backend implementation ---
+//
+// The GUI runs an aggregating MCP server (internal/guimcp) so an
+// agent gets ONE socket covering every daemon the GUI talks to.
+// These two methods are how that server enumerates + resolves
+// tabs across the local hub + every remote hub.
+
+// getDaemonHub returns the default hub + its host name under the
+// lock. Used by the guimcp request goroutines (which run
+// concurrently with activeDaemonHub's re-dial writes).
+func (a *App) getDaemonHub() (*daemonsource.Hub, string) {
+	a.daemonMu.Lock()
+	defer a.daemonMu.Unlock()
+	return a.daemonHub, a.daemonHubName
+}
+
+// setDaemonHub publishes the default hub + name under the lock.
+func (a *App) setDaemonHub(hub *daemonsource.Hub, name string) {
+	a.daemonMu.Lock()
+	a.daemonHub = hub
+	a.daemonHubName = name
+	a.daemonMu.Unlock()
+}
+
+// hubsByName returns the daemon hubs the GUI is connected to,
+// keyed by host namespace. The default hub is keyed by its OWN
+// name (daemonHubName) — "local" normally, but the host name in
+// daemon:<name> mode. That dedupes against the remoteHubs entry
+// for the same hub: in daemon:kh mode the kh hub is BOTH the
+// default and remoteHubs["kh"], and keying both by "kh" collapses
+// them into one map entry instead of listing the same tabs as
+// "local:" and "kh:".
+func (a *App) hubsByName() map[string]*daemonsource.Hub {
+	out := map[string]*daemonsource.Hub{}
+	hub, name := a.getDaemonHub()
+	if hub != nil {
+		if name == "" {
+			name = "local"
+		}
+		out[name] = hub
+	}
+	a.remoteHubsMu.Lock()
+	for rname, e := range a.remoteHubs {
+		out[rname] = e.hub
+	}
+	a.remoteHubsMu.Unlock()
+	return out
+}
+
+// ListTabs implements guimcp.Backend: every tab across every hub
+// with namespaced IDs + triage metadata (cwd, foreground proc,
+// closed state, focused flag).
+func (a *App) ListTabs() []guimcp.TabRef {
+	focused := a.focusedDaemonTabIDs() // set of source pointers that are focused
+	var refs []guimcp.TabRef
+	for name, hub := range a.hubsByName() {
+		for _, src := range hub.Sources() {
+			refs = append(refs, guimcp.TabRef{
+				NSID:       guimcp.MakeNSID(name, src.TabID()),
+				Host:       name,
+				Title:      src.Title(),
+				Cols:       src.Width(),
+				Rows:       src.Height(),
+				CWD:        src.GetCWD(),
+				Foreground: src.ForegroundProcessName(),
+				Closed:     src.IsClosed(),
+				ExitCode:   src.ChildExitCode(),
+				Focused:    focused[src],
+			})
+		}
+	}
+	return refs
+}
+
+// focusedDaemonTabIDs returns the set of daemon Sources that are the
+// active tab of some GUI window — so list_tabs can flag which tabs the
+// user is actually looking at. Called on the guimcp goroutine; it
+// reads the snapshot published by publishFocusedSources on the main
+// thread rather than walking a.windows / tabs.Manager directly (those
+// are mutated unsynchronized by the UI thread). A momentarily stale
+// answer is fine — this is advisory metadata.
+func (a *App) focusedDaemonTabIDs() map[*daemonsource.Source]bool {
+	if m := a.focusedSources.Load(); m != nil {
+		return *m
+	}
+	return map[*daemonsource.Source]bool{}
+}
+
+// publishFocusedSources recomputes the focused-Source set and stores
+// it for the guimcp goroutine to read. MUST be called on the main
+// thread (it walks a.windows and each window's tabs.Manager). The
+// stored map is treated as immutable after Store — readers never
+// mutate it — so the atomic swap is a safe hand-off.
+func (a *App) publishFocusedSources() {
+	out := map[*daemonsource.Source]bool{}
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		if t := w.tabs.Active(); t != nil && t.Terminal != nil {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok {
+				out[ds] = true
+			}
+		}
+	}
+	a.focusedSources.Store(&out)
+}
+
+// SourceFor implements guimcp.Backend: resolve "<host>:<tabid>"
+// to the Source on that host's hub.
+func (a *App) SourceFor(nsID string) (*daemonsource.Source, bool) {
+	// Split on the LAST colon, not the first: an ad-hoc host key can
+	// itself contain a colon (e.g. "user@host:2222"), and the tab ID
+	// is always the trailing numeric segment. strings.Cut (first
+	// colon) would mis-parse "user@host:2222:5" as host="user@host".
+	i := strings.LastIndex(nsID, ":")
+	if i < 0 {
+		return nil, false
+	}
+	host, idStr := nsID[:i], nsID[i+1:]
+	id64, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		return nil, false
+	}
+	hub, ok := a.hubsByName()[host]
+	if !ok {
+		return nil, false
+	}
+	for _, src := range hub.Sources() {
+		if src.TabID() == uint32(id64) {
+			return src, true
+		}
+	}
+	return nil, false
+}
+
+// guiProposal tags a daemon-reported proposal with the hub +
+// host it came from so the GUI gate resolves against the correct
+// daemon. Without the tag, a remote (kh) proposal's Approve would
+// have gone to the local/default hub — wrong daemon, wrong tab.
+type guiProposal struct {
+	hub  *daemonsource.Hub
+	host string
+	info protocol.ProposalInfo
+}
+
+// wireHubCallbacks installs the hub-level (session-global)
+// callbacks: OSC 52 clipboard writes → local OS clipboard, and
+// propose-mode queue updates → the approval banner. Called for
+// every hub (local + remote); name is the host namespace
+// ("local" or a cfg.Hosts name) used for display + so each hub's
+// proposal list replaces only its own entries.
+func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
+	hub.SetClipboardSetCallback(func(text string) {
+		_ = input.ClipboardWrite(text)
+	})
+	hub.SetProposalsCallback(func(infos []protocol.ProposalInfo) {
+		a.proposalsMu.Lock()
+		// Drop this HOST's previous entries (by namespace, not hub
+		// pointer), keep other hosts', then append the fresh list.
+		// Filtering by host (not pointer) means a reconnected host
+		// — which gets a brand-new *Hub — still clears its stale
+		// rows: the new hub's callback fires under the same name,
+		// so an empty list correctly empties the host's rows
+		// instead of leaving orphans tagged with the dead pointer.
+		kept := a.pendingProposals[:0:0]
+		for _, gp := range a.pendingProposals {
+			if gp.host != name {
+				kept = append(kept, gp)
+			}
+		}
+		for _, info := range infos {
+			kept = append(kept, guiProposal{hub: hub, host: name, info: info})
+		}
+		a.pendingProposals = kept
+		a.proposalsMu.Unlock()
+		// Wake the (event-driven) render loop so the approval banner
+		// appears/updates without waiting out the idle timeout.
+		platform.PostWake()
+	})
+	// Topology snapshots (a tab/window created/closed/moved by another
+	// client or an MCP agent) → reconcile the GUI tab bar. Stash the
+	// latest and wake the loop; the actual GUI mutation runs on the
+	// main thread in applyPendingTopology.
+	hub.SetTopologyCallback(func(s *protocol.TopologyChanged) {
+		a.topoMu.Lock()
+		if a.pendingTopo == nil {
+			a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
+		}
+		a.pendingTopo[hub] = pendingTopoSnap{host: name, snap: s}
+		a.topoMu.Unlock()
+		platform.PostWake()
+	})
+	a.ensureGUIMCP()
+}
+
+// pendingTopoSnap is a queued topology snapshot + the hub's display
+// host, awaiting main-thread reconcile.
+type pendingTopoSnap struct {
+	host string
+	snap *protocol.TopologyChanged
+}
+
+// applyPendingTopology drains queued topology snapshots and reconciles
+// the GUI tab bar against each. MUST run on the main thread (it mutates
+// windows / tabs.Manager). Called once per frame.
+//
+// Scope: it ADDS GUI tabs for daemon tabs that newly appeared (created
+// by another client or an MCP agent), and RELOCATES a visible tab when
+// a snapshot shows it in a different daemon window than the GUI has it
+// (so later local focus/reorder targets the right daemon window).
+// Removal of vanished tabs is handled elsewhere — applyTopology marks
+// the vanished Source closed (markVanished) and the per-frame
+// CheckClosed + reap drops it (forced even under on_child_exit=hold).
+func (a *App) applyPendingTopology() {
+	// Don't reconcile mid-drag: a cross-window drag is actively moving
+	// a tab between managers, and relocating underneath it would
+	// corrupt the drag. Leave the (latest-wins) snapshot queued and
+	// process it on a later frame once the drag completes.
+	if a.dragTab != nil {
+		return
+	}
+	a.topoMu.Lock()
+	if len(a.pendingTopo) == 0 {
+		a.topoMu.Unlock()
+		return
+	}
+	pend := a.pendingTopo
+	a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
+	a.topoMu.Unlock()
+	for hub, ps := range pend {
+		a.reconcileDaemonTabs(hub, ps.host, ps.snap)
+	}
+}
+
+// reconcileDaemonTabs adds GUI tabs for newly-appeared daemon tabs and
+// relocates visible tabs that moved to a different daemon window —
+// preserving each window's active tab (snapshot FocusedTabID is
+// attach-time metadata, never used to hijack a live client's focus).
+func (a *App) reconcileDaemonTabs(hub *daemonsource.Hub, host string, snap *protocol.TopologyChanged) {
+	cli := hub.Client()
+	// Which daemon tab IDs already have a GUI tab on this hub?
+	present := make(map[uint32]bool)
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		for _, t := range w.tabs.Tabs {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == cli {
+				present[ds.TabID()] = true
+			}
+		}
+	}
+	// daemon windowID for each tab in the snapshot, for placement.
+	winOfTab := make(map[uint32]uint32, len(snap.Tabs))
+	for _, wi := range snap.Windows {
+		for _, id := range wi.TabIDs {
+			winOfTab[id] = wi.ID
+		}
+	}
+	for _, ti := range snap.Tabs {
+		if present[ti.ID] {
+			// Already shown — but maybe in the wrong GUI window if a
+			// remote actor moved it. Relocate if so.
+			a.relocateDaemonTab(hub, ti.ID, winOfTab[ti.ID])
+			continue
+		}
+		target := a.targetWindowForDaemonTab(hub, winOfTab[ti.ID])
+		if target == nil {
+			// No GUI window represents this hub yet — a window that
+			// adopts the hub will pick the tab up. Skip for now.
+			continue
+		}
+		src := hub.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
+		// Preserve the target window's active tab across the add.
+		prevActiveID := -1
+		if at := target.tabs.Active(); at != nil {
+			prevActiveID = at.ID
+		}
+		tab := target.tabs.AdoptTab(src) // AdoptTab focuses the new tab…
+		if host != "" && host != "local" {
+			tab.Host = host
+		}
+		if ti.Title != "" {
+			tab.SetTitle(ti.Title)
+		}
+		// …so restore the prior active tab — don't steal focus from a
+		// live client just because another client made a tab.
+		if prevActiveID >= 0 {
+			for i, t := range target.tabs.Tabs {
+				if t.ID == prevActiveID {
+					target.tabs.ActiveIdx = i
+					break
+				}
+			}
+		}
+		present[ti.ID] = true
+	}
+}
+
+// targetWindowForDaemonTab picks the GUI window a newly-appeared
+// daemon tab should join: the window mapped to the tab's daemon-side
+// window, else any window already showing this hub's tabs, else the
+// active window. Returns nil if no window represents the hub yet.
+func (a *App) targetWindowForDaemonTab(hub *daemonsource.Hub, daemonWinID uint32) *Window {
+	var hubWindow *Window
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		if daemonWinID != 0 && w.daemonWindowForHub(hub) == daemonWinID {
+			return w
+		}
+		if hubWindow == nil {
+			for _, t := range w.tabs.Tabs {
+				if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == hub.Client() {
+					hubWindow = w
+					break
+				}
+			}
+		}
+	}
+	if hubWindow != nil {
+		return hubWindow
+	}
+	return a.active
+}
+
+// relocateDaemonTab moves an already-visible daemon tab to the GUI
+// window mapped to its current daemon-side window, when a snapshot
+// shows it moved (by another client / MCP agent). Without this the tab
+// stays in its old GUI window and later local focus/reorder sends the
+// stale daemon window ID. No-op when the placement is already correct,
+// the daemon window has no GUI window, or the tab isn't found.
+// Preserves both windows' active tabs (a remote move must not steal a
+// live client's focus).
+func (a *App) relocateDaemonTab(hub *daemonsource.Hub, tabID, daemonWinID uint32) {
+	if daemonWinID == 0 {
+		return
+	}
+	cli := hub.Client()
+	// Locate the tab's current GUI window + index.
+	var srcWin *Window
+	srcIdx := -1
+	for _, w := range a.windows {
+		if w.tabs == nil {
+			continue
+		}
+		for i, t := range w.tabs.Tabs {
+			if ds, ok := t.Terminal.(*daemonsource.Source); ok && ds.HubClient() == cli && ds.TabID() == tabID {
+				srcWin, srcIdx = w, i
+				break
+			}
+		}
+		if srcWin != nil {
+			break
+		}
+	}
+	if srcWin == nil {
+		return
+	}
+	if srcWin.daemonWindowForHub(hub) == daemonWinID {
+		return // already in the right GUI window
+	}
+	// Destination GUI window must already map to this daemon window;
+	// if the GUI doesn't represent it, leave the tab put.
+	var dstWin *Window
+	for _, w := range a.windows {
+		if w.tabs != nil && w != srcWin && w.daemonWindowForHub(hub) == daemonWinID {
+			dstWin = w
+			break
+		}
+	}
+	if dstWin == nil {
+		return
+	}
+	moved := srcWin.tabs.Tabs[srcIdx]
+	host, title := moved.Host, moved.Title()
+	dstPrevActive := -1
+	if at := dstWin.tabs.Active(); at != nil {
+		dstPrevActive = at.ID
+	}
+	// RemoveTab preserves srcWin's active tab; AdoptTab focuses the
+	// moved tab in dstWin, so restore dstWin's prior active after.
+	srcWin.tabs.RemoveTab(srcIdx)
+	newTab := dstWin.tabs.AdoptTab(moved.Terminal)
+	newTab.Host = host
+	if title != "" {
+		newTab.SetTitle(title)
+	}
+	if dstPrevActive >= 0 {
+		for i, t := range dstWin.tabs.Tabs {
+			if t.ID == dstPrevActive {
+				dstWin.tabs.ActiveIdx = i
+				break
+			}
+		}
+	}
+	// If relocating emptied the source window, schedule it for reap.
+	if srcWin.tabs.Count() == 0 {
+		srcWin.pendingClose = true
+	}
+}
+
+// ensureGUIMCP starts the GUI's aggregating MCP server once, the
+// first time any daemon hub connects. Socket lives alongside the
+// daemon sockets with a .gui.mcp.sock suffix. Best-effort: a
+// failure (e.g. socket in use by another xerotty) just logs.
+func (a *App) ensureGUIMCP() {
+	a.daemonMu.Lock()
+	if a.guiMCP != nil {
+		a.daemonMu.Unlock()
+		return
+	}
+	sock := guiMCPSocketPath()
+	srv := guimcp.New(a, sock)
+	a.guiMCP = srv
+	a.daemonMu.Unlock()
+	go func() {
+		fmt.Fprintf(os.Stderr, "xerotty: aggregating MCP on %s\n", sock)
+		if err := srv.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: guimcp: %v\n", err)
+		}
+	}()
+}
+
+// guiMCPSocketPath picks the aggregating MCP socket path:
+// $XDG_RUNTIME_DIR/xerotty-gui.mcp.sock (or /tmp fallback).
+func guiMCPSocketPath() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "xerotty-gui.mcp.sock")
+	}
+	return filepath.Join(os.TempDir(), "xerotty-gui-"+strconv.Itoa(os.Getuid())+".mcp.sock")
+}
+
+// installSourceFactory builds the tabs.Manager.SourceFactory for a
+// Window. In daemon mode the closure does NOT capture a hub pointer —
+// it calls a.activeDaemonHub() per invocation. The hub itself
+// self-heals across connection drops (layer 4b), so the pointer is
+// stable; the per-invocation lookup just keeps the factory honest if
+// the default hub is ever swapped wholesale (e.g. mode reconfig).
+//
+// Falls back to in-process PTY when daemon mode isn't active OR
+// activeDaemonHub returns nil.
+func (a *App) installSourceFactory(w *Window) {
+	// OSC 52 clipboard hooks — injected so tabs.Manager can wire
+	// them onto each source without the tabs package importing the
+	// SDL-backed clipboard. Set on every manager regardless of
+	// source mode (PTY tabs handle OSC 52 locally; daemon tabs
+	// route through their hub).
+	w.tabs.ClipboardSetFn = func(text string) {
+		_ = input.ClipboardWrite(text)
+	}
+	w.tabs.ClipboardGetFn = func() string {
+		s, _ := input.ClipboardRead()
+		return s
+	}
+	if a.daemonHub == nil {
+		w.tabs.SourceFactory = nil // tabs.NewTab uses terminal.New
+		return
+	}
+	w.tabs.SourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
+		hub := a.activeDaemonHub()
+		if hub == nil {
+			return nil, fmt.Errorf("daemon hub unavailable")
+		}
+		// Snapshot the WindowID at call time, not closure-create
+		// time, so re-installs after daemonWindowID changes pick
+		// up the new value. 0 → daemon's default window.
+		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd)
+	}
+}
+
+// activeDaemonHub returns the default daemon hub, or nil in PTY mode /
+// when startup init never produced one. The hub self-heals across
+// connection drops (layer 4b): its reconnect loop re-dials in place
+// keeping the same Sources, so callers no longer re-init on a dead
+// client. During the brief dial gap the hub's current client is the
+// closed one, so a NewTabIn through it returns a transient error rather
+// than hanging — acceptable; the user retries.
+func (a *App) activeDaemonHub() *daemonsource.Hub {
+	hub, _ := a.getDaemonHub()
+	return hub
 }
 
 // reapClosedWindows removes Windows the user closed this frame. All
@@ -138,10 +1529,15 @@ func (a *App) reapClosedWindows() {
 			survivors = append(survivors, w)
 			continue
 		}
-		// Tear down the Window's terminals and renderer.
+		// Tear down the Window's terminals and renderer. Use
+		// Detach (not Close) so daemon-backed tabs survive — the
+		// user closing a GUI window means "stop showing me", not
+		// "kill the shell". For in-process PTY tabs Detach is
+		// equivalent to Close anyway (PTY can't outlive the
+		// process).
 		if w.tabs != nil {
 			for _, tab := range w.tabs.Tabs {
-				tab.Terminal.Close()
+				tab.Terminal.Detach()
 			}
 		}
 		if w.renderer != nil && w.renderer.Glyphs != nil {
@@ -349,7 +1745,7 @@ func (a *App) startMouseMirrorWakePoller() func() {
 // its first tab adopts the given already-running Terminal instead
 // of starting a fresh shell. Used by cross-Window tab drag when the
 // user drops the floating tab outside any existing Window.
-func (a *App) spawnWindowAdopting(term *terminal.Terminal) {
+func (a *App) spawnWindowAdopting(term terminal.Source) {
 	a.spawnWindowImpl(term)
 }
 
@@ -363,7 +1759,22 @@ func (a *App) spawnWindow() {
 	a.spawnWindowImpl(nil)
 }
 
-func (a *App) spawnWindowImpl(adopt *terminal.Terminal) {
+// spawnEmptyWindow creates a new GUI window with NO starting tab.
+// Used by remote reattach which adopts tabs into the window itself
+// — the normal spawn path would create a local/default PTY tab
+// first, leaving an unwanted stray tab. Returns the new Window
+// (or nil if spawn failed) so the caller can adopt into it.
+func (a *App) spawnEmptyWindow() *Window {
+	a.suppressInitialTab = true
+	a.spawnWindowImpl(nil)
+	a.suppressInitialTab = false
+	if len(a.windows) == 0 {
+		return nil
+	}
+	return a.windows[len(a.windows)-1]
+}
+
+func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	if len(a.windows) == 0 {
 		return // can't spawn before Run() has set up the main Window
 	}
@@ -471,15 +1882,90 @@ func (a *App) spawnWindowImpl(adopt *terminal.Terminal) {
 	// tab's CWD — Cmd+N from inside ~/src/foo gives a new Window also
 	// in ~/src/foo, matching iTerm/Terminal.app's behavior.
 	w.tabs = tabs.NewManager(&a.cfg)
+	a.installSourceFactory(w)
 	cols, rows := w.gridSize()
-	if adopt != nil {
-		// Adopt the already-running Terminal from a cross-Window
-		// tab drag. Resize it to this Window's grid so its PTY +
-		// vt emulator match what the new Window's renderer expects.
+
+	// Daemon-side window association. Three cases:
+	//   1. adopt != nil   — cross-Window tab drag, no fresh daemon
+	//                       window needed; the dragged source keeps
+	//                       its existing daemon-window membership
+	//                       (TODO: emit SendWindowMoveTab here when
+	//                       the source is daemon-backed).
+	//   2. adoptQueue !=  — reattach restore: pop the next daemon
+	//      empty (daemon)   window snapshot, claim its ID, adopt
+	//                       its tabs.
+	//   3. fresh daemon   — SendWindowCreate to mint a new daemon
+	//      window mode      window; Hub.SetDefaultWindowID makes
+	//                       NewTab put new tabs there.
+	if a.suppressInitialTab {
+		// Empty window — caller (remote reattach) adopts tabs
+		// itself. Skip all tab creation. The window still gets a
+		// daemon-window association lazily via windowIDForHub when
+		// the first tab is adopted.
+	} else if adopt != nil {
 		if cols > 1 && rows > 1 {
 			adopt.Resize(cols, rows)
 		}
-		w.tabs.AdoptTab(adopt)
+		newTab := w.tabs.AdoptTab(adopt)
+		// Cross-window tab drag: tell the owning daemon the tab
+		// moved to the new GUI window's daemon window. Persists
+		// the layout across reattach. For a fresh GUI window the
+		// daemonWindowID isn't set yet — push the move once
+		// SendWindowCreate completes via the deferred path below.
+		// For now, store the move + replay after window ID is
+		// known. Simpler: defer the move-fire to next frame via
+		// a pending field.
+		w.pendingDaemonMove = adopt
+		_ = newTab
+	} else if len(a.daemonAdoptQueue) > 0 && a.daemonHub != nil {
+		snap := a.daemonAdoptQueue[0]
+		a.daemonAdoptQueue = a.daemonAdoptQueue[1:]
+		w.daemonWindowID = snap.WindowID
+		a.installSourceFactory(w)
+		a.daemonHub.SetDefaultWindowID(snap.WindowID)
+		var focusIdx = -1
+		for i, ts := range snap.Tabs {
+			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
+			tab := w.tabs.AdoptTab(src)
+			if ts.Title != "" {
+				tab.SetTitle(ts.Title)
+			}
+			if cols > 1 && rows > 1 {
+				src.Resize(cols, rows)
+			}
+			if ts.ID == snap.FocusedTabID {
+				focusIdx = i
+			}
+		}
+		// Honor the daemon's record of which tab was front, not
+		// the AdoptTab default of "last one wins". Reattach
+		// shouldn't surprise the user with a different focus
+		// than they left.
+		if focusIdx >= 0 && focusIdx < len(w.tabs.Tabs) {
+			w.tabs.ActiveIdx = focusIdx
+			w.tabSwitchReq = w.tabs.Tabs[focusIdx].ID
+		}
+		// Push current GUI geometry so a future reattach restores
+		// to the same on-screen position.
+		_ = a.daemonHub.Client().SendWindowGeometry(snap.WindowID, 0, 0, int32(w.width), int32(w.height))
+	} else if a.daemonHub != nil {
+		// Fresh daemon window for this GUI window. CreateWindow
+		// correlates the reply by ReqID (router-demuxed).
+		if id, err := a.daemonHub.CreateWindow(0, 0, int32(w.width), int32(w.height)); err == nil {
+			w.daemonWindowID = id
+			a.daemonHub.SetDefaultWindowID(w.daemonWindowID)
+		}
+		// else: daemon didn't respond; new tabs land in its default
+		// window. Non-fatal.
+		var cwd string
+		if a.cfg.Tabs.InheritCWD && parent != nil {
+			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
+				cwd = parentTab.Terminal.GetCWD()
+			}
+		}
+		if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
+			return
+		}
 	} else {
 		var cwd string
 		if a.cfg.Tabs.InheritCWD && parent != nil {
@@ -530,6 +2016,13 @@ func (w *Window) initialWindowSize() (int, int) {
 	hp := int(math.Ceil(float64(float32(rows)*estCellH + pad + cellSafetyMarginV)))
 	return wp, hp
 }
+
+// idleSafetyNetMs bounds how long the render loop parks when nothing is
+// animating (no blinking cursor). It's a safety net, NOT a real timer:
+// every async state change (PTY/daemon data, topology, proposals, …)
+// wakes the loop immediately, so this only catches a wake we forgot —
+// 1 fps idle is ~0% CPU but never lets the UI freeze for over a second.
+const idleSafetyNetMs = 1000
 
 // Run starts the application main loop.
 func (a *App) Run() error {
@@ -616,6 +2109,7 @@ func (a *App) Run() error {
 
 	// Tab manager (terminal creation deferred to first frame for accurate metrics)
 	w.tabs = tabs.NewManager(&a.cfg)
+	a.installSourceFactory(w)
 
 	// macOS-only: hook an SDL event watch so a real frame still renders
 	// while AppKit's live-resize tracking mode holds the run loop.
@@ -640,6 +2134,11 @@ func (a *App) Run() error {
 	wrappedFrame := func() {
 		liveResizeMainFrameBegin()
 		defer liveResizeMainFrameEnd()
+		// Start each frame assuming nothing animates: the loop may park
+		// up to idleSafetyNetMs. The cursor-blink draw lowers this to
+		// the next toggle when a focused cursor is blinking; the safety
+		// net (not an infinite block) bounds any missed wake.
+		a.idleWakeMs = idleSafetyNetMs
 		// (Modifier resync is in beforeRender — it has to run BEFORE
 		// imgui.NewFrame consumes the input queue, otherwise the
 		// re-asserted modifier state only takes effect next frame
@@ -665,6 +2164,15 @@ func (a *App) Run() error {
 			// SDL_WINDOW_BORDERLESS.
 			windowClass := imgui.NewWindowClass()
 			windowClass.SetViewportFlagsOverrideClear(imgui.ViewportFlagsNoDecoration)
+			// NoAutoMerge: each xerotty Window must be its OWN OS
+			// viewport, never merged into another window's surface.
+			// Without this, a spawned window whose cascaded position
+			// lands within an existing window's rect gets merged by
+			// ImGui and renders INSIDE that window (e.g. "New Window"
+			// from a remote-reattach window drew the new terminal on
+			// top of the remote one). Mirrors the prefs dialog, which
+			// already forces this for the same reason.
+			windowClass.SetViewportFlagsOverrideSet(imgui.ViewportFlagsNoAutoMerge)
 			imgui.SetNextWindowClass(windowClass)
 			windowClass.Destroy()
 			// Position outside the main viewport the first time so
@@ -749,6 +2257,26 @@ func (a *App) Run() error {
 			imgui.PopStyleVarV(2)
 			if shouldRenderFrame {
 				win.imViewport = imgui.WindowViewport()
+				// Apply window opacity (cfg.Appearance.Opacity) via
+				// SDL_SetWindowOpacity — only when it changed, so the
+				// first valid frame and live prefs-slider edits both
+				// take effect without calling SDL every frame. The
+				// SDL2→SDL3 migration dropped this wiring; see SPEC
+				// "Window opacity support".
+				op := a.cfg.Appearance.Opacity
+				if a.forceOpaque.Load() {
+					op = 1.0 // SIGUSR1 screenshot-safe override
+				}
+				if op != win.appliedOpacity {
+					if h := win.imViewport.PlatformHandle(); h != 0 {
+						applied := op
+						if applied <= 0 || applied > 1 {
+							applied = 1.0 // never hide/invalidate the window
+						}
+						platform.SetWindowOpacity(h, applied)
+						win.appliedOpacity = op
+					}
+				}
 				// Capture the wrapper's actual content origin (NOT
 				// viewport.Pos — see contentOriginY comment on
 				// Window). CursorScreenPos right after Begin is the
@@ -875,6 +2403,16 @@ func (a *App) Run() error {
 			platform.Quit()
 		}
 		a.updateTabDragDrop()
+		// Reconcile any topology snapshots from other clients / MCP
+		// agents into the GUI tab bar (add newly-created tabs).
+		a.applyPendingTopology()
+		// Republish the focused-Source snapshot for the guimcp
+		// goroutine now that this frame's window/tab mutations are
+		// settled (see publishFocusedSources).
+		a.publishFocusedSources()
+		// Tell the render loop how long it may park before the next
+		// forced frame (next blink toggle, or the safety net).
+		platform.SetIdleTimeout(a.idleWakeMs)
 	}
 	installLiveResizeWatch(bgR, bgG, bgB, wrappedFrame, a.beforeRender)
 
@@ -883,6 +2421,11 @@ func (a *App) Run() error {
 	// (cursor blink etc.) and the user sees up to ~500ms latency on
 	// incoming bytes.
 	terminal.Wake = platform.PostWake
+	// Same for daemon-backed tabs: the Hub router applies cell/cursor/
+	// title/bell frames on its own goroutine; without this the now
+	// event-driven loop wouldn't repaint remote output until its next
+	// idle timeout.
+	daemonsource.Wake = platform.PostWake
 
 	stopMouseWakePoller := a.startMouseMirrorWakePoller()
 	defer stopMouseWakePoller()
@@ -896,13 +2439,16 @@ func (a *App) Run() error {
 	}
 	platform.Shutdown()
 
-	// Cleanup: close all tabs in every Window before exiting.
+	// Cleanup: detach from all tabs in every Window before exiting.
+	// Daemon-backed tabs survive (the daemon process keeps the
+	// shells alive); in-process PTY tabs get torn down (Detach is
+	// Close for them).
 	for _, win := range a.windows {
 		if win.tabs == nil {
 			continue
 		}
 		for _, tab := range win.tabs.Tabs {
-			tab.Terminal.Close()
+			tab.Terminal.Detach()
 		}
 	}
 
@@ -1218,7 +2764,99 @@ func (w *Window) containsMousePos(mp imgui.Vec2) bool {
 		mp.Y < w.contentOriginY+float32(w.height)
 }
 
+// syncDaemonFocus checks if the active tab changed since last
+// frame and, if so, broadcasts the new focus to the OWNING
+// daemon for that tab. Critical detail: the focused tab might
+// be on a remote daemon (via cfg.Hosts) — sending its tab ID
+// to the local daemon would be wrong (mismatched ID spaces).
+// Route through Source.HubClient() so each daemon gets focus
+// updates for its own tabs only.
+//
+// Window IDs are scoped per-daemon too: a.daemonWindowID is only
+// valid for the LOCAL daemon (the one we created the GUI window
+// against). Remote tabs don't have a local-window association,
+// so SendWindowFocusTab is skipped for them. A future polish
+// could track per-(GUI window, remote daemon) window IDs.
+//
+// Cheap per-frame: one type-assert + a uint32 compare. Only sends
+// when the focus changes so the wire stays quiet during normal
+// tab use.
+func (a *Window) syncDaemonFocus() {
+	// Drain any deferred cross-window-drag move. Once the
+	// destination window has a daemon-window ID on the dragged
+	// tab's HUB (lazily minted by windowIDForHub), tell that
+	// daemon the tab moved here.
+	if a.pendingDaemonMove != nil {
+		if ds, ok := a.pendingDaemonMove.(*daemonsource.Source); ok {
+			if hub := a.app.findHubForClient(ds.HubClient()); hub != nil {
+				if id := a.windowIDForHub(hub); id != 0 {
+					_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), id, -1)
+					a.pendingDaemonMove = nil
+				}
+			} else {
+				// Non-daemon tab — nothing to persist.
+				a.pendingDaemonMove = nil
+			}
+		} else {
+			a.pendingDaemonMove = nil
+		}
+	}
+	tab := a.tabs.Active()
+	var cur uint32
+	var ds *daemonsource.Source
+	if tab != nil && tab.Terminal != nil {
+		// Only daemon-backed sources have a daemon tab ID. PTY
+		// tabs don't (and shouldn't generate focus messages).
+		var ok bool
+		if ds, ok = tab.Terminal.(*daemonsource.Source); ok {
+			cur = ds.TabID()
+		}
+	}
+	if cur == a.lastSentFocusTabID {
+		return
+	}
+	a.lastSentFocusTabID = cur
+	if cur == 0 || ds == nil {
+		return
+	}
+	cli := ds.HubClient()
+	_ = cli.SendTabFocus(cur)
+	// Window-focus needs the daemon-window ID FOR THAT TAB'S
+	// HUB. windowIDForHub does the per-hub lookup (lazily
+	// minting a remote-side daemon window on first use). Without
+	// the per-hub map, a remote tab's focus would send the
+	// local-daemon's window ID to the remote daemon —
+	// mismatched ID spaces.
+	hub := a.app.findHubForClient(cli)
+	if hub != nil {
+		if id := a.windowIDForHub(hub); id != 0 {
+			_ = cli.SendWindowFocusTab(id, cur)
+		}
+	}
+}
+
+// findHubForClient maps a clientproto.Client back to its
+// daemonsource.Hub by walking the registry (local + remote).
+// Used for "I have a Source's Client; which hub does it belong
+// to?" lookups during cross-hub focus + move operations.
+func (a *App) findHubForClient(cli *clientproto.Client) *daemonsource.Hub {
+	if a.daemonHub != nil && a.daemonHub.Client() == cli {
+		return a.daemonHub
+	}
+	a.remoteHubsMu.Lock()
+	defer a.remoteHubsMu.Unlock()
+	for _, e := range a.remoteHubs {
+		if e.hub.Client() == cli {
+			return e.hub
+		}
+	}
+	return nil
+}
+
 func (a *Window) frame() {
+	a.syncDaemonFocus()
+	a.app.pollClipboardForDaemons()
+
 	// macOS: after the first click that shifts the Cocoa first-responder,
 	// SDL2 stops receiving subsequent mouse-button NSEvents — neither
 	// presses nor releases reach the SDL event queue, so ImGui sees no
@@ -1472,9 +3110,56 @@ func (a *Window) frame() {
 
 		// First-frame startup tab — no parent to inherit CWD from;
 		// the shell uses xerotty's own CWD (launcher / cwd-at-launch).
-		if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
-			platform.Quit()
-			return
+		//
+		// In daemon mode, drain the adoptQueue first. The first
+		// entry's tabs become this Window's tabs (restoring the
+		// previous session). Any extra entries in the queue get
+		// spawned as additional Windows by App after this returns
+		// so the multi-window layout survives reattach.
+		if a.app.daemonHub != nil && len(a.app.daemonAdoptQueue) > 0 {
+			snap := a.app.daemonAdoptQueue[0]
+			a.app.daemonAdoptQueue = a.app.daemonAdoptQueue[1:]
+			a.daemonWindowID = snap.WindowID
+			a.app.installSourceFactory(a)
+			a.app.daemonHub.SetDefaultWindowID(snap.WindowID)
+			var focusIdx = -1
+			for i, ts := range snap.Tabs {
+				src := a.app.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
+				tab := a.tabs.AdoptTab(src)
+				if ts.Title != "" {
+					tab.SetTitle(ts.Title)
+				}
+				src.Resize(cfgCols, cfgRows)
+				if ts.ID == snap.FocusedTabID {
+					focusIdx = i
+				}
+			}
+			if focusIdx >= 0 && focusIdx < len(a.tabs.Tabs) {
+				a.tabs.ActiveIdx = focusIdx
+				a.tabSwitchReq = a.tabs.Tabs[focusIdx].ID
+			}
+		} else if a.app.daemonHub != nil {
+			// Daemon mode, no existing tabs — mint a fresh daemon
+			// window for this first GUI window (ReqID-correlated).
+			if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
+				a.daemonWindowID = id
+				a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
+			}
+			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+				platform.Quit()
+				return
+			}
+		} else {
+			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+				platform.Quit()
+				return
+			}
+		}
+		// More daemon windows in the queue → spawn extra GUI
+		// windows for them. spawnWindow uses spawnWindowImpl which
+		// drains adoptQueue further.
+		for len(a.app.daemonAdoptQueue) > 0 {
+			a.app.spawnWindow()
 		}
 		return
 	}
@@ -1545,15 +3230,17 @@ func (a *Window) frame() {
 	}
 
 	// Handle scroll wheel: tab bar = switch tabs, Ctrl+scroll = zoom, plain scroll = scrollback
-	// Geometric scope: only the Window whose content rect contains the
-	// cursor consumes the wheel. Using a.app.active fails the same way
-	// the selection / right-click gates did on Wayland multi-viewport
-	// — focus tracking is unreliable so the wheel would silently no-op.
-	mpW := imgui.MousePos()
-	wheelInThisWindow := mpW.X >= a.contentOriginX &&
-		mpW.X < a.contentOriginX+float32(a.width) &&
-		mpW.Y >= a.contentOriginY &&
-		mpW.Y < a.contentOriginY+float32(a.height)
+	// io.MouseWheel is global, so EVERY Window's frame() sees the same
+	// delta — gate to the Window the cursor is actually over or the
+	// wheel scrolls all Windows at once. The contentOrigin rect test
+	// can't do this on Wayland (every viewport reports Pos (0,0) and
+	// io.MousePos is surface-local), so use the OS pointer-focus
+	// (MouseFocusWindowID), same as the context-menu open gate.
+	myWheelWinID := uintptr(0)
+	if vp := a.viewport(); vp != nil {
+		myWheelWinID = vp.PlatformHandle()
+	}
+	wheelInThisWindow := myWheelWinID != 0 && platform.MouseFocusWindowID() == myWheelWinID
 	wheel := imgui.CurrentIO().MouseWheel()
 	if wheel != 0 && wheelInThisWindow {
 		vpOffY := a.contentOriginY
@@ -1619,7 +3306,7 @@ func (a *Window) frame() {
 				if s, ok := a.scroll[tab.ID]; ok {
 					scrollOff = s.Offset
 				}
-				a.hoveredLink = detectLinkAt(tab.Terminal.Emu, col, row, scrollOff)
+				a.hoveredLink = detectLinkAt(tab.Terminal.Emulator(), col, row, scrollOff)
 
 				// Ctrl+click opens link
 				if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
@@ -1660,30 +3347,116 @@ func (a *Window) frame() {
 
 	// Check for closed tabs and handle on_child_exit policy
 	a.tabs.CheckClosed()
+	// Track WHY tabs closed this frame. A daemon-side VANISH splits two
+	// ways that the Count()==0 block treats very differently: a daemon
+	// RESTART (process died + came back, took the shells) must keep the
+	// window alive and reseat, whereas a remote close (another client /
+	// MCP agent closed the last tab on a still-LIVE daemon) is a
+	// legitimate close. Both still force-remove the dead tab here.
+	daemonRestartVanished := false
+	otherClose := false
 	for i := len(a.tabs.Tabs) - 1; i >= 0; i-- {
 		tab := a.tabs.Tabs[i]
 		if !tab.Closed {
 			continue
 		}
+		// A daemon tab that vanished from the topology (closed by
+		// another client / MCP agent, or lost when the daemon process
+		// restarted) is GONE — there's no local child to "hold", so
+		// force-remove it regardless of on_child_exit. Only a
+		// restart-vanish counts toward the reseat decision below; a
+		// remote close leaves daemonRestartVanished false so the window
+		// closes normally.
+		if ds, ok := tab.Terminal.(*daemonsource.Source); ok && ds.IsVanished() {
+			if ds.VanishedByRestart() {
+				daemonRestartVanished = true
+			}
+			a.tabs.CloseTab(i)
+			continue
+		}
 		switch a.app.cfg.Tabs.OnChildExit {
 		case "close":
 			a.tabs.CloseTab(i)
+			otherClose = true
 		case "hold":
 			// Keep tab open — user can close manually
 		case "hold_on_error":
-			if tab.Terminal.ExitCode == 0 {
+			if tab.Terminal.ChildExitCode() == 0 {
 				a.tabs.CloseTab(i)
+				otherClose = true
 			}
 			// Non-zero exit: keep tab open so user can see output
 		default:
 			a.tabs.CloseTab(i)
+			otherClose = true
 		}
 	}
 
-	// No tabs left in this Window — close just this Window. The reap
-	// pass in wrappedFrame removes it; if it was the last Window the
-	// process exits.
-	if a.tabs.Count() == 0 {
+	// No tabs left in this Window. Normally that closes the Window (and,
+	// if it's the last one, quits the app). But if the window emptied
+	// ONLY because the daemon PROCESS restarted and took its shells with
+	// it (not the user closing them, and not another client closing the
+	// last tab on a still-live daemon), closing the last window would
+	// call platform.Quit() and silently exit the whole GUI. A daemon is
+	// local infrastructure, not a quit request, so instead keep the
+	// Window alive and reseat a fresh tab on the reconnected daemon ("the
+	// server came back, here's a new shell"). The persistent flag retries
+	// across frames while the hub is still mid-redial; a genuine
+	// user/child-exit/remote-close empty still closes.
+	if a.tabs.Count() == 0 && (a.daemonReseatPending || (daemonRestartVanished && !otherClose)) && a.app.daemonHub != nil {
+		a.daemonReseatPending = true
+		cols, rows := a.gridSize()
+		if cols < 2 || rows < 2 {
+			cols, rows = 80, 24
+		}
+		// The old daemonWindowID belonged to the dead daemon; mint a
+		// fresh daemon window for this GUI window before adding the tab
+		// (mirrors first-frame init). Do this AT MOST ONCE per episode:
+		// CreateWindow is a synchronous hub RPC, and re-minting every
+		// retry frame (when NewTab fails after CreateWindow succeeds)
+		// leaked a daemon window per tick. setLocalDaemonWindowID keeps
+		// the legacy field, the per-hub map, and the hub default window
+		// all consistent so later focus/move use the NEW window ID.
+		//
+		// The mint-once is scoped to the CURRENT daemon instance: if a
+		// SECOND restart happens mid-reseat, the previously-minted window
+		// ID belongs to the dead intermediate daemon, so reseatNeedsMint
+		// forces a re-mint on the new one (see its doc).
+		curInstance := a.app.daemonHub.InstanceID()
+		if reseatNeedsMint(a.daemonReseatMinted, a.daemonReseatInstance, curInstance) {
+			if id, err := a.app.daemonHub.CreateWindow(0, 0, int32(a.width), int32(a.height)); err == nil {
+				a.setLocalDaemonWindowID(id)
+				a.daemonReseatMinted = true
+				a.daemonReseatInstance = curInstance
+			}
+		}
+		// Only retry the cheap part (NewTab) each frame — but ONLY once we
+		// actually hold a window minted for the CURRENT daemon instance.
+		// If CreateWindow failed this frame (daemon mid-redial), the mint
+		// is either absent (first episode) or stale (a second restart left
+		// daemonReseatInstance pointing at the dead intermediate daemon).
+		// Running NewTab with that stale daemonWindowID would silently land
+		// the tab in the daemon's DEFAULT window (session.go falls back for
+		// unknown IDs). So skip NewTab and retry next frame — the window
+		// stays open+empty with daemonReseatPending set, never pendingClose.
+		if a.daemonReseatMinted && a.daemonReseatInstance == curInstance {
+			if _, err := a.tabs.NewTab(cols, rows, ""); err == nil {
+				// Got a tab; episode over — resume normal rendering.
+				a.daemonReseatPending = false
+				a.daemonReseatMinted = false
+				a.daemonReseatInstance = ""
+			}
+		}
+		if a.tabs.Count() == 0 {
+			// Hub still mid-reconnect — render an empty frame and retry
+			// next frame. Crucially do NOT set pendingClose.
+			imgui.CurrentIO().ClearInputKeys()
+			return
+		}
+		// Fell through with a fresh tab; render it this frame.
+	} else if a.tabs.Count() == 0 {
+		// The reap pass in wrappedFrame removes this Window; if it was
+		// the last Window the process exits.
 		a.pendingClose = true
 		// Clear ImGui's input key state so any key the user was
 		// holding at close time (Ctrl-D / Enter / etc. — i.e. the
@@ -1760,18 +3533,18 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
-
-			// Draw selection highlight
+			// Feed the selection into the renderer so selected cells
+			// draw with SelectionFg/SelectionBg inline (text stays
+			// visible) instead of an opaque rect painted over the
+			// glyphs, which buried the selected text.
 			if a.sel.active {
 				r1, c1, r2, c2 := a.sel.normalize()
-				cols, rows := a.gridSize()
-				a.renderer.DrawSelection(renderer.SelectionBounds{
-					Active:   true,
-					StartRow: r1, StartCol: c1,
-					EndRow: r2, EndCol: c2,
-				}, cols, rows, drawList)
+				cols, _ := a.gridSize()
+				a.renderer.SetSelection(true, r1, c1, r2, c2, cols)
+			} else {
+				a.renderer.SetSelection(false, 0, 0, 0, 0, 0)
 			}
+			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
 
 			// Draw link underline on hover
 			if a.hoveredLink != nil {
@@ -1786,20 +3559,48 @@ func (a *Window) frame() {
 				)
 			}
 
-			// Only show cursor when at live position (not scrolled back)
-			if scrollOff == 0 {
+			// Only show cursor when at live position (not scrolled
+			// back) AND the terminal hasn't hidden it (DECTCEM).
+			if scrollOff == 0 && tab.Terminal.CursorVisible() {
+				// Cursor SHAPE: when the foreground app explicitly set
+				// the cursor via DECSCUSR (styleSet), honor it; else
+				// use the user's config preference. Same for blink.
+				styleStr := a.app.cfg.Appearance.CursorStyle
+				cfgBlink := a.app.cfg.Appearance.CursorBlink
+				if ts, tblink, styleSet := tab.Terminal.CursorStyle(); styleSet {
+					styleStr = cursorStyleName(ts)
+					cfgBlink = tblink
+				}
 				showCursor := true
-				if a.app.cfg.Appearance.CursorBlink {
+				if cfgBlink {
 					rate := float64(a.app.cfg.Appearance.BlinkRate) / 1000.0
 					if rate <= 0 {
 						rate = 0.53
 					}
-					showCursor = int(imgui.Time()/rate)%2 == 0
+					now := imgui.Time()
+					showCursor = int(now/rate)%2 == 0
+					// This (active-tab) cursor is blinking, so the render
+					// loop must wake to toggle it. Lower the idle wait to
+					// the next toggle — at most 2 renders/blink-period
+					// instead of the old full frame cap.
+					nextToggle := float64(int(now/rate)+1) * rate
+					// Clamp to a 1ms floor: the interval is always
+					// positive, so a sub-millisecond remainder must NOT
+					// round down to 0 and get ignored — otherwise the
+					// loop falls back to the 1000ms safety net and the
+					// cursor stays un-toggled for up to a second.
+					ms := int((nextToggle - now) * 1000)
+					if ms < 1 {
+						ms = 1
+					}
+					if ms < a.app.idleWakeMs {
+						a.app.idleWakeMs = ms
+					}
 				}
 				if showCursor {
-					pos := tab.Terminal.Emu.CursorPosition()
+					pos := tab.Terminal.Emulator().CursorPosition()
 					a.renderer.DrawCursor(struct{ X, Y int }{pos.X, pos.Y},
-						a.app.cfg.Appearance.CursorStyle, drawList)
+						styleStr, drawList)
 				}
 			}
 
@@ -1809,7 +3610,7 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
 				_, visRows := a.gridSize()
 				savedIdx := s.MatchIdx
-				s.Search(tab.Terminal.Emu, visRows)
+				s.Search(tab.Terminal.Emulator(), visRows)
 				if savedIdx < len(s.Matches) {
 					s.MatchIdx = savedIdx
 				}
@@ -1826,6 +3627,10 @@ func (a *Window) frame() {
 	// Tab bar — rendered AFTER terminal cells so it visually layers
 	// on top of them when they share the wrapper's drawlist.
 	a.renderTabBar()
+
+	// Propose-mode approval gate (daemon mode only; no-op when
+	// the queue is empty).
+	a.renderProposalGate()
 
 	// Search overlay
 	a.renderSearchOverlay()
@@ -1868,10 +3673,19 @@ func (a *Window) frame() {
 	// just record the position; renderContextMenu draws via BeginV
 	// and we control when it closes.
 	mp := imgui.MousePos()
-	mouseInThisWindow := mp.X >= a.contentOriginX &&
-		mp.X < a.contentOriginX+float32(a.width) &&
-		mp.Y >= a.contentOriginY &&
-		mp.Y < a.contentOriginY+float32(a.height)
+	// Which Window the cursor is physically over, by OS-level pointer
+	// focus. This is the authoritative discriminator on Wayland, where
+	// every viewport reports Pos (0,0) and io.MousePos is surface-local
+	// — so a contentOrigin-based rect test is true for EVERY Window and
+	// ImGui's focus flag lags the compositor (verified: a right-click
+	// opened the menu on whichever Window ImGui happened to mark
+	// focused, not the one clicked). MouseFocusWindowID goes through OS
+	// pointer-focus and is reliable on X11/Wayland/Cocoa.
+	myWinID := uintptr(0)
+	if vp := a.viewport(); vp != nil {
+		myWinID = vp.PlatformHandle()
+	}
+	mouseOverThisWindow := myWinID != 0 && platform.MouseFocusWindowID() == myWinID
 	// Only OPEN the menu via right-click; never re-open or reposition
 	// while it's already open. If the user right-clicks the terminal
 	// with the menu showing, the click counts as a click-outside and
@@ -1879,16 +3693,15 @@ func (a *Window) frame() {
 	// re-set contextMenuOpenedFrame here, allowCloseClick would be
 	// false for that frame and the menu would silently reposition
 	// instead of closing.
-	// Only the focused Window opens its menu — without this gate,
-	// overlapping multi-viewport popout rects mean a right-click in
-	// the overlap area fires "menu open" on BOTH windows (verified:
-	// same mouse pos passes mouseInThisWindow for both), producing
-	// duplicate menus and an ImGui ID conflict. We use IsWindowFocused
-	// inline (not a.app.active, which is last-frame's value updated
-	// post-render) so the *clicked* window is the one that responds.
-	thisWindowFocused := imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows)
-	if thisWindowFocused && mouseInThisWindow && imgui.IsMouseClickedBool(imgui.MouseButtonRight) && !a.contextMenuOpen {
+	rightClicked := imgui.IsMouseClickedBool(imgui.MouseButtonRight)
+	// Open the menu only on the Window the cursor is over — exactly
+	// where the user right-clicked. Only one Window can be under the
+	// pointer at a time, so a click that dismisses one Window's menu
+	// can never reopen a menu on a different Window.
+	menuBusyThisFrame := int(imgui.FrameCount()) == a.app.menuActivityFrame
+	if mouseOverThisWindow && rightClicked && !a.contextMenuOpen && !menuBusyThisFrame {
 		a.contextMenuOpen = true
+		a.app.menuActivityFrame = int(imgui.FrameCount())
 		a.contextMenuX = mp.X
 		a.contextMenuY = mp.Y
 		// Remember which frame we opened on — renderContextMenu skips
@@ -1912,11 +3725,19 @@ func (a *Window) frame() {
 	// Tab rename dialog
 	a.renderRenameDialog()
 
+	// "Connect to host…" ad-hoc remote dialog
+	a.renderConnectDialog()
+
 	// Preferences dialog
 	a.renderPreferences()
 
 	// Resize overlay
 	a.renderResizeOverlay()
+
+	// "Reconnecting…" badge when the active tab's daemon connection is
+	// down and re-dialing (layer 4b). The last frame stays frozen
+	// underneath; this just signals it's stalled, not dead.
+	a.renderReconnectingOverlay()
 
 	// Push cell-width resize increments to the OS window each time
 	// the cell dimensions change (font zoom, metric refresh) AND
@@ -1964,7 +3785,25 @@ func (w *Window) isSearching() bool {
 func (w *Window) popupActive() bool {
 	// Note: prefDialog is a non-modal window. It manages its own focus
 	// through ImGui's WantCaptureKeyboard, so it shouldn't gate terminal input.
-	return w.renamingTab || w.pendingPaste != ""
+	return w.renamingTab || w.pendingPaste != "" || w.connectingHost
+}
+
+// inputOwnedByDialog reports whether a preferences dialog on ANY window
+// currently holds focus. processKeys runs only for a.active and the old
+// gate checked just that window's prefDialog — so with prefs focused on
+// Window A but Window B active, B still drained the global character
+// queue into its PTY (the combo type-ahead / label keystrokes leaked
+// behind the dialog). Scanning every window closes that multi-window
+// gap. The focus check (not just .open) avoids over-gating: if prefs is
+// open but the user clicked back to a terminal, the dialog isn't focused
+// and terminal input flows normally.
+func (a *App) inputOwnedByDialog() bool {
+	for _, w := range a.windows {
+		if w.prefDialog.open && w.prefDialog.focused {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *Window) processKeys() {
@@ -1986,6 +3825,22 @@ func (w *Window) processKeys() {
 		return
 	}
 
+	// A prefs dialog on ANY window owns the keyboard — its InputText
+	// label fields and the Add combo's type-ahead read ImGui's char
+	// queue. Forwarding to the PTY here would leak every typed char into
+	// the shell behind the dialog (and steal the combo's letters). Gate
+	// at the app level (not just this active window's prefDialog) so the
+	// multi-window case — prefs focused on Window A while Window B is
+	// active — doesn't leak A's keystrokes into B's PTY. This single
+	// early-return covers BOTH the translated-key path and the
+	// character-queue path below. NOT gated on WantCaptureKeyboard: with
+	// NavEnableKeyboard set (sdl3.cpp) that's true even on plain terminal
+	// focus, which would suppress normal typing. The prefs window's own
+	// EnsureTextInput keeps feeding chars to ImGui, so type-ahead works.
+	if w.app.inputOwnedByDialog() {
+		return
+	}
+
 	// Yield to ImGui only when a text-entry widget is actually wanting chars
 	// (prefs InputText, etc). WantCaptureKeyboard is too broad — it also flips
 	// true when a non-text window has plain focus, so e.g. clicking a tab or
@@ -1993,6 +3848,16 @@ func (w *Window) processKeys() {
 	// even though nothing on screen needs the keys.
 	if imgui.CurrentIO().WantTextInput() && !searchInputFocused {
 		return
+	}
+
+	// Past the gates, the terminal owns keyboard input this frame —
+	// re-assert SDL text input on this Window so typed characters keep
+	// flowing. A dialog's InputText (rename/connect/search) closing
+	// makes the ImGui backend SDL_StopTextInput this very window,
+	// which would otherwise leave the terminal able to see mapped keys
+	// (Enter, arrows) but not typed characters. No-op when already on.
+	if vp := w.viewport(); vp != nil {
+		platform.EnsureTextInput(vp.PlatformHandle())
 	}
 
 	// Poll ImGui key state (SDL backend's SetKeyCallback is not implemented).
@@ -2159,6 +4024,50 @@ func encodeRune(buf []byte, r rune) int {
 }
 
 func (w *Window) dispatchAction(action string) {
+	// Action namespace "new_tab_remote:<host>" opens a NEW tab on
+	// the named host. "attach_remote:<host>" adopts every existing
+	// remote tab into this window — for the "show me what I had
+	// open on kh" UX. Both share the per-host Hub (one SSH
+	// connection serves all tabs). Failures log + drop.
+	if strings.HasPrefix(action, "new_tab_remote:") {
+		host := action[len("new_tab_remote:"):]
+		if err := w.openRemoteTab(host); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: new_tab_remote %s: %v\n", host, err)
+		}
+		return
+	}
+	if strings.HasPrefix(action, "attach_remote:") {
+		host := action[len("attach_remote:"):]
+		if err := w.openRemoteReattach(host); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: attach_remote %s: %v\n", host, err)
+		}
+		return
+	}
+	if action == "connect_remote" {
+		w.openConnectDialog()
+		return
+	}
+	// "remote_new_tab" / "remote_new_window" act on the host of the
+	// CURRENTLY active tab — a new tab/window on the same remote box
+	// you're looking at. No-op (with a note) when the active tab is
+	// local; the plain new_tab/new_window actions cover the local case.
+	if action == "remote_new_tab" || action == "remote_new_window" {
+		t := w.tabs.Active()
+		if t == nil || t.Host == "" {
+			fmt.Fprintf(os.Stderr, "xerotty: %s: active tab is not on a remote host\n", action)
+			return
+		}
+		var err error
+		if action == "remote_new_tab" {
+			err = w.openRemoteTab(t.Host)
+		} else {
+			err = w.openRemoteWindow(t.Host)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: %s %s: %v\n", action, t.Host, err)
+		}
+		return
+	}
 	switch action {
 	case "new_tab":
 		cols, rows := w.gridSize()
@@ -2213,8 +4122,29 @@ func (w *Window) dispatchAction(action string) {
 		text := w.selectedText()
 		if text != "" {
 			input.ClipboardWrite(text)
+			// Push the copied text to every daemon we're attached
+			// to so MCP agents reading get_clipboard see it (and
+			// future OSC 52 reads from PTY children can return
+			// it). Sending to multiple daemons is cheap and
+			// keeps the user's clipboard view consistent across
+			// local and remote sessions.
+			w.app.broadcastClipboard(text)
 		}
 	case "paste":
+		// Image-first: a screenshot copied via Cmd+Shift+4 etc.
+		// goes to the daemon as raw bytes (which writes it to a
+		// temp file the PTY child can read by path). Falls back
+		// to text paste when the clipboard has no image. Lets
+		// "paste a screenshot into Claude Code over SSH" Just
+		// Work without OSC52 / base64 brittleness.
+		if mime, data, err := input.ClipboardReadImage(); err == nil && len(data) > 0 {
+			if tab := w.tabs.Active(); tab != nil && tab.Terminal != nil {
+				if err := tab.Terminal.PasteImage(mime, "", data); err != nil {
+					fmt.Fprintf(os.Stderr, "xerotty: image paste: %v\n", err)
+				}
+				return
+			}
+		}
 		text, err := input.ClipboardRead()
 		if err == nil && text != "" {
 			w.pasteText(text)
@@ -2260,6 +4190,15 @@ func (w *Window) dispatchAction(action string) {
 			s.OpenSearch()
 			w.searchFocusInput = true
 		}
+	case "toggle_opacity":
+		// Flip between the configured opacity and fully opaque. Opaque is
+		// the screenshot-safe state: a translucent window blends whatever
+		// is behind it, so a capture can leak other windows — toggle to
+		// opaque before shooting. App-level so all windows flip together;
+		// the per-Window opacity apply in Run() picks it up. PostWake
+		// forces an immediate render so the change is visible at once.
+		w.app.forceOpaque.Store(!w.app.forceOpaque.Load())
+		platform.PostWake()
 	case "font_size_up":
 		// Per-window zoom — only this Window's font size changes.
 		// Other Windows keep their own zoom level (iTerm2-style).
@@ -2276,8 +4215,8 @@ func (w *Window) dispatchAction(action string) {
 		w.updateFontMetrics()
 	case "select_all":
 		if tab := w.tabs.Active(); tab != nil {
-			cols := tab.Terminal.Emu.Width()
-			rows := tab.Terminal.Emu.Height()
+			cols := tab.Terminal.Emulator().Width()
+			rows := tab.Terminal.Emulator().Height()
 			w.sel.startCol = 0
 			w.sel.startRow = 0
 			w.sel.endCol = cols - 1
@@ -2287,7 +4226,7 @@ func (w *Window) dispatchAction(action string) {
 		}
 	case "clear_scrollback":
 		if tab := w.tabs.Active(); tab != nil {
-			tab.Terminal.Emu.ClearScrollback()
+			tab.Terminal.ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
@@ -2296,7 +4235,7 @@ func (w *Window) dispatchAction(action string) {
 		if tab := w.tabs.Active(); tab != nil {
 			// Send RIS (Reset to Initial State) escape sequence
 			tab.Terminal.Write([]byte("\x1bc"))
-			tab.Terminal.Emu.ClearScrollback()
+			tab.Terminal.ClearScrollback()
 			if s, ok := w.scroll[tab.ID]; ok {
 				s.Reset()
 			}
@@ -2449,6 +4388,68 @@ func (w *Window) updateFontMetrics() {
 	w.resizeOverlay = true
 }
 
+// renderProposalGate draws the propose-mode approval banner: a
+// small overlay window listing each pending agent-proposed write
+// with Approve / Drop buttons. Only the active Window renders it
+// (the queue is session-global, one daemon). No-op when empty or
+// not in daemon mode.
+//
+// Approve/Drop send a ProposalResolve over the daemon connection;
+// the daemon applies/discards and broadcasts the updated queue,
+// which refreshes a.pendingProposals via the hub callback.
+func (w *Window) renderProposalGate() {
+	// Render in the active window whenever ANY hub has pending
+	// proposals — NOT gated on a default daemonHub. Ad-hoc remote
+	// tabs (opened via the Remote menu in PTY-default mode) have a
+	// remote hub but no default hub; their propose-mode writes
+	// still need a visible gate. Each proposal carries its own
+	// hub, so Approve/Drop works regardless.
+	if w.app.active != w {
+		return
+	}
+	w.app.proposalsMu.Lock()
+	props := w.app.pendingProposals
+	w.app.proposalsMu.Unlock()
+	if len(props) == 0 {
+		return
+	}
+
+	imgui.SetNextWindowBgAlpha(0.92)
+	flags := imgui.WindowFlags(imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoFocusOnAppearing)
+	if !imgui.BeginV("Agent proposals"+w.imguiSuffix(), nil, flags) {
+		imgui.End()
+		return
+	}
+	imgui.Text("AI agent wants to run (propose mode):")
+	imgui.Separator()
+	for i, gp := range props {
+		p := gp.info
+		// Unique widget IDs per (host, index) — two hubs can both
+		// have a proposal at index 0.
+		uid := fmt.Sprintf("##p%s%d%s", gp.host, p.Index, w.imguiSuffix())
+		imgui.TextUnformatted(fmt.Sprintf("%s tab %d [%s]: %s", gp.host, p.TabID, p.Kind, p.Preview))
+		imgui.SameLine()
+		hub := gp.hub
+		idx := p.Index
+		if imgui.Button("Approve" + uid) {
+			if hub != nil {
+				_ = hub.ResolveProposal(idx, true)
+			}
+		}
+		imgui.SameLine()
+		if imgui.Button("Drop" + uid) {
+			if hub != nil {
+				_ = hub.ResolveProposal(idx, false)
+			}
+		}
+		_ = i
+	}
+	imgui.End()
+}
+
 func (w *Window) renderTabBar() {
 	w.tabBarHovered = false
 	if w.tabs.Count() <= 1 {
@@ -2490,6 +4491,12 @@ func (w *Window) renderTabBar() {
 		y0 := originY
 		y1 := originY + height
 		isActive := i == w.tabs.ActiveIdx
+
+		// Becoming active clears any pending bell urgency — the
+		// user is now looking at the tab that beeped.
+		if isActive && tab.BellPending() {
+			tab.SetBellPending(false)
+		}
 
 		// Whole-tab invisible button for hit detection. We use ONE
 		// button rather than two (with the close X as a second
@@ -2553,7 +4560,11 @@ func (w *Window) renderTabBar() {
 
 		// Centered label, clipped to the tab's interior so long
 		// titles don't bleed into the close button or the next tab.
+		// Prefix a bell marker for background tabs that beeped.
 		label := tab.DisplayTitle()
+		if tab.BellPending() && !isActive {
+			label = "● " + label
+		}
 		labelSize := imgui.CalcTextSize(label)
 		labelX := x0 + framePad.X
 		labelMaxX := x1 - closeBtnW - framePad.X*2
@@ -2605,8 +4616,13 @@ func (w *Window) renderTabBar() {
 		}
 
 		// Dispatch the click: cursor inside the close X rect → close,
-		// anywhere else on the tab → switch.
-		if clicked {
+		// anywhere else on the tab → switch. Gate on an actual mouse
+		// press — InvisibleButton also reports `clicked` when ImGui
+		// keyboard-nav ACTIVATES the (still nav-focused) button via
+		// Enter/Space. Without this gate, hitting Enter in the terminal
+		// re-"clicked" a previously-focused tab button and jumped focus
+		// to it (the "Enter jumps to the first tab" bug).
+		if clicked && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
 			if mouseInClose {
 				closedIdx = i
 			} else {
@@ -2689,8 +4705,14 @@ func (w *Window) renderTabBar() {
 				targetIdx = numTabs - 1
 			}
 			if targetIdx != w.tabDragIdx {
+				moved := w.tabs.Tabs[w.tabDragIdx]
 				w.tabs.MoveTab(w.tabDragIdx, targetIdx)
 				w.tabDragIdx = targetIdx
+				// Persist the reorder to the daemon so reattach
+				// restores the new order. Same-window reorder
+				// = WindowMoveTab with the same window ID +
+				// new index. No-op for PTY-backed tabs.
+				w.sendDaemonMoveTab(moved, w.daemonWindowID, int32(targetIdx))
 			}
 		}
 	} else if !imgui.IsMouseDown(imgui.MouseButtonLeft) {
@@ -2713,6 +4735,41 @@ func (w *Window) renderTabBar() {
 		// the resize lands.
 		platform.PostWake()
 	}
+}
+
+// measureMenu estimates the rendered width/height of a menu item list
+// in the popup's default ImGui font + style. Metrics are empirical
+// (item rows advance ~17px, separators ~4px, 8px window padding each
+// side; ~7px per default-font char). Submenu items add an arrow's
+// worth of width. Used to size the popup surface so a cascaded submenu
+// has room beside its parent.
+func measureMenu(items []config.MenuItem) (w, h float32) {
+	const (
+		itemAdvance = 17.0
+		sepAdvance  = 4.0
+		padY        = 8.0
+		padX        = 8.0
+		charW       = 7.0
+		arrowW      = 20.0 // submenu ">" indicator + spacing
+	)
+	w = 120
+	h = padY * 2
+	for _, item := range items {
+		if item.Action == "separator" {
+			h += sepAdvance
+			continue
+		}
+		iw := float32(len(item.Label))*charW + float32(len(item.Shortcut))*charW + 30
+		if len(item.Submenu) > 0 {
+			iw += arrowW
+		}
+		if iw > w {
+			w = iw
+		}
+		h += itemAdvance
+	}
+	w += padX * 2
+	return
 }
 
 func (w *Window) renderContextMenu() {
@@ -2746,46 +4803,49 @@ func (w *Window) renderContextMenu() {
 	}
 
 	ctx := w.menuContext()
-	// Pre-compute popup size matching the popup's actual rendering.
-	// Values are empirical — captured by tracing CursorPosY of an
-	// 11-item / 4-separator menu in the popup's default font + style
-	// and back-solving. See popup_imgui.cpp trace lines.
-	//
-	//   items * 17 + separators * 4 + 16 (top+bottom WindowPadding)
-	//   == actual rendered height
-	//
-	// These are properties of ImGui's default font + default style
-	// rendering MenuItem/Separator, so they hold for any
-	// user-customized menu items list.
-	const (
-		popupItemAdvance = 17.0 // MenuItem cursor advance (default font+style)
-		popupSepAdvance  = 4.0  // Separator cursor advance
-		popupWindowPadY  = 8.0
-		popupWindowPadX  = 8.0
-		popupCharW       = 7.0 // ~ default ImGui font monospace width
-	)
-	popupW := float32(120)
-	popupH := float32(popupWindowPadY * 2)
-	for _, item := range w.app.cfg.Menu.Items {
-		if item.Action == "separator" {
-			popupH += popupSepAdvance
-			continue
+	// Pre-compute popup size. The SDL surface is deliberately sized to
+	// fit the top-level menu PLUS the widest cascaded submenu to its
+	// right (and tall enough for it to drop down), so BeginMenu can
+	// open the submenu beside the parent instead of clamping it on top.
+	// The surface is transparent, so the extra room is invisible until
+	// a submenu opens. measureMenu's metrics are empirical for ImGui's
+	// default font + style (see popup_imgui.cpp).
+	expanded := w.app.expandMenu(w.app.cfg.Menu.Items)
+	mainW, mainH := measureMenu(expanded)
+	// Widest / tallest submenu among the top-level items.
+	var subW, subH float32
+	for _, item := range expanded {
+		if len(item.Submenu) > 0 {
+			sw, sh := measureMenu(item.Submenu)
+			if sw > subW {
+				subW = sw
+			}
+			if sh > subH {
+				subH = sh
+			}
 		}
-		labelW := float32(len(item.Label)) * popupCharW
-		shortcutW := float32(len(item.Shortcut)) * popupCharW
-		w := labelW + shortcutW + 30
-		if w > popupW {
-			popupW = w
-		}
-		popupH += popupItemAdvance
 	}
-	popupW += float32(popupWindowPadX * 2)
+	// Width: main + submenu side by side. Height: a submenu can open as
+	// low as the bottom of the main menu and drop subH further, so
+	// reserve mainH+subH (transparent slack — harmless).
+	popupW := mainW + subW + 8
+	popupH := mainH
+	if subW > 0 {
+		popupH = mainH + subH
+	}
 	var selectedAction string
 	platform.RunImGuiPopup(parentID, relX, relY, int(popupW), int(popupH),
 		func() platform.PopupMenuDrawResult {
-			io := imgui.CurrentIO()
+			// Anchor the menu at the surface's top-left, sized to the
+			// MEASURED main-menu rect — not the whole (oversized)
+			// surface (which would paint the menu background across the
+			// transparent submenu room) and not AlwaysAutoResize (which
+			// shrinks to the widest label and ignores the shortcuts
+			// drawn via the draw list, squashing label and shortcut
+			// together). The submenu opens as its own child window into
+			// the transparent area to the right.
 			imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
-			imgui.SetNextWindowSize(io.DisplaySize())
+			imgui.SetNextWindowSize(imgui.Vec2{X: mainW, Y: mainH})
 			flags := imgui.WindowFlagsNoTitleBar |
 				imgui.WindowFlagsNoResize |
 				imgui.WindowFlagsNoMove |
@@ -2793,27 +4853,23 @@ func (w *Window) renderContextMenu() {
 				imgui.WindowFlagsNoCollapse |
 				imgui.WindowFlagsNoScrollbar
 			var action string
-			var contentH float32
-			var contentW float32
 			if imgui.BeginV("##popupmenu", nil, flags) {
-				action = menu.RenderItemsOnly(w.app.cfg.Menu.Items, ctx)
-				// CursorPosY after the last item is exactly where the
-				// next item would go — i.e. the true rendered content
-				// height. Use it (plus a bit of bottom padding) as
-				// the desired SDL popup size; the C side then shrinks
-				// the OS window to fit. Robust against any
-				// miscalculation in the pre-Open estimate.
-				contentH = imgui.CursorPosY() + 8 // bottom padding
-				contentW = imgui.WindowSize().X
+				action = menu.RenderItemsOnly(expanded, ctx)
 			}
 			imgui.End()
-			res := platform.PopupMenuDrawResult{
-				DesiredWidth:  int(contentW),
-				DesiredHeight: int(contentH),
-			}
+			var res platform.PopupMenuDrawResult
 			if action != "" {
 				selectedAction = action
 				res.Close = true
+			}
+			// Dismiss on a click that lands in the transparent area
+			// (outside the menu/submenu windows) — the surface is
+			// bigger than the visible menu now, and the C side only
+			// auto-dismisses clicks on OTHER OS windows.
+			if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) || imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
+				if !imgui.CurrentIO().WantCaptureMouse() {
+					res.Close = true
+				}
 			}
 			return res
 		})
@@ -2830,6 +4886,7 @@ func (w *Window) menuContext() *menu.Context {
 	ctx := &menu.Context{
 		HasSelection: w.sel.active,
 		Selection:    w.selectedText(),
+		ForceOpaque:  w.app.forceOpaque.Load(),
 	}
 	if tab := w.tabs.Active(); tab != nil {
 		ctx.TabTitle = tab.DisplayTitle()
@@ -2915,7 +4972,7 @@ func (w *Window) renderSearchOverlay() {
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
 		w.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
-			s.Search(tab.Terminal.Emu, rows)
+			s.Search(tab.Terminal.Emulator(), rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 		// Counter: render into a fixed-width Dummy slot via drawList
@@ -2979,7 +5036,7 @@ func (w *Window) renderSearchOverlay() {
 		imgui.SameLineV(0, 8)
 		optChanged = imgui.Checkbox("WRAP", &s.WrapAround) || optChanged
 		if optChanged && s.Query != "" {
-			s.Search(tab.Terminal.Emu, rows)
+			s.Search(tab.Terminal.Emulator(), rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 	}
@@ -3129,6 +5186,60 @@ func (w *Window) renderResizeOverlay() {
 			fgColor,
 			primary,
 		)
+	}
+}
+
+// renderReconnectingOverlay dims the viewport and draws a small
+// "reconnecting…" badge when the active tab is a daemon-backed source
+// whose connection dropped and is re-dialing (layer 4b). The frozen
+// last frame stays visible underneath the dim so the user keeps context
+// (what was on screen) while seeing the link is stalled. Pure daemon
+// sources reconnect; in-process PTY tabs never match the assertion, so
+// this is a no-op for them.
+func (w *Window) renderReconnectingOverlay() {
+	tab := w.tabs.Active()
+	if tab == nil {
+		return
+	}
+	ds, ok := tab.Terminal.(*daemonsource.Source)
+	if !ok || !ds.IsReconnecting() {
+		return
+	}
+
+	var vpX, vpY float32
+	if vp := w.viewport(); vp != nil {
+		vpX, vpY = vp.Pos().X, vp.Pos().Y
+	}
+	dl := w.fgDrawList()
+	// Dim the whole content area so the frozen frame reads as inactive.
+	dl.AddRectFilledV(
+		imgui.Vec2{X: vpX, Y: vpY},
+		imgui.Vec2{X: vpX + float32(w.width), Y: vpY + float32(w.height)},
+		uint32(70)<<24, // ~27% black wash
+		0, 0,
+	)
+
+	label := "reconnecting…"
+	ts := imgui.CalcTextSize(label)
+	padX, padY := float32(14), float32(8)
+	boxW, boxH := ts.X+padX*2, ts.Y+padY*2
+	cx := vpX + float32(w.width)/2
+	cy := vpY + float32(w.height)/2
+	dl.AddRectFilledV(
+		imgui.Vec2{X: cx - boxW/2, Y: cy - boxH/2},
+		imgui.Vec2{X: cx + boxW/2, Y: cy + boxH/2},
+		uint32(0xCC)<<24, // mostly-opaque black pill
+		6, 0,
+	)
+	dl.AddTextVec2(
+		imgui.Vec2{X: cx - ts.X/2, Y: cy - ts.Y/2},
+		0xFFFFFFFF,
+		label,
+	)
+	// Keep the loop awake so the badge stays painted while idle (the
+	// daemon sends no frames during a drop, so nothing else wakes us).
+	if w.app.idleWakeMs > 250 {
+		w.app.idleWakeMs = 250
 	}
 }
 
@@ -3352,14 +5463,14 @@ func (w *Window) renderRenameDialog() {
 
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.Title = w.renameBuffer
+				tab.SetTitle(w.renameBuffer)
 			}
 			w.renamingTab = false
 		}
 
 		if imgui.Button("OK") {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.Title = w.renameBuffer
+				tab.SetTitle(w.renameBuffer)
 			}
 			w.renamingTab = false
 		}
@@ -3369,6 +5480,121 @@ func (w *Window) renderRenameDialog() {
 		}
 	}
 	imgui.End()
+}
+
+// openConnectDialog shows the ad-hoc "Connect to host…" prompt. The
+// buffers persist between opens so a typo'd dest is still there to
+// fix; only the stale error is cleared.
+func (w *Window) openConnectDialog() {
+	w.connectingHost = true
+	w.connectFocus = true
+	w.connectError = ""
+	w.app.active = w
+}
+
+// renderConnectDialog draws the ad-hoc remote-connect prompt. Mirrors
+// renderRenameDialog: a single dimmed, auto-resizing modal centered on
+// this Window, Enter-to-submit from the destination field.
+func (w *Window) renderConnectDialog() {
+	if !w.connectingHost {
+		return
+	}
+
+	// Dim THIS Window only — same as the rename / paste dialogs.
+	dimCol := uint32(0x80000000)
+	w.bgDrawList().AddRectFilled(
+		imgui.Vec2{X: w.contentOriginX, Y: w.contentOriginY},
+		imgui.Vec2{X: w.contentOriginX + float32(w.width), Y: w.contentOriginY + float32(w.height)},
+		dimCol,
+	)
+
+	if vp := w.viewport(); vp != nil {
+		imgui.SetNextWindowViewport(vp.ID())
+	}
+	center := imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + float32(w.height)/2}
+	imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
+
+	flags := imgui.WindowFlagsAlwaysAutoResize |
+		imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsNoSavedSettings |
+		imgui.WindowFlagsNoDocking
+	if imgui.BeginV("Connect to host###connectdlg"+w.imguiSuffix(), nil, flags) {
+		imgui.Text("SSH destination (user@host, host, or ~/.ssh/config alias):")
+		submit := false
+		// Land keyboard focus in the dest field when the dialog opens so
+		// the user can type immediately + Enter submits. Guard on
+		// !IsMouseDown so a menu-click that opened the dialog doesn't get
+		// its ActiveId snatched mid-click (same pattern as the search
+		// overlay).
+		if w.connectFocus && !imgui.IsMouseDown(0) {
+			imgui.SetKeyboardFocusHere()
+			w.connectFocus = false
+		}
+		imgui.InputTextWithHint("##connectdest", "user@host", &w.connectBuffer, 0, nil)
+		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
+			submit = true
+		}
+		imgui.Text("Extra ssh options (optional):")
+		imgui.InputTextWithHint("##connectargs", "-p 2222 -i ~/.ssh/key", &w.connectArgsBuffer, 0, nil)
+		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
+			submit = true
+		}
+
+		if w.connectError != "" {
+			imgui.Text("Error: " + w.connectError)
+		}
+
+		if imgui.Button("Connect") {
+			submit = true
+		}
+		imgui.SameLineV(0, 8)
+		if imgui.Button("Cancel") {
+			w.connectingHost = false
+			w.connectError = ""
+		}
+
+		if submit {
+			w.doConnect()
+		}
+	}
+	imgui.End()
+}
+
+// doConnect dials the typed ad-hoc destination, registers it as a
+// session host so re-dials/reattach can find it, and reattaches the
+// host's existing tabs (or opens a fresh one if it has none).
+// On failure it keeps the dialog open with the error so the user can
+// correct the input.
+func (w *Window) doConnect() {
+	dest := strings.TrimSpace(w.connectBuffer)
+	if dest == "" {
+		w.connectError = "destination is required"
+		return
+	}
+	host := config.RemoteHost{
+		Name:    dest,
+		SSHDest: normalizeSSHDest(dest),
+		SSHArgs: strings.Fields(w.connectArgsBuffer),
+	}
+	if w.app.adhocHosts == nil {
+		w.app.adhocHosts = make(map[string]config.RemoteHost)
+	}
+	w.app.adhocHosts[dest] = host
+
+	// Reattach rather than always opening a fresh tab: the remote
+	// daemon keeps PTYs alive across disconnects, so connecting should
+	// restore whatever was already running there (e.g. a long-lived
+	// shell or editor). openRemoteReattach falls back to a new tab when
+	// the host has nothing to reattach to.
+	if err := w.openRemoteReattach(dest); err != nil {
+		// Drop the half-registered entry so a later retry with
+		// corrected args isn't shadowed by this failed attempt.
+		delete(w.app.adhocHosts, dest)
+		w.connectError = err.Error()
+		return
+	}
+	w.connectingHost = false
+	w.connectError = ""
 }
 
 func (w *Window) handleMouseSelection() {
@@ -3442,11 +5668,11 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		cell := cellAtViewport(tab.Terminal.Emu, col, row, scrollOff)
+		cell := cellAtViewport(tab.Terminal, col, row, scrollOff)
 		if cell != nil && isSelWordChar(cell.Content) {
-			w.sel.selectWord(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectWord(tab.Terminal, col, row, scrollOff)
 		} else {
-			w.sel.selectSpace(tab.Terminal.Emu, col, row, scrollOff)
+			w.sel.selectSpace(tab.Terminal, col, row, scrollOff)
 		}
 		if w.sel.active {
 			// iTerm2-style: hold-and-drag after a double-click extends
@@ -3454,7 +5680,7 @@ func (w *Window) handleMouseSelection() {
 			// anchor. Release without movement just keeps the word
 			// selection.
 			w.sel.dragging = true
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 		w.lastDblClickTime = imgui.Time()
 		w.lastDblClickRow = row
@@ -3466,11 +5692,11 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.sel.selectLine(tab.Terminal.Emu, row, scrollOff)
+			w.sel.selectLine(tab.Terminal, row, scrollOff)
 			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
 				w.sel.dragging = true
-				w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+				w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 			}
 			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
@@ -3486,7 +5712,7 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		w.sel.extendDrag(row, col, tab.Terminal.Emu, scrollOff)
+		w.sel.extendDrag(row, col, tab.Terminal, scrollOff)
 	}
 
 	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
@@ -3498,7 +5724,7 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.writeSelection(w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 	}
 
@@ -3535,6 +5761,11 @@ func (w *Window) writeSelection(text string) {
 	input.PrimaryWrite(text)
 	if w.app.cfg.Clipboard.CopyOnSelect {
 		input.ClipboardWrite(text)
+		// Daemons need to know about copy-on-select too so MCP
+		// get_clipboard / future PTY OSC52 reads see the
+		// freshly-selected text. Without this, copy-on-select
+		// users had a clipboard divergence between OS and daemon.
+		w.app.broadcastClipboard(text)
 	}
 }
 
@@ -3550,7 +5781,7 @@ func (w *Window) selectedText() string {
 	if s, ok := w.scroll[tab.ID]; ok {
 		scrollOff = s.Offset
 	}
-	return w.sel.extractText(tab.Terminal.Emu, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
+	return w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
 }
 
 func getCWD(term interface{}) string {

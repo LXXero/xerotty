@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"os"
@@ -31,6 +32,43 @@ type Terminal struct {
 	cmd      *exec.Cmd
 	DataCh   chan struct{} // signals new data for rendering (buffered, cap 1)
 	OnTitle  func(string)  // called when OSC 0/2 sets window title
+
+	// OnChildExit fires from the waitChild goroutine the instant
+	// the PTY child reaps. Caller gets the exit code; the daemon
+	// uses this to ship a MsgChildExit to attached wire clients,
+	// the GUI uses it to drive the on-child-exit policy. Set via
+	// SetOnChildExit so the callback swap is mutex-guarded.
+	OnChildExit func(int)
+
+	// OnBell fires when the terminal bell (BEL = 0x07) is
+	// received. Daemon ships MsgBell on this. Set via SetOnBell.
+	OnBell func()
+
+	// OnClipboardSet fires when a PTY app issues OSC 52 set
+	// (writes the clipboard). Arg is the decoded text. PTY mode
+	// writes it to the local OS clipboard; daemon mode ships
+	// MsgClipboardSet to attached clients. Set via SetOnClipboardSet.
+	OnClipboardSet func(string)
+
+	// ClipboardProvider returns the current clipboard text for OSC
+	// 52 GET (the "?" query) — a PTY app asking "what's on the
+	// clipboard?". The response is written back to the PTY as an
+	// OSC 52 reply. nil → GET queries are answered with empty.
+	// Set via SetClipboardProvider.
+	ClipboardProvider func() string
+
+	// cursorVisible / cursorStyle / cursorBlink track DECTCEM +
+	// DECSCUSR via the vt emulator's callbacks so the daemon's
+	// MsgCursor frames can carry the real values (style 0..6,
+	// visibility, blink). Without these the daemon hard-coded
+	// visible=true, style=0=block.
+	cursorVisible atomic.Bool
+	cursorStyle   atomic.Uint32 // packed: bit0..7=vt style enum, bit8=blink
+	// cursorStyleSet goes true the first time the foreground app
+	// issues DECSCUSR. Until then the GUI should use its config
+	// cursor preference rather than the vt default (block).
+	cursorStyleSet atomic.Bool
+
 	cols        int
 	rows        int
 	closed      bool // Close() has run and released resources
@@ -39,6 +77,18 @@ type Terminal struct {
 	mu          sync.Mutex
 	closeOnce   sync.Once
 	done        chan struct{}
+
+	// publishMu serializes the emulator's "ingest a chunk of PTY
+	// output" (readPTY → t.Emu.Write) with bulk snapshots of the
+	// grid + scrollback (SnapshotViewport / SnapshotScrollbackRange,
+	// used by the daemon to build CellFull / CellDiff frames). The
+	// SafeEmulator's own RLock is per-cell — without this outer
+	// coordination, the daemon would read row 0 → Emu scrolls →
+	// daemon reads row 1 from the now-shifted grid, producing the
+	// "live cells scrambled with stale cells" pattern (see the
+	// `1, 6573, 3, 4, 5` bug). Held briefly per PTY write batch
+	// and per snapshot; nothing nested under it.
+	publishMu sync.Mutex
 
 	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
 	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
@@ -66,6 +116,23 @@ type Terminal struct {
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
+// NewDaemonHosted is New with the scrollback config forcibly set
+// to "unlimited" mode. Used by the daemon (cmd/xerotty serve →
+// internal/daemon.Session.NewTab) so its in-memory scrollback ring
+// never rotates and absolute scrollback indices stay stable for
+// shipping to wire clients. The user's "memory" preference becomes
+// a client-side display cap (daemonsource.Hub.SetScrollbackCap)
+// rather than a server-side ring cap; the daemon's job is to
+// retain everything until the client decides what to mirror.
+//
+// Disk usage lives under /tmp via internal/terminal.DiskScrollback
+// and is cleaned up on Terminal.Close.
+func NewDaemonHosted(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
+	override := *cfg
+	override.Scrollback.Mode = "unlimited"
+	return New(&override, cols, rows, cwd)
+}
+
 func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd)
 	if err != nil {
@@ -86,11 +153,48 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 	}
 	t.applyScrollbackConfig(cfg)
 
+	// Default cursor state — visible block. vt's callbacks will
+	// update these as the emulator parses DECTCEM / DECSCUSR.
+	t.cursorVisible.Store(true)
+	t.cursorStyle.Store(packCursorStyle(0, true)) // style 0 = block, blink
+
 	emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
-			if t.OnTitle != nil {
-				t.OnTitle(title)
+			// Snapshot OnTitle under t.mu so this read doesn't
+			// race a concurrent SetOnTitle. The callback itself
+			// is invoked OUTSIDE the lock so application code in
+			// the callback can't deadlock on Terminal methods
+			// that also take t.mu.
+			t.mu.Lock()
+			cb := t.OnTitle
+			t.mu.Unlock()
+			if cb != nil {
+				cb(title)
 			}
+		},
+		Bell: func() {
+			t.mu.Lock()
+			cb := t.OnBell
+			t.mu.Unlock()
+			if cb != nil {
+				cb()
+			}
+		},
+		CursorVisibility: func(visible bool) {
+			t.cursorVisible.Store(visible)
+		},
+		CursorStyle: func(style vt.CursorStyle, steady bool) {
+			// IMPORTANT: x/vt invokes this callback with the
+			// STEADY flag (the inverse of blink) as the second
+			// arg — see screen.go setCursorStyle's
+			// `cb.CursorStyle(style, !blink)`. So blink = !steady.
+			// Storing steady-as-blink would invert: DECSCUSR 1
+			// (blinking block) would render steady and vice-versa.
+			//
+			// style is the vt shape enum (0=block, 1=underline,
+			// 2=bar) — ship that, NOT a DECSCUSR code.
+			t.cursorStyle.Store(packCursorStyle(uint8(style), !steady))
+			t.cursorStyleSet.Store(true)
 		},
 		EnableMode: func(mode ansi.Mode) {
 			switch mode {
@@ -317,6 +421,17 @@ func (t *Terminal) Close() {
 		t.mu.Unlock()
 
 		close(t.done)
+		// Unblock readEmu, which is parked in t.Emu.Read (a blocking
+		// io.PipeReader read that the done-channel select can't
+		// interrupt). Closing the emulator's INPUT pipe makes that
+		// Read return io.EOF. We deliberately do NOT call Emu.Close():
+		// that also flips vt's unsynchronized `closed` bool, which
+		// races readEmu's own `if e.closed` check (caught by -race in
+		// TestCursorStyleDECSCUSR). Closing the pipe touches only the
+		// pipe's internally-locked state, so there's no race.
+		if pw, ok := t.Emu.InputPipe().(*io.PipeWriter); ok {
+			_ = pw.CloseWithError(io.EOF)
+		}
 		if t.cmd.Process != nil {
 			_ = t.cmd.Process.Kill()
 		}
@@ -329,6 +444,259 @@ func (t *Terminal) Close() {
 // keys should be sent as `ESC O X` instead of `ESC [ X`.
 func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
+}
+
+// SnapshotViewport returns a consistent snapshot of the visible
+// grid (current cols × rows). Held under publishMu so no PTY write
+// can scroll the emulator mid-snapshot. Returned cells are values
+// (not pointers); safe to retain.
+//
+// Used by the daemon to build CellFull / CellDiff frames where a
+// torn mid-scroll read would otherwise ship garbage.
+func (t *Terminal) SnapshotViewport() [][]uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	cols := t.Emu.Width()
+	rows := t.Emu.Height()
+	out := make([][]uv.Cell, rows)
+	for r := 0; r < rows; r++ {
+		row := make([]uv.Cell, cols)
+		for col := 0; col < cols; col++ {
+			c := t.Emu.CellAt(col, r)
+			if c != nil {
+				row[col] = *c
+			}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// SnapshotScrollbackRange returns rows [from, to) from the
+// scrollback as a consistent snapshot under publishMu. Returns at
+// most (to - from) rows; may return fewer if the range extends past
+// the actual scrollback length. row indices are absolute (0 =
+// oldest); ScrollbackCellAt handles the disk + in-memory split.
+func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	sbLen := t.ScrollbackLen()
+	if to > sbLen {
+		to = sbLen
+	}
+	if from < 0 {
+		from = 0
+	}
+	if to <= from {
+		return nil
+	}
+	cols := t.Emu.Width()
+	out := make([][]uv.Cell, 0, to-from)
+	for r := from; r < to; r++ {
+		row := make([]uv.Cell, cols)
+		for col := 0; col < cols; col++ {
+			c := t.ScrollbackCellAt(col, r)
+			if c != nil {
+				row[col] = *c
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// Source interface shims. These exist so *Terminal satisfies
+// terminal.Source without renaming the exported Emu / ExitCode /
+// DataCh fields (which a lot of internal code reads directly).
+//
+// Method names deliberately differ from the field names to dodge
+// the field-vs-method conflict Go would otherwise flag.
+
+// Emulator returns the underlying vt.SafeEmulator. Same value as the
+// public Emu field; method form is what terminal.Source requires.
+func (t *Terminal) Emulator() *vt.SafeEmulator { return t.Emu }
+
+// ChildExitCode returns the child process's exit code (-1 if still
+// running / unknown). Method form of the public ExitCode field for
+// Source-interface use.
+func (t *Terminal) ChildExitCode() int { return t.ExitCode }
+
+// DataChan returns the dirty-tab signal channel. Method form of the
+// public DataCh field for Source-interface use.
+func (t *Terminal) DataChan() <-chan struct{} { return t.DataCh }
+
+// Detach is equivalent to Close for in-process PTYs (the child
+// can't outlive xerotty). Daemon-backed sources override this with
+// a "let the daemon keep the session alive" semantic.
+func (t *Terminal) Detach() { t.Close() }
+
+// PasteImage writes the image bytes to a local temp file and
+// types the path into the PTY (via Paste, so bracketed-paste mode
+// applies if the foreground app enabled it). Matches what the
+// daemon does for MsgInputImage so PTY-backed and daemon-backed
+// tabs behave the same to user-facing apps like Claude Code.
+//
+// mime selects the file extension; filename is a sanitized prefix.
+// Empty filename → "xerotty-paste".
+func (t *Terminal) PasteImage(mime, filename string, data []byte) error {
+	prefix := "xerotty-paste"
+	if hint := sanitizeForFile(filename); hint != "" {
+		prefix += "-" + hint
+	}
+	f, err := os.CreateTemp("", prefix+"-*"+extForImageMIME(mime))
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	t.Paste(" " + f.Name() + " ")
+	return nil
+}
+
+// extForImageMIME mirrors the daemon's mime→ext logic so PTY-mode
+// temp files have recognizable extensions.
+func extForImageMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/bmp":
+		return ".bmp"
+	case "image/tiff":
+		return ".tiff"
+	case "image/svg+xml":
+		return ".svg"
+	default:
+		return ".bin"
+	}
+}
+
+// sanitizeForFile keeps only [A-Za-z0-9_.-] so the prefix can't
+// inject shell metacharacters when the PTY child reads the path.
+func sanitizeForFile(s string) string {
+	if s == "" {
+		return ""
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s) && len(out) < 32; i++ {
+		ch := s[i]
+		switch {
+		case ch >= 'a' && ch <= 'z',
+			ch >= 'A' && ch <= 'Z',
+			ch >= '0' && ch <= '9',
+			ch == '-' || ch == '_' || ch == '.':
+			out = append(out, ch)
+		}
+	}
+	return string(out)
+}
+
+// ClearScrollback drops both the emulator's in-memory scrollback
+// ring AND any disk-backed extension. Wraps the operation in
+// publishMu so a daemon-side bulk snapshot can't read a partially-
+// cleared state. Safe to call from any goroutine.
+func (t *Terminal) ClearScrollback() {
+	t.publishMu.Lock()
+	t.Emu.ClearScrollback()
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+	if disk != nil {
+		_ = disk.Clear()
+	}
+	t.publishMu.Unlock()
+	// Wake any DataChan waiter so the GUI repaints the now-empty
+	// scrollback region.
+	select {
+	case t.DataCh <- struct{}{}:
+	default:
+	}
+}
+
+// SetOnTitle registers a callback fired on OSC 0/2 title changes.
+// Pass nil to clear. Holds t.mu so callers swapping the callback
+// from a different goroutine don't race the readPTY goroutine that
+// invokes it.
+func (t *Terminal) SetOnTitle(fn func(string)) {
+	t.mu.Lock()
+	t.OnTitle = fn
+	t.mu.Unlock()
+}
+
+// packCursorStyle / unpackCursorStyle pack a (style, blink) pair
+// into a single uint32 so atomic Load/Store can carry both.
+// Style enum lives in the low 8 bits, blink in bit 8.
+func packCursorStyle(style uint8, blink bool) uint32 {
+	v := uint32(style)
+	if blink {
+		v |= 1 << 8
+	}
+	return v
+}
+
+// CursorStyle returns the current cursor shape (vt enum: 0=block,
+// 1=underline, 2=bar), blink flag, and whether the foreground app
+// explicitly set it via DECSCUSR. When styleSet is false the GUI
+// should use its configured default cursor instead.
+func (t *Terminal) CursorStyle() (style uint8, blink bool, styleSet bool) {
+	v := t.cursorStyle.Load()
+	return uint8(v & 0xFF), (v>>8)&1 != 0, t.cursorStyleSet.Load()
+}
+
+// CursorVisible reports whether the cursor is currently visible.
+// Updated by the vt CursorVisibility callback from DECTCEM.
+func (t *Terminal) CursorVisible() bool {
+	return t.cursorVisible.Load()
+}
+
+// SetOnBell registers a callback fired on terminal bell. Daemon
+// uses this to ship MsgBell to attached clients.
+func (t *Terminal) SetOnBell(fn func()) {
+	t.mu.Lock()
+	t.OnBell = fn
+	t.mu.Unlock()
+}
+
+// SetOnClipboardSet registers a callback fired when a PTY app
+// writes the clipboard via OSC 52. Arg is the decoded text.
+func (t *Terminal) SetOnClipboardSet(fn func(string)) {
+	t.mu.Lock()
+	t.OnClipboardSet = fn
+	t.mu.Unlock()
+}
+
+// SetClipboardProvider registers a function returning the current
+// clipboard text, used to answer OSC 52 GET queries.
+func (t *Terminal) SetClipboardProvider(fn func() string) {
+	t.mu.Lock()
+	t.ClipboardProvider = fn
+	t.mu.Unlock()
+}
+
+// SetOnChildExit registers a callback fired the instant the PTY
+// child exits. May fire immediately if the child has already
+// exited by the time this is called (rare but possible — e.g. a
+// shell that crashes during init). Pass nil to clear.
+func (t *Terminal) SetOnChildExit(fn func(int)) {
+	t.mu.Lock()
+	t.OnChildExit = fn
+	alreadyExited := t.childExited
+	code := t.ExitCode
+	t.mu.Unlock()
+	if alreadyExited && fn != nil {
+		fn(code)
+	}
 }
 
 // IsClosed reports whether this Terminal is no longer usable — either
@@ -346,10 +714,17 @@ func (t *Terminal) IsClosed() bool {
 // cleanup once — otherwise the PTY fd, done channel, and any other
 // per-tab resources would leak whenever a tab exits naturally before the
 // user closes it explicitly.
+//
+// Fires t.OnChildExit (under the mutex, after state is set) so any
+// observer — the daemon's publishLoop, the GUI's tab manager, etc.
+// — gets notified synchronously with the state transition. Without
+// this, attached clients in daemon mode never learn the shell died
+// and the tab hangs forever (no DataCh signal because the PTY
+// reader has nothing to read; no MsgChildExit because nobody sent
+// it).
 func (t *Terminal) waitChild() {
 	err := t.cmd.Wait()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if err == nil {
 		t.ExitCode = 0
 	} else if exitErr, ok := err.(*exec.ExitError); ok {
@@ -358,6 +733,12 @@ func (t *Terminal) waitChild() {
 		t.ExitCode = 1
 	}
 	t.childExited = true
+	cb := t.OnChildExit
+	code := t.ExitCode
+	t.mu.Unlock()
+	if cb != nil {
+		cb(code)
+	}
 }
 
 // readPTY reads from the PTY and writes to the SafeEmulator.
@@ -380,11 +761,17 @@ func (t *Terminal) readPTY() {
 			oscBuf = newOSCBuf
 			inOSC = newInOSC
 			if len(cleaned) > 0 {
+				// publishMu serializes this write with daemon-side
+				// bulk snapshots so they see a consistent grid +
+				// scrollback rather than a half-shifted mid-write
+				// state.
+				t.publishMu.Lock()
 				t.Emu.Write(cleaned)
 				// Mirror new scrollback lines to disk in unlimited
 				// mode. No-op otherwise. Runs on this goroutine so
 				// the mirror always sees writes in PTY-arrival order.
 				t.mirrorScrollback()
+				t.publishMu.Unlock()
 			}
 			select {
 			case t.DataCh <- struct{}{}:
@@ -475,9 +862,74 @@ func (t *Terminal) dispatchOSC(body []byte) {
 	data := body[semi+1:]
 	switch cmd {
 	case "0", "1", "2":
-		if t.OnTitle != nil {
-			t.OnTitle(string(data))
+		// Snapshot under lock — SetOnTitle can race this read
+		// otherwise. Invoke outside the lock so callbacks that
+		// touch Terminal methods don't deadlock.
+		t.mu.Lock()
+		cb := t.OnTitle
+		t.mu.Unlock()
+		if cb != nil {
+			cb(string(data))
 		}
+	case "52":
+		t.dispatchOSC52(data)
+	}
+}
+
+// dispatchOSC52 handles OSC 52 (clipboard) bodies. After the "52;"
+// prefix the body is "<selection>;<payload>":
+//   - payload "?"  → GET: the app wants the current clipboard. We
+//     reply by writing an OSC 52 set back to the PTY carrying the
+//     base64 of ClipboardProvider()'s text.
+//   - payload b64  → SET: decode + fire OnClipboardSet so the
+//     clipboard gets written (local OS clipboard in PTY mode, or
+//     shipped to clients in daemon mode).
+//
+// We ignore the selection field (c/p/s/...) and treat everything
+// as the clipboard — matches what most terminals practically do.
+func (t *Terminal) dispatchOSC52(data []byte) {
+	semi := -1
+	for i, b := range data {
+		if b == ';' {
+			semi = i
+			break
+		}
+	}
+	if semi < 0 {
+		return
+	}
+	payload := string(data[semi+1:])
+
+	if payload == "?" {
+		// GET — reply with current clipboard as OSC 52 set.
+		t.mu.Lock()
+		provider := t.ClipboardProvider
+		t.mu.Unlock()
+		var cur string
+		if provider != nil {
+			cur = provider()
+		}
+		enc := base64.StdEncoding.EncodeToString([]byte(cur))
+		// ESC ] 52 ; c ; <b64> BEL
+		_, _ = t.ptmx.WriteString("\x1b]52;c;" + enc + "\x07")
+		return
+	}
+
+	// SET — decode base64. Tolerate missing padding (some apps
+	// emit unpadded). Empty/garbage decodes are ignored.
+	dec, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		if d2, e2 := base64.RawStdEncoding.DecodeString(payload); e2 == nil {
+			dec = d2
+		} else {
+			return
+		}
+	}
+	t.mu.Lock()
+	cb := t.OnClipboardSet
+	t.mu.Unlock()
+	if cb != nil {
+		cb(string(dec))
 	}
 }
 
@@ -492,6 +944,15 @@ func (t *Terminal) readEmu() {
 		}
 
 		n, err := t.Emu.Read(buf)
+		// Discard close-time wakeups: Close() unblocks the Read above
+		// by closing the input pipe, but the bytes (if any) are stale
+		// and the ptmx is about to close — re-check done before
+		// writing back so we don't push a response into a dying PTY.
+		select {
+		case <-t.done:
+			return
+		default:
+		}
 		if n > 0 {
 			_, _ = t.ptmx.Write(buf[:n])
 		}
@@ -506,7 +967,10 @@ func (t *Terminal) readEmu() {
 func (t *Terminal) GetCWD() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.cmd == nil || t.cmd.Process == nil {
+	// Bail once closed: Close() sets t.closed (under t.mu) BEFORE it
+	// closes the PTY, so checking it here under the same lock keeps us
+	// from touching the process/fd as it's torn down.
+	if t.closed || t.cmd == nil || t.cmd.Process == nil {
 		return ""
 	}
 	return processCWD(t.cmd.Process.Pid)
@@ -527,7 +991,10 @@ func (t *Terminal) GetCWD() string {
 func (t *Terminal) ForegroundProcessName() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.ptmx == nil {
+	// Bail once closed (see GetCWD): Close() marks t.closed under t.mu
+	// before closing the PTY, so this guard prevents reading the ptmx
+	// fd concurrently with its close (a -race-flagged data race).
+	if t.closed || t.ptmx == nil {
 		return ""
 	}
 	pgid, err := unix.IoctlGetInt(int(t.ptmx.Fd()), unix.TIOCGPGRP)

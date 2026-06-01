@@ -1,10 +1,14 @@
 package app
 
 import (
+	"sync"
+
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // Window owns the per-OS-window state. One Window = one SDL_Window =
@@ -23,6 +27,41 @@ type Window struct {
 	// Back-reference to the owning App for process-wide state (config,
 	// theme, base font metrics, font-reload flags). Set in newWindow.
 	app *App
+
+	// daemonWindowID is the server-side window ID this GUI window
+	// corresponds to on the LOCAL/default daemon. Kept for
+	// backwards compatibility with code that already knows it
+	// only cares about the primary daemon (installSourceFactory,
+	// adoption paths). For mixed local+remote tabs the per-hub
+	// view lives in daemonWindowIDs below.
+	daemonWindowID uint32
+
+	// daemonWindowIDs maps each daemon hub this GUI window has
+	// ever touched to the server-side window ID created on that
+	// hub. Lets focus/reorder/move operations send the RIGHT
+	// window ID to the RIGHT hub — without this map, a remote
+	// tab's reorder used to send the local-daemon's window ID to
+	// the remote daemon (mismatched ID spaces). Lazily populated
+	// as needed by windowIDFor.
+	daemonWindowIDsMu sync.Mutex
+	daemonWindowIDs   map[*daemonsource.Hub]uint32
+
+	// lastSentFocusTabID is the most recent tab ID we shipped to
+	// the daemon via SendTabFocus / SendWindowFocusTab. Per-frame
+	// focus check compares against w.tabs.Active().ID and fires
+	// only on change so we don't spam the wire with redundant
+	// focus messages.
+	lastSentFocusTabID uint32
+
+	// pendingDaemonMove holds a Source that landed via cross-
+	// window drag (spawnWindowImpl with adopt!=nil) before this
+	// Window had a daemonWindowID. Once the window registers with
+	// its daemon (next frame after SendWindowCreate completes),
+	// syncDaemonFocus / frame fire the deferred MoveTab so the
+	// daemon's layout matches the GUI's. Cleared after fire.
+	pendingDaemonMove terminal.Source
+
+
 
 	// (Old: per-Window cimgui-go backend handle. Removed during the
 	// SDL3 platform migration — the platform layer owns lifecycle
@@ -72,6 +111,11 @@ type Window struct {
 	hoveredLink        *linkHit
 	renamingTab        bool
 	renameBuffer       string
+	connectingHost     bool   // "Connect to host…" dialog open
+	connectFocus       bool   // request keyboard focus into the dest field
+	connectBuffer      string // typed SSH destination (user@host / alias)
+	connectArgsBuffer  string // optional extra ssh args (e.g. "-p 2222 -i key")
+	connectError       string // last connect failure, shown in the dialog
 	sbDragging         bool
 	searchFocusInput   bool
 	searchInputFocused bool
@@ -83,6 +127,11 @@ type Window struct {
 	lastTabBarW        float32
 	lastTabBarH        float32
 	skipDisplaySync    int
+	// appliedOpacity is the cfg.Appearance.Opacity value last pushed to
+	// SDL_SetWindowOpacity for this Window. Tracked so the per-frame apply
+	// only calls SDL on change (first valid frame + live prefs edits),
+	// never every frame. -1 sentinel until the first apply.
+	appliedOpacity float32
 
 	// Context menu state. ImGui's BeginPopup auto-closes the popup
 	// whenever the OS window loses focus / mouse crosses the parent
@@ -134,6 +183,32 @@ type Window struct {
 	imguiName     string // stable ImGui ID suffix (e.g. "win0")
 	imViewport    *imgui.Viewport
 	pendingClose  bool
+	// daemonReseatPending is set when this Window emptied because its
+	// daemon-backed tabs all VANISHED (the daemon process restarted and
+	// took the shells with it) rather than the user closing them. Closing
+	// the last window calls platform.Quit(), so a local daemon restart
+	// would silently exit the whole GUI — instead we keep the Window alive
+	// and reseat a fresh tab on the reconnected daemon. The flag persists
+	// across frames so that if the hub is still mid-redial (NewTab returns
+	// a transient error) we retry next frame instead of falling through to
+	// pendingClose. Cleared once a tab is successfully created.
+	daemonReseatPending bool
+	// daemonReseatMinted guards the daemon-window CreateWindow so it
+	// happens AT MOST ONCE per reseat episode. CreateWindow is a
+	// synchronous hub RPC; the original reseat re-minted it on every
+	// retry frame, so a CreateWindow-succeeds-but-NewTab-fails frame
+	// leaked a fresh daemon window each tick. Set when the window is
+	// minted, cleared (with daemonReseatPending) once NewTab finally
+	// succeeds — retries reuse the minted window and only redo NewTab.
+	daemonReseatMinted bool
+	// daemonReseatInstance is the daemon InstanceID the reseat window was
+	// minted against. It scopes the mint-once to a SINGLE restart episode:
+	// if a SECOND daemon restart happens while a reseat is still pending
+	// (CreateWindow done, NewTab not yet succeeded), the minted window ID
+	// belongs to the now-dead intermediate daemon. Comparing this against
+	// the hub's current InstanceID detects that and forces a re-mint on
+	// the new daemon, so focus/move don't keep targeting a stale window.
+	daemonReseatInstance string
 	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
 	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
 	// pendingFocus asks the main loop to raise + key-focus this Window's
@@ -210,11 +285,12 @@ func (w *Window) titleForWindow() string {
 // kept alive only for the ImGui context).
 func newWindow(app *App) *Window {
 	return &Window{
-		app:          app,
-		scroll:       make(map[int]*scrollback.State),
-		tabBarH:      0, // updated each frame from imgui.FrameHeight() when >1 tab
-		tabSwitchReq: -1,
-		tabDragIdx:   -1,
+		app:            app,
+		scroll:         make(map[int]*scrollback.State),
+		tabBarH:        0, // updated each frame from imgui.FrameHeight() when >1 tab
+		tabSwitchReq:   -1,
+		tabDragIdx:     -1,
+		appliedOpacity: -1, // sentinel: forces opacity apply on first valid frame
 	}
 }
 

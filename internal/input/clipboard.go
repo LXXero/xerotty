@@ -41,6 +41,52 @@ func ClipboardWrite(text string) error {
 	return nil
 }
 
+// imagePasteMIMEs is the priority order we check on the clipboard.
+// Try lossless formats first; fall back to JPEG only if nothing
+// else is offered (some pasteboards only have JPEG e.g. when the
+// source was a phone photo).
+var imagePasteMIMEs = []string{
+	"image/png",
+	"image/webp",
+	"image/jpeg",
+	"image/gif",
+	"image/bmp",
+}
+
+// ClipboardReadImage looks for an image on the OS clipboard and
+// returns its MIME type + raw bytes. Returns ("", nil, nil) when
+// the clipboard doesn't contain an image. Used by the paste
+// handler so Ctrl+Shift+V on a copied screenshot ships the bytes
+// to the daemon (which writes them to a temp file the PTY child
+// can read).
+//
+// SDL3's clipboard API supports arbitrary MIME types via
+// SDL_GetClipboardData; we walk our preferred type list and grab
+// the first match.
+func ClipboardReadImage() (mime string, data []byte, err error) {
+	for _, m := range imagePasteMIMEs {
+		cmime := C.CString(m)
+		has := C.SDL_HasClipboardData(cmime)
+		C.free(unsafe.Pointer(cmime))
+		if !has {
+			continue
+		}
+		cmime = C.CString(m)
+		var sz C.size_t
+		ptr := C.SDL_GetClipboardData(cmime, &sz)
+		C.free(unsafe.Pointer(cmime))
+		if ptr == nil || sz == 0 {
+			continue
+		}
+		// Copy the bytes out before SDL_free; SDL owns the buffer
+		// until we release it.
+		buf := C.GoBytes(unsafe.Pointer(ptr), C.int(sz))
+		C.SDL_free(unsafe.Pointer(ptr))
+		return m, buf, nil
+	}
+	return "", nil, nil
+}
+
 // PrimaryRead reads from the X11/Wayland PRIMARY selection (the
 // mouse-select / middle-click-paste buffer). macOS has no equivalent —
 // returns empty there.

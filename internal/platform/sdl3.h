@@ -91,6 +91,19 @@ void platform_resync_modifiers(void);
 // in the first frame after Cmd+N route to the wrong window.
 void platform_raise_window(unsigned long window_id);
 
+// platform_set_window_opacity sets whole-window opacity (0..1) on the
+// SDL_Window with the given ID via SDL_SetWindowOpacity — the compositor
+// blends the whole window. Restores the documented `opacity` config that
+// the SDL2→SDL3 migration dropped. No-op if the compositor doesn't
+// support per-window opacity.
+void platform_set_window_opacity(unsigned long window_id, float opacity);
+
+// platform_ensure_text_input re-asserts SDL text input on the given
+// window if not already active, so the terminal keeps receiving
+// SDL_EVENT_TEXT_INPUT (typed characters) after an ImGui InputText
+// dialog on the same viewport closes and the backend stopped it.
+void platform_ensure_text_input(unsigned long window_id);
+
 // platform_set_window_icon attaches an RGBA8 pixel buffer to the
 // SDL_Window with the given ID via SDL_SetWindowIcon. The pixels are
 // row-major, top-to-bottom, with no padding (pitch = width * 4). On
@@ -106,6 +119,12 @@ void platform_set_window_icon(unsigned long window_id,
 // SDL_WaitEventTimeout immediately when new terminal output arrives,
 // so the next frame renders without waiting out the frame-cap window.
 void platform_post_wake(void);
+
+// platform_set_idle_timeout_ms bounds the idle render wait (ms). Called
+// each frame by Go with the time until the next cursor-blink toggle (or
+// a safety-net) so an idle UI parks at ~0% CPU yet a blinking cursor
+// keeps ticking and a missed wake can't freeze the UI.
+void platform_set_idle_timeout_ms(int ms);
 
 #ifdef __cplusplus
 }

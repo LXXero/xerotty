@@ -19,23 +19,57 @@ runtime-decode failures.
 If you must run `go build` for a quick syntax check, that's OK — but
 the artifact isn't shippable and isn't what tests should run against.
 
+**Headless build:** `./build.sh headless` (or `make headless`)
+produces `xerotty-headless` with NO SDL3/GL/ImGui/freetype/fontconfig
+linked — `serve` + `connect` only, GUI default stubbed. For server
+installs. The `-tags headless` build tag excludes `cmd/xerotty/gui.go`
+(the ONLY file importing `internal/app`) and substitutes
+`gui_headless.go`. **Invariant: `internal/app` must be imported from
+exactly one `//go:build !headless` file** — build.sh guards this with
+a `go list -deps` import-graph check + an `ldd` check, both of which
+fail the build if a GUI import escapes the tag. Install the lean
+artifact AS `xerotty` on servers so the SSH bridge + auto-spawn
+(`xerotty serve`) stay uniform.
+
 ## Architecture
 
-Currently bundled UI + PTY + scrollback in one process. There's an
-active arc to split this into:
+xerotty can run its tabs in-process (default) OR through a
+headless daemon. ONE binary, three roles via subcommand:
 
-- `xerottyd` — headless daemon owning PTYs, scrollback, the wire
-  protocol socket, and the MCP socket
-- `xerotty` — thin UI client (SDL3 + ImGui) that attaches to one or
-  more daemons over a structured protocol
+- `xerotty` — GUI (default). In-process PTY tabs, or attaches to
+  local + remote daemons.
+- `xerotty serve` — headless daemon: owns PTYs, scrollback, the
+  wire-protocol socket, and the MCP socket.
+- `xerotty connect` — CLI thin client.
 
-See `docs/DAEMON_PLAN.md` for the design. Not yet started, but the
-plan governs incoming architecture decisions.
+Shipped on `spike/daemon`. See `docs/DAEMON_PLAN.md` (design +
+phase history) and `docs/DAEMON_STATUS.md` (package map +
+how-to-verify). Two protocols: msgpack wire (`internal/protocol`)
+for the terminal data plane, JSON-RPC/MCP (`internal/mcp` +
+`internal/guimcp`) for AI control.
 
 Older arc that's already merged: SDL2 → SDL3 + the new
 `internal/platform/` package. See `docs/SDL3_PLAN.md` for context on
 what was done and why. The platform layer is bypass-cimgui-go custom
 cgo glue around SDL3 + Dear ImGui's official SDL3 backend.
+
+Daemon-arc packages:
+- `internal/protocol` — msgpack wire format (codegen via msgp).
+- `internal/daemon` — session + tab + window management, client
+  registry, broadcast helpers.
+- `internal/runner` — serve / connect / stdio-bridge subcommands.
+- `internal/clientproto` — client side of the wire protocol.
+- `internal/daemonsource` — `Hub` + `Source` (terminal.Source
+  backed by a shadow vt emulator) for daemon-backed GUI tabs.
+- `internal/terminal/source.go` — the `Source` interface both
+  in-process PTY and daemon tabs implement.
+- `internal/mcp` — per-daemon JSON-RPC/MCP server.
+- `internal/guimcp` — GUI's aggregating MCP server (one socket
+  over all daemons, host-namespaced tab IDs).
+
+GUI integration is done: `internal/app` flips tabs between
+in-process and daemon-backed via `cfg.Tabs.Source`
+(`pty`/`daemon`/`daemon:<host>`).
 
 ## Code structure
 

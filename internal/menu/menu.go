@@ -5,10 +5,62 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 )
+
+// Type-to-jump state for the context menu. One menu is ever open at a
+// time (RunImGuiPopup blocks), so package-level state is safe. The
+// prefix accumulates typed letters and resets after a short idle so a
+// fresh keystroke starts a new search rather than extending a stale one.
+var (
+	menuTMPrefix   string
+	menuTMLastNano int64
+)
+
+const menuTypematchIdle = 700 * time.Millisecond
+
+// menuTypematchTarget consumes characters typed this frame and returns
+// the index of the first item whose label matches the accumulated prefix
+// (prefix-match preferred, substring as fallback), or -1 when nothing
+// was typed this frame / nothing matches. Separators and unlabeled items
+// are skipped. Only call it for the focused menu level so nested levels
+// don't both consume the same characters.
+func menuTypematchTarget(items []config.MenuItem) int {
+	nowNano := time.Now().UnixNano()
+	if nowNano-menuTMLastNano > int64(menuTypematchIdle) {
+		menuTMPrefix = ""
+	}
+	var typed string
+	for _, ch := range imgui.CurrentIO().InputQueueCharacters().Slice() {
+		if ch >= 0x20 && ch < 0x7f { // printable ASCII
+			typed += string(rune(ch))
+		}
+	}
+	if typed == "" {
+		return -1
+	}
+	menuTMLastNano = nowNano
+	menuTMPrefix += strings.ToLower(typed)
+
+	match := func(pred func(label, prefix string) bool) int {
+		for i, it := range items {
+			if it.Action == "separator" || it.Label == "" {
+				continue
+			}
+			if pred(strings.ToLower(it.Label), menuTMPrefix) {
+				return i
+			}
+		}
+		return -1
+	}
+	if i := match(strings.HasPrefix); i >= 0 {
+		return i
+	}
+	return match(strings.Contains)
+}
 
 // Context holds runtime state for menu condition evaluation.
 type Context struct {
@@ -18,6 +70,9 @@ type Context struct {
 	Link         string
 	CWD          string
 	TabTitle     string
+	// ForceOpaque reflects the live opacity-toggle state so a menu item
+	// with Checked == "force_opaque" can show whether it's currently on.
+	ForceOpaque bool
 }
 
 // Render draws the context menu at desktop coordinates (x, y). Caller
@@ -101,23 +156,63 @@ func RenderItemsOnly(items []config.MenuItem, ctx *Context) string {
 }
 
 func renderItems(items []config.MenuItem, ctx *Context) string {
-	for _, item := range items {
+	// PushIDInt per index: two items with the same Label (e.g. two
+	// "New Tab" entries, or duplicate exec hooks) would otherwise hash to
+	// the same ImGui ID and trigger a "conflicting ID" assert / merged
+	// hover+click state. The index disambiguates them. Every return /
+	// continue / end-of-iteration path must PopID to keep the ID stack
+	// balanced.
+	// Type-to-jump: only the focused level consumes the typed chars, so a
+	// parent and an open submenu don't both react. tmTarget is the index
+	// to move keyboard focus to this frame (-1 = none).
+	tmTarget := -1
+	if imgui.IsWindowFocusedV(imgui.FocusedFlagsNone) {
+		tmTarget = menuTypematchTarget(items)
+	}
+	defaultFocusSet := false
+
+	for i, item := range items {
+		imgui.PushIDInt(int32(i))
 		enabled := checkEnabled(item.Enabled, ctx)
+		checked := checkChecked(item.Checked, ctx)
 
 		if item.Action == "separator" {
 			imgui.Separator()
+			imgui.PopID()
 			continue
+		}
+
+		// Type-to-jump landed on this item: focus the NEXT submitted
+		// widget (this row), which also scrolls it into view.
+		if i == tmTarget {
+			imgui.SetKeyboardFocusHereV(0)
+			// If the mouse just moved over the menu, ImGui flipped to
+			// mouse-nav and hid the keyboard-nav cursor — which would
+			// suppress this typed jump until an arrow key re-engages.
+			// Re-assert keyboard nav so the letter takes effect now.
+			imgui.InternalSetNavCursorVisibleAfterMove()
+			imgui.CurrentContext().SetNavInputSource(imgui.InputSourceKeyboard)
 		}
 
 		// Submenu
 		if len(item.Submenu) > 0 {
-			if imgui.BeginMenu(item.Label) {
+			opened := imgui.BeginMenu(item.Label)
+			// Default keyboard focus to the first enabled item so Up/Down
+			// have an anchor (only safe when the submenu isn't open —
+			// once open the current window is the child, not this header).
+			if enabled && !defaultFocusSet && !opened {
+				imgui.SetItemDefaultFocus()
+				defaultFocusSet = true
+			}
+			if opened {
 				if action := renderItems(item.Submenu, ctx); action != "" {
 					imgui.EndMenu()
+					imgui.PopID()
 					return action
 				}
 				imgui.EndMenu()
 			}
+			imgui.PopID()
 			continue
 		}
 
@@ -144,7 +239,11 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 		if !enabled {
 			flags |= imgui.SelectableFlagsDisabled
 		}
-		sel := imgui.SelectableBoolV(item.Label, false, flags, imgui.Vec2{X: 0, Y: 0})
+		sel := imgui.SelectableBoolV(item.Label, checked, flags, imgui.Vec2{X: 0, Y: 0})
+		if enabled && !defaultFocusSet {
+			imgui.SetItemDefaultFocus()
+			defaultFocusSet = true
+		}
 		if item.Shortcut != "" {
 			sw := imgui.CalcTextSize(item.Shortcut).X
 			var col uint32
@@ -158,8 +257,10 @@ func renderItems(items []config.MenuItem, ctx *Context) string {
 				col, item.Shortcut)
 		}
 		if sel {
+			imgui.PopID()
 			return item.Action
 		}
+		imgui.PopID()
 	}
 	return ""
 }
@@ -176,6 +277,17 @@ func checkEnabled(condition string, ctx *Context) bool {
 		return true
 	}
 	return true
+}
+
+// checkChecked resolves a menu item's Checked predicate to its live
+// on/off state, so renderItems can show the item as toggled on. Empty
+// or unknown predicates are never checked.
+func checkChecked(condition string, ctx *Context) bool {
+	switch condition {
+	case "force_opaque":
+		return ctx.ForceOpaque
+	}
+	return false
 }
 
 // ExecAction executes a shell hook action (exec:command).

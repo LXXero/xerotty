@@ -3,13 +3,60 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Always run `go generate` first. Currently a no-op (no //go:generate
-# directives in the tree yet) but the daemon protocol work will add
-# tinylib/msgp codegen for the wire format — having it wired into the
-# canonical build script means schema-drift between Go structs and
-# generated encoders can never happen. Direct `go build` skips this;
-# always build via build.sh or `make` (which also runs it).
+# Pass `headless` to build the server artifact (xerotty-headless)
+# instead of the GUI binary: `./build.sh headless`. It links no
+# SDL3/GL/ImGui/freetype/fontconfig — `xerotty serve` + connect
+# only. Install it AS `xerotty` on servers so the SSH bridge +
+# auto-spawn (which run `xerotty serve`) stay uniform.
+HEADLESS=""
+if [[ "${1:-}" == "headless" ]]; then
+    HEADLESS=1
+fi
+
+# Always run `go generate` first so tinylib/msgp regenerates the
+# wire-format encoders in internal/protocol. Direct `go build` skips
+# this and produces a binary with stale encoders → cryptic decode
+# errors on the wire. Always build via build.sh or `make`.
+#
+# Ensure $(go env GOPATH)/bin is on PATH so `go generate` can find
+# the msgp binary (`go install github.com/tinylib/msgp` puts it
+# there). Idempotent if already on PATH.
+GOBIN="$(go env GOPATH)/bin"
+case ":$PATH:" in
+    *":$GOBIN:"*) ;;
+    *) export PATH="$GOBIN:$PATH" ;;
+esac
+
+# Install msgp if missing — first-clone friendly. Pinned to the
+# version go.mod tracks so the generator matches the runtime lib.
+if ! command -v msgp >/dev/null 2>&1; then
+    echo "build.sh: installing tinylib/msgp..."
+    go install github.com/tinylib/msgp
+fi
+
 go generate ./...
+
+if [[ -n "$HEADLESS" ]]; then
+    # Lean server build: no GUI deps. Verify by import graph FIRST
+    # (catches a stray internal/app import before we even link),
+    # then by ldd on the artifact (catches silent re-fattening if
+    # someone adds an untagged GUI import later).
+    bad=$(go list -tags headless -deps ./cmd/xerotty 2>/dev/null \
+        | grep -ciE "internal/(app|platform|renderer|fontsys|glyphcache|sdlhack|dpi|input)|cimgui|veandco|/sdl" || true)
+    if [[ "$bad" != "0" ]]; then
+        echo "build.sh: headless build imports GUI packages ($bad) — a GUI import escaped the !headless tag." >&2
+        exit 1
+    fi
+    go build -tags headless -o xerotty-headless ./cmd/xerotty
+    if command -v ldd >/dev/null 2>&1; then
+        if ldd xerotty-headless 2>/dev/null | grep -qiE 'libSDL|libGL|freetype|fontconfig'; then
+            echo "build.sh: headless build re-linked GUI deps! (ldd found SDL/GL/freetype/fontconfig)" >&2
+            exit 1
+        fi
+    fi
+    echo "built: $(pwd)/xerotty-headless (no GUI deps — install AS xerotty on servers)"
+    exit 0
+fi
 
 case "$(uname -s)" in
 Darwin)
@@ -28,6 +75,8 @@ Darwin)
     # icon/xerotty-256.png via icon/embed.go and applies it to each
     # SDL_Window at startup (see internal/app/icon_linux.go) — WM
     # taskbars and Alt-Tab pick that up.
+    # One binary now — `xerotty`, `xerotty serve`, `xerotty connect`
+    # are all the same file dispatched on the first positional arg.
     go build -o xerotty ./cmd/xerotty
     echo "built: $(pwd)/xerotty"
     ;;

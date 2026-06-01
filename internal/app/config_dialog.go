@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
@@ -36,6 +37,11 @@ var (
 	prefSBVisible    = []string{"always", "never", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
+	// prefTabSourcesBase is the always-available subset. Remote
+	// host entries get appended at prefs-open time via
+	// buildTabSourceOptions; the resulting per-dialog slice lives
+	// on configDialog.tabSourceOpts.
+	prefTabSourcesBase = []string{"pty", "daemon"}
 	prefColorModes   = []string{"theme", "custom"}
 	prefBSModes      = []string{"ascii_del", "ascii_bs"}
 	prefDelModes     = []string{"vt_sequence", "ascii_del"}
@@ -57,11 +63,40 @@ var prefMenuActions = []string{
 	"search", "fullscreen",
 	"select_all", "clear_scrollback", "reset_terminal",
 	"rename_tab", "preferences",
+	"connect_remote",
 	"font_size_up", "font_size_down", "font_size_reset",
+	// _remote_hosts is a magic action: at render time
+	// app.expandMenu replaces it with a "Remote" submenu
+	// listing per-host new/reattach items, one pair per
+	// [[hosts]] entry. Listed here so the menu editor can
+	// re-insert it after the user removes it.
+	"_remote_hosts",
+}
+
+// menuKindSubmenu is an editor-only sentinel in the Add combo: picking
+// it makes "Add Item" / a submenu's "+" create a new EMPTY submenu
+// container (an explicitly-named parent) rather than an action item. It
+// is never a real config action — newMenuEditorItem maps it to an
+// isSubmenu entry.
+const menuKindSubmenu = "_submenu"
+
+// prefMenuAddOptions is the Add combo's option list: every action plus
+// the "make a submenu" sentinel. d.addActionIdx indexes into THIS slice.
+var prefMenuAddOptions = append(append([]string{}, prefMenuActions...), menuKindSubmenu)
+
+// newMenuEditorItem builds the entry the Add combo's current selection
+// describes — a named empty submenu for the sentinel, otherwise an
+// action item with its default label.
+func newMenuEditorItem(kind string) menuEditorItem {
+	if kind == menuKindSubmenu {
+		return menuEditorItem{label: "Submenu", isSubmenu: true}
+	}
+	return menuEditorItem{label: prefMenuLabels[kind], action: kind}
 }
 
 var prefMenuLabels = map[string]string{
 	"separator":        "---",
+	"_remote_hosts":    "Remote (expands per host)",
 	"new_tab":          "New Tab",
 	"close_tab":        "Close Tab",
 	"new_window":       "New Window",
@@ -77,14 +112,59 @@ var prefMenuLabels = map[string]string{
 	"reset_terminal":   "Reset Terminal",
 	"rename_tab":       "Rename Tab",
 	"preferences":      "Preferences",
+	"connect_remote":   "Connect to host...",
 	"font_size_up":     "Font Size Up",
 	"font_size_down":   "Font Size Down",
 	"font_size_reset":  "Font Size Reset",
+	"_submenu":         "Submenu",
 }
+
+// menuAddOption pairs a friendly display label with the action (or
+// sentinel) it adds. The Add combo shows the labels alphabetically;
+// d.addActionIdx indexes into prefMenuAddSorted, and .action maps the
+// selected index back to what newMenuEditorItem consumes — so reordering
+// the display never changes which item gets added.
+type menuAddOption struct {
+	label  string
+	action string
+}
+
+func menuAddLabel(action string) string {
+	if l, ok := prefMenuLabels[action]; ok && l != "" {
+		return l
+	}
+	return action
+}
+
+func buildMenuAddSorted() ([]menuAddOption, []string) {
+	opts := make([]menuAddOption, 0, len(prefMenuAddOptions))
+	for _, a := range prefMenuAddOptions {
+		opts = append(opts, menuAddOption{label: menuAddLabel(a), action: a})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].label < opts[j].label })
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	return opts, labels
+}
+
+// prefMenuAddSorted / prefMenuAddLabels are the Add combo's options
+// sorted by friendly label, built once at init. Go orders package-var
+// initialization by dependency, so this safely reads prefMenuAddOptions
+// + prefMenuLabels.
+var prefMenuAddSorted, prefMenuAddLabels = buildMenuAddSorted()
 
 // configDialog holds state for the preferences window.
 type configDialog struct {
 	open       bool
+	// focused mirrors whether the prefs window (or its children/combo
+	// popup) holds ImGui focus this frame. App.inputOwnedByDialog reads
+	// it across ALL windows so the terminal input path can tell "a prefs
+	// dialog is being typed into" from "prefs is open but the user
+	// clicked back to a terminal" — even when the focused dialog belongs
+	// to a window that isn't app.active.
+	focused    bool
 	themeNames []string
 
 	// Appearance
@@ -123,11 +203,14 @@ type configDialog struct {
 	fontSizeCustom bool // size combo set to "Custom..." → show numeric input
 
 	// Shell & Tabs
-	shell        string
-	term         string
-	childExitIdx int32
-	inheritCWD   bool
-	closeBtnIdx  int32
+	shell         string
+	term          string
+	childExitIdx  int32
+	inheritCWD    bool
+	closeBtnIdx   int32
+	tabSourceIdx  int32
+	tabSourceOpts []string // built on prefs-open: base + per-host
+	daemonSocket  string
 
 	// Scrollback
 	sbLines   int32
@@ -167,16 +250,74 @@ type configDialog struct {
 	winTitle string
 	winFS    bool
 
-	// Menu editor
+	// Menu editor. addActionIdx indexes prefMenuAddSorted (the chooser is
+	// a native SDL3 popup — see renderPrefMenuAddFooter).
 	menuItems    []menuEditorItem
 	addActionIdx int32
 }
 
+// menuEditorItem is the editor's view of one menu entry. An entry is
+// exactly ONE of three kinds: a separator (action == "separator"), a
+// submenu (isSubmenu — a named container holding `submenu` children, no
+// action of its own), or an action (everything else — fires `action`).
 type menuEditorItem struct {
 	label    string
 	action   string
 	shortcut string
 	enabled  string
+	checked  string
+	// isSubmenu marks a named-container entry. It's tracked explicitly
+	// (rather than inferred from len(submenu)>0) so a freshly-created
+	// EMPTY submenu still shows its add-child button — config.MenuItem
+	// can't express an empty submenu, so we can't round-trip through
+	// len()>0 alone.
+	isSubmenu bool
+	submenu   []menuEditorItem
+}
+
+// menuItemsToEditor / editorToMenuItems convert between the config and
+// editor representations recursively, so hand-authored [[menu.items.submenu]]
+// trees survive a prefs open + save round-trip. config.MenuItem infers
+// "is a submenu" from len(Submenu)>0; the editor tracks it explicitly.
+func menuItemsToEditor(items []config.MenuItem) []menuEditorItem {
+	var out []menuEditorItem
+	for _, item := range items {
+		ed := menuEditorItem{
+			label: item.Label, shortcut: item.Shortcut,
+			enabled: item.Enabled, checked: item.Checked,
+		}
+		if len(item.Submenu) > 0 {
+			// Submenu container: a named parent, no action of its own
+			// (the engine ignores Action when Submenu is non-empty).
+			ed.isSubmenu = true
+			ed.submenu = menuItemsToEditor(item.Submenu)
+		} else {
+			ed.action = item.Action
+		}
+		out = append(out, ed)
+	}
+	return out
+}
+
+func editorToMenuItems(items []menuEditorItem) []config.MenuItem {
+	var out []config.MenuItem
+	for _, item := range items {
+		mi := config.MenuItem{
+			Label: item.label, Shortcut: item.shortcut,
+			Enabled: item.enabled, Checked: item.checked,
+		}
+		if item.isSubmenu {
+			// A submenu serializes via its children. An EMPTY submenu
+			// can't be expressed in config (len(Submenu)==0 reads back
+			// as a leaf), so it degrades to a leaf-with-label, no action
+			// — acceptable since an empty submenu is meaningless.
+			mi.Submenu = editorToMenuItems(item.submenu)
+		} else {
+			mi.Action = item.action
+		}
+		out = append(out, mi)
+	}
+	return out
 }
 
 func prefIndexOf(items []string, val string) int32 {
@@ -277,6 +418,39 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.childExitIdx = prefIndexOf(prefChildExits, cfg.Tabs.OnChildExit)
 	d.inheritCWD = cfg.Tabs.InheritCWD
 	d.closeBtnIdx = prefIndexOf(prefCloseBtnPos, cfg.Tabs.CloseButtonPosition)
+	// Build the source-mode option list dynamically: base
+	// options (pty, daemon) + one "daemon:<name>" per cfg.Hosts
+	// entry. Without this, setting Tabs.Source = "daemon:kh"
+	// would fall to index 0 (pty) on prefs-open and get
+	// clobbered back to "pty" on save.
+	d.tabSourceOpts = append([]string{}, prefTabSourcesBase...)
+	for _, h := range cfg.Hosts {
+		d.tabSourceOpts = append(d.tabSourceOpts, "daemon:"+h.Name)
+	}
+	// Membership check, NOT prefIndexOf — prefIndexOf returns 0
+	// (= "pty") on miss, which would silently downgrade an unknown
+	// source value. We want -1-on-miss semantics here so the
+	// preservation branch below actually fires.
+	d.tabSourceIdx = -1
+	for i, opt := range d.tabSourceOpts {
+		if opt == cfg.Tabs.Source {
+			d.tabSourceIdx = int32(i)
+			break
+		}
+	}
+	if d.tabSourceIdx < 0 {
+		// Source references a host not currently in cfg.Hosts —
+		// add it temporarily so the user can see + keep their
+		// configured value instead of having it silently
+		// downgraded.
+		if cfg.Tabs.Source != "" {
+			d.tabSourceOpts = append(d.tabSourceOpts, cfg.Tabs.Source)
+			d.tabSourceIdx = int32(len(d.tabSourceOpts) - 1)
+		} else {
+			d.tabSourceIdx = 0
+		}
+	}
+	d.daemonSocket = cfg.Tabs.DaemonSocket
 
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
@@ -310,13 +484,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.winTitle = cfg.Window.Title
 	d.winFS = cfg.Window.Fullscreen
 
-	d.menuItems = nil
-	for _, item := range cfg.Menu.Items {
-		d.menuItems = append(d.menuItems, menuEditorItem{
-			label: item.Label, action: item.Action,
-			shortcut: item.Shortcut, enabled: item.Enabled,
-		})
-	}
+	d.menuItems = menuItemsToEditor(cfg.Menu.Items)
 	d.addActionIdx = 0
 }
 
@@ -363,6 +531,10 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Tabs.OnChildExit = prefChildExits[d.childExitIdx]
 	}
 	cfg.Tabs.InheritCWD = d.inheritCWD
+	if int(d.tabSourceIdx) < len(d.tabSourceOpts) {
+		cfg.Tabs.Source = d.tabSourceOpts[d.tabSourceIdx]
+	}
+	cfg.Tabs.DaemonSocket = d.daemonSocket
 	if int(d.closeBtnIdx) < len(prefCloseBtnPos) {
 		cfg.Tabs.CloseButtonPosition = prefCloseBtnPos[d.closeBtnIdx]
 	}
@@ -415,13 +587,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Window.Title = d.winTitle
 	cfg.Window.Fullscreen = d.winFS
 
-	cfg.Menu.Items = nil
-	for _, item := range d.menuItems {
-		cfg.Menu.Items = append(cfg.Menu.Items, config.MenuItem{
-			Label: item.label, Action: item.action,
-			Shortcut: item.shortcut, Enabled: item.enabled,
-		})
-	}
+	cfg.Menu.Items = editorToMenuItems(d.menuItems)
 }
 
 // openPreferences loads current config into dialog and shows it.
@@ -445,8 +611,36 @@ func (a *Window) restoreFocusAfterPreferencesClose() {
 func (a *Window) applyPreferences() {
 	prevFamily := a.app.cfg.Font.Family
 	prevPath := a.app.cfg.Font.Path
+	prevSource := a.app.cfg.Tabs.Source
+	// Snapshot the geometry-affecting inputs so we only reflow windows
+	// when one of them actually changed — see the resize gate below.
+	prevPx := renderer.PixelSize(&a.app.cfg)
+	prevPad := a.app.cfg.Appearance.Padding
 
 	a.prefDialog.applyTo(&a.app.cfg)
+
+	// Tab source mode flip. Only honor pty → daemon switches that
+	// previously had no hub (auto-spawn the daemon now). Going
+	// daemon → pty just nulls out the factory; the running hub +
+	// any daemon-backed tabs keep going (no point tearing them
+	// down — the user can close them when they're done). Tabs
+	// opened after the toggle land in the new source.
+	if a.app.cfg.Tabs.Source != prevSource {
+		if a.app.cfg.Tabs.Source == "daemon" && a.app.daemonHub == nil {
+			if err := a.app.initDaemonSource(); err != nil {
+				fmt.Fprintf(os.Stderr, "xerotty: prefs flipped to daemon mode but auto-spawn failed: %v\n", err)
+			}
+		}
+		// Reapply the factory to every Window so the next NewTab
+		// honors the new mode. installSourceFactory closes over
+		// the Window's own daemonWindowID — important so multi-
+		// window setups route correctly post-flip.
+		for _, win := range a.app.windows {
+			if win.tabs != nil {
+				a.app.installSourceFactory(win)
+			}
+		}
+	}
 
 	// Apply theme change. The cimgui-go backend is shared across all
 	// Windows (multi-viewport pop-out reuses the carrier's GL context),
@@ -480,10 +674,16 @@ func (a *Window) applyPreferences() {
 		// which manifests as the terminal going blank or input/selection
 		// breaking until a resize forces a redraw.
 		a.app.pendingFontFace = true
-	} else {
-		// Size-only change from prefs is treated as "reset all windows
-		// to the new default" — overrides any per-window Cmd+= / Cmd+-
-		// zoom that diverged from the previous default.
+	} else if renderer.PixelSize(&a.app.cfg) != prevPx || a.app.cfg.Appearance.Padding != prevPad {
+		// Font size or padding changed — reflow every window to the new
+		// metrics. Treated as "reset all windows to the new default",
+		// overriding any per-window Cmd+= / Cmd+- zoom that diverged.
+		//
+		// Gated on an ACTUAL geometry change: updateFontMetrics requests
+		// a window resize, and running it on an Apply that changed
+		// nothing geometric (a menu/keybind/theme edit) needlessly
+		// resized windows — which on some WMs settled a couple grid rows
+		// short, shrinking tabbed terminals after Apply.
 		newSize := renderer.PixelSize(&a.app.cfg)
 		for _, win := range a.app.windows {
 			win.fontSize = newSize
@@ -556,9 +756,24 @@ func (a *Window) renderPreferences() {
 	// only thing the user has to drag/close with.
 	prefFlags := imgui.WindowFlagsNoDocking
 	if multiViewport {
-		prefFlags |= imgui.WindowFlagsNoTitleBar
+		// OS chrome (the title bar) moves the window under multi-viewport,
+		// so also disable ImGui's own move-by-dragging-the-body. Without
+		// NoMove, clicking the inert background between widgets — e.g. the
+		// menu editor's Text rows — and twitching starts an ImGui
+		// window-move; on Wayland that move's mouse-up can be dropped
+		// during the viewport position/focus shuffle, leaving
+		// g.MovingWindow stuck so the whole dialog goes unclickable until
+		// it's closed and reopened.
+		prefFlags |= imgui.WindowFlagsNoTitleBar | imgui.WindowFlagsNoMove
 	}
+	// Reset each frame; set true below only while the prefs window
+	// actually holds focus (used by App.inputOwnedByDialog to gate
+	// terminal input across all windows).
+	a.prefDialog.focused = false
 	if imgui.BeginV("Preferences###prefs", &a.prefDialog.open, prefFlags) {
+		// RootAndChildWindows so the tab content, the menu editor's
+		// child, and the Add combo's popup all count as "prefs focused".
+		a.prefDialog.focused = imgui.IsWindowFocusedV(imgui.FocusedFlagsRootAndChildWindows)
 		// OS close-button: under multi-viewport ImGui's &open bool
 		// doesn't propagate the WM's close — viewport.PlatformRequestClose
 		// does. Mirror it back to our open state.
@@ -567,6 +782,16 @@ func (a *Window) renderPreferences() {
 				a.prefDialog.open = false
 				vp.SetPlatformRequestClose(false)
 			}
+		}
+		// Keep SDL text input asserted on the prefs window every frame.
+		// The ImGui SDL3 backend SDL_StopTextInput's the window when an
+		// InputText deactivates, so opening the Add combo (not an
+		// InputText) would otherwise leave text input OFF — io.InputQueue
+		// stays empty and combo type-ahead (jump-to-letter) never fires.
+		// EnsureTextInput is a no-op when input is already on, so it
+		// doesn't disturb the label InputText fields.
+		if vp := imgui.WindowViewport(); vp != nil {
+			platform.EnsureTextInput(vp.PlatformHandle())
 		}
 		// Reserve space for bottom separator + button row.
 		// Negative Y in BeginChildStrV means "fill, but leave -Y at the bottom".
@@ -628,10 +853,17 @@ func (a *Window) renderPreferences() {
 				imgui.EndTabItem()
 			}
 			if imgui.BeginTabItem("Menu") {
-				if imgui.BeginChildStrV("##menusc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+				// Shorten the scroll child by the footer's height so the
+				// Add controls (rendered AFTER EndChild, outside the
+				// scroll region — see renderPrefMenuAddFooter) have room.
+				// The action chooser is a native SDL3 popup window, so it
+				// floats OVER the dialog and needs no reserved space here.
+				footerH := imgui.FrameHeightWithSpacing() + 12
+				if imgui.BeginChildStrV("##menusc", imgui.Vec2{X: 0, Y: tabH - footerH}, 0, 0) {
 					a.renderPrefMenu()
 				}
 				imgui.EndChild()
+				a.renderPrefMenuAddFooter()
 				imgui.EndTabItem()
 			}
 			if imgui.BeginTabItem("Window") {
@@ -992,6 +1224,21 @@ func (a *Window) renderPrefShellTabs() {
 	imgui.Text("Close Button Position")
 	imgui.SetNextItemWidth(w)
 	imgui.ComboStrarr("##closebtn", &d.closeBtnIdx, prefCloseBtnPos, int32(len(prefCloseBtnPos)))
+
+	imgui.Separator()
+
+	imgui.Text("Tab Source")
+	imgui.SetNextItemWidth(w)
+	imgui.ComboStrarr("##tabsource", &d.tabSourceIdx, d.tabSourceOpts, int32(len(d.tabSourceOpts)))
+	imgui.TextDisabled("pty: in-process. daemon: routes through xerotty serve")
+	imgui.TextDisabled("(auto-spawns one if no daemon is running). Takes effect on")
+	imgui.TextDisabled("the next tab — existing tabs stay on their current source.")
+
+	if d.tabSourceIdx == 1 {
+		imgui.Text("Daemon Socket (empty = $XDG_RUNTIME_DIR/xerottyd.sock)")
+		imgui.SetNextItemWidth(w)
+		imgui.InputTextWithHint("##daemonsock", "/run/user/1000/xerottyd.sock", &d.daemonSocket, 0, nil)
+	}
 }
 
 func (a *Window) renderPrefScrollback() {
@@ -1009,6 +1256,12 @@ func (a *Window) renderPrefScrollback() {
 		imgui.Text("Lines")
 		imgui.SetNextItemWidth(w)
 		imgui.InputInt("##sblines", &d.sbLines)
+		imgui.TextDisabled("Output past Lines is dropped (oldest first). For huge")
+		imgui.TextDisabled("bursts (seq 80000, find / etc.) pick \"unlimited\" so")
+		imgui.TextDisabled("history doesn't get truncated.")
+	} else {
+		imgui.TextDisabled("Unlimited mode spills to disk via /tmp. Daemon-mode")
+		imgui.TextDisabled("tabs honor this too — full history reaches the GUI.")
 	}
 
 	imgui.Separator()
@@ -1095,42 +1348,264 @@ func (a *Window) renderPrefKeys() {
 	imgui.ComboStrarr("##shenter", &d.shEnIdx, prefShiftEnters, int32(len(prefShiftEnters)))
 }
 
+// renderPrefMenu draws the scrollable item list. The Add controls are
+// NOT here — they render as a fixed footer (renderPrefMenuAddFooter)
+// OUTSIDE the scrolling child. Inside the scroll region the combo's
+// dropdown was positioned relative to clipped/scrolled content, so on
+// Wayland it floated mid-window and couldn't be clicked.
 func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
 
 	imgui.Text("Context Menu Items")
+	imgui.TextDisabled("  submenu names are editable · ^/v reorder within a level · + (submenus only) adds a child · X removes")
 	imgui.Separator()
+
+	a.renderMenuLevel(&d.menuItems, 0, "m")
+}
+
+// renderPrefMenuAddFooter draws the "Add Item" button + a selection
+// button as a fixed footer below the scrollable list. Clicking the
+// selection button opens a REAL floating dropdown via
+// platform.RunImGuiPopup — a native SDL3 xdg_popup parented to the prefs
+// window, correctly positioned + clickable on Wayland (ImGui's own combo
+// BeginPopup is broken on this multi-viewport setup; same reason menu.go
+// hand-rolls its menu). Modeled on the working right-click context menu
+// (Window.renderContextMenu). selectedAddAction maps d.addActionIdx (an
+// index into prefMenuAddSorted) back to the action — unchanged.
+func (a *Window) renderPrefMenuAddFooter() {
+	d := &a.prefDialog
+
+	imgui.Separator()
+	if imgui.Button("Add Item") {
+		d.menuItems = append(d.menuItems, newMenuEditorItem(d.selectedAddAction()))
+	}
+	imgui.SameLineV(0, 8)
+
+	preview := "(choose)"
+	if int(d.addActionIdx) >= 0 && int(d.addActionIdx) < len(prefMenuAddLabels) {
+		preview = prefMenuAddLabels[d.addActionIdx]
+	}
+	open := imgui.ButtonV(preview+"##addchooser", imgui.Vec2{X: 200, Y: 0})
+	// Capture the button's screen rect + the prefs viewport NOW, before
+	// RunImGuiPopup swaps the ImGui context.
+	btnMin := imgui.ItemRectMin()
+	btnMax := imgui.ItemRectMax()
+	vp := imgui.WindowViewport()
+	if open && vp != nil {
+		a.openAddActionPopup(vp, btnMin, btnMax)
+	}
+}
+
+// openAddActionPopup runs a floating SDL3 popup listing the add-action
+// options (prefMenuAddSorted). Clicking a row sets d.addActionIdx and
+// closes the popup. Anchored just below the selection button. Coords are
+// relative to the parent viewport's OS-window top-left, the same scheme
+// renderContextMenu uses. RunImGuiPopup blocks (on its own ImGui
+// context) until dismissed.
+func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec2) {
+	d := &a.prefDialog
+	parentID := vp.PlatformHandle()
+	vpPos := vp.Pos()
+	relX := int(btnMin.X - vpPos.X)
+	relY := int(btnMax.Y - vpPos.Y) // drop below the button
+	if relX < 0 {
+		relX = 0
+	}
+	if relY < 0 {
+		relY = 0
+	}
+
+	// Surface size: wide enough for the labels, tall enough for the rows
+	// (capped — the list window scrolls past the cap).
+	rowH := imgui.TextLineHeightWithSpacing()
+	popupW := 240
+	popupH := int(rowH)*len(prefMenuAddSorted) + 12
+	if popupH > 420 {
+		popupH = 420
+	}
+
+	platform.RunImGuiPopup(parentID, relX, relY, popupW, popupH,
+		func() platform.PopupMenuDrawResult {
+			imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
+			imgui.SetNextWindowSize(imgui.Vec2{X: float32(popupW), Y: float32(popupH)})
+			flags := imgui.WindowFlagsNoTitleBar |
+				imgui.WindowFlagsNoResize |
+				imgui.WindowFlagsNoMove |
+				imgui.WindowFlagsNoSavedSettings |
+				imgui.WindowFlagsNoCollapse
+			var res platform.PopupMenuDrawResult
+			if imgui.BeginV("##addactionpopup", nil, flags) {
+				// Type-to-jump: move keyboard focus to the first label
+				// matching what the user typed this frame.
+				tmTarget := -1
+				if imgui.IsWindowFocusedV(imgui.FocusedFlagsNone) {
+					tmTarget = addChooserTypematchTarget()
+				}
+				for i, opt := range prefMenuAddSorted {
+					selected := int32(i) == d.addActionIdx
+					if i == tmTarget {
+						imgui.SetKeyboardFocusHereV(0)
+						// If the mouse just moved over the popup, ImGui
+						// flipped to mouse-nav and hid the keyboard-nav
+						// cursor, suppressing this typed jump until an
+						// arrow re-engages. Re-assert keyboard nav now.
+						imgui.InternalSetNavCursorVisibleAfterMove()
+						imgui.CurrentContext().SetNavInputSource(imgui.InputSourceKeyboard)
+					}
+					clicked := imgui.SelectableBoolV(opt.label+fmt.Sprintf("##ao%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0})
+					// Anchor initial keyboard focus on the current
+					// selection so Up/Down start from there.
+					if selected {
+						imgui.SetItemDefaultFocus()
+					}
+					if clicked {
+						d.addActionIdx = int32(i)
+						res.Close = true
+					}
+				}
+			}
+			imgui.End()
+			// Click in the transparent slack (outside the list) dismisses.
+			if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) || imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
+				if !imgui.CurrentIO().WantCaptureMouse() {
+					res.Close = true
+				}
+			}
+			return res
+		})
+	platform.PostWake()
+}
+
+// Type-to-jump state for the add-action popup. One popup is open at a
+// time (RunImGuiPopup blocks), so package-level state is safe; the
+// prefix resets after a short idle.
+var (
+	addChooserTMPrefix   string
+	addChooserTMLastNano int64
+)
+
+// addChooserTypematchTarget consumes characters typed this frame and
+// returns the index into prefMenuAddSorted of the first label matching
+// the accumulated prefix (prefix-match preferred, substring fallback),
+// or -1 when nothing was typed this frame / nothing matches.
+func addChooserTypematchTarget() int {
+	nowNano := time.Now().UnixNano()
+	if nowNano-addChooserTMLastNano > int64(700*time.Millisecond) {
+		addChooserTMPrefix = ""
+	}
+	var typed string
+	for _, ch := range imgui.CurrentIO().InputQueueCharacters().Slice() {
+		if ch >= 0x20 && ch < 0x7f { // printable ASCII
+			typed += string(rune(ch))
+		}
+	}
+	if typed == "" {
+		return -1
+	}
+	addChooserTMLastNano = nowNano
+	addChooserTMPrefix += strings.ToLower(typed)
+	for i, o := range prefMenuAddSorted {
+		if strings.HasPrefix(strings.ToLower(o.label), addChooserTMPrefix) {
+			return i
+		}
+	}
+	for i, o := range prefMenuAddSorted {
+		if strings.Contains(strings.ToLower(o.label), addChooserTMPrefix) {
+			return i
+		}
+	}
+	return -1
+}
+
+// selectedAddAction is the single source of truth for what the Add combo
+// will create. The combo renders prefMenuAddSorted's labels, so the
+// selection MUST be mapped back through the SAME sorted slice — indexing
+// the unsorted prefMenuActions/prefMenuAddOptions with d.addActionIdx
+// would add the wrong item (the bug always landed on "Reset Terminal").
+// Both consumers — top-level "Add Item" and a submenu's "+" — go through
+// here.
+func (d *configDialog) selectedAddAction() string {
+	return menuAddSelection(d.addActionIdx)
+}
+
+// menuAddSelection maps the Add combo's selected index (into the
+// label-sorted prefMenuAddSorted) back to the action/sentinel it adds.
+// Out-of-range falls back to the first option, never a wrong action.
+func menuAddSelection(idx int32) string {
+	if idx < 0 || int(idx) >= len(prefMenuAddSorted) {
+		return prefMenuAddSorted[0].action
+	}
+	return prefMenuAddSorted[idx].action
+}
+
+// renderMenuLevel draws one level of the menu editor and recurses into
+// each submenu, indented. Only submenu rows expose an editable name
+// InputText (a submenu's name is its identity); action and separator
+// rows are read-only Text so the action's identity stays visible and
+// can't be blanked into a mystery row. Structural edits (reorder /
+// remove / add-child) are recorded
+// during the loop and applied after it so the slice isn't mutated
+// mid-iteration. Widget IDs are derived from idp+index so they stay
+// unique across the whole nested tree — colliding ImGui IDs would make
+// sibling widgets share state. The + button (add a child, of the kind
+// the Add combo currently selects) shows ONLY on submenu rows; an action
+// or separator can't hold children.
+func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string) {
+	d := &a.prefDialog
+	list := *items
+	n := len(list)
 
 	removeIdx := -1
 	swapA, swapB := -1, -1
-	n := len(d.menuItems)
+	addChildIdx := -1
 
-	for i := range d.menuItems {
-		item := &d.menuItems[i]
+	indentX := 8 + float32(depth)*18
 
-		// Label column.
-		if item.action == "separator" {
-			imgui.Text("  ----------------")
-		} else {
+	for i := range list {
+		item := &list[i]
+		id := fmt.Sprintf("%s_%d", idp, i)
+		isSep := item.action == "separator"
+
+		imgui.SetCursorPosX(indentX)
+
+		switch {
+		case isSep:
+			imgui.AlignTextToFramePadding()
+			imgui.Text("──────────  (separator)")
+		case item.isSubmenu:
+			// A submenu's name IS its identity, so it stays editable.
+			imgui.AlignTextToFramePadding()
+			imgui.Text("▸")
+			imgui.SameLineV(0, 6)
+			imgui.SetNextItemWidth(200)
+			imgui.InputTextWithHint("##lbl"+id, "submenu name", &item.label, 0, nil)
+		default:
+			// Action rows are READ-ONLY: the action's identity must
+			// always be visible. Renaming/blanking the label here would
+			// leave an anonymous mystery row (the editor shows the label,
+			// not the action id). Show the friendly label + shortcut hint.
 			label := item.label
 			if label == "" {
-				label = item.action
+				label = menuAddLabel(item.action)
 			}
-			text := label
+			text := "  " + label
 			if item.shortcut != "" {
 				text += "  (" + item.shortcut + ")"
 			}
-			imgui.Text("  " + text)
+			imgui.AlignTextToFramePadding()
+			imgui.Text(text)
 		}
 
-		// Buttons aligned to right side.
-		imgui.SameLineV(imgui.WindowWidth()-80, 0)
+		// Button column, right-aligned: ^ v [+|spacer] X. The + slot is
+		// always reserved (real button on submenus, blank dummy elsewhere)
+		// so the X column lines up across every row.
+		imgui.SameLineV(imgui.WindowWidth()-104, 0)
 
 		dis := i == 0
 		if dis {
 			imgui.BeginDisabled()
 		}
-		if imgui.ButtonV(fmt.Sprintf("^##mu%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if imgui.ButtonV("^##up"+id, imgui.Vec2{X: 22, Y: 0}) {
 			swapA, swapB = i, i-1
 		}
 		if dis {
@@ -1143,7 +1618,7 @@ func (a *Window) renderPrefMenu() {
 		if dis {
 			imgui.BeginDisabled()
 		}
-		if imgui.ButtonV(fmt.Sprintf("v##md%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if imgui.ButtonV("v##dn"+id, imgui.Vec2{X: 22, Y: 0}) {
 			swapA, swapB = i, i+1
 		}
 		if dis {
@@ -1152,30 +1627,40 @@ func (a *Window) renderPrefMenu() {
 
 		imgui.SameLineV(0, 2)
 
-		if imgui.ButtonV(fmt.Sprintf("X##mx%d", i), imgui.Vec2{X: 22, Y: 0}) {
+		if item.isSubmenu {
+			if imgui.ButtonV("+##add"+id, imgui.Vec2{X: 22, Y: 0}) {
+				addChildIdx = i
+			}
+		} else {
+			imgui.Dummy(imgui.Vec2{X: 22, Y: 0})
+		}
+
+		imgui.SameLineV(0, 2)
+
+		if imgui.ButtonV("X##rm"+id, imgui.Vec2{X: 22, Y: 0}) {
 			removeIdx = i
+		}
+
+		// Recurse into the submenu's children, indented one level deeper.
+		// Edits inside mutate list[i].submenu in place via the pointer,
+		// independent of this level's index shifts.
+		if item.isSubmenu {
+			a.renderMenuLevel(&item.submenu, depth+1, id)
 		}
 	}
 
 	// Apply modifications after iteration.
 	if swapA >= 0 && swapB >= 0 {
-		d.menuItems[swapA], d.menuItems[swapB] = d.menuItems[swapB], d.menuItems[swapA]
+		list[swapA], list[swapB] = list[swapB], list[swapA]
+	}
+	if addChildIdx >= 0 {
+		list[addChildIdx].submenu = append(list[addChildIdx].submenu,
+			newMenuEditorItem(d.selectedAddAction()))
 	}
 	if removeIdx >= 0 {
-		d.menuItems = append(d.menuItems[:removeIdx], d.menuItems[removeIdx+1:]...)
+		list = append(list[:removeIdx], list[removeIdx+1:]...)
 	}
-
-	imgui.Separator()
-	if imgui.Button("Add Item") {
-		action := prefMenuActions[d.addActionIdx]
-		label := prefMenuLabels[action]
-		d.menuItems = append(d.menuItems, menuEditorItem{
-			label: label, action: action,
-		})
-	}
-	imgui.SameLineV(0, 8)
-	imgui.SetNextItemWidth(200)
-	imgui.ComboStrarr("##addaction", &d.addActionIdx, prefMenuActions, int32(len(prefMenuActions)))
+	*items = list
 }
 
 func (a *Window) renderPrefWindow() {
