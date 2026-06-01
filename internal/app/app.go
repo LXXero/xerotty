@@ -117,6 +117,19 @@ type App struct {
 	// UI goroutine), so it shares no lock with remoteHubs.
 	adhocHosts map[string]config.RemoteHost
 
+	// windowSeq is a monotonic counter for assigning each Window's
+	// stable ImGui ID (imguiName). It must NEVER be derived from
+	// len(a.windows): closing a window removes it from a.windows but
+	// does NOT make ImGui forget that ID's in-memory ImGuiWindow (its
+	// last size lives on until the context is destroyed — NoSavedSettings
+	// only suppresses the .ini, not the in-session state). A len-based
+	// name reuses the ID of a previously-closed window, so the next
+	// spawn's SetNextWindowSize(CondFirstUseEver) is treated as "not the
+	// first use" and the window opens at the stale remembered size
+	// instead of the configured cols×rows. A counter that only ever
+	// increments keeps every spawn a fresh ImGui identity. Main is 0.
+	windowSeq int
+
 	// suppressInitialTab tells spawnWindowImpl to skip ALL tab
 	// creation for the next spawn — used by spawnEmptyWindow when
 	// the caller will adopt tabs into the window itself (remote
@@ -1786,8 +1799,20 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	w := newWindow(a)
 	// Stable ImGui ID — display title is computed per-frame via the
 	// "###" separator so it can reflect the active tab's title without
-	// invalidating the window's identity.
-	w.imguiName = fmt.Sprintf("xerottywin%d", len(a.windows))
+	// invalidating the window's identity. Use a monotonic counter, NOT
+	// len(a.windows): a closed window leaves its ImGui-side size cached,
+	// so a reused name would make this new window open at that stale
+	// size. See the windowSeq doc on App.
+	a.windowSeq++
+	w.imguiName = fmt.Sprintf("xerottywin%d", a.windowSeq)
+	// Force the configured geometry onto this Window's first rendered
+	// frame (CondAlways) rather than CondFirstUseEver. The monotonic
+	// name above already prevents ID reuse, but this guarantees the
+	// spawn lands at the computed width/height even if any ImGui-side
+	// size state for this ID somehow survives — the size is one-shot
+	// (pendingResize clears after the first Begin), so user resizing
+	// afterward still works.
+	w.pendingResize = true
 	// Inherit the spawning Window's font size + cell metrics — Cmd+N
 	// from a zoomed window opens a new window at the same zoom, just
 	// like iTerm2. From then on the two diverge if user Cmd+= on
