@@ -1417,7 +1417,9 @@ func (a *Window) renderPrefMenuAddFooter() {
 
 // openAddActionPopup runs a floating SDL3 popup listing the add-action
 // options (prefMenuAddSorted). Clicking a row sets d.addActionIdx and
-// closes the popup. Anchored just below the selection button. Coords are
+// closes the popup. Anchored ABOVE the selection button (opening upward
+// over the dialog) so it never covers the Add Item / Apply / OK row, with
+// below/right/left fallbacks when there's no room above. Coords are
 // relative to the parent viewport's OS-window top-left, the same scheme
 // renderContextMenu uses. RunImGuiPopup blocks (on its own ImGui
 // context) until dismissed.
@@ -1426,21 +1428,27 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 	parentID := vp.PlatformHandle()
 	vpPos := vp.Pos()
 
-	// Surface size: wide enough for the labels, tall enough for the rows
-	// (capped — the list window scrolls past the cap).
+	// Surface size: wide enough for the labels, tall enough for the rows.
+	// The inner list auto-sizes to its content (transparent slack is
+	// invisible), so this only needs to be an upper bound on the content
+	// height. rowH comes from the main context's font; floor it at 18 so
+	// it never UNDER-counts the popup's default-font rows (which would
+	// clip the auto-sized window).
 	rowH := imgui.TextLineHeightWithSpacing()
+	if rowH < 18 {
+		rowH = 18
+	}
 	popupW := 240
-	popupH := int(rowH)*len(prefMenuAddSorted) + 12
+	popupH := int(rowH)*len(prefMenuAddSorted) + 16
 	if popupH > 420 {
 		popupH = 420
 	}
 
-	// Position the popup BESIDE the button rather than below it so
-	// it doesn't obscure the Add Item / Apply / OK row directly
-	// underneath the chooser. Default to the right of the button;
-	// fall back through left → below → above as each direction
-	// proves to overflow the usable screen bounds (which exclude
-	// the macOS Dock and Linux taskbars).
+	// Pop the list UPWARD, above the button (like a menu that opens over
+	// the control), so it never obscures the Add Item / Apply / OK row
+	// directly underneath the chooser. Fall back through below → right →
+	// left as each direction proves to overflow the usable screen bounds
+	// (which exclude the macOS Dock and Linux taskbars).
 	const gap = 4
 	rightX := int(btnMax.X) + gap
 	leftX := int(btnMin.X) - popupW - gap
@@ -1479,20 +1487,26 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 	}
 
 	var absX, absY int
+	// placedAbove: the list opens upward, so anchor its content to the
+	// BOTTOM of the (transparent, deliberately-oversized) surface — see
+	// the draw callback. Otherwise content anchors at the surface top.
+	placedAbove := false
 	switch {
+	case fits(int(btnMin.X), aboveY):
+		absX, absY = int(btnMin.X), aboveY
+		placedAbove = true
+	case fits(int(btnMin.X), belowY):
+		absX, absY = int(btnMin.X), belowY
 	case fits(rightX, topY):
 		absX, absY = rightX, topY
 	case fits(leftX, topY):
 		absX, absY = leftX, topY
-	case fits(int(btnMin.X), belowY):
-		absX, absY = int(btnMin.X), belowY
-	case fits(int(btnMin.X), aboveY):
-		absX, absY = int(btnMin.X), aboveY
 	default:
-		// No clean fit anywhere. Prefer the right side and clamp
-		// vertically so as much of the list as possible stays on
-		// screen — better than dropping behind the Dock.
-		absX, absY = rightX, clampY(topY)
+		// No clean fit anywhere. Prefer upward (above the button) and
+		// clamp vertically so as much of the list as possible stays on
+		// screen — better than dropping behind the Dock/taskbar.
+		absX, absY = int(btnMin.X), clampY(aboveY)
+		placedAbove = true
 	}
 
 	relX := absX - int(vpPos.X)
@@ -1506,13 +1520,26 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 
 	platform.RunImGuiPopup(parentID, relX, relY, popupW, popupH,
 		func() platform.PopupMenuDrawResult {
-			imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
-			imgui.SetNextWindowSize(imgui.Vec2{X: float32(popupW), Y: float32(popupH)})
+			// Auto-size the list window to its content. The popup renders
+			// in a separate ImGui context with the small default font, so
+			// forcing popupH (computed from the main window's larger font)
+			// painted a gray gap below the last row. The surface stays the
+			// oversized popupH but is transparent, so the slack is
+			// invisible. For an upward-opening list, anchor the window's
+			// BOTTOM to the surface bottom (pivot 0,1) so its bottom edge
+			// sits just above the button and it grows upward into the
+			// transparent slack; otherwise anchor the top-left.
+			if placedAbove {
+				imgui.SetNextWindowPosV(imgui.Vec2{X: 0, Y: float32(popupH)}, imgui.CondAlways, imgui.Vec2{X: 0, Y: 1})
+			} else {
+				imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
+			}
 			flags := imgui.WindowFlagsNoTitleBar |
 				imgui.WindowFlagsNoResize |
 				imgui.WindowFlagsNoMove |
 				imgui.WindowFlagsNoSavedSettings |
-				imgui.WindowFlagsNoCollapse
+				imgui.WindowFlagsNoCollapse |
+				imgui.WindowFlagsAlwaysAutoResize
 			var res platform.PopupMenuDrawResult
 			if imgui.BeginV("##addactionpopup", nil, flags) {
 				// Type-to-jump: move keyboard focus to the first label
