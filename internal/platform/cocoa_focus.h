@@ -68,6 +68,22 @@ int platform_cocoa_any_window_moved(void);
 // content rect happens to be under the dragged title bar.
 int platform_cocoa_event_on_chrome(void);
 
+// platform_cocoa_app_is_active returns 1 while NSApp.isActive is YES
+// (xerotty is the frontmost app), 0 otherwise. Used by the popup
+// event loop to dismiss menus when the user clicks into another
+// application — SDL doesn't deliver mouse events for clicks outside
+// our windows, but [NSApp isActive] flips to NO on deactivation.
+int platform_cocoa_app_is_active(void);
+
+// platform_cocoa_pressed_mouse_buttons returns AppKit's global
+// pressedMouseButtons bitmask. Unlike SDL mouse events, this can be
+// polled while the cursor is outside xerotty.
+unsigned int platform_cocoa_pressed_mouse_buttons(void);
+
+// platform_cocoa_mouse_in_window returns 1 if the current global mouse
+// location is inside the backing NSWindow for the given SDL_WindowID.
+int platform_cocoa_mouse_in_window(unsigned long window_id);
+
 #ifdef __cplusplus
 }
 #endif

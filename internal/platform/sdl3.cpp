@@ -385,6 +385,26 @@ extern "C" void platform_set_window_opacity(unsigned long window_id, float opaci
     SDL_SetWindowOpacity(w, opacity);
 }
 
+extern "C" int platform_get_window_usable_bounds(unsigned long window_id,
+                                                 int* out_x, int* out_y,
+                                                 int* out_w, int* out_h) {
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return 0;
+    SDL_DisplayID did = SDL_GetDisplayForWindow(w);
+    if (did == 0) return 0;
+    SDL_Rect r;
+    if (!SDL_GetDisplayUsableBounds(did, &r)) {
+        // Fallback: full display bounds (includes Dock area). Better
+        // than nothing — at least the popup gets clamped to screen.
+        if (!SDL_GetDisplayBounds(did, &r)) return 0;
+    }
+    if (out_x) *out_x = r.x;
+    if (out_y) *out_y = r.y;
+    if (out_w) *out_w = r.w;
+    if (out_h) *out_h = r.h;
+    return 1;
+}
+
 // platform_ensure_text_input re-asserts SDL text input on the given
 // window if it isn't already active. SDL3 only delivers
 // SDL_EVENT_TEXT_INPUT (the source of typed characters the terminal

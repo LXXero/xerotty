@@ -91,6 +91,18 @@ void platform_resync_modifiers(void);
 // in the first frame after Cmd+N route to the wrong window.
 void platform_raise_window(unsigned long window_id);
 
+// platform_get_window_usable_bounds returns the usable screen rect
+// (excludes the macOS Dock / Linux panel) for the display containing
+// the SDL_Window with the given ID. Writes x/y/w/h via out-pointers
+// and returns 1 on success, 0 if the window doesn't exist or SDL
+// can't query bounds. Coords are absolute desktop screen pixels.
+//
+// Callers use it for popup-positioning fallback: when a dropdown
+// anchored below a button would overflow the dock, flip it up.
+int platform_get_window_usable_bounds(unsigned long window_id,
+                                      int* out_x, int* out_y,
+                                      int* out_w, int* out_h);
+
 // platform_set_window_opacity sets whole-window opacity (0..1) on the
 // SDL_Window with the given ID via SDL_SetWindowOpacity — the compositor
 // blends the whole window. Restores the documented `opacity` config that

@@ -357,7 +357,7 @@ func sgrForStyle(style uint32, fgRGB, bgRGB uint32) string {
 }
 
 func makeRaw(fd int) (*unix.Termios, error) {
-	old, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	old, err := unix.IoctlGetTermios(fd, ioctlGetTermios)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +369,7 @@ func makeRaw(fd int) (*unix.Termios, error) {
 	raw.Cflag |= unix.CS8
 	raw.Cc[unix.VMIN] = 1
 	raw.Cc[unix.VTIME] = 0
-	if err := unix.IoctlSetTermios(fd, unix.TCSETS, &raw); err != nil {
+	if err := unix.IoctlSetTermios(fd, ioctlSetTermios, &raw); err != nil {
 		return nil, err
 	}
 	return old, nil
@@ -379,7 +379,7 @@ func restoreTerm(fd int, t *unix.Termios) {
 	if t == nil {
 		return
 	}
-	_ = unix.IoctlSetTermios(fd, unix.TCSETS, t)
+	_ = unix.IoctlSetTermios(fd, ioctlSetTermios, t)
 	fmt.Fprint(os.Stdout, "\x1b[?25h\x1b[0m\r\n")
 }
 

@@ -167,6 +167,22 @@ func SetWindowOpacity(windowID uintptr, opacity float32) {
 	C.platform_set_window_opacity(C.ulong(windowID), C.float(opacity))
 }
 
+// WindowUsableBounds returns the usable screen rect (excludes macOS
+// Dock / Linux panels) for the display containing the given
+// SDL_Window. Coords are absolute desktop screen pixels. Returns
+// (0,0,0,0,false) if the window doesn't exist or SDL can't query
+// bounds. Callers use it to flip-up popups that would overflow the
+// screen bottom when anchored below a button.
+func WindowUsableBounds(windowID uintptr) (x, y, w, h int, ok bool) {
+	var cx, cy, cw, ch C.int
+	got := C.platform_get_window_usable_bounds(C.ulong(windowID),
+		&cx, &cy, &cw, &ch)
+	if got == 0 {
+		return 0, 0, 0, 0, false
+	}
+	return int(cx), int(cy), int(cw), int(ch), true
+}
+
 // EnsureTextInput re-asserts SDL text input on the window so the
 // terminal keeps receiving typed characters (SDL_EVENT_TEXT_INPUT →
 // io.InputQueueCharacters). The ImGui SDL3 backend calls

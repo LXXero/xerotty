@@ -191,6 +191,24 @@ int platform_cocoa_event_on_chrome(void) {
     return 0;
 }
 
+int platform_cocoa_app_is_active(void) {
+    return [NSApp isActive] ? 1 : 0;
+}
+
+unsigned int platform_cocoa_pressed_mouse_buttons(void) {
+    return (unsigned int)[NSEvent pressedMouseButtons];
+}
+
+int platform_cocoa_mouse_in_window(unsigned long window_id) {
+    SDL_Window* sdlwin = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!sdlwin) return 0;
+    SDL_PropertiesID props = SDL_GetWindowProperties(sdlwin);
+    NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+        props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!nswin) return 0;
+    return NSPointInRect([NSEvent mouseLocation], [nswin frame]) ? 1 : 0;
+}
+
 unsigned int platform_cocoa_modifier_flags(void) {
     // NSEvent.modifierFlags is a CLASS method that returns the
     // current PHYSICAL state of modifier keys system-wide. Unlike

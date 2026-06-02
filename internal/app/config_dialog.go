@@ -254,6 +254,14 @@ type configDialog struct {
 	// a native SDL3 popup — see renderPrefMenuAddFooter).
 	menuItems    []menuEditorItem
 	addActionIdx int32
+
+	// addActionPopupClosedFrame is the imgui FrameCount at which
+	// RunImGuiPopup last returned. If the dismiss-click lands on the
+	// trigger button itself, main_ctx sees a release-while-hovered
+	// edge a few frames after popup-close and ButtonV would re-fire,
+	// reopening the popup. renderPrefMenuAddFooter suppresses `open`
+	// for a short window after this frame.
+	addActionPopupClosedFrame int
 }
 
 // menuEditorItem is the editor's view of one menu entry. An entry is
@@ -1386,6 +1394,17 @@ func (a *Window) renderPrefMenuAddFooter() {
 		preview = prefMenuAddLabels[d.addActionIdx]
 	}
 	open := imgui.ButtonV(preview+"##addchooser", imgui.Vec2{X: 200, Y: 0})
+	// The popup loop's separate ImGui context consumes the
+	// dismiss-click DOWN, but the UP arrives in main's drain_events a
+	// few frames later and main's ButtonV interprets it as a
+	// release-while-hovered click on the trigger — reopening the
+	// popup the user just dismissed. Swallow `open` for a short
+	// window after the popup closed.
+	const addActionReopenCooldownFrames = 20
+	if open && d.addActionPopupClosedFrame > 0 &&
+		int(imgui.FrameCount())-d.addActionPopupClosedFrame < addActionReopenCooldownFrames {
+		open = false
+	}
 	// Capture the button's screen rect + the prefs viewport NOW, before
 	// RunImGuiPopup swaps the ImGui context.
 	btnMin := imgui.ItemRectMin()
@@ -1406,14 +1425,6 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 	d := &a.prefDialog
 	parentID := vp.PlatformHandle()
 	vpPos := vp.Pos()
-	relX := int(btnMin.X - vpPos.X)
-	relY := int(btnMax.Y - vpPos.Y) // drop below the button
-	if relX < 0 {
-		relX = 0
-	}
-	if relY < 0 {
-		relY = 0
-	}
 
 	// Surface size: wide enough for the labels, tall enough for the rows
 	// (capped — the list window scrolls past the cap).
@@ -1422,6 +1433,75 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 	popupH := int(rowH)*len(prefMenuAddSorted) + 12
 	if popupH > 420 {
 		popupH = 420
+	}
+
+	// Position the popup BESIDE the button rather than below it so
+	// it doesn't obscure the Add Item / Apply / OK row directly
+	// underneath the chooser. Default to the right of the button;
+	// fall back through left → below → above as each direction
+	// proves to overflow the usable screen bounds (which exclude
+	// the macOS Dock and Linux taskbars).
+	const gap = 4
+	rightX := int(btnMax.X) + gap
+	leftX := int(btnMin.X) - popupW - gap
+	belowY := int(btnMax.Y) + gap
+	aboveY := int(btnMin.Y) - popupH - gap
+	topY := int(btnMin.Y)
+
+	usableX, usableY, usableW, usableH := 0, 0, 0, 0
+	haveUsable := false
+	if x, y, w, h, ok := platform.WindowUsableBounds(parentID); ok {
+		usableX, usableY, usableW, usableH = x, y, w, h
+		haveUsable = true
+	}
+
+	// Returns absolute screen rect.
+	fits := func(absX, absY int) bool {
+		if !haveUsable {
+			return true
+		}
+		return absX >= usableX &&
+			absY >= usableY &&
+			absX+popupW <= usableX+usableW &&
+			absY+popupH <= usableY+usableH
+	}
+	clampY := func(absY int) int {
+		if !haveUsable {
+			return absY
+		}
+		if absY+popupH > usableY+usableH {
+			absY = usableY + usableH - popupH
+		}
+		if absY < usableY {
+			absY = usableY
+		}
+		return absY
+	}
+
+	var absX, absY int
+	switch {
+	case fits(rightX, topY):
+		absX, absY = rightX, topY
+	case fits(leftX, topY):
+		absX, absY = leftX, topY
+	case fits(int(btnMin.X), belowY):
+		absX, absY = int(btnMin.X), belowY
+	case fits(int(btnMin.X), aboveY):
+		absX, absY = int(btnMin.X), aboveY
+	default:
+		// No clean fit anywhere. Prefer the right side and clamp
+		// vertically so as much of the list as possible stays on
+		// screen — better than dropping behind the Dock.
+		absX, absY = rightX, clampY(topY)
+	}
+
+	relX := absX - int(vpPos.X)
+	relY := absY - int(vpPos.Y)
+	if relX < 0 {
+		relX = 0
+	}
+	if relY < 0 {
+		relY = 0
 	}
 
 	platform.RunImGuiPopup(parentID, relX, relY, popupW, popupH,
@@ -1473,6 +1553,7 @@ func (a *Window) openAddActionPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec
 			}
 			return res
 		})
+	d.addActionPopupClosedFrame = int(imgui.FrameCount())
 	platform.PostWake()
 }
 

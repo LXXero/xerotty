@@ -27,6 +27,9 @@
 #include "sdl3.h"
 #include "wlgrab.h"
 #include "xgrab.h"
+#ifdef __APPLE__
+#include "cocoa_focus.h"
+#endif
 
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
@@ -136,6 +139,22 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
         SDL_WindowID parent_id = SDL_GetWindowID(parent);
         bool         done      = false;
         bool         dirty     = true;
+#ifdef __APPLE__
+        Uint64       popup_created_ns = SDL_GetTicksNS();
+        // Darwin has two awkward popup-click cases:
+        //
+        //   1. SDL doesn't deliver mouse events for clicks in another
+        //      app, so poll AppKit's global mouse button state and
+        //      close on a NEW down-edge outside the popup frame.
+        //   2. When right-clicking a background xerotty window, the
+        //      activation/opening click can still arrive tagged to the
+        //      parent after the popup exists. Don't arm outside-click
+        //      dismissal until the buttons that existed at popup
+        //      creation have been released.
+        unsigned int cocoa_last_mouse_buttons = platform_cocoa_pressed_mouse_buttons();
+        bool         cocoa_outside_click_armed = cocoa_last_mouse_buttons == 0;
+        bool         app_was_active = platform_cocoa_app_is_active() != 0;
+#endif
 
         while (!done && !g_quit) {
             if (dirty) {
@@ -165,77 +184,132 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
             }
 
             SDL_Event e;
-            if (!SDL_WaitEventTimeout(&e, 30)) {
+            bool got_event = SDL_WaitEventTimeout(&e, 30);
+            if (!got_event) {
                 dirty = true;
-                continue;
-            }
-            do {
-                // On Wayland the popup rarely gets wl_keyboard focus, so
-                // key/text events arrive tagged with the PARENT's
-                // windowID and ImGui_ImplSDL3_ProcessEvent would drop
-                // them (wrong window). Rewrite parent-delivered keyboard
-                // and text events onto the popup so they reach this
-                // context's nav/typematch. Mouse events are left
-                // window-specific: a parent mouse-down is the
-                // click-outside dismiss path below, NOT popup input.
-                switch (e.type) {
-                    case SDL_EVENT_KEY_DOWN:
-                    case SDL_EVENT_KEY_UP:
-                        if (e.key.windowID == parent_id) e.key.windowID = popup_id;
-                        break;
-                    case SDL_EVENT_TEXT_INPUT:
-                        if (e.text.windowID == parent_id) e.text.windowID = popup_id;
-                        break;
-                    default:
-                        break;
-                }
-                ImGui_ImplSDL3_ProcessEvent(&e);
-                switch (e.type) {
-                    case SDL_EVENT_QUIT:
-                        g_quit = true;
-                        break;
-                    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                        if (e.window.windowID == popup_id) done = true;
-                        break;
-                    case SDL_EVENT_WINDOW_HIDDEN:
-                        if (e.window.windowID == popup_id) done = true;
-                        break;
-                    case SDL_EVENT_KEY_DOWN:
-                        if (e.key.key == SDLK_ESCAPE) done = true;
-                        // Redraw immediately so the nav highlight tracks
-                        // arrow keys without waiting for the idle timeout.
-                        dirty = true;
-                        break;
-                    case SDL_EVENT_KEY_UP:
-                        dirty = true;
-                        break;
-                    case SDL_EVENT_MOUSE_BUTTON_DOWN:
-                        // Click on a window OTHER than the popup
-                        // dismisses. Wayland's xdg_popup grab only
-                        // fires popup_done for clicks on different
-                        // apps; clicks on the *parent* surface (the
-                        // terminal) are considered "still inside the
-                        // grab area" per spec and don't dismiss
-                        // automatically. Without this, right- or
-                        // left-clicking the terminal while a menu is
-                        // open does nothing instead of closing the
-                        // menu the way every native context menu does.
-                        if (e.button.windowID != popup_id) {
-                            done = true;
+            } else {
+                do {
+                    // On Wayland the popup rarely gets wl_keyboard focus, so
+                    // key/text events arrive tagged with the PARENT's
+                    // windowID and ImGui_ImplSDL3_ProcessEvent would drop
+                    // them (wrong window). Rewrite parent-delivered keyboard
+                    // and text events onto the popup so they reach this
+                    // context's nav/typematch. Mouse events are left
+                    // window-specific: a parent mouse-down is the
+                    // click-outside dismiss path below, NOT popup input.
+                    switch (e.type) {
+                        case SDL_EVENT_KEY_DOWN:
+                        case SDL_EVENT_KEY_UP:
+                            if (e.key.windowID == parent_id) e.key.windowID = popup_id;
                             break;
-                        }
-                        dirty = true;
-                        break;
-                    case SDL_EVENT_MOUSE_MOTION:
-                    case SDL_EVENT_MOUSE_BUTTON_UP:
-                    case SDL_EVENT_MOUSE_WHEEL:
-                    case SDL_EVENT_TEXT_INPUT:
-                        dirty = true;
-                        break;
-                    default:
-                        break;
-                }
-            } while (!done && SDL_PollEvent(&e));
+                        case SDL_EVENT_TEXT_INPUT:
+                            if (e.text.windowID == parent_id) e.text.windowID = popup_id;
+                            break;
+                        default:
+                            break;
+                    }
+                    ImGui_ImplSDL3_ProcessEvent(&e);
+                    switch (e.type) {
+                        case SDL_EVENT_QUIT:
+                            g_quit = true;
+                            break;
+                        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+                            if (e.window.windowID == popup_id) done = true;
+                            break;
+                        case SDL_EVENT_WINDOW_HIDDEN:
+                            if (e.window.windowID == popup_id) done = true;
+                            break;
+                        // FOCUS_LOST isn't usable for click-outside-app on
+                        // macOS: the popup window itself never takes key
+                        // focus (NSPanel canBecomeKey=NO for borderless),
+                        // and the parent's focus-lost-then-regained churn
+                        // at popup creation can't be cleanly distinguished
+                        // from real deactivation by event alone. We poll
+                        // [NSApp isActive] each loop iteration instead —
+                        // see below the event-drain block.
+                        case SDL_EVENT_KEY_DOWN:
+                            if (e.key.key == SDLK_ESCAPE) done = true;
+                            // Redraw immediately so the nav highlight tracks
+                            // arrow keys without waiting for the idle timeout.
+                            dirty = true;
+                            break;
+                        case SDL_EVENT_KEY_UP:
+                            dirty = true;
+                            break;
+                        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                            // Click on a window OTHER than the popup
+                            // dismisses. Wayland's xdg_popup grab only
+                            // fires popup_done for clicks on different
+                            // apps; clicks on the *parent* surface (the
+                            // terminal) are considered "still inside the
+                            // grab area" per spec and don't dismiss
+                            // automatically. Without this, right- or
+                            // left-clicking the terminal while a menu is
+                            // open does nothing instead of closing the
+                            // menu the way every native context menu does.
+                            if (e.button.windowID != popup_id) {
+#ifdef __APPLE__
+                                // Ignore stale opener clicks. On macOS,
+                                // clicking/right-clicking a background
+                                // window can both activate the parent and
+                                // open this popup, then deliver that same
+                                // parent-window button-down to the popup
+                                // loop. Treat outside clicks as real only
+                                // after the creation-time buttons have
+                                // come back up, and never close on an
+                                // event timestamped before this loop
+                                // existed.
+                                if (!cocoa_outside_click_armed ||
+                                    e.button.timestamp <= popup_created_ns) {
+                                    dirty = true;
+                                    break;
+                                }
+#endif
+                                done = true;
+                                break;
+                            }
+                            dirty = true;
+                            break;
+                        case SDL_EVENT_MOUSE_MOTION:
+                        case SDL_EVENT_MOUSE_BUTTON_UP:
+                        case SDL_EVENT_MOUSE_WHEEL:
+                        case SDL_EVENT_TEXT_INPUT:
+                            dirty = true;
+                            break;
+                        default:
+                            break;
+                    }
+                } while (!done && SDL_PollEvent(&e));
+            }
+
+#ifdef __APPLE__
+            // Cocoa click-away path. This catches clicks in other
+            // apps, where SDL never sends us a mouse-down event. Use
+            // button DOWN EDGES, not "mouse button is down", so the
+            // right-click that opened the menu cannot dismiss it.
+            unsigned int cocoa_mouse_buttons = platform_cocoa_pressed_mouse_buttons();
+            unsigned int cocoa_new_mouse_buttons =
+                cocoa_mouse_buttons & ~cocoa_last_mouse_buttons;
+            if (cocoa_mouse_buttons == 0) {
+                cocoa_outside_click_armed = true;
+            }
+            if (!done && cocoa_outside_click_armed &&
+                cocoa_new_mouse_buttons != 0 &&
+                !platform_cocoa_mouse_in_window((unsigned long)popup_id)) {
+                done = true;
+            }
+            cocoa_last_mouse_buttons = cocoa_mouse_buttons;
+
+            // Keyboard app switching/Dock activation has no mouse
+            // down edge. Keep this edge-triggered and armed so a
+            // background-window launch does not close before AppKit's
+            // activation has settled.
+            if (platform_cocoa_app_is_active()) {
+                app_was_active = true;
+            } else if (app_was_active && cocoa_outside_click_armed) {
+                done = true;
+            }
+#endif
         }
     }
 
