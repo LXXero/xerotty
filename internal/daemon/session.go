@@ -508,13 +508,27 @@ func (s *Session) FindOrCreateTab(name string, windowID uint32, cols, rows int, 
 	defer s.initMu.Unlock()
 	s.mu.Lock()
 	if id, ok := s.tabsByName[name]; ok {
-		// A live tab under this label → reuse it. The nil guard
-		// covers a stale index entry (tab gone without cleanup);
-		// fall through to recreate in that case.
+		// Reuse only a LIVE tab under this label. Two ways the
+		// index can point at something unusable — both fall through
+		// to recreate after dropping the stale label:
+		//   - tab missing from s.tabs (defensive; CloseTab keeps the
+		//     two maps in lockstep, so this shouldn't happen), or
+		//   - tab present but its shell already reaped (Exited
+		//     closed). Child-exit latches the corpse without
+		//     unlinking it, so without this guard find-or-create
+		//     would hand the agent a dead PTY that silently eats its
+		//     writes. The corpse lingers in s.tabs like any other
+		//     exited tab until something closes it; we just refuse
+		//     to reuse it as the named handle.
 		if t := s.tabs[id]; t != nil {
-			w := s.windowOfLocked(id)
-			s.mu.Unlock()
-			return t, w, false, nil
+			select {
+			case <-t.Exited:
+				// shell dead — fall through to recreate
+			default:
+				w := s.windowOfLocked(id)
+				s.mu.Unlock()
+				return t, w, false, nil
+			}
 		}
 		delete(s.tabsByName, name)
 	}
