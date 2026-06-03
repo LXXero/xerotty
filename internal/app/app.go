@@ -1320,6 +1320,18 @@ func (a *App) reconcileDaemonTabs(hub *daemonsource.Hub, host string, snap *prot
 			continue
 		}
 		src := hub.Adopt(ti.ID, int(ti.Cols), int(ti.Rows))
+		// Resize the freshly-adopted source to the GUI window it's
+		// joining. The daemon minted the tab at its own dimensions
+		// (ti.Cols×ti.Rows — e.g. an MCP agent's NewTab default), which
+		// rarely match this window's grid. Without this the tab's
+		// contents stay at the daemon size until the next manual window
+		// resize triggers resizeTerminals() and snaps them straight.
+		// Every other adopt path (spawn, first-frame attach, cross-window
+		// drag) already does this; this remote-created-tab path was the
+		// one that didn't.
+		if cols, rows := target.gridSize(); cols > 1 && rows > 1 {
+			src.Resize(cols, rows)
+		}
 		// Preserve the target window's active tab across the add.
 		prevActiveID := -1
 		if at := target.tabs.Active(); at != nil {
