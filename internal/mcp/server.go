@@ -250,6 +250,7 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 		Cols     int    `json:"cols,omitempty"`
 		Rows     int    `json:"rows,omitempty"`
 		Cwd      string `json:"cwd,omitempty"`
+		Name     string `json:"name,omitempty"`
 	}
 	if len(req.Params) > 0 {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -268,8 +269,11 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 	}
 	// Funnel through the daemon so the new tab broadcasts to every
 	// attached wire client — an MCP-created tab must be visible to a
-	// watching GUI, not just to the agent that made it.
-	t, _, err := c.srv.d.CreateTab(sess, p.WindowID, p.Cols, p.Rows, p.Cwd)
+	// watching GUI, not just to the agent that made it. A non-empty
+	// name makes this idempotent: a second call with the same name
+	// returns the existing tab (reused=true) instead of stacking a
+	// duplicate.
+	t, _, created, err := c.srv.d.CreateNamedTab(sess, p.Name, p.WindowID, p.Cols, p.Rows, p.Cwd)
 	if err != nil {
 		return rpcErr(req.ID, -32000, "new tab: "+err.Error(), nil)
 	}
@@ -278,6 +282,8 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 		"tab_id": t.ID,
 		"cols":   t.Term.Width(),
 		"rows":   t.Term.Height(),
+		"name":   t.Name,
+		"reused": !created,
 	})
 }
 
@@ -434,6 +440,7 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 	for _, t := range tabs {
 		out = append(out, tabSummary{
 			ID:       t.ID,
+			Name:     t.Name,
 			Title:    t.Title(),
 			Cols:     uint16(t.Term.Width()),
 			Rows:     uint16(t.Term.Height()),

@@ -42,6 +42,12 @@ type Session struct {
 	// this invariant on every Window/Tab mutation).
 	tabs map[uint32]*Tab
 
+	// tabsByName maps an agent-chosen label → tab ID, the index
+	// behind FindOrCreateTab's idempotency. Only named tabs appear
+	// here; an unnamed tab (Tab.Name == "") is absent. Kept in sync
+	// with `tabs`: NewTab registers, CloseTab removes. Guarded by mu.
+	tabsByName map[string]uint32
+
 	// All windows in the session, in stable creation order.
 	windows []*Window
 
@@ -237,6 +243,14 @@ func (s *Session) SetClipboard(text string) {
 // the reader goroutines. We just track its identity in the session.
 type Tab struct {
 	ID uint32
+
+	// Name is an optional agent-chosen label, set once at creation
+	// and never mutated — that write-once-before-publish discipline
+	// (set under s.mu before the tab enters s.tabs) is what makes it
+	// safe to read without a per-field lock, unlike `title`. Empty
+	// for tabs spawned without a name. The reuse key for
+	// FindOrCreateTab.
+	Name string
 	// title is set from the OnTitle callback (PTY reader goroutine)
 	// and read from publishLoop (separate goroutine). Guard with
 	// titleMu — straight string field had a -race-flagged race.
@@ -273,9 +287,10 @@ func newSession(name string, cfg *config.Config, d *Daemon) *Session {
 		Name:      name,
 		cfg:       cfg,
 		daemon:    d,
-		nextTabID: 1,
-		nextWinID: 1,
-		tabs:      make(map[uint32]*Tab),
+		nextTabID:  1,
+		nextWinID:  1,
+		tabs:       make(map[uint32]*Tab),
+		tabsByName: make(map[string]uint32),
 	}
 }
 
@@ -352,10 +367,12 @@ func (s *Session) CloseWindow(id uint32) {
 // NewTab spawns a PTY-backed tab and adds it to a window. windowID
 // of 0 means "session's default window" (one is created if absent).
 // cols/rows are the initial PTY dimensions; cwd is the starting
-// directory ("" for xerottyd's CWD).
+// directory ("" for xerottyd's CWD). name is an optional reuse
+// label ("" for an unnamed tab); when set it's recorded in
+// tabsByName so a later FindOrCreateTab can return this same tab.
 //
 // Returns the new tab and the window it joined.
-func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
+func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string) (*Tab, *Window, error) {
 	// Daemon-hosted variant forces unlimited+disk scrollback mode
 	// on the server side regardless of cfg.Scrollback.Mode. Why:
 	// memory mode's bounded ring rotates without notification, so
@@ -375,11 +392,17 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd string) (*Tab, *Wi
 	defer s.mu.Unlock()
 	t := &Tab{
 		ID:     s.nextTabID,
+		Name:   name,
 		Term:   term,
 		Exited: make(chan struct{}),
 	}
 	s.nextTabID++
 	s.tabs[t.ID] = t
+	// Register the reuse label before publishing so the index is
+	// consistent the instant the tab is observable under mu.
+	if name != "" {
+		s.tabsByName[name] = t.ID
+	}
 	term.SetOnTitle(func(title string) {
 		t.SetTitle(title)
 	})
@@ -460,10 +483,57 @@ func (s *Session) EnsureInitialTab(cols, rows int, cwd string) (bool, error) {
 	if already {
 		return false, nil
 	}
-	if _, _, err := s.NewTab(0, cols, rows, cwd); err != nil {
+	if _, _, err := s.NewTab(0, cols, rows, cwd, ""); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// FindOrCreateTab returns the tab labelled `name`, spawning + tagging
+// one if none exists yet. The third return is true when a tab was
+// actually created (false on reuse) so callers can skip the
+// subscribe/broadcast they only owe a brand-new tab.
+//
+// An empty name means "no reuse key" — always a fresh tab, same as
+// NewTab. For a non-empty name, initMu serializes concurrent callers
+// around the check-and-spawn (exactly as EnsureInitialTab does) so
+// two agents racing on the same label don't both spawn; the loser
+// finds the winner's tab in tabsByName.
+func (s *Session) FindOrCreateTab(name string, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, bool, error) {
+	if name == "" {
+		t, w, err := s.NewTab(windowID, cols, rows, cwd, "")
+		return t, w, true, err
+	}
+	s.initMu.Lock()
+	defer s.initMu.Unlock()
+	s.mu.Lock()
+	if id, ok := s.tabsByName[name]; ok {
+		// A live tab under this label → reuse it. The nil guard
+		// covers a stale index entry (tab gone without cleanup);
+		// fall through to recreate in that case.
+		if t := s.tabs[id]; t != nil {
+			w := s.windowOfLocked(id)
+			s.mu.Unlock()
+			return t, w, false, nil
+		}
+		delete(s.tabsByName, name)
+	}
+	s.mu.Unlock()
+	t, w, err := s.NewTab(windowID, cols, rows, cwd, name)
+	return t, w, true, err
+}
+
+// windowOfLocked returns the window holding tab id, or nil. Caller
+// must hold s.mu.
+func (s *Session) windowOfLocked(id uint32) *Window {
+	for _, w := range s.windows {
+		for _, tid := range w.TabIDs {
+			if tid == id {
+				return w
+			}
+		}
+	}
+	return nil
 }
 
 // Tab returns the tab with the given ID, or nil if not found.
@@ -708,6 +778,9 @@ func (s *Session) CloseTab(id uint32) {
 		return
 	}
 	delete(s.tabs, id)
+	if t.Name != "" {
+		delete(s.tabsByName, t.Name)
+	}
 	for _, w := range s.windows {
 		for i, tid := range w.TabIDs {
 			if tid == id {

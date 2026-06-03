@@ -248,13 +248,27 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 // title / state / scrollback to all of them. Without this, other
 // clients adopt the tab from the broadcast but see it blank.
 func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
-	t, w, err := sess.NewTab(windowID, cols, rows, cwd)
+	t, w, _, err := d.CreateNamedTab(sess, "", windowID, cols, rows, cwd)
+	return t, w, err
+}
+
+// CreateNamedTab is CreateTab with an idempotency label: if `name`
+// already tags a live tab in the session, it returns that tab
+// (created=false) instead of spawning a duplicate. The subscribe +
+// topology broadcast only fire for a genuinely new tab — reusing an
+// existing one needs neither, since every client is already
+// subscribed and the topology hasn't changed. name == "" is the
+// plain always-spawn path.
+func (d *Daemon) CreateNamedTab(sess *Session, name string, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, bool, error) {
+	t, w, created, err := sess.FindOrCreateTab(name, windowID, cols, rows, cwd)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	d.subscribeSessionClients(sess, t)
-	d.broadcastTopology(sess)
-	return t, w, nil
+	if created {
+		d.subscribeSessionClients(sess, t)
+		d.broadcastTopology(sess)
+	}
+	return t, w, created, nil
 }
 
 // CloseTab removes a tab from the session and broadcasts the topology.

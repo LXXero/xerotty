@@ -58,6 +58,7 @@ func invalidParams(id json.RawMessage, detail string) *rpcResponse {
 // tabSummary is the result row for tabs/list.
 type tabSummary struct {
 	ID       uint32 `json:"id"`
+	Name     string `json:"name,omitempty"`
 	Title    string `json:"title"`
 	Cols     uint16 `json:"cols"`
 	Rows     uint16 `json:"rows"`

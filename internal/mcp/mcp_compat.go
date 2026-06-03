@@ -43,7 +43,7 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 	tools := []map[string]any{
 		{
 			"name":        "list_tabs",
-			"description": "List every open tab in the daemon's default session. Returns id, title, dimensions, window membership, and whether the tab is focused.",
+			"description": "List every open tab in the daemon's default session. Returns id, name (the reuse label, if any), title, dimensions, window membership, and whether the tab is focused. Check here for an existing named tab before calling create_tab.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -99,14 +99,15 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "create_tab",
-			"description": "Spawn a new tab on the daemon. Defaults to 80x24, the daemon's default window, and the daemon's CWD. Returns the new tab_id. Blocked in observe mode.",
+			"description": "Open a tab on the daemon, reusing one when possible. Pass a stable `name` to make this idempotent: the first call spawns and labels the tab, later calls with the same name return that same tab (response field reused=true) instead of stacking duplicates — prefer this over spawning a fresh tab each time. Omit name for a throwaway one-off tab. Defaults to 80x24, the daemon's default window, and the daemon's CWD. Returns tab_id, name, and reused. Blocked in observe mode.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"name":      map[string]any{"type": "string", "description": "Stable reuse label (e.g. \"build\", \"logs\"). Same name returns the same tab. Omit for a one-off tab."},
 					"window_id": map[string]any{"type": "integer", "description": "Daemon window to put the tab in. 0 or omitted = default window."},
 					"cols":      map[string]any{"type": "integer"},
 					"rows":      map[string]any{"type": "integer"},
-					"cwd":       map[string]any{"type": "string", "description": "Starting directory for the shell."},
+					"cwd":       map[string]any{"type": "string", "description": "Starting directory for the shell. Ignored when reusing an existing named tab."},
 				},
 			},
 		},
