@@ -41,10 +41,10 @@ var (
 	// buildTabSourceOptions; the resulting per-dialog slice lives
 	// on configDialog.tabSourceOpts.
 	prefTabSourcesBase = []string{"pty", "daemon"}
-	prefColorModes   = []string{"theme", "custom"}
-	prefBSModes      = []string{"ascii_del", "ascii_bs"}
-	prefDelModes     = []string{"vt_sequence", "ascii_del"}
-	prefShiftEnters  = []string{"newline", "escape_sequence"}
+	prefColorModes     = []string{"theme", "custom"}
+	prefBSModes        = []string{"ascii_del", "ascii_bs"}
+	prefDelModes       = []string{"vt_sequence", "ascii_del"}
+	prefShiftEnters    = []string{"newline", "escape_sequence"}
 
 	// Standard terminal font sizes. TTF/OTF fonts scale to any size, but
 	// readable terminal sizes cluster in this range — exposing arbitrary
@@ -53,23 +53,43 @@ var (
 	prefFontSizes = []float32{8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72}
 )
 
-// Available actions for the menu editor.
+// Available actions for the menu editor. Keep alphabetical (the Add
+// combo re-sorts by friendly label at runtime, but the source list
+// stays greppable and additions have one obvious home).
 var prefMenuActions = []string{
-	"separator",
-	"new_tab", "close_tab", "new_window",
-	"copy", "paste", "paste_selection",
-	"open_link", "copy_link",
-	"search", "fullscreen",
-	"select_all", "clear_scrollback", "reset_terminal",
-	"rename_tab", "preferences",
-	"connect_remote",
-	"font_size_up", "font_size_down", "font_size_reset",
 	// _remote_hosts is a magic action: at render time
 	// app.expandMenu replaces it with a "Remote" submenu
 	// listing per-host new/reattach items, one pair per
 	// [[hosts]] entry. Listed here so the menu editor can
 	// re-insert it after the user removes it.
 	"_remote_hosts",
+	"clear_scrollback",
+	"close_tab",
+	"connect_remote",
+	"copy",
+	"copy_link",
+	"font_size_down",
+	"font_size_reset",
+	"font_size_up",
+	"fullscreen",
+	"new_tab",
+	"new_window",
+	"next_tab",
+	"open_link",
+	"paste",
+	"paste_selection",
+	"preferences",
+	"prev_tab",
+	"rename_tab",
+	"reset_terminal",
+	"scroll_bottom",
+	"scroll_page_down",
+	"scroll_page_up",
+	"scroll_top",
+	"search",
+	"select_all",
+	"separator",
+	"toggle_opacity",
 }
 
 // menuKindSubmenu is an editor-only sentinel in the Add combo: picking
@@ -90,32 +110,47 @@ func newMenuEditorItem(kind string) menuEditorItem {
 	if kind == menuKindSubmenu {
 		return menuEditorItem{label: "Submenu", isSubmenu: true}
 	}
-	return menuEditorItem{label: prefMenuLabels[kind], action: kind}
+	it := menuEditorItem{label: prefMenuLabels[kind], action: kind}
+	if kind == "toggle_opacity" {
+		// Bind the live force-opaque state so the row renders its
+		// checkmark — the same binding the default config entry ships
+		// ({Action: "toggle_opacity", Checked: "force_opaque"}).
+		it.checked = "force_opaque"
+	}
+	return it
 }
 
+// Keep alphabetical by key, same as prefMenuActions.
 var prefMenuLabels = map[string]string{
-	"separator":        "---",
 	"_remote_hosts":    "Remote (expands per host)",
-	"new_tab":          "New Tab",
-	"close_tab":        "Close Tab",
-	"new_window":       "New Window",
-	"copy":             "Copy",
-	"paste":            "Paste",
-	"paste_selection":  "Paste Selection",
-	"open_link":        "Open Link",
-	"copy_link":        "Copy Link",
-	"search":           "Search...",
-	"fullscreen":       "Fullscreen",
-	"select_all":       "Select All",
+	"_submenu":         "Submenu",
 	"clear_scrollback": "Clear Scrollback",
-	"reset_terminal":   "Reset Terminal",
-	"rename_tab":       "Rename Tab",
-	"preferences":      "Preferences",
+	"close_tab":        "Close Tab",
 	"connect_remote":   "Connect to host...",
-	"font_size_up":     "Font Size Up",
+	"copy":             "Copy",
+	"copy_link":        "Copy Link",
 	"font_size_down":   "Font Size Down",
 	"font_size_reset":  "Font Size Reset",
-	"_submenu":         "Submenu",
+	"font_size_up":     "Font Size Up",
+	"fullscreen":       "Fullscreen",
+	"new_tab":          "New Tab",
+	"new_window":       "New Window",
+	"next_tab":         "Next Tab",
+	"open_link":        "Open Link",
+	"paste":            "Paste",
+	"paste_selection":  "Paste Selection",
+	"preferences":      "Preferences",
+	"prev_tab":         "Previous Tab",
+	"rename_tab":       "Rename Tab",
+	"reset_terminal":   "Reset Terminal",
+	"scroll_bottom":    "Scroll to Bottom",
+	"scroll_page_down": "Scroll Page Down",
+	"scroll_page_up":   "Scroll Page Up",
+	"scroll_top":       "Scroll to Top",
+	"search":           "Search...",
+	"select_all":       "Select All",
+	"separator":        "---",
+	"toggle_opacity":   "Toggle Opacity",
 }
 
 // menuAddOption pairs a friendly display label with the action (or
@@ -156,7 +191,7 @@ var prefMenuAddSorted, prefMenuAddLabels = buildMenuAddSorted()
 
 // configDialog holds state for the preferences window.
 type configDialog struct {
-	open       bool
+	open bool
 	// focused mirrors whether the prefs window (or its children/combo
 	// popup) holds ImGui focus this frame. App.inputOwnedByDialog reads
 	// it across ALL windows so the terminal input path can tell "a prefs
