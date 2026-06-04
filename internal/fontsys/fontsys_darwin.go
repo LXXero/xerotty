@@ -73,6 +73,7 @@ static int xt_desc_monospace(CTFontDescriptorRef desc) {
 }
 
 static CTFontRef xt_open_font(const char *path);
+static int xt_font_has(CTFontRef font, uint32_t codepoint);
 
 // xt_find_by_charset finds an installed font whose character set covers
 // the codepoint, via descriptor matching on kCTFontCharacterSetAttribute.
@@ -97,7 +98,21 @@ static char *xt_find_by_charset(uint32_t codepoint) {
     CTFontDescriptorRef want = CTFontDescriptorCreateWithAttributes(attrs);
     CFRelease(attrs);
     if (!want) return NULL;
-    CFArrayRef matches = CTFontDescriptorCreateMatchingFontDescriptors(want, NULL);
+    // Mark the charset attribute MANDATORY. Without this, matching
+    // treats the charset as a preference and the result list can
+    // contain fonts that don't cover the codepoint at all.
+    CFTypeRef setVals[] = { (CFTypeRef)kCTFontCharacterSetAttribute };
+    CFSetRef mandatory = CFSetCreate(NULL, (const void **)setVals, 1,
+        &kCFTypeSetCallBacks);
+    CFArrayRef matches = CTFontDescriptorCreateMatchingFontDescriptors(want, mandatory);
+    if (mandatory) CFRelease(mandatory);
+    if (!matches || CFArrayGetCount(matches) == 0) {
+        // Some CoreText versions return nothing under a mandatory
+        // charset — retry loose; per-candidate verification below
+        // keeps the result honest either way.
+        if (matches) CFRelease(matches);
+        matches = CTFontDescriptorCreateMatchingFontDescriptors(want, NULL);
+    }
     CFRelease(want);
     if (!matches) return NULL;
 
@@ -111,6 +126,17 @@ static char *xt_find_by_charset(uint32_t codepoint) {
         // LastResort claims every codepoint but renders placeholder
         // boxes — matching it would mask "genuinely missing" forever.
         if (strstr(p, "LastResort")) {
+            free(p);
+            continue;
+        }
+        // Trust nothing: verify the candidate really has a glyph for
+        // the codepoint before returning it (the descriptor's claimed
+        // charset and the actual cmap can disagree, and the loose
+        // retry above returns near-misses by design).
+        CTFontRef probe = CTFontCreateWithFontDescriptor(d, 14.0, NULL);
+        int covered = probe && xt_font_has(probe, codepoint);
+        if (probe) CFRelease(probe);
+        if (!covered) {
             free(p);
             continue;
         }
