@@ -246,7 +246,7 @@ func Default() Config {
 		Links: LinksConfig{
 			Enabled:   true,
 			CtrlClick: true,
-			Opener:    "xdg-open",
+			Opener:    DefaultOpener(),
 		},
 		Clipboard: ClipboardConfig{
 			// Default off to match xterm / gnome-terminal / xfce4-terminal
@@ -333,6 +333,16 @@ func Save(cfg Config) error {
 
 	encoder := toml.NewEncoder(f)
 	return encoder.Encode(cfg)
+}
+
+// DefaultOpener returns the platform's URL-opener command: macOS
+// ships `open`; xdg-open is the freedesktop convention everywhere
+// else.
+func DefaultOpener() string {
+	if runtime.GOOS == "darwin" {
+		return "open"
+	}
+	return "xdg-open"
 }
 
 // DetectShell returns the shell to use: config override > $SHELL > platform default.

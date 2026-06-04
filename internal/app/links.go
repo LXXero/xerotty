@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/LXXero/xerotty/internal/config"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -71,7 +72,7 @@ func extractLineText(emu *vt.SafeEmulator, row, scrollOffset, cols int) string {
 // openURL opens a URL with the given opener command.
 func openURL(url, opener string) {
 	if opener == "" {
-		opener = "xdg-open"
+		opener = config.DefaultOpener()
 	}
 	cmd := exec.Command(opener, url)
 	_ = cmd.Start()

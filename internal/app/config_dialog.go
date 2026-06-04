@@ -1366,7 +1366,7 @@ func (a *Window) renderPrefLinks() {
 
 		imgui.Text("URL Opener Command")
 		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##opener", "xdg-open", &d.opener, 0, nil)
+		imgui.InputTextWithHint("##opener", config.DefaultOpener(), &d.opener, 0, nil)
 	}
 }
 
