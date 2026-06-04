@@ -227,6 +227,15 @@ static char *xt_find_for_codepoint(const char *hint, uint32_t codepoint) {
     }
     CFRelease(chosen);
 
+    // CTFontCreateForString resolves unmapped codepoints to the
+    // LastResort font, whose cmap claims EVERYTHING — so the glyph
+    // check above "succeeds" and we'd ship its placeholder box.
+    // Treat LastResort as a miss so real coverage search runs.
+    if (out && strstr(out, "LastResort")) {
+        free(out);
+        out = NULL;
+    }
+
     // Cascade came up empty — typical for PUA codepoints (Powerline /
     // Nerd Font). Fall back to coverage-based descriptor matching.
     if (!out) {
