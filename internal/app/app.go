@@ -1213,6 +1213,44 @@ func (a *App) SourceFor(nsID string) (*daemonsource.Source, bool) {
 	return nil, false
 }
 
+// CreateTab implements guimcp.Backend: open (or find, when name is
+// non-empty) a tab on the named host's daemon. Runs on the guimcp
+// goroutine — safe because it only touches the hub (thread-safe wire
+// client), never the GUI. The GUI tab materializes via the daemon's
+// MsgTopologyChanged broadcast → applyPendingTopology on the main
+// thread, the same route as a tab created by any other client.
+func (a *App) CreateTab(host, name string, cols, rows int) (string, bool, error) {
+	hubs := a.hubsByName()
+	if host == "" {
+		if _, n := a.getDaemonHub(); n != "" {
+			host = n
+		} else {
+			host = "local"
+		}
+	}
+	hub, ok := hubs[host]
+	if !ok || hub == nil {
+		return "", false, fmt.Errorf("no daemon hub for host %q", host)
+	}
+	src, reused, err := hub.NewNamedTab(name, cols, rows, "")
+	if err != nil {
+		return "", false, err
+	}
+	return guimcp.MakeNSID(host, src.TabID()), reused, nil
+}
+
+// CloseTab implements guimcp.Backend: daemon-side close of a
+// namespaced tab. The GUI tab reaps through the normal vanish path
+// (markVanished -> CheckClosed) once the daemon broadcasts the close.
+func (a *App) CloseTab(nsID string) error {
+	src, ok := a.SourceFor(nsID)
+	if !ok {
+		return fmt.Errorf("tab not found: %s", nsID)
+	}
+	src.Close()
+	return nil
+}
+
 // guiProposal tags a daemon-reported proposal with the hub +
 // host it came from so the GUI gate resolves against the correct
 // daemon. Without the tag, a remote (kh) proposal's Approve would

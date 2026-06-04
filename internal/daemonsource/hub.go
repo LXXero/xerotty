@@ -474,6 +474,18 @@ func (h *Hub) NewTab(cols, rows int, cwd string) (*Source, error) {
 	return h.NewTabIn(winID, cols, rows, cwd)
 }
 
+// NewNamedTab is NewTab with the wire's idempotency label: a
+// non-empty name returns the session's existing live tab under that
+// label (reused=true) instead of creating. Used by the GUI's
+// aggregating MCP server so agents can say "the tab named build"
+// without stacking duplicates.
+func (h *Hub) NewNamedTab(name string, cols, rows int, cwd string) (src *Source, reused bool, err error) {
+	h.mu.RLock()
+	winID := h.defaultWindowID
+	h.mu.RUnlock()
+	return h.newTabIn(winID, cols, rows, cwd, name)
+}
+
 // NewTabIn requests a fresh tab on the named daemon window. Each
 // GUI Window's tabs.Manager.SourceFactory closes over its own
 // daemonWindowID and calls this — that way "new tab in window A"
@@ -483,6 +495,11 @@ func (h *Hub) NewTab(cols, rows int, cwd string) (*Source, error) {
 // windowID = 0 means "daemon's default window" (typically the
 // first window the daemon created).
 func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, error) {
+	src, _, err := h.newTabIn(windowID, cols, rows, cwd, "")
+	return src, err
+}
+
+func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string) (*Source, bool, error) {
 	// Mint a request ID and register a waiter channel BEFORE sending,
 	// so the router can never deliver our ack before we're listening.
 	reqID := h.nextReqID.Add(1)
@@ -497,8 +514,8 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 	}()
 
 	cli := h.client()
-	if err := cli.SendTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", reqID); err != nil {
-		return nil, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
+	if err := cli.SendNamedTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", name, reqID); err != nil {
+		return nil, false, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
 	}
 	// Wait for OUR ack (matched by ReqID in the router). Bail if the
 	// connection dies, the hub shuts down, or the daemon never answers
@@ -509,15 +526,15 @@ func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, er
 		// Adopt at the dims the daemon actually allocated (it clamps
 		// to MaxTabDim), not what we requested — otherwise the local
 		// emulator would be sized wrong and desync from the daemon.
-		return h.Adopt(tc.Info.ID, int(tc.Info.Cols), int(tc.Info.Rows)), nil
+		return h.Adopt(tc.Info.ID, int(tc.Info.Cols), int(tc.Info.Rows)), tc.Reused, nil
 	case <-cli.Closed():
-		return nil, fmt.Errorf("daemonsource: connection closed before TabCreated")
+		return nil, false, fmt.Errorf("daemonsource: connection closed before TabCreated")
 	case <-h.stopCh:
-		return nil, fmt.Errorf("daemonsource: hub stopped before TabCreated")
+		return nil, false, fmt.Errorf("daemonsource: hub stopped before TabCreated")
 	case <-time.After(h.createTimeout):
 		// The conn is up but the daemon never confirmed — don't block
 		// the GUI's tab-create forever.
-		return nil, fmt.Errorf("daemonsource: timed out waiting for TabCreated")
+		return nil, false, fmt.Errorf("daemonsource: timed out waiting for TabCreated")
 	}
 }
 

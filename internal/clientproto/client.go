@@ -431,8 +431,15 @@ func (c *Client) SendTabCreate(windowID uint32, cols, rows uint16, cwd, command 
 // echoes in MsgTabCreated, so the caller can correlate the reply to
 // this specific request (see protocol.TabCreate.ReqID).
 func (c *Client) SendTabCreateReq(windowID uint32, cols, rows uint16, cwd, command string, reqID uint64) error {
+	return c.SendNamedTabCreateReq(windowID, cols, rows, cwd, command, "", reqID)
+}
+
+// SendNamedTabCreateReq is SendTabCreateReq with an idempotency
+// label: a non-empty name reuses the session's live tab under that
+// label instead of creating (TabCreated.Reused reports which).
+func (c *Client) SendNamedTabCreateReq(windowID uint32, cols, rows uint16, cwd, command, name string, reqID uint64) error {
 	return c.send(protocol.MsgTabCreate, &protocol.TabCreate{
-		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command, ReqID: reqID,
+		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command, Name: name, ReqID: reqID,
 	})
 }
 

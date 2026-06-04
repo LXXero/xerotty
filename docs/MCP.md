@@ -74,13 +74,18 @@ before use.
 ## Tools
 
 GUI aggregator: `list_tabs`, `get_screen`, `get_scrollback`,
-`send_input`, `send_paste`. `list_tabs` returns per-tab metadata for
-triage without reading every screen: cwd, foreground process, dims,
-exit state, and which tab the user has focused.
+`send_input`, `send_paste`, `create_tab`, `close_tab`. `list_tabs`
+returns per-tab metadata for triage without reading every screen:
+cwd, foreground process, dims, exit state, and which tab the user
+has focused. `create_tab` takes `host` (any namespace from
+list_tabs — so an agent can open a tab on a remote daemon) and an
+optional stable `name` for idempotent find-or-create: same name →
+same tab (`reused: true`), no duplicate stacking. Created tabs pop
+into the user's GUI immediately.
 
-Per-daemon adds tab lifecycle + trust management on top of those:
-`create_tab` (idempotent via a stable `name` — reuse, don't stack),
-`close_tab`, `resize_tab`, `get_clipboard`, `list_proposals`,
+Per-daemon adds trust management + extras on top of those:
+`create_tab` (same name semantics), `close_tab`, `resize_tab`,
+`get_clipboard`, `list_proposals`,
 `approve_proposal`, `drop_proposal`, `set_agent_mode`,
 `authenticate`, `list_clients`, `get_server_info`.
 

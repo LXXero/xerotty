@@ -17,7 +17,7 @@ No separate `xerottyd` executable; socket filenames keep the
 
 Two protocols, two sockets:
 - **Wire** (GUI/CLI ↔ daemon): msgpack, `internal/protocol`.
-  `[u32 len BE][u8 type][msgpack body]`, `ProtocolVersion = 7`.
+  `[u32 len BE][u8 type][msgpack body]`, `ProtocolVersion = 8`.
 - **MCP** (agents ↔ daemon, GUI ↔ agents): line-delimited
   JSON-RPC 2.0, `internal/mcp` + `internal/guimcp`.
 

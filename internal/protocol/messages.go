@@ -44,7 +44,13 @@ package protocol
 //       forever. A v6 client gets InstanceID="" and would keep
 //       cross-restart tombstones; the handshake gate forces the clean
 //       version error instead of that silent misbehavior.
-const ProtocolVersion uint16 = 7
+//   8 — TabCreate.Name + TabCreated.Reused: named (idempotent) tab
+//       create over the wire, so the GUI's aggregating MCP server can
+//       reach the daemon's find-or-create-by-label semantics. A v7
+//       daemon would silently ignore Name and stack duplicate tabs on
+//       every "reuse" call — degradation the handshake gate should
+//       reject loudly instead.
+const ProtocolVersion uint16 = 8
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -208,6 +214,12 @@ type TabCreate struct {
 	// reply to a newer create — and so multiple in-flight creates can
 	// coexist. 0 means "uncorrelated" (legacy callers / fire-and-forget).
 	ReqID uint64 `msg:"req_id,omitempty"`
+	// Name is an optional idempotency label: non-empty routes through
+	// the session's find-or-create index, so a second create with the
+	// same name returns the existing live tab (TabCreated.Reused)
+	// instead of stacking a duplicate. Same semantics as the daemon
+	// MCP server's create_tab name.
+	Name string `msg:"name,omitempty"`
 }
 
 // TabClose asks the daemon to close a tab. Daemon kills the child
@@ -237,6 +249,9 @@ type TabCreated struct {
 	Info     TabInfo `msg:"info"`
 	WindowID uint32  `msg:"window_id"`
 	ReqID    uint64  `msg:"req_id,omitempty"`
+	// Reused: the request carried a Name that matched a live tab, and
+	// Info describes that existing tab rather than a fresh one.
+	Reused bool `msg:"reused,omitempty"`
 }
 
 // WindowCreate asks the daemon to register a new logical UI window

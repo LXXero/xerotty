@@ -734,7 +734,11 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	// Route through the daemon funnel: it subscribes EVERY attached
 	// client (including us) to the new tab and broadcasts the topology
 	// (MsgTopologyChanged), so the tab isn't just acked to the creator.
-	t, w, err := c.daemon.CreateTab(c.session, msg.WindowID, cols, rows, msg.Cwd)
+	// Name routes through the session's find-or-create index (same
+	// idempotency the daemon MCP server's create_tab offers) so wire
+	// clients — the GUI's aggregating MCP among them — can say "the
+	// tab labeled build" without stacking duplicates.
+	t, w, created, err := c.daemon.CreateNamedTab(c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd)
 	if err != nil {
 		c.send(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
 		return nil
@@ -754,6 +758,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 		},
 		WindowID: w.ID,
 		ReqID:    msg.ReqID,
+		Reused:   !created,
 	})
 	return nil
 }

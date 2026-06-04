@@ -4997,6 +4997,12 @@ func (z *TabCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ReqID")
 				return
 			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -5011,8 +5017,8 @@ func (z *TabCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(6)
-	var zb0001Mask uint8 /* 6 bits */
+	zb0001Len := uint32(7)
+	var zb0001Mask uint8 /* 7 bits */
 	_ = zb0001Mask
 	if z.WindowID == 0 {
 		zb0001Len--
@@ -5029,6 +5035,10 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x20
+	}
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x40
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -5106,6 +5116,18 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
 	}
 	return
 }
@@ -5114,8 +5136,8 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(6)
-	var zb0001Mask uint8 /* 6 bits */
+	zb0001Len := uint32(7)
+	var zb0001Mask uint8 /* 7 bits */
 	_ = zb0001Mask
 	if z.WindowID == 0 {
 		zb0001Len--
@@ -5132,6 +5154,10 @@ func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x20
+	}
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x40
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -5163,6 +5189,11 @@ func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "req_id"
 			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
 			o = msgp.AppendUint64(o, z.ReqID)
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
 		}
 	}
 	return
@@ -5222,6 +5253,12 @@ func (z *TabCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "ReqID")
 				return
 			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -5236,7 +5273,7 @@ func (z *TabCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabCreate) Msgsize() (s int) {
-	s = 1 + 10 + msgp.Uint32Size + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size + 4 + msgp.StringPrefixSize + len(z.Cwd) + 8 + msgp.StringPrefixSize + len(z.Command) + 7 + msgp.Uint64Size
+	s = 1 + 10 + msgp.Uint32Size + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size + 4 + msgp.StringPrefixSize + len(z.Cwd) + 8 + msgp.StringPrefixSize + len(z.Command) + 7 + msgp.Uint64Size + 5 + msgp.StringPrefixSize + len(z.Name)
 	return
 }
 
@@ -5276,6 +5313,12 @@ func (z *TabCreated) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ReqID")
 				return
 			}
+		case "reused":
+			z.Reused, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "Reused")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -5290,12 +5333,16 @@ func (z *TabCreated) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabCreated) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(3)
-	var zb0001Mask uint8 /* 3 bits */
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
 	_ = zb0001Mask
 	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x4
+	}
+	if z.Reused == false {
+		zb0001Len--
+		zb0001Mask |= 0x8
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -5337,6 +5384,18 @@ func (z *TabCreated) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// write "reused"
+			err = en.Append(0xa6, 0x72, 0x65, 0x75, 0x73, 0x65, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.Reused)
+			if err != nil {
+				err = msgp.WrapError(err, "Reused")
+				return
+			}
+		}
 	}
 	return
 }
@@ -5345,12 +5404,16 @@ func (z *TabCreated) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabCreated) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(3)
-	var zb0001Mask uint8 /* 3 bits */
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
 	_ = zb0001Mask
 	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x4
+	}
+	if z.Reused == false {
+		zb0001Len--
+		zb0001Mask |= 0x8
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -5371,6 +5434,11 @@ func (z *TabCreated) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "req_id"
 			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
 			o = msgp.AppendUint64(o, z.ReqID)
+		}
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// string "reused"
+			o = append(o, 0xa6, 0x72, 0x65, 0x75, 0x73, 0x65, 0x64)
+			o = msgp.AppendBool(o, z.Reused)
 		}
 	}
 	return
@@ -5412,6 +5480,12 @@ func (z *TabCreated) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "ReqID")
 				return
 			}
+		case "reused":
+			z.Reused, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Reused")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -5426,7 +5500,7 @@ func (z *TabCreated) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabCreated) Msgsize() (s int) {
-	s = 1 + 5 + z.Info.Msgsize() + 10 + msgp.Uint32Size + 7 + msgp.Uint64Size
+	s = 1 + 5 + z.Info.Msgsize() + 10 + msgp.Uint32Size + 7 + msgp.Uint64Size + 7 + msgp.BoolSize
 	return
 }
 

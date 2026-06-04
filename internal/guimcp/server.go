@@ -19,6 +19,8 @@
 //	get_scrollback {tab_id, ...}  -> {from, to, total, lines}
 //	send_input   {tab_id, bytes}
 //	send_paste   {tab_id, text}
+//	create_tab   {host?, name?, cols?, rows?} -> {tab_id, reused}
+//	close_tab    {tab_id}
 //
 // No write-gating here: the GUI is the user's own trusted process.
 // (The daemon-side MCP servers keep their observe/propose/auto
@@ -48,6 +50,15 @@ type Backend interface {
 	ListTabs() []TabRef
 	// SourceFor resolves a namespaced ID to its Source.
 	SourceFor(nsID string) (*daemonsource.Source, bool)
+	// CreateTab opens (or, for a non-empty name, finds) a tab on the
+	// named host's daemon. host "" means the default ("local") hub.
+	// Returns the namespaced ID and whether an existing named tab was
+	// reused. The new tab pops into the GUI via the daemon's topology
+	// broadcast — same path as any other client creating one.
+	CreateTab(host, name string, cols, rows int) (nsID string, reused bool, err error)
+	// CloseTab closes the tab (daemon-side close; the GUI tab reaps
+	// via the normal vanish path).
+	CloseTab(nsID string) error
 }
 
 // TabRef is one tab in the aggregated view. Beyond identity +
@@ -174,6 +185,10 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 		return s.sendInput(req.ID, req.Params)
 	case "send_paste":
 		return s.sendPaste(req.ID, req.Params)
+	case "create_tab":
+		return s.createTab(req.ID, req.Params)
+	case "close_tab":
+		return s.closeTab(req.ID, req.Params)
 	default:
 		return rpcErrResp(req.ID, -32601, "method not found: "+req.Method)
 	}
@@ -195,6 +210,10 @@ func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
 		inner = s.getScreen(req.ID, p.Arguments)
 	case "get_scrollback":
 		inner = s.getScrollback(req.ID, p.Arguments)
+	case "create_tab":
+		inner = s.createTab(req.ID, p.Arguments)
+	case "close_tab":
+		inner = s.closeTab(req.ID, p.Arguments)
 	case "send_input":
 		inner = s.sendInput(req.ID, p.Arguments)
 	case "send_paste":
@@ -342,6 +361,44 @@ func (s *Server) sendPaste(id json.RawMessage, params json.RawMessage) *rpcRespo
 
 // --- helpers ---
 
+func (s *Server) createTab(id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		Host string `json:"host,omitempty"`
+		Name string `json:"name,omitempty"`
+		Cols int    `json:"cols,omitempty"`
+		Rows int    `json:"rows,omitempty"`
+	}
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return rpcErrResp(id, -32602, err.Error())
+		}
+	}
+	if p.Cols <= 0 {
+		p.Cols = 80
+	}
+	if p.Rows <= 0 {
+		p.Rows = 24
+	}
+	nsID, reused, err := s.backend.CreateTab(p.Host, p.Name, p.Cols, p.Rows)
+	if err != nil {
+		return rpcErrResp(id, -32000, "create tab: "+err.Error())
+	}
+	return okResp(id, map[string]any{"tab_id": nsID, "name": p.Name, "reused": reused})
+}
+
+func (s *Server) closeTab(id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		TabID string `json:"tab_id"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return rpcErrResp(id, -32602, err.Error())
+	}
+	if err := s.backend.CloseTab(p.TabID); err != nil {
+		return rpcErrResp(id, -32004, err.Error())
+	}
+	return okResp(id, map[string]any{"closed": p.TabID})
+}
+
 // MakeNSID builds a namespaced tab ID from host + daemon tab ID.
 func MakeNSID(host string, tabID uint32) string {
 	return host + ":" + strconv.FormatUint(uint64(tabID), 10)
@@ -362,5 +419,7 @@ func toolCatalog() []map[string]any {
 		{"name": "get_scrollback", "description": "Read a tab's scrollback history. Defaults to the last 200 rows. styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. \\r submits a shell command.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
+		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs (default \"\" = local)"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
+		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
 	}
 }

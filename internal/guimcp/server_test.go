@@ -29,10 +29,33 @@ import (
 // JSON-RPC framing, MCP envelope, list_tabs field mapping,
 // namespaced-ID parsing, and not-found handling.
 type fakeBackend struct {
-	tabs []guimcp.TabRef
+	tabs    []guimcp.TabRef
+	created []string
+	closed  []string
 }
 
 func (f *fakeBackend) ListTabs() []guimcp.TabRef { return f.tabs }
+
+func (f *fakeBackend) CreateTab(host, name string, cols, rows int) (string, bool, error) {
+	if host == "" {
+		host = "local"
+	}
+	f.created = append(f.created, host+"/"+name)
+	// Second create under the same name reports reuse, mirroring the
+	// daemon's find-or-create semantics.
+	reused := false
+	for _, prev := range f.created[:len(f.created)-1] {
+		if prev == host+"/"+name && name != "" {
+			reused = true
+		}
+	}
+	return host + ":99", reused, nil
+}
+
+func (f *fakeBackend) CloseTab(nsID string) error {
+	f.closed = append(f.closed, nsID)
+	return nil
+}
 func (f *fakeBackend) SourceFor(nsID string) (*daemonsource.Source, bool) {
 	// No real Source available without a daemon — report miss.
 	// Tests that need a hit go through the daemonsource integration
@@ -257,5 +280,48 @@ func TestGUIMCPNamespacedResolveMiss(t *testing.T) {
 		if rerr.Code != -32004 {
 			t.Errorf("%s: code %d, want -32004 (not found)", tc.method, rerr.Code)
 		}
+	}
+}
+
+func TestGUIMCPCreateAndCloseTab(t *testing.T) {
+	fb := &fakeBackend{}
+	sock := startServer(t, fb)
+	c, closeC := dial(t, sock)
+	defer closeC()
+
+	// First create with a name: fresh tab.
+	res, rerr := c.call(t, 1, "create_tab", map[string]any{"host": "kh", "name": "build"})
+	if rerr != nil {
+		t.Fatalf("create_tab: %+v", rerr)
+	}
+	var created struct {
+		TabID  string `json:"tab_id"`
+		Reused bool   `json:"reused"`
+	}
+	if err := json.Unmarshal(res, &created); err != nil {
+		t.Fatalf("create_tab result: %v", err)
+	}
+	if created.TabID != "kh:99" || created.Reused {
+		t.Fatalf("first create: %+v", created)
+	}
+
+	// Same name again: idempotent reuse.
+	res, rerr = c.call(t, 2, "create_tab", map[string]any{"host": "kh", "name": "build"})
+	if rerr != nil {
+		t.Fatalf("create_tab reuse: %+v", rerr)
+	}
+	if err := json.Unmarshal(res, &created); err != nil {
+		t.Fatalf("reuse result: %v", err)
+	}
+	if !created.Reused {
+		t.Fatalf("second create with same name should report reused: %+v", created)
+	}
+
+	// Close routes to the backend.
+	if _, rerr := c.call(t, 3, "close_tab", map[string]any{"tab_id": "kh:99"}); rerr != nil {
+		t.Fatalf("close_tab: %+v", rerr)
+	}
+	if len(fb.closed) != 1 || fb.closed[0] != "kh:99" {
+		t.Fatalf("backend close calls: %v", fb.closed)
 	}
 }
