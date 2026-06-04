@@ -216,6 +216,10 @@ func (c *clientConn) writeLoop() {
 				c.shutdown()
 				return
 			}
+			if f.typ == protocol.MsgAttached {
+				// Open the priority lane (see flushPriority).
+				c.attachedSent.Store(true)
+			}
 		case <-c.coalesceCh:
 			// A priority slot changed (ping armed, or a coalesced
 			// frame queued) — loop back to flushPriority.
@@ -231,6 +235,15 @@ func (c *clientConn) flushPriority() error {
 		if err := c.writeFrameRaw(protocol.MsgPing, &protocol.Ping{Nonce: c.pingNonce.Add(1)}); err != nil {
 			return err
 		}
+	}
+	// The latest-wins lane stays SHUT until the FIFO has delivered
+	// MsgAttached: these frames jump the backlog by design, but the
+	// client seeds its topology revision gate (and any session state)
+	// from Attached — a topology/proposals frame overtaking it on the
+	// wire would hit an unseeded client. The slots just stay pending;
+	// the writeLoop re-enters here right after Attached goes out.
+	if !c.attachedSent.Load() {
+		return nil
 	}
 	for {
 		c.coalesceMu.Lock()
@@ -341,6 +354,11 @@ type clientConn struct {
 	lastWriteProgress atomic.Int64
 	lastPong          atomic.Int64
 	pingPending       atomic.Bool
+	// attachedSent gates the latest-wins priority lane: topology /
+	// proposals frames must never overtake MsgAttached on the wire
+	// (the client seeds its revision gate from Attached). Set by the
+	// writeLoop when the Attached frame is actually written.
+	attachedSent atomic.Bool
 	pingNonce         atomic.Uint64
 
 	clientID string    // from Hello
