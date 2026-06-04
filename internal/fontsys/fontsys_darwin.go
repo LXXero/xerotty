@@ -74,6 +74,62 @@ static int xt_desc_monospace(CTFontDescriptorRef desc) {
 
 static CTFontRef xt_open_font(const char *path);
 
+// xt_find_by_charset finds an installed font whose character set covers
+// the codepoint, via descriptor matching on kCTFontCharacterSetAttribute.
+// This is the second-chance path for codepoints the system cascade
+// refuses to resolve: CTFontCreateForString won't map Private Use Area
+// codepoints (Powerline / Nerd Font glyphs at U+E000–U+F8FF and plane
+// 15/16) to third-party fonts because PUA has no Unicode semantics —
+// but an installed Nerd Font absolutely should supply them, and this
+// matching API (like fontconfig on Linux) goes by raw glyph coverage.
+// Prefers a monospace match. Returns a malloc'd path or NULL.
+static char *xt_find_by_charset(uint32_t codepoint) {
+    CFMutableCharacterSetRef mcs = CFCharacterSetCreateMutable(NULL);
+    if (!mcs) return NULL;
+    CFCharacterSetAddCharactersInRange(mcs, CFRangeMake(codepoint, 1));
+    CFTypeRef keys[] = { (CFTypeRef)kCTFontCharacterSetAttribute };
+    CFTypeRef vals[] = { (CFTypeRef)mcs };
+    CFDictionaryRef attrs = CFDictionaryCreate(NULL, (const void **)keys,
+        (const void **)vals, 1,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(mcs);
+    if (!attrs) return NULL;
+    CTFontDescriptorRef want = CTFontDescriptorCreateWithAttributes(attrs);
+    CFRelease(attrs);
+    if (!want) return NULL;
+    CFArrayRef matches = CTFontDescriptorCreateMatchingFontDescriptors(want, NULL);
+    CFRelease(want);
+    if (!matches) return NULL;
+
+    char *mono = NULL;   // best: a monospace font covering the codepoint
+    char *any = NULL;    // fallback: first coverage hit of any kind
+    CFIndex n = CFArrayGetCount(matches);
+    for (CFIndex i = 0; i < n && !mono; i++) {
+        CTFontDescriptorRef d = (CTFontDescriptorRef)CFArrayGetValueAtIndex(matches, i);
+        char *p = xt_desc_path(d);
+        if (!p) continue;
+        // LastResort claims every codepoint but renders placeholder
+        // boxes — matching it would mask "genuinely missing" forever.
+        if (strstr(p, "LastResort")) {
+            free(p);
+            continue;
+        }
+        if (xt_desc_monospace(d)) {
+            mono = p;
+        } else if (!any) {
+            any = p;
+        } else {
+            free(p);
+        }
+    }
+    CFRelease(matches);
+    if (mono) {
+        free(any);
+        return mono;
+    }
+    return any;
+}
+
 // xt_find_for_codepoint asks CoreText which installed font is the best
 // fallback for a given codepoint, biased by the selected primary font.
 // hint may be a font path or a CoreText font name. Returns a malloc'd
@@ -144,6 +200,12 @@ static char *xt_find_for_codepoint(const char *hint, uint32_t codepoint) {
         }
     }
     CFRelease(chosen);
+
+    // Cascade came up empty — typical for PUA codepoints (Powerline /
+    // Nerd Font). Fall back to coverage-based descriptor matching.
+    if (!out) {
+        out = xt_find_by_charset(codepoint);
+    }
     return out;
 }
 
