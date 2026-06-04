@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/guimcp"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/input"
+	"github.com/LXXero/xerotty/internal/launchipc"
 	"github.com/LXXero/xerotty/internal/menu"
 	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -135,6 +136,20 @@ type App struct {
 	// the caller will adopt tabs into the window itself (remote
 	// reattach). Reset to false right after.
 	suppressInitialTab bool
+
+	// spawnCWD, when non-empty, overrides the first tab's starting
+	// directory for the next spawnWindowImpl call — used by forwarded
+	// single-instance launches (internal/launchipc) so the new
+	// window's shell opens in the INVOKING shell's directory, not
+	// the GUI's. Reset to "" right after, like suppressInitialTab.
+	spawnCWD string
+
+	// launchQueue holds forwarded single-instance launch requests
+	// queued by the launch-socket accept goroutine and drained on the
+	// main thread once per frame (drainLaunchRequests) — window/tab
+	// creation touches ImGui/SDL state only the frame loop may own.
+	launchMu    sync.Mutex
+	launchQueue []launchipc.Request
 
 	// pendingProposals is the propose-mode queue across ALL hubs,
 	// each entry tagged with its originating hub + host name so
@@ -1994,8 +2009,11 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		}
 		// else: daemon didn't respond; new tabs land in its default
 		// window. Non-fatal.
-		var cwd string
-		if a.cfg.Tabs.InheritCWD && parent != nil {
+		// A forwarded single-instance launch carries the invoking
+		// shell's directory; it wins over InheritCWD, which is about
+		// Cmd+N from inside the GUI inheriting the parent tab.
+		cwd := a.spawnCWD
+		if cwd == "" && a.cfg.Tabs.InheritCWD && parent != nil {
 			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
 				cwd = parentTab.Terminal.GetCWD()
 			}
@@ -2004,8 +2022,11 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			return
 		}
 	} else {
-		var cwd string
-		if a.cfg.Tabs.InheritCWD && parent != nil {
+		// A forwarded single-instance launch carries the invoking
+		// shell's directory; it wins over InheritCWD, which is about
+		// Cmd+N from inside the GUI inheriting the parent tab.
+		cwd := a.spawnCWD
+		if cwd == "" && a.cfg.Tabs.InheritCWD && parent != nil {
 			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
 				cwd = parentTab.Terminal.GetCWD()
 			}
@@ -2148,6 +2169,15 @@ func (a *App) Run() error {
 	w.tabs = tabs.NewManager(&a.cfg)
 	a.installSourceFactory(w)
 
+	// Single-instance launch socket: later `xerotty` runs in this
+	// session forward "open a window/tab" here instead of spawning a
+	// second GUI (see internal/launchipc + cmd/xerotty). Best-effort:
+	// a bind failure (or an older GUI already owning the socket) just
+	// means no forwarding — never a failed launch.
+	if cleanup, err := launchipc.Listen(a.enqueueLaunch); err == nil {
+		defer cleanup()
+	}
+
 	// macOS-only: hook an SDL event watch so a real frame still renders
 	// while AppKit's live-resize tracking mode holds the run loop.
 	// Without this the OS just stretches the previous GL framebuffer
@@ -2176,6 +2206,9 @@ func (a *App) Run() error {
 		// the next toggle when a focused cursor is blinking; the safety
 		// net (not an infinite block) bounds any missed wake.
 		a.idleWakeMs = idleSafetyNetMs
+		// Apply any forwarded single-instance launches before the
+		// window walk so a "new window" request renders this frame.
+		a.drainLaunchRequests()
 		// (Modifier resync is in beforeRender — it has to run BEFORE
 		// imgui.NewFrame consumes the input queue, otherwise the
 		// re-asserted modifier state only takes effect next frame
