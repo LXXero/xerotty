@@ -99,6 +99,15 @@ extern "C" int platform_init(const char* title, int width, int height) {
         return 0;
     }
 
+    // SDL disables the screensaver by default, which on Wayland plants a
+    // zwp_idle_inhibit_manager_v1 inhibitor on every window. A terminal
+    // that's always open thus silently breaks compositor idle session-wide:
+    // swayidle never fires, so the screen never auto-locks/blanks and a
+    // blanked output can't be woken by input (the resume hook needs an
+    // idle->active edge that can never happen). A terminal has no business
+    // keeping the screen awake — re-enable the screensaver.
+    SDL_EnableScreenSaver();
+
     // Match Dear ImGui's own SDL example: GL 3.0 core + GLSL 130 on
     // Linux/Windows, 3.2 core + GLSL 150 + forward-compatible on macOS
     // (the only Mac-allowed combo). Asking for 3.2 core on X11 made
