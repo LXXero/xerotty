@@ -18,6 +18,16 @@ import (
 // the headless build silently re-fattens. build.sh asserts
 // against that with an ldd check.
 func launchGUI(cfg config.Config) int {
+	// GUI launchers (Finder/launchd on macOS, some Linux menus) start
+	// us with CWD "/". New tabs inherit the process CWD, so without
+	// this every shell would open in / — start them in $HOME instead,
+	// like every other terminal. Only the "/" case is rewritten; a
+	// shell-launched `cd somewhere && xerotty` keeps its CWD.
+	if wd, err := os.Getwd(); err != nil || wd == "/" {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			_ = os.Chdir(home)
+		}
+	}
 	a := app.New(cfg)
 	if err := a.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "xerotty: %v\n", err)

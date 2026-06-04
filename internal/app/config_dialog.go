@@ -4,7 +4,6 @@ package app
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -341,14 +340,11 @@ func discoverThemes() []string {
 	seen := map[string]bool{}
 	var names []string
 
-	if dir, err := os.UserConfigDir(); err == nil {
-		scanThemeDir(filepath.Join(dir, "xerotty", "themes"), &names, seen)
-	}
-
-	if exe, err := os.Executable(); err == nil {
-		base := filepath.Dir(exe)
-		scanThemeDir(filepath.Join(base, "themes"), &names, seen)
-		scanThemeDir(filepath.Join(base, "..", "themes"), &names, seen)
+	// Enumerate the exact dirs themes.Load resolves against — keeping
+	// a second hand-rolled path list here is how the picker once ended
+	// up blind to the macOS .app's Resources/themes dir.
+	for _, dir := range themes.SearchDirs() {
+		scanThemeDir(dir, &names, seen)
 	}
 
 	sort.Strings(names)

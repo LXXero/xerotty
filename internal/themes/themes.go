@@ -70,12 +70,17 @@ func Load(name string) (renderer.Theme, error) {
 	return renderer.DefaultTheme(), nil
 }
 
-func searchPaths(name string) []string {
-	var paths []string
+// SearchDirs returns every directory theme files are looked up in,
+// highest priority first. The prefs dialog's theme picker enumerates
+// these same dirs — keep the list HERE so the picker can never drift
+// from what Load actually resolves (it did once: the picker missed
+// the .app Resources dir and showed no themes on macOS).
+func SearchDirs() []string {
+	var dirs []string
 
 	configDir, err := os.UserConfigDir()
 	if err == nil {
-		paths = append(paths, filepath.Join(configDir, "xerotty", "themes", name+".toml"))
+		dirs = append(dirs, filepath.Join(configDir, "xerotty", "themes"))
 	}
 
 	// Bundled themes relative to executable. The third path covers the
@@ -86,11 +91,19 @@ func searchPaths(name string) []string {
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exe)
-		paths = append(paths, filepath.Join(dir, "themes", name+".toml"))
-		paths = append(paths, filepath.Join(dir, "..", "themes", name+".toml"))
-		paths = append(paths, filepath.Join(dir, "..", "Resources", "themes", name+".toml"))
+		dirs = append(dirs, filepath.Join(dir, "themes"))
+		dirs = append(dirs, filepath.Join(dir, "..", "themes"))
+		dirs = append(dirs, filepath.Join(dir, "..", "Resources", "themes"))
 	}
 
+	return dirs
+}
+
+func searchPaths(name string) []string {
+	var paths []string
+	for _, dir := range SearchDirs() {
+		paths = append(paths, filepath.Join(dir, name+".toml"))
+	}
 	return paths
 }
 

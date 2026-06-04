@@ -4,6 +4,8 @@ package terminal
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/creack/pty"
@@ -17,6 +19,17 @@ import (
 func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string) (*os.File, *exec.Cmd, error) {
 	shell := cfg.DetectShell()
 	cmd := exec.Command(shell)
+	if runtime.GOOS == "darwin" {
+		// Spawn a LOGIN shell on macOS (leading "-" in argv[0]), like
+		// Terminal.app and iTerm2 do. A Finder-launched app inherits
+		// launchd's bare env (no /opt/homebrew/bin on PATH), and only a
+		// login shell reads ~/.zprofile — where Homebrew/starship/mise
+		// PATH setup conventionally lives on macOS. Without this,
+		// Finder-launched tabs get a shell that can't find brew-installed
+		// tools. Linux is untouched: terminals there spawn non-login
+		// interactive shells and the session env is already complete.
+		cmd.Args[0] = "-" + filepath.Base(shell)
+	}
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
