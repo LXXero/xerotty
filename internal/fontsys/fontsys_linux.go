@@ -11,6 +11,7 @@ package fontsys
 #include FT_GLYPH_H
 #include FT_BITMAP_H
 #include FT_OUTLINE_H
+#include <fontconfig/fcfreetype.h> // FcFreeTypeQuery — needs FT types above
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
