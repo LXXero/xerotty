@@ -59,6 +59,7 @@
 - [x] multi-attach + topology broadcast + snapshot/revision resync
 - [x] connection resilience — dead/hung/slept client detection (async bounded writers, app heartbeat, write deadlines, SSH keepalive); live-validated
 - [x] `./build.sh headless` — lean `serve` + `connect` binary, no SDL3/GL/ImGui linked, for server installs
+- [x] `xerotty mcp` — stdio↔socket bridge so MCP clients (`claude mcp add xerotty -- xerotty mcp`) get the tool surface natively; `docs/MCP.md`
 
 ## Open
 

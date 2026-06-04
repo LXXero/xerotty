@@ -61,6 +61,7 @@ Working daily-driver. Recent arcs: the SDL2→SDL3 platform migration, and an op
 - Remote attach over SSH — drive terminal sessions running on another host from the local GUI
 - `xerotty connect` — CLI thin client to a local or remote daemon
 - AI control via MCP — agents (Claude Code, custom orchestrators) read/write sessions as first-class clients over a JSON-RPC/MCP socket, alongside the GUI; trust-gated (`default_mode` / approval tokens)
+- `xerotty mcp` — stdio bridge so MCP clients need zero socket plumbing: `claude mcp add xerotty -- xerotty mcp` and agents get `list_tabs` / `get_screen` / `send_input` / … as native tools ([`docs/MCP.md`](docs/MCP.md))
 - `./build.sh headless` produces a lean `serve` + `connect` binary with no SDL3/GL/ImGui linked, for server installs
 - Design + code map: [`docs/DAEMON_PLAN.md`](docs/DAEMON_PLAN.md), [`docs/DAEMON_STATUS.md`](docs/DAEMON_STATUS.md)
 

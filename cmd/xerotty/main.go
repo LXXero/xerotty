@@ -43,9 +43,15 @@ USAGE
                              for AI control (Claude Code, Xyphia).
   xerotty connect [flags]    Open a CLI thin client attached to a
                              local or remote daemon.
+  xerotty mcp [flags]        Bridge stdio <-> an MCP socket so MCP
+                             clients can drive xerotty as a tool
+                             server. Targets the GUI's aggregating
+                             socket, falling back to the local
+                             daemon's. See docs/MCP.md.
 
   xerotty serve   --help     Show flags for the serve subcommand.
   xerotty connect --help     Show flags for the connect subcommand.
+  xerotty mcp     --help     Show flags for the mcp bridge.
 
 COMMON RECIPES
   Run a local daemon and attach a CLI client to it:
@@ -57,12 +63,15 @@ COMMON RECIPES
     (spawns "ssh user@host xerotty serve --stdio" — make sure the
      same xerotty is on that box's PATH, or use --remote-cmd.)
 
-  Probe the MCP agent socket from a shell:
+  Let Claude Code drive xerotty tabs as MCP tools (one-time setup):
+    $ claude mcp add xerotty -- xerotty mcp
+
+  Probe the MCP agent socket from a shell (debugging):
     $ echo '{"jsonrpc":"2.0","id":1,"method":"tabs/list"}' \
         | nc -U $XDG_RUNTIME_DIR/xerottyd.mcp.sock
 
 SEE ALSO
-  SPEC.md, docs/DAEMON_PLAN.md, CLAUDE.md
+  SPEC.md, docs/MCP.md, docs/DAEMON_PLAN.md, CLAUDE.md
 `
 
 func main() {
@@ -76,6 +85,8 @@ func main() {
 			os.Exit(runner.Serve(os.Args[2:]))
 		case "connect":
 			os.Exit(runner.Connect(os.Args[2:]))
+		case "mcp":
+			os.Exit(runner.MCPBridge(os.Args[2:]))
 		case "help", "--help", "-h", "-help":
 			fmt.Print(helpText)
 			os.Exit(0)

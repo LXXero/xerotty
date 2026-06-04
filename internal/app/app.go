@@ -16,6 +16,7 @@ import (
 	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/renderer"
+	"github.com/LXXero/xerotty/internal/runner"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
 	"github.com/LXXero/xerotty/internal/tabs"
@@ -23,7 +24,6 @@ import (
 	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -1514,13 +1514,11 @@ func (a *App) ensureGUIMCP() {
 	}()
 }
 
-// guiMCPSocketPath picks the aggregating MCP socket path:
-// $XDG_RUNTIME_DIR/xerotty-gui.mcp.sock (or /tmp fallback).
+// guiMCPSocketPath picks the aggregating MCP socket path. Delegates
+// to runner so `xerotty mcp` (the stdio bridge, headless-safe)
+// derives the exact same path — bind side and dial side can't drift.
 func guiMCPSocketPath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "xerotty-gui.mcp.sock")
-	}
-	return filepath.Join(os.TempDir(), "xerotty-gui-"+strconv.Itoa(os.Getuid())+".mcp.sock")
+	return runner.GUIMCPSocketPath()
 }
 
 // installSourceFactory builds the tabs.Manager.SourceFactory for a

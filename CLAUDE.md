@@ -41,6 +41,8 @@ headless daemon. ONE binary, three roles via subcommand:
 - `xerotty serve` — headless daemon: owns PTYs, scrollback, the
   wire-protocol socket, and the MCP socket.
 - `xerotty connect` — CLI thin client.
+- `xerotty mcp` — stdio↔socket bridge for MCP clients
+  (`claude mcp add xerotty -- xerotty mcp`); see `docs/MCP.md`.
 
 Shipped (merged to `main`). See `docs/DAEMON_PLAN.md` (design +
 phase history) and `docs/DAEMON_STATUS.md` (package map +
