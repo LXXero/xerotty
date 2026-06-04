@@ -177,6 +177,15 @@ type Window struct {
 	// exactly the reattach lost-row bug.
 	restoredGeom bool
 
+	// restoredWithBar means the restored geometry came from a
+	// multi-tab window, i.e. the height ALREADY includes the tab
+	// bar. The bar's first appearance after adoption must then skip
+	// the grow-by-bar-height compensation — otherwise the bar is
+	// double-counted and the window gains one bar height per
+	// reattach, compounding forever. Consumed (cleared) at that
+	// first transition; later 1↔2 transitions compensate as usual.
+	restoredWithBar bool
+
 	// Multi-window plumbing. Every Window is equal: the cimgui-go
 	// primary SDL_Window stays hidden as an invisible "carrier" for
 	// the ImGui context, and every user-visible Window renders inside

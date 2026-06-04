@@ -695,6 +695,7 @@ func (w *Window) openRemoteReattach(hostName string) error {
 			nw.width, nw.height = int(snap.Width), int(snap.Height)
 			nw.pendingResize = true
 			nw.restoredGeom = true
+			nw.restoredWithBar = len(snap.Tabs) > 1
 		}
 		if snap.PosX != 0 || snap.PosY != 0 {
 			nw.initialPosX, nw.initialPosY = float32(snap.PosX), float32(snap.PosY)
@@ -1996,6 +1997,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		if snap.Width > 0 && snap.Height > 0 {
 			w.width, w.height = int(snap.Width), int(snap.Height)
 			w.restoredGeom = true
+			w.restoredWithBar = len(snap.Tabs) > 1
 		}
 		if snap.PosX != 0 || snap.PosY != 0 {
 			w.initialPosX, w.initialPosY = float32(snap.PosX), float32(snap.PosY)
@@ -2134,6 +2136,7 @@ func (a *App) Run() error {
 		if snap.Width > 0 && snap.Height > 0 {
 			w.width, w.height = int(snap.Width), int(snap.Height)
 			w.restoredGeom = true
+			w.restoredWithBar = len(snap.Tabs) > 1
 		}
 		if snap.PosX != 0 || snap.PosY != 0 {
 			w.initialPosX, w.initialPosY = float32(snap.PosX), float32(snap.PosY)
@@ -3637,7 +3640,15 @@ func (a *Window) frame() {
 	// expanding to accommodate the bar. Skip in fullscreen — the WM ignores
 	// SetWindowSize there and we can't grow past the display.
 	if a.tabBarH != oldTabBarH {
-		if !a.fullscreen {
+		if a.restoredWithBar && oldTabBarH == 0 {
+			// Reattach-restored height already includes the bar (it
+			// is the live detach-time size of a multi-tab window), so
+			// the bar's first appearance after adoption must not grow
+			// the window again — that double-count compounded by one
+			// bar height per restart. One-shot: real 1↔2 transitions
+			// after this compensate as usual.
+			a.restoredWithBar = false
+		} else if !a.fullscreen {
 			delta := int(math.Ceil(float64(a.tabBarH - oldTabBarH)))
 			if delta != 0 {
 				newH := a.height + delta
