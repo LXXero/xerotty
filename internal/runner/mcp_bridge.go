@@ -6,21 +6,10 @@ import (
 	"io"
 	"net"
 	"os"
-	"path/filepath"
-	"strconv"
-)
 
-// GUIMCPSocketPath picks the GUI's aggregating MCP socket path:
-// $XDG_RUNTIME_DIR/xerotty-gui.mcp.sock (or /tmp fallback). Lives
-// here (not internal/app) so the headless build's `xerotty mcp`
-// can derive it too; the GUI calls this when binding the server so
-// the two sides can never drift.
-func GUIMCPSocketPath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "xerotty-gui.mcp.sock")
-	}
-	return filepath.Join(os.TempDir(), "xerotty-gui-"+strconv.Itoa(os.Getuid())+".mcp.sock")
-}
+	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/sockpath"
+)
 
 // MCPBridge implements `xerotty mcp`: a stdio <-> unix-socket bridge
 // so MCP clients — which spawn a command and speak line-delimited
@@ -30,31 +19,51 @@ func GUIMCPSocketPath() string {
 //
 //	claude mcp add xerotty -- xerotty mcp
 //
-// Default target is the GUI aggregator (all hosts, namespaced tab
-// IDs), falling back to the local daemon's MCP socket so the same
-// command works on a headless server. Both sides of the bridge are
-// newline-delimited JSON-RPC 2.0, so this is a verbatim byte pump.
+// Discovery order (each candidate is dial-verified, first live one
+// wins):
+//
+//  1. --socket PATH               explicit, no fallback
+//  2. recorded GUI MCP socket     where the GUI actually bound
+//  3. default GUI MCP socket
+//  4. recorded daemon MCP socket  where the daemon actually bound
+//  5. config tabs.daemon_socket   user's configured override
+//  6. default daemon MCP socket
+//
+// (2)+(3) are skipped with --daemon. The recordings exist because
+// computed defaults aren't enough on macOS: without XDG_RUNTIME_DIR
+// the temp dir comes from $TMPDIR, which differs per launch context,
+// so the bind side and an agent-spawned bridge can compute different
+// "defaults". See internal/sockpath.
 func MCPBridge(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	var socketPath string
 	var daemonOnly bool
-	fs.StringVar(&socketPath, "socket", "", "MCP socket path to bridge to (default: GUI aggregator, then local daemon)")
+	fs.StringVar(&socketPath, "socket", "", "MCP socket path to bridge to (default: discover GUI aggregator, then local daemon)")
 	fs.BoolVar(&daemonOnly, "daemon", false, "bridge to the local daemon's MCP socket, skipping the GUI aggregator")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
 	var candidates []string
-	switch {
-	case socketPath != "":
-		candidates = []string{socketPath}
-	case daemonOnly:
-		candidates = []string{defaultMCPSocketPath(defaultSocketPath())}
-	default:
-		candidates = []string{
-			GUIMCPSocketPath(),
-			defaultMCPSocketPath(defaultSocketPath()),
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			candidates = append(candidates, p)
 		}
+	}
+	if socketPath != "" {
+		add(socketPath)
+	} else {
+		if !daemonOnly {
+			add(sockpath.Recorded(sockpath.RecordGUIMCP))
+			add(sockpath.GUIMCPSocket())
+		}
+		add(sockpath.Recorded(sockpath.RecordDaemonMCP))
+		if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
+			add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket))
+		}
+		add(sockpath.MCPSocketFor(sockpath.DaemonSocket()))
 	}
 
 	var conn net.Conn

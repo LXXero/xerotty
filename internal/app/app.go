@@ -3,25 +3,6 @@ package app
 
 import (
 	"fmt"
-	"github.com/AllenDang/cimgui-go/imgui"
-	"github.com/LXXero/xerotty/internal/clientproto"
-	"github.com/LXXero/xerotty/internal/config"
-	"github.com/LXXero/xerotty/internal/daemonsource"
-	"github.com/LXXero/xerotty/internal/fontsys"
-	"github.com/LXXero/xerotty/internal/guimcp"
-	"github.com/LXXero/xerotty/internal/glyphcache"
-	"github.com/LXXero/xerotty/internal/input"
-	"github.com/LXXero/xerotty/internal/launchipc"
-	"github.com/LXXero/xerotty/internal/menu"
-	"github.com/LXXero/xerotty/internal/platform"
-	"github.com/LXXero/xerotty/internal/protocol"
-	"github.com/LXXero/xerotty/internal/renderer"
-	"github.com/LXXero/xerotty/internal/runner"
-	"github.com/LXXero/xerotty/internal/scrollback"
-	"github.com/LXXero/xerotty/internal/sdlhack"
-	"github.com/LXXero/xerotty/internal/tabs"
-	"github.com/LXXero/xerotty/internal/terminal"
-	"github.com/LXXero/xerotty/internal/themes"
 	"math"
 	"os"
 	"regexp"
@@ -31,6 +12,26 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/clientproto"
+	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/glyphcache"
+	"github.com/LXXero/xerotty/internal/guimcp"
+	"github.com/LXXero/xerotty/internal/input"
+	"github.com/LXXero/xerotty/internal/launchipc"
+	"github.com/LXXero/xerotty/internal/menu"
+	"github.com/LXXero/xerotty/internal/platform"
+	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/renderer"
+	"github.com/LXXero/xerotty/internal/scrollback"
+	"github.com/LXXero/xerotty/internal/sdlhack"
+	"github.com/LXXero/xerotty/internal/sockpath"
+	"github.com/LXXero/xerotty/internal/tabs"
+	"github.com/LXXero/xerotty/internal/terminal"
+	"github.com/LXXero/xerotty/internal/themes"
 )
 
 // disableMirror is a runtime kill switch for the macOS mouse-event
@@ -411,12 +412,12 @@ func cursorStyleName(style uint8) string {
 // expandMenu walks the configured menu items and replaces magic
 // placeholders with synthesized items:
 //
-//   "_remote_hosts" — expands into a "Remote Hosts" submenu
-//                     listing each cfg.Hosts entry with two child
-//                     items: "New tab on <host>" and "Reattach
-//                     <host>". If cfg.Hosts is empty the
-//                     placeholder collapses to nothing so the
-//                     menu doesn't show a useless empty entry.
+//	"_remote_hosts" — expands into a "Remote Hosts" submenu
+//	                  listing each cfg.Hosts entry with two child
+//	                  items: "New tab on <host>" and "Reattach
+//	                  <host>". If cfg.Hosts is empty the
+//	                  placeholder collapses to nothing so the
+//	                  menu doesn't show a useless empty entry.
 //
 // Other items pass through untouched. Default menu config
 // includes the placeholder so users get host entries
@@ -1515,10 +1516,10 @@ func (a *App) ensureGUIMCP() {
 }
 
 // guiMCPSocketPath picks the aggregating MCP socket path. Delegates
-// to runner so `xerotty mcp` (the stdio bridge, headless-safe)
+// to sockpath so `xerotty mcp` (the stdio bridge, headless-safe)
 // derives the exact same path — bind side and dial side can't drift.
 func guiMCPSocketPath() string {
-	return runner.GUIMCPSocketPath()
+	return sockpath.GUIMCPSocket()
 }
 
 // installSourceFactory builds the tabs.Manager.SourceFactory for a

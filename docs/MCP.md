@@ -41,13 +41,35 @@ Both speak line-delimited JSON-RPC 2.0 with the standard MCP shape
 ## `xerotty mcp` flags
 
 ```
-xerotty mcp                  GUI aggregator, falling back to the local daemon
+xerotty mcp                  discover the GUI aggregator, then the local daemon
 xerotty mcp --daemon         local daemon only (skip the GUI socket)
 xerotty mcp --socket PATH    explicit socket (e.g. a daemon started with --socket)
 ```
 
 Stderr carries diagnostics (which socket it bridged to); stdout is
 exclusively the JSON-RPC stream.
+
+### How discovery works
+
+Servers **record** where they actually bound (a pathfile under
+`os.UserCacheDir()/xerotty/` — `~/.cache` on Linux,
+`~/Library/Caches` on macOS), and the bridge dial-verifies
+candidates in order:
+
+1. `--socket PATH` (explicit — no fallback)
+2. recorded GUI MCP socket
+3. default GUI MCP socket
+4. recorded daemon MCP socket
+5. `tabs.daemon_socket` from config (`.mcp.sock` derived)
+6. default daemon MCP socket
+
+Recordings exist because computed defaults can't work on macOS:
+without `XDG_RUNTIME_DIR` the temp dir comes from `$TMPDIR`, which
+differs per launch context — a Finder-launched GUI and an
+agent-spawned bridge would compute different paths. Defaults without
+XDG now live in a stable `/tmp/xerotty-<uid>/` (0700) for the same
+reason. Stale recordings are harmless: every candidate is dialed
+before use.
 
 ## Tools
 

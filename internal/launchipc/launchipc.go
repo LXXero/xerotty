@@ -17,6 +17,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // Request is one forwarded launch. Action is "window" or "tab"; CWD is
@@ -58,12 +60,12 @@ func SocketPath() (path string, ok bool) {
 	default:
 		return "", false
 	}
-	// Mirror the daemon socket's placement convention (serve.go):
-	// XDG_RUNTIME_DIR when present, uid-suffixed /tmp otherwise.
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "xerotty-gui-"+key+".sock"), true
-	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("xerotty-gui-%d-%s.sock", os.Getuid(), key)), true
+	// sockpath.RuntimeDir is the shared placement convention for all
+	// xerotty sockets — env-independent on macOS, where $TMPDIR
+	// differs between launch contexts (a Finder-launched GUI vs a
+	// shell-launched `xerotty -t` would otherwise compute different
+	// paths and never find each other).
+	return filepath.Join(sockpath.RuntimeDir(), "xerotty-gui-"+key+".sock"), true
 }
 
 // sanitize makes a display name filesystem-safe. DISPLAY values like

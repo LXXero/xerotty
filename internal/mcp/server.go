@@ -45,6 +45,7 @@ import (
 	"sync"
 
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // Server is the MCP listener. Like daemon.Daemon it owns a unix
@@ -105,6 +106,10 @@ func (s *Server) Run() error {
 	}
 	s.listener = ln
 	_ = os.Chmod(s.socketPath, 0o600)
+	// Record the bound path so `xerotty mcp` can discover this
+	// daemon even when its environment computes different defaults
+	// (macOS TMPDIR varies by launch context).
+	_ = sockpath.Record(sockpath.RecordDaemonMCP, s.socketPath)
 
 	for {
 		conn, err := ln.Accept()

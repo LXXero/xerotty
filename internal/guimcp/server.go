@@ -38,6 +38,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // Backend is what the GUI provides: enumeration of all tabs across
@@ -103,6 +104,10 @@ func (s *Server) Run() error {
 	}
 	s.listener = ln
 	_ = os.Chmod(s.socketPath, 0o600)
+	// Record where we actually bound so `xerotty mcp` (possibly
+	// spawned with a different environment — macOS TMPDIR varies by
+	// launch context) can find us without recomputing defaults.
+	_ = sockpath.Record(sockpath.RecordGUIMCP, s.socketPath)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

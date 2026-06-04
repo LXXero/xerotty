@@ -5,11 +5,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // EnsureLocalDaemon makes sure a local xerotty daemon is reachable
@@ -67,14 +66,11 @@ func EnsureLocalDaemon(socketPath string) (*clientproto.Client, error) {
 	return nil, fmt.Errorf("ensure daemon: forked xerotty serve but socket %s never came up", socketPath)
 }
 
-// DefaultSocketPath mirrors runner.defaultSocketPath. Duplicated here
-// because importing internal/runner would create a cycle (runner
-// imports daemonsource indirectly through mcp's daemon dep).
+// DefaultSocketPath is the local daemon's default socket. Thin
+// wrapper over sockpath (the single source of truth — see that
+// package for why this must never be hand-derived per-package).
 func DefaultSocketPath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "xerottyd.sock")
-	}
-	return filepath.Join(os.TempDir(), "xerottyd-"+strconv.Itoa(os.Getuid())+".sock")
+	return sockpath.DaemonSocket()
 }
 
 // SocketAlive returns true if something is listening on the path.

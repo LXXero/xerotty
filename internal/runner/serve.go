@@ -9,15 +9,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // Serve runs the `xerotty serve` subcommand: a headless daemon that
@@ -129,23 +127,13 @@ func Serve(args []string) int {
 // boxes. Name kept as "xerottyd.sock" — the wire format hasn't
 // changed, this is just the same daemon under a different binary.
 func defaultSocketPath() string {
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "xerottyd.sock")
-	}
-	return filepath.Join(os.TempDir(), "xerottyd-"+strconv.Itoa(os.Getuid())+".sock")
+	return sockpath.DaemonSocket()
 }
 
 // defaultMCPSocketPath derives the MCP socket path from the main
 // socket: same dir, .mcp.sock suffix appended before .sock.
 func defaultMCPSocketPath(mainSocket string) string {
-	dir := filepath.Dir(mainSocket)
-	name := filepath.Base(mainSocket)
-	if strings.HasSuffix(name, ".sock") {
-		name = strings.TrimSuffix(name, ".sock") + ".mcp.sock"
-	} else {
-		name += ".mcp.sock"
-	}
-	return filepath.Join(dir, name)
+	return sockpath.MCPSocketFor(mainSocket)
 }
 
 // DefaultSocketPath is the exported flavor of defaultSocketPath so
