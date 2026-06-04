@@ -39,6 +39,17 @@ func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string) (*os.File, *exe
 		"TERM="+cfg.Term,
 		"COLORTERM=truecolor",
 	)
+	if runtime.GOOS == "darwin" &&
+		os.Getenv("LC_ALL") == "" && os.Getenv("LC_CTYPE") == "" && os.Getenv("LANG") == "" {
+		// launchd's environment (what Finder-launched GUIs and the
+		// daemons they auto-spawn inherit) carries NO locale vars, so
+		// the shell lands in the C locale and zsh — with MULTIBYTE
+		// off — mangles UTF-8 prompt glyphs (starship's Powerline /
+		// Nerd Font PUA chars). Terminal.app, iTerm2, and kitty all
+		// set LANG themselves for exactly this reason. Only defaulted
+		// when no locale is present; cfg.Env (below) can override.
+		cmd.Env = append(cmd.Env, "LANG=en_US.UTF-8")
+	}
 	for k, v := range cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
