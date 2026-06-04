@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+
+	"github.com/LXXero/xerotty/internal/screentext"
 )
 
 // rpcRequest is the wire shape of an incoming JSON-RPC 2.0 call.
@@ -66,19 +68,32 @@ type tabSummary struct {
 	Focused  bool   `json:"focused"`
 }
 
-// screenResult is the result of tab/screen.
+// screenResult is the result of tab/screen. Lines XOR Runs is set,
+// depending on the request's styled flag.
 type screenResult struct {
-	Cols  uint16   `json:"cols"`
-	Rows  uint16   `json:"rows"`
-	Lines []string `json:"lines"`
+	Cols   uint16             `json:"cols"`
+	Rows   uint16             `json:"rows"`
+	Cursor cursorResult       `json:"cursor"`
+	Lines  []string           `json:"lines,omitempty"`
+	Runs   [][]screentext.Run `json:"runs,omitempty"`
+}
+
+// cursorResult is the cursor block in screenResult. The position is
+// a strong presentation signal for agents: faint text at/after the
+// cursor is typically a TUI's ghost-text suggestion, not real input.
+type cursorResult struct {
+	Row     int  `json:"row"`
+	Col     int  `json:"col"`
+	Visible bool `json:"visible"`
 }
 
 // scrollbackResult is the result of tab/scrollback. Total is the
 // daemon-side total scrollback length so the caller can see how
 // many more rows of history exist beyond the slice returned.
 type scrollbackResult struct {
-	From  int      `json:"from"`
-	To    int      `json:"to"`
-	Total int      `json:"total"`
-	Lines []string `json:"lines"`
+	From  int                `json:"from"`
+	To    int                `json:"to"`
+	Total int                `json:"total"`
+	Lines []string           `json:"lines,omitempty"`
+	Runs  [][]screentext.Run `json:"runs,omitempty"`
 }

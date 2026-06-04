@@ -33,11 +33,9 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"strings"
-
-	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
@@ -235,7 +233,8 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 
 func (s *Server) getScreen(id json.RawMessage, params json.RawMessage) *rpcResponse {
 	var p struct {
-		TabID string `json:"tab_id"`
+		TabID  string `json:"tab_id"`
+		Styled bool   `json:"styled,omitempty"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return rpcErrResp(id, -32602, err.Error())
@@ -245,19 +244,31 @@ func (s *Server) getScreen(id json.RawMessage, params json.RawMessage) *rpcRespo
 		return rpcErrResp(id, -32004, "tab not found: "+p.TabID)
 	}
 	grid := src.SnapshotViewport()
-	lines := gridLines(grid)
 	cols := 0
 	if len(grid) > 0 {
 		cols = len(grid[0])
 	}
-	return okResp(id, map[string]any{"cols": cols, "rows": len(grid), "lines": lines})
+	pos := src.Emulator().CursorPosition()
+	res := map[string]any{
+		"cols": cols, "rows": len(grid),
+		"cursor": map[string]any{
+			"row": pos.Y, "col": pos.X, "visible": src.CursorVisible(),
+		},
+	}
+	if p.Styled {
+		res["runs"] = screentext.StyledLines(grid)
+	} else {
+		res["lines"] = screentext.Lines(grid)
+	}
+	return okResp(id, res)
 }
 
 func (s *Server) getScrollback(id json.RawMessage, params json.RawMessage) *rpcResponse {
 	var p struct {
-		TabID string `json:"tab_id"`
-		From  *int   `json:"from,omitempty"`
-		To    *int   `json:"to,omitempty"`
+		TabID  string `json:"tab_id"`
+		From   *int   `json:"from,omitempty"`
+		To     *int   `json:"to,omitempty"`
+		Styled bool   `json:"styled,omitempty"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		return rpcErrResp(id, -32602, err.Error())
@@ -281,11 +292,18 @@ func (s *Server) getScrollback(id json.RawMessage, params json.RawMessage) *rpcR
 	if to > total {
 		to = total
 	}
-	var lines []string
+	res := map[string]any{"from": from, "to": to, "total": total}
 	if to > from {
-		lines = gridLines(src.SnapshotScrollbackRange(from, to))
+		grid := src.SnapshotScrollbackRange(from, to)
+		if p.Styled {
+			res["runs"] = screentext.StyledLines(grid)
+		} else {
+			res["lines"] = screentext.Lines(grid)
+		}
+	} else if !p.Styled {
+		res["lines"] = []string{}
 	}
-	return okResp(id, map[string]any{"from": from, "to": to, "total": total, "lines": lines})
+	return okResp(id, res)
 }
 
 func (s *Server) sendInput(id json.RawMessage, params json.RawMessage) *rpcResponse {
@@ -324,22 +342,6 @@ func (s *Server) sendPaste(id json.RawMessage, params json.RawMessage) *rpcRespo
 
 // --- helpers ---
 
-func gridLines(grid [][]uv.Cell) []string {
-	lines := make([]string, len(grid))
-	for r, row := range grid {
-		var sb strings.Builder
-		for _, c := range row {
-			if c.Content == "" {
-				sb.WriteByte(' ')
-				continue
-			}
-			sb.WriteString(c.Content)
-		}
-		lines[r] = strings.TrimRight(sb.String(), " ")
-	}
-	return lines
-}
-
 // MakeNSID builds a namespaced tab ID from host + daemon tab ID.
 func MakeNSID(host string, tabID uint32) string {
 	return host + ":" + strconv.FormatUint(uint64(tabID), 10)
@@ -356,8 +358,8 @@ func toolCatalog() []map[string]any {
 	}
 	return []map[string]any{
 		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\".", "inputSchema": obj(map[string]any{})},
-		{"name": "get_screen", "description": "Read a tab's visible viewport as text. tab_id is the namespaced ID from list_tabs.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
-		{"name": "get_scrollback", "description": "Read a tab's scrollback history. Defaults to the last 200 rows.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}}, "tab_id")},
+		{"name": "get_screen", "description": "Read a tab's visible viewport. tab_id is the namespaced ID from list_tabs. Always includes cursor {row, col, visible}. With styled=true, lines become runs of styled text ({t, fg, bg, a}) instead of flat strings — use it to tell presentation apart from content: faint (a:\"faint\") text at/after the cursor is typically a TUI's autocomplete ghost text the user has NOT typed; red fg usually means an error.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "styled": map[string]any{"type": "boolean", "description": "return styled runs instead of flat lines"}}, "tab_id")},
+		{"name": "get_scrollback", "description": "Read a tab's scrollback history. Defaults to the last 200 rows. styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. \\r submits a shell command.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
 	}

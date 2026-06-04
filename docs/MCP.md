@@ -84,6 +84,17 @@ Per-daemon adds tab lifecycle + trust management on top of those:
 `approve_proposal`, `drop_proposal`, `set_agent_mode`,
 `authenticate`, `list_clients`, `get_server_info`.
 
+Both screen readers take `styled: true` to return per-line **runs of
+styled text** instead of flat strings — `{t, fg, bg, a}` with terse
+keys (palette colors as ints, truecolor as `#rrggbb`, attrs like
+`"faint"` / `"bold,underline"`). `get_screen` always includes
+`cursor: {row, col, visible}`. Together these let an agent separate
+presentation from content — the motivating case being TUI ghost
+text: Claude Code renders its autocomplete suggestion as faint text
+after the cursor, which in a flat string is indistinguishable from
+input the user actually typed. Faint run at/after the cursor → a
+suggestion, not a command; red runs → error output.
+
 `tools/list` is always the authoritative catalog — descriptions and
 schemas come back in the listing.
 

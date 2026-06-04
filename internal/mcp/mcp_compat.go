@@ -51,24 +51,26 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "get_screen",
-			"description": "Read the visible viewport of a tab as plain text. Returns the rendered lines with trailing whitespace trimmed.",
+			"description": "Read the visible viewport of a tab. Always includes cursor {row, col, visible}. Default returns plain-text lines (trailing whitespace trimmed); styled=true returns runs of styled text per line ({t: text, fg/bg: palette int or #rrggbb, a: attrs like \"faint\" or \"bold,underline\"}) — use it to tell presentation from content: faint text at/after the cursor is typically a TUI's autocomplete ghost-text suggestion the user has NOT typed; red fg usually marks errors.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"tab_id": map[string]any{"type": "integer", "description": "ID from list_tabs"},
+					"styled": map[string]any{"type": "boolean", "description": "Return styled runs instead of flat lines."},
 				},
 				"required": []string{"tab_id"},
 			},
 		},
 		{
 			"name":        "get_scrollback",
-			"description": "Read scrollback history (rows that scrolled off the viewport) as plain text. Defaults to the most recent 200 rows; pass {from, to} for an absolute range (0 = oldest). Result includes the total scrollback length so the agent can paginate.",
+			"description": "Read scrollback history (rows that scrolled off the viewport). Defaults to the most recent 200 rows; pass {from, to} for an absolute range (0 = oldest). Result includes the total scrollback length so the agent can paginate. styled=true returns styled runs instead of flat lines (see get_screen).",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"tab_id": map[string]any{"type": "integer"},
 					"from":   map[string]any{"type": "integer", "description": "Absolute scrollback row index (0 = oldest). Omit for default tail."},
 					"to":     map[string]any{"type": "integer", "description": "Exclusive upper bound. Omit for default tail."},
+					"styled": map[string]any{"type": "boolean", "description": "Return styled runs instead of flat lines."},
 				},
 				"required": []string{"tab_id"},
 			},

@@ -41,10 +41,10 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
@@ -458,7 +458,8 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 
 func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 	var p struct {
-		TabID uint32 `json:"tab_id"`
+		TabID  uint32 `json:"tab_id"`
+		Styled bool   `json:"styled,omitempty"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -480,20 +481,17 @@ func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 	if rows > 0 {
 		cols = len(grid[0])
 	}
-	lines := make([]string, rows)
-	for r := 0; r < rows; r++ {
-		var sb strings.Builder
-		for col := 0; col < cols; col++ {
-			cell := &grid[r][col]
-			if cell.Content == "" {
-				sb.WriteByte(' ')
-				continue
-			}
-			sb.WriteString(cell.Content)
-		}
-		lines[r] = strings.TrimRight(sb.String(), " ")
+	pos := t.Term.CursorPosition()
+	res := screenResult{
+		Cols: uint16(cols), Rows: uint16(rows),
+		Cursor: cursorResult{Row: pos.Y, Col: pos.X, Visible: t.Term.CursorVisible()},
 	}
-	return ok(req.ID, screenResult{Cols: uint16(cols), Rows: uint16(rows), Lines: lines})
+	if p.Styled {
+		res.Runs = screentext.StyledLines(grid)
+	} else {
+		res.Lines = screentext.Lines(grid)
+	}
+	return ok(req.ID, res)
 }
 
 // handleTabScrollback reads a slice of scrollback rows for a tab.
@@ -505,9 +503,10 @@ func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 // SnapshotViewport, just for the scrollback half.
 func (c *agentConn) handleTabScrollback(req *rpcRequest) *rpcResponse {
 	var p struct {
-		TabID uint32 `json:"tab_id"`
-		From  *int   `json:"from,omitempty"`
-		To    *int   `json:"to,omitempty"`
+		TabID  uint32 `json:"tab_id"`
+		From   *int   `json:"from,omitempty"`
+		To     *int   `json:"to,omitempty"`
+		Styled bool   `json:"styled,omitempty"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -539,19 +538,13 @@ func (c *agentConn) handleTabScrollback(req *rpcRequest) *rpcResponse {
 		return ok(req.ID, scrollbackResult{From: from, To: from, Total: sbLen, Lines: []string{}})
 	}
 	rows := t.Term.SnapshotScrollbackRange(from, to)
-	lines := make([]string, len(rows))
-	for i, row := range rows {
-		var sb strings.Builder
-		for _, cell := range row {
-			if cell.Content == "" {
-				sb.WriteByte(' ')
-				continue
-			}
-			sb.WriteString(cell.Content)
-		}
-		lines[i] = strings.TrimRight(sb.String(), " ")
+	res := scrollbackResult{From: from, To: to, Total: sbLen}
+	if p.Styled {
+		res.Runs = screentext.StyledLines(rows)
+	} else {
+		res.Lines = screentext.Lines(rows)
 	}
-	return ok(req.ID, scrollbackResult{From: from, To: to, Total: sbLen, Lines: lines})
+	return ok(req.ID, res)
 }
 
 func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
