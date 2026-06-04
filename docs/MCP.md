@@ -74,7 +74,7 @@ before use.
 ## Tools
 
 GUI aggregator: `list_tabs`, `get_screen`, `get_scrollback`,
-`send_input`, `send_paste`, `create_tab`, `close_tab`. `list_tabs`
+`send_input`, `send_keys`, `send_paste`, `create_tab`, `close_tab`. `list_tabs`
 returns per-tab metadata for triage without reading every screen:
 cwd, foreground process, dims, exit state, and which tab the user
 has focused. `create_tab` takes `host` (any namespace from
@@ -99,6 +99,29 @@ text: Claude Code renders its autocomplete suggestion as faint text
 after the cursor, which in a flat string is indistinguishable from
 input the user actually typed. Faint run at/after the cursor → a
 suggestion, not a command; red runs → error output.
+
+**Keystrokes go through `send_keys`** — agents reliably lose the
+JSON-escaping guessing game when expressing Enter/Ctrl-C as raw
+bytes ("\r"? "\\r"? "\u000d"?), so keys have names instead:
+
+```json
+send_keys {"tab_id": "local:1", "text": "make test", "keys": ["enter"]}
+send_keys {"tab_id": "local:1", "keys": ["ctrl+c"]}
+send_keys {"tab_id": "local:1", "keys": ["up", "up", "enter"]}
+```
+
+`text` is typed first, completely literally; then each key token.
+Tokens are a single literal character or a named key (`enter`,
+`esc`, `tab`, `backspace`, `space`, `delete`, `insert`, arrows,
+`home`/`end`, `pageup`/`pagedown`, `f1`–`f12`) with modifier
+prefixes joined by `+` or `-`: `ctrl+c`, `alt+enter`,
+`ctrl+shift+up`, and — because the remainder after the modifiers IS
+the key — `ctrl++` is ctrl and `+`. tmux-style `C-c` / `M-x` work
+too. Arrows honor the tab's app-cursor mode (DECCKM) server-side,
+which raw bytes can't do; chords with no classic terminal encoding
+(`ctrl+enter`, `ctrl++`) are sent as CSI-u for modern TUIs. Unknown
+tokens error with the full vocabulary. `send_input` remains for
+truly raw bytes (standard JSON unescaping, no extra layer).
 
 `tools/list` is always the authoritative catalog — descriptions and
 schemas come back in the listing.

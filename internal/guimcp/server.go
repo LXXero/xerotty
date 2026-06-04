@@ -18,6 +18,7 @@
 //	get_screen   {tab_id}         -> {cols, rows, lines}
 //	get_scrollback {tab_id, ...}  -> {from, to, total, lines}
 //	send_input   {tab_id, bytes}
+//	send_keys    {tab_id, text?, keys?[]}
 //	send_paste   {tab_id, text}
 //	create_tab   {host?, name?, cols?, rows?} -> {tab_id, reused}
 //	close_tab    {tab_id}
@@ -38,6 +39,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/screentext"
+	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
@@ -183,6 +185,8 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 		return s.getScrollback(req.ID, req.Params)
 	case "send_input":
 		return s.sendInput(req.ID, req.Params)
+	case "send_keys":
+		return s.sendKeys(req.ID, req.Params)
 	case "send_paste":
 		return s.sendPaste(req.ID, req.Params)
 	case "create_tab":
@@ -216,6 +220,8 @@ func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
 		inner = s.closeTab(req.ID, p.Arguments)
 	case "send_input":
 		inner = s.sendInput(req.ID, p.Arguments)
+	case "send_keys":
+		inner = s.sendKeys(req.ID, p.Arguments)
 	case "send_paste":
 		inner = s.sendPaste(req.ID, p.Arguments)
 	default:
@@ -343,6 +349,36 @@ func (s *Server) sendInput(id json.RawMessage, params json.RawMessage) *rpcRespo
 	return okResp(id, map[string]bool{"ok": true})
 }
 
+func (s *Server) sendKeys(id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		TabID string   `json:"tab_id"`
+		Text  string   `json:"text,omitempty"`
+		Keys  []string `json:"keys,omitempty"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return rpcErrResp(id, -32602, err.Error())
+	}
+	src, ok := s.backend.SourceFor(p.TabID)
+	if !ok {
+		return rpcErrResp(id, -32004, "tab not found: "+p.TabID)
+	}
+	// Text first (typed verbatim), then the keys — so the common
+	// "type command, press enter" is one call with no escape grammar.
+	buf := []byte(p.Text)
+	kb, err := sendkeys.Translate(p.Keys, src.AppCursorMode())
+	if err != nil {
+		return rpcErrResp(id, -32602, err.Error())
+	}
+	buf = append(buf, kb...)
+	if len(buf) == 0 {
+		return rpcErrResp(id, -32602, "nothing to send: pass text and/or keys")
+	}
+	if _, err := src.Write(buf); err != nil {
+		return rpcErrResp(id, -32000, "write: "+err.Error())
+	}
+	return okResp(id, map[string]bool{"ok": true})
+}
+
 func (s *Server) sendPaste(id json.RawMessage, params json.RawMessage) *rpcResponse {
 	var p struct {
 		TabID string `json:"tab_id"`
@@ -417,7 +453,8 @@ func toolCatalog() []map[string]any {
 		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\".", "inputSchema": obj(map[string]any{})},
 		{"name": "get_screen", "description": "Read a tab's visible viewport. tab_id is the namespaced ID from list_tabs. Always includes cursor {row, col, visible}. With styled=true, lines become runs of styled text ({t, fg, bg, a}) instead of flat strings — use it to tell presentation apart from content: faint (a:\"faint\") text at/after the cursor is typically a TUI's autocomplete ghost text the user has NOT typed; red fg usually means an error.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "styled": map[string]any{"type": "boolean", "description": "return styled runs instead of flat lines"}}, "tab_id")},
 		{"name": "get_scrollback", "description": "Read a tab's scrollback history. Defaults to the last 200 rows. styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
-		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. \\r submits a shell command.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
+		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. The string is used as-is after standard JSON unescaping — no extra escape layer. Prefer send_keys for keystrokes (enter, ctrl+c, arrows): it cannot be mis-escaped.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
+		{"name": "send_keys", "description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is typed first, completely literally (no escape interpretation), then each `keys` token is pressed in order. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("literal text typed before the keys"), "keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "key tokens pressed in order"}}, "tab_id")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
 		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs (default \"\" = local)"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
 		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},

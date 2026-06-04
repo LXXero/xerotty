@@ -28,7 +28,7 @@
 // Supports the standard MCP shape (initialize / tools/list /
 // tools/call) AND native JSON-RPC methods for `nc -U` debugging.
 // Native methods: tabs/list, tab/screen, tab/scrollback,
-// tab/input, tab/paste, tab/create, tab/close, tab/resize,
+// tab/input, tab/keys, tab/paste, tab/create, tab/close, tab/resize,
 // tab/clipboard, proposals/{list,approve,drop}, agent/{mode,
 // authenticate,clients}, server/info.
 package mcp
@@ -45,6 +45,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/screentext"
+	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
@@ -202,6 +203,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleTabScrollback(req)
 	case "tab/input":
 		return c.handleTabInput(req)
+	case "tab/keys":
+		return c.handleTabKeys(req)
 	case "tab/paste":
 		return c.handleTabPaste(req)
 	case "tab/create":
@@ -572,6 +575,49 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 		return ok(req.ID, map[string]bool{"queued": true})
 	}
 	if _, err := t.Term.Write([]byte(p.Bytes)); err != nil {
+		return rpcErr(req.ID, -32000, "write: "+err.Error(), nil)
+	}
+	return ok(req.ID, map[string]bool{"ok": true})
+}
+
+// handleTabKeys is tab/input for named keystrokes: text typed
+// verbatim, then key tokens translated server-side (sendkeys) with
+// the tab's live app-cursor mode. Same propose-gating as tab/input —
+// the queued proposal carries the final translated bytes.
+func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		TabID uint32   `json:"tab_id"`
+		Text  string   `json:"text,omitempty"`
+		Keys  []string `json:"keys,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	t := sess.Tab(p.TabID)
+	if t == nil {
+		return rpcErr(req.ID, -32004, "tab not found", nil)
+	}
+	buf := []byte(p.Text)
+	kb, err := sendkeys.Translate(p.Keys, t.Term.AppCursorMode())
+	if err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	buf = append(buf, kb...)
+	if len(buf) == 0 {
+		return invalidParams(req.ID, "nothing to send: pass text and/or keys")
+	}
+	if c.modeIs("propose") {
+		sess.QueueProposedInput(p.TabID, buf)
+		return ok(req.ID, map[string]bool{"queued": true})
+	}
+	if _, err := t.Term.Write(buf); err != nil {
 		return rpcErr(req.ID, -32000, "write: "+err.Error(), nil)
 	}
 	return ok(req.ID, map[string]bool{"ok": true})
