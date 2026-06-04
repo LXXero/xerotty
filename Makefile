@@ -16,17 +16,29 @@ GO           := go
 
 UNAME_S := $(shell uname -s)
 
+# go generate needs the msgp binary (tinylib/msgp codegen for the
+# daemon wire format). It installs to $(go env GOPATH)/bin, which
+# isn't necessarily on the caller's PATH — prepend it for every
+# recipe so `make` is self-sufficient, same as build.sh.
+GOBIN := $(shell $(GO) env GOPATH)/bin
+export PATH := $(GOBIN):$(PATH)
+
 .PHONY: all build headless generate app install clean
 
 all: build
 
-# `generate` runs `go generate ./...` before any build. Currently a
-# no-op but the daemon protocol work will add tinylib/msgp codegen
-# directives for the wire format. Wiring it into the canonical build
-# target means schema-drift between Go structs and generated encoders
-# can never happen. Direct `go build` skips this; always build via
-# `make` or `build.sh` (which calls into this).
+# `generate` runs `go generate ./...` before any build so tinylib/msgp
+# regenerates the wire-format encoders in internal/protocol. Wiring it
+# into the canonical build target means schema-drift between Go structs
+# and generated encoders can never happen. Direct `go build` skips
+# this; always build via `make` or `build.sh` (which calls into this).
+# Installs msgp on first use — pinned to the version go.mod tracks so
+# the generator matches the runtime lib.
 generate:
+	@command -v msgp >/dev/null 2>&1 || { \
+		echo "make: installing tinylib/msgp..."; \
+		$(GO) install github.com/tinylib/msgp; \
+	}
 	$(GO) generate ./...
 
 build: generate
