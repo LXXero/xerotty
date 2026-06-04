@@ -446,6 +446,13 @@ func (s *Source) applyCellFull(f *protocol.CellFull) {
 			if int(c) >= len(row) {
 				break
 			}
+			// Skip wide-cell placeholders: SetCell on the wide glyph
+			// one column left already wrote them, and an explicit
+			// write here reads as a partial overwrite of the wide
+			// cell — Line.Set blanks the glyph itself.
+			if row[c].Width == 0 {
+				continue
+			}
 			cell := uvCellFromProto(row[c])
 			s.emu.SetCell(int(c), int(r), &cell)
 		}
@@ -457,6 +464,12 @@ func (s *Source) applyCellFull(f *protocol.CellFull) {
 func (s *Source) applyCellDiff(f *protocol.CellDiff) {
 	s.mu.Lock()
 	for _, e := range f.Cells {
+		// Same placeholder skip as applyCellFull — diffs scan
+		// row-major, so the wide glyph's own SetCell (one column
+		// left, same frame or an earlier one) owns the placeholder.
+		if e.Cell.Width == 0 {
+			continue
+		}
 		cell := uvCellFromProto(e.Cell)
 		s.emu.SetCell(int(e.Col), int(e.Row), &cell)
 	}
@@ -661,11 +674,16 @@ func uvCellFromProto(p protocol.Cell) uv.Cell {
 		Style:   style,
 		Width:   int(p.Width),
 	}
+	if c.Width == 0 {
+		// Wide-cell placeholder — the column under a width-2 glyph's
+		// right half. Must stay a true zero cell: forcing it to a
+		// width-1 space made scrollback rows overdraw the glyph's
+		// right half, and viewport applies (via Line.Set's partial-
+		// overwrite handling) blank the wide glyph entirely.
+		return uv.Cell{}
+	}
 	if c.Content == "" {
 		c.Content = " "
-	}
-	if c.Width == 0 {
-		c.Width = 1
 	}
 	return c
 }

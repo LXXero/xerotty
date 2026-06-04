@@ -50,7 +50,13 @@ func TestPUAGlyphsSurviveWire(t *testing.T) {
 	// we know the whole echo line landed, not a partial frame.
 	const bmpPUA = ""
 	const supPUA = "\U000F1062"
-	src.Write([]byte("echo " + bmpPUA + supPUA + " END\r"))
+	// U+5BBD 宽 is a width-2 CJK cell: replaying the daemon grid into
+	// the shadow emulator cell-by-cell writes the wire's placeholder
+	// column on top of the wide cell's auto-generated placeholder,
+	// which ultraviolet's Line.Set treats as a partial overwrite and
+	// blanks the glyph — wide cells need explicit regression cover.
+	const wideCJK = "宽"
+	src.Write([]byte("echo " + bmpPUA + supPUA + wideCJK + " END\r"))
 
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
@@ -70,5 +76,8 @@ func TestPUAGlyphsSurviveWire(t *testing.T) {
 	}
 	if !scanViewport(src, supPUA) {
 		t.Errorf("supplementary PUA glyph U+F1062 lost on the wire")
+	}
+	if !scanViewport(src, wideCJK) {
+		t.Errorf("width-2 cell U+5BBD lost on the wire")
 	}
 }
