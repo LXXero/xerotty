@@ -686,6 +686,20 @@ func (w *Window) openRemoteReattach(hostName string) error {
 		if nw == nil {
 			continue
 		}
+		// Same detach-time geometry restore as the local reattach
+		// path: the recorded size includes the tab bar, so the
+		// adopted multi-tab window keeps its full grid. Only fresh
+		// spawned windows — adoptIntoWindow itself must not resize
+		// the user's CURRENT window (the pending[0] case above).
+		if snap.Width > 0 && snap.Height > 0 {
+			nw.width, nw.height = int(snap.Width), int(snap.Height)
+			nw.pendingResize = true
+			nw.restoredGeom = true
+		}
+		if snap.PosX != 0 || snap.PosY != 0 {
+			nw.initialPosX, nw.initialPosY = float32(snap.PosX), float32(snap.PosY)
+			nw.hasInitialPos = true
+		}
 		nCols, nRows := nw.gridSize()
 		if nCols < 2 || nRows < 2 {
 			nCols, nRows = cols, rows
@@ -1975,6 +1989,18 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		w.daemonWindowID = snap.WindowID
 		a.installSourceFactory(w)
 		a.daemonHub.SetDefaultWindowID(snap.WindowID)
+		// Restore the recorded detach-time geometry (which includes
+		// the tab bar) over the cols×rows estimate; pendingResize is
+		// already set, so the next Begin applies it. Recorded
+		// position beats the cascade offset for the same reason.
+		if snap.Width > 0 && snap.Height > 0 {
+			w.width, w.height = int(snap.Width), int(snap.Height)
+			w.restoredGeom = true
+		}
+		if snap.PosX != 0 || snap.PosY != 0 {
+			w.initialPosX, w.initialPosY = float32(snap.PosX), float32(snap.PosY)
+			w.hasInitialPos = true
+		}
 		var focusIdx = -1
 		for i, ts := range snap.Tabs {
 			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
@@ -1997,9 +2023,9 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			w.tabs.ActiveIdx = focusIdx
 			w.tabSwitchReq = w.tabs.Tabs[focusIdx].ID
 		}
-		// Push current GUI geometry so a future reattach restores
-		// to the same on-screen position.
-		_ = a.daemonHub.Client().SendWindowGeometry(snap.WindowID, 0, 0, int32(w.width), int32(w.height))
+		// (Geometry pushes are owned by the per-frame pushGeometry
+		// dedupe now — no one-shot push here; it would just re-send
+		// the restored values.)
 	} else if a.daemonHub != nil {
 		// Fresh daemon window for this GUI window. CreateWindow
 		// correlates the reply by ReqID (router-demuxed).
@@ -2095,6 +2121,25 @@ func (a *App) Run() error {
 	a.theme = theme
 
 	w.width, w.height = w.initialWindowSize()
+
+	// Reattach restore: this (main) Window adopts the first queued
+	// daemon-window snapshot, so prefer that snapshot's recorded
+	// geometry over the configured cols×rows estimate. The recorded
+	// size is the live size at detach — INCLUDING the tab bar — so a
+	// multi-tab window comes back with its full grid instead of
+	// losing a row to the bar (the cols×rows estimate assumes a
+	// fresh window with no bar).
+	if len(a.daemonAdoptQueue) > 0 {
+		snap := a.daemonAdoptQueue[0]
+		if snap.Width > 0 && snap.Height > 0 {
+			w.width, w.height = int(snap.Width), int(snap.Height)
+			w.restoredGeom = true
+		}
+		if snap.PosX != 0 || snap.PosY != 0 {
+			w.initialPosX, w.initialPosY = float32(snap.PosX), float32(snap.PosY)
+			w.hasInitialPos = true
+		}
+	}
 
 	// platform.Init creates the SDL3 window + GL context and brings up
 	// Dear ImGui with the SDL3 + OpenGL3 backends. Replaces cimgui-go's
@@ -2209,6 +2254,12 @@ func (a *App) Run() error {
 		// Apply any forwarded single-instance launches before the
 		// window walk so a "new window" request renders this frame.
 		a.drainLaunchRequests()
+		// Keep the daemons' window-geometry hints tracking the live
+		// size/position (deduped to changes; values are last frame's,
+		// which is fine). Reattach restores from these.
+		for _, win := range a.windows {
+			win.pushGeometry()
+		}
 		// (Modifier resync is in beforeRender — it has to run BEFORE
 		// imgui.NewFrame consumes the input queue, otherwise the
 		// re-asserted modifier state only takes effect next frame
@@ -3164,18 +3215,26 @@ func (a *Window) frame() {
 		if cfgRows < 2 {
 			cfgRows = 24
 		}
-		pad := float32(a.app.cfg.Appearance.Padding) * 2
-		// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
-		desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMarginH + cellOriginInsetX)))
-		desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMarginV)))
-		if desiredW != a.width || desiredH != a.height {
-			// Every Window's OS geometry is driven by ImGui multi-
-			// viewport. Set width/height + pendingResize so the
-			// Begin in wrappedFrame uses CondAlways next frame.
-			a.width = desiredW
-			a.height = desiredH
-			a.pendingResize = true
-			a.skipDisplaySync = 2
+		// Skip the re-fit when reattach restored the previous
+		// session's recorded geometry: those are real pixels from a
+		// live window — tab bar included — not an estimate.
+		// "Correcting" them to a bare cols×rows grid here is exactly
+		// the reattach lost-row bug (the bar then reappears for the
+		// adopted tabs and eats a row).
+		if !a.restoredGeom {
+			pad := float32(a.app.cfg.Appearance.Padding) * 2
+			// Add cellSafetyMargin so gridSize() computes back to cfgCols/cfgRows.
+			desiredW := int(math.Ceil(float64(float32(cfgCols)*a.cellW + pad + cellSafetyMarginH + cellOriginInsetX)))
+			desiredH := int(math.Ceil(float64(float32(cfgRows)*a.cellH + pad + a.tabBarH + cellSafetyMarginV)))
+			if desiredW != a.width || desiredH != a.height {
+				// Every Window's OS geometry is driven by ImGui multi-
+				// viewport. Set width/height + pendingResize so the
+				// Begin in wrappedFrame uses CondAlways next frame.
+				a.width = desiredW
+				a.height = desiredH
+				a.pendingResize = true
+				a.skipDisplaySync = 2
+			}
 		}
 
 		// First-frame startup tab — no parent to inherit CWD from;

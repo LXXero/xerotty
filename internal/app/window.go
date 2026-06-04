@@ -163,6 +163,20 @@ type Window struct {
 	// back from the Window's local fontSize via its scale ratio.
 	pendingRemeasure bool
 
+	// lastGeom* dedupe the per-frame geometry push to the owning
+	// daemon(s) (pushGeometry): only changes go on the wire.
+	// geomPushed false means "never pushed yet".
+	geomPushed           bool
+	lastGeomX, lastGeomY int32
+	lastGeomW, lastGeomH int32
+
+	// restoredGeom means width/height were restored from a reattach
+	// snapshot's recorded geometry (real pixels from the previous
+	// session, tab bar included). The first-frame cols×rows re-fit
+	// must skip such windows — "correcting" them to a bare grid is
+	// exactly the reattach lost-row bug.
+	restoredGeom bool
+
 	// Multi-window plumbing. Every Window is equal: the cimgui-go
 	// primary SDL_Window stays hidden as an invisible "carrier" for
 	// the ImGui context, and every user-visible Window renders inside
@@ -373,4 +387,39 @@ func (w *Window) bgDrawList() *imgui.DrawList {
 // prefs / search overlays.
 func (w *Window) fgDrawList() *imgui.DrawList {
 	return imgui.ForegroundDrawListViewportPtrV(w.viewport())
+}
+
+// pushGeometry sends this Window's current position/size to every
+// daemon that has a server-side window for it, deduped to changes.
+// Called once per frame from the main loop. The daemon's geometry
+// hints are what a future reattach restores, so they must track live
+// resizes/moves: a spawn-time-only push bakes in the pre-tab-bar
+// height, and a reattached multi-tab window then comes back a row
+// short of its configured grid once the bar appears.
+func (w *Window) pushGeometry() {
+	if w.imViewport == nil {
+		return
+	}
+	pos := w.imViewport.Pos()
+	x, y := int32(pos.X), int32(pos.Y)
+	width, height := int32(w.width), int32(w.height)
+	if w.geomPushed && x == w.lastGeomX && y == w.lastGeomY &&
+		width == w.lastGeomW && height == w.lastGeomH {
+		return
+	}
+	pushed := false
+	if w.app.daemonHub != nil && w.daemonWindowID != 0 {
+		_ = w.app.daemonHub.Client().SendWindowGeometry(w.daemonWindowID, x, y, width, height)
+		pushed = true
+	}
+	w.daemonWindowIDsMu.Lock()
+	for hub, id := range w.daemonWindowIDs {
+		_ = hub.Client().SendWindowGeometry(id, x, y, width, height)
+		pushed = true
+	}
+	w.daemonWindowIDsMu.Unlock()
+	if pushed {
+		w.geomPushed = true
+		w.lastGeomX, w.lastGeomY, w.lastGeomW, w.lastGeomH = x, y, width, height
+	}
 }
