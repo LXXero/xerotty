@@ -17,6 +17,7 @@
 - [x] config dialog (preferences UI; flat font picker, theme picker, keybinds, clipboard, links, etc.)
 - [x] context menu submenus — `[[menu.items.submenu]]` nested arrays in TOML
 - [x] multi-window — single process, ImGui multi-viewport, one Dock icon for N OS windows
+- [x] lava-lamp glow backdrop — animated theme-derived blobs under the cell pass (`internal/app/glow.go`); opt-in, fps-capped self-wake
 
 ### Selection
 - [x] double-click word selection (3-class: word / whitespace / punctuation)

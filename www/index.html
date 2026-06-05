@@ -279,6 +279,38 @@ nav .links a:hover {
   line-height: 1.5;
 }
 
+/* ── cta buttons ── */
+.cta {
+  display: flex;
+  gap: 12px;
+  margin-top: 22px;
+  flex-wrap: wrap;
+}
+.btn {
+  display: inline-block;
+  padding: 9px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.92rem;
+  letter-spacing: 0.02em;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.btn:hover {
+  background: var(--accent-dim);
+  color: var(--fg-bright);
+}
+.btn.ghost {
+  border-color: rgba(176, 176, 176, 0.25);
+  color: var(--fg);
+  cursor: default;
+}
+.btn.ghost small {
+  opacity: 0.55;
+  margin-left: 6px;
+}
+
 /* ── features ── */
 .features {
   border-top: 1px solid var(--border);
@@ -503,9 +535,16 @@ footer {
       <span>Linux &amp; macOS</span>
     </div>
 
+    <div class="cta fade-in" style="animation-delay: 0.2s;">
+      <a class="btn" href="https://github.com/LXXero/xerotty">View on GitHub</a>
+      <!-- swap for a real release link once releases exist:
+           <a class="btn" href="https://github.com/LXXero/xerotty/releases/latest">Download</a> -->
+      <span class="btn ghost">Downloads<small>coming soon — build from source</small></span>
+    </div>
+
     <!-- screenshot -->
     <div class="terminal-frame fade-in" style="animation-delay: 0.35s;">
-      <img src="xerotty.png" alt="xerotty running on Linux — two tabs, a translucent window, and a zsh prompt"
+      <img src="xerotty.png" alt="xerotty running on Linux — tabs, a zsh prompt, and the animated lava-lamp glow backdrop"
            style="display:block; width:100%; height:auto;">
     </div>
   </div>
@@ -670,6 +709,10 @@ footer {
       <div class="feature-row">
         <div class="key">Themes</div>
         <div class="val">Dracula, Gruvbox, Monokai, Solarized, Tango bundled. Convert any iTerm2 <code>.itermcolors</code> to TOML with the included import tool. Switch at runtime.</div>
+      </div>
+      <div class="feature-row">
+        <div class="key">Lava lamp</div>
+        <div class="val">An animated glow backdrop &mdash; soft color blobs drifting behind your shell, derived from the active theme's accent colors (dracula glows purple, gruvbox glows amber). Opt-in, low-fps, stops burning cycles the instant you turn it off. Your terminal, but ambient.</div>
       </div>
       <div class="feature-row">
         <div class="key">Fonts</div>

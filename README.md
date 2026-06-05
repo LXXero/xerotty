@@ -19,6 +19,7 @@ The rest follows from "no, you don't have to fight your terminal":
 - Selection that respects how you started it — single-click drags by character, double-click drags by word, triple-click drags by line, with an iTerm2-style anchor that stays put.
 - Real bold from your font's bold face when one exists, faux-bold when it doesn't (Monaco-style), drawn through the OS font system so emoji and Nerd Font glyphs Just Work without you pre-declaring atlas ranges.
 - Theming via `[colors]` blocks or full `[theme]` files, including bundled iTerm2-imported palettes and a one-shot `tools/iterm2-import.go` for converting your own.
+- A lava-lamp mode, because a terminal you stare at all day might as well be beautiful: soft animated glow blobs drifting behind the cells, colored from the active theme (`[appearance.glow]`, opt-in).
 
 ## Status
 
@@ -32,6 +33,7 @@ Working daily-driver. Recent arcs: the SDL2→SDL3 platform migration, and an op
 - Unsafe-paste detection (multiline / `sudo` / `rm -rf` / `curl | sh` patterns) with a yes/no confirm dialog
 - Process-aware tab title from terminal escape sequences (OSC 0/1/2)
 - Fullscreen (F11), runtime theme switching, font zoom (Ctrl+= / Ctrl+- / Ctrl+0)
+- Lava-lamp glow backdrop — theme-derived animated color blobs behind the cells; opt-in, low-fps self-wake only while enabled (`[appearance.glow]` or the prefs dialog)
 
 ### Selection
 - Char-precise drag (single click), word-snap drag (double click), line-snap drag (triple click)
