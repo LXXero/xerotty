@@ -9,6 +9,7 @@ package runner
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,6 +48,14 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 	if err != nil {
 		return fmt.Errorf("upgrade: serialize: %w", err)
 	}
+	// Pass the wire listener through the exec so the socket never
+	// closes — reconnecting clients land on the new image with no
+	// connection-refused window. (The MCP socket re-binds fresh in
+	// the new image instead: agents reconnect per-request anyway.)
+	if lf := d.ListenerFile(); lf != nil {
+		st.WireListenFD = int(lf.Fd())
+		keepFiles = append(keepFiles, lf)
+	}
 
 	stateFile := filepath.Join(filepath.Dir(socketPath), "xerottyd.handoff")
 	if err := st.WriteFile(stateFile); err != nil {
@@ -83,16 +92,26 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 // resumeFromFile is the new image's side: load + delete the state
 // file, rebuild the session around the inherited fds. Runs before
 // the daemon starts listening so clients reconnecting mid-resume
-// can't observe a half-built session.
-func resumeFromFile(d *daemon.Daemon, path string) error {
+// can't observe a half-built session. Returns the inherited wire
+// listener when the old image passed one (nil = bind fresh).
+func resumeFromFile(d *daemon.Daemon, path string) (net.Listener, error) {
 	st, err := handoff.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// The file holds terminal contents — delete it the moment it's
 	// parsed, success or not below.
 	_ = os.Remove(path)
-	return d.ResumeFromHandoff(st)
+	var ln net.Listener
+	if st.WireListenFD >= 0 {
+		f := os.NewFile(uintptr(st.WireListenFD), "wire-listener")
+		if l, err := net.FileListener(f); err == nil {
+			ln = l
+			// FileListener dups the fd; drop ours.
+			_ = f.Close()
+		}
+	}
+	return ln, d.ResumeFromHandoff(st)
 }
 
 // upgradeOnSignal arms SIGUSR2 as the upgrade trigger (the nginx
@@ -121,13 +140,15 @@ func upgradeOnSignal(d *daemon.Daemon, mcpSrv *mcp.Server, socketPath, mcpSocket
 			close(upgrading)
 			// Quiesce: no new clients, no publishers mid-release.
 			// Step logs are deliberate — if an upgrade ever wedges,
-			// the last line names the stuck step.
+			// the last line names the stuck step. The wire listener
+			// is SUSPENDED, not stopped — its fd survives the exec
+			// so the socket never closes.
 			if mcpSrv != nil {
 				fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: stopping mcp")
 				_ = mcpSrv.Stop()
 			}
-			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: stopping listener")
-			_ = d.Stop()
+			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: suspending listener")
+			d.Suspend()
 			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: disconnecting clients")
 			d.DisconnectClients()
 			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: serializing")

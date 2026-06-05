@@ -7,6 +7,7 @@ package runner
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -89,12 +90,15 @@ func Serve(args []string) int {
 
 	d := daemon.New(&cfg, socketPath)
 
+	var inheritedLn net.Listener
 	if resumeFile != "" {
-		if err := resumeFromFile(d, resumeFile); err != nil {
+		ln, err := resumeFromFile(d, resumeFile)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "xerotty serve: resume: %v\n", err)
 			// Carry on as a fresh daemon: a partial resume already
 			// adopted what it could; a failed parse adopted nothing.
 		} else {
+			inheritedLn = ln
 			fmt.Fprintln(os.Stderr, "xerotty serve: resumed session from hot upgrade")
 		}
 	}
@@ -128,7 +132,11 @@ func Serve(args []string) int {
 
 	fmt.Fprintf(os.Stderr, "xerotty serve: listening on %s\n", socketPath)
 	fmt.Println(socketPath) // stdout so auto-spawn can locate the socket
-	err = d.Run()
+	if inheritedLn != nil {
+		err = d.RunWithListener(inheritedLn)
+	} else {
+		err = d.Run()
+	}
 	select {
 	case <-upgrading:
 		// An exec-in-place upgrade owns the process now: quiesce

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
@@ -39,6 +40,7 @@ type Daemon struct {
 	// "who's attached" UI.
 	clientsMu sync.Mutex
 	clients   map[*clientConn]struct{}
+	suspended atomic.Bool // upgrade quiesce: refuse new conns, keep listener
 
 	// Heartbeat tuning (Phase 10 layer 2). Defaults set in New;
 	// SetHeartbeat overrides them (tests use short windows). Read by
@@ -473,6 +475,16 @@ func (d *Daemon) Run() error {
 	if err != nil {
 		return fmt.Errorf("daemon: listen %s: %w", d.socketPath, err)
 	}
+	// Filesystem-perm gate: only this user can connect.
+	_ = os.Chmod(d.socketPath, 0o600)
+	return d.RunWithListener(ln)
+}
+
+// RunWithListener serves on an already-bound listener. The hot
+// upgrade's resume path uses this with the listener fd inherited
+// through the exec, so the socket never closes and reconnecting
+// clients never see a connection-refused window.
+func (d *Daemon) RunWithListener(ln net.Listener) error {
 	// Publish the listener under the lock. If Stop() already ran
 	// (raced ahead of us), tear down immediately instead of
 	// blocking forever in Accept.
@@ -485,8 +497,6 @@ func (d *Daemon) Run() error {
 	}
 	d.listener = ln
 	d.listenerMu.Unlock()
-	// Filesystem-perm gate: only this user can connect.
-	_ = os.Chmod(d.socketPath, 0o600)
 
 	for {
 		conn, err := ln.Accept()
@@ -498,8 +508,38 @@ func (d *Daemon) Run() error {
 			}
 			return fmt.Errorf("daemon: accept: %w", err)
 		}
+		if d.suspended.Load() {
+			// Upgrade in flight: the session is being serialized.
+			// Refuse instantly; the client's reconnect loop lands
+			// on the NEW image via the inherited listener.
+			_ = conn.Close()
+			continue
+		}
 		go d.serveConn(conn)
 	}
+}
+
+// Suspend makes the daemon refuse new connections without closing
+// the listener — upgrade quiesce. The listener itself survives the
+// exec (its fd passes through), so suspension here means "the next
+// image will take your call".
+func (d *Daemon) Suspend() { d.suspended.Store(true) }
+
+// ListenerFile dups the wire listener for handoff. Returns nil if
+// the daemon isn't serving on a unix listener.
+func (d *Daemon) ListenerFile() *os.File {
+	d.listenerMu.Lock()
+	ln := d.listener
+	d.listenerMu.Unlock()
+	ul, ok := ln.(*net.UnixListener)
+	if !ok || ul == nil {
+		return nil
+	}
+	f, err := ul.File()
+	if err != nil {
+		return nil
+	}
+	return f
 }
 
 // ServeConn handles one preexisting connection on this daemon. Used

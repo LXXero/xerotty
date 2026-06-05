@@ -144,7 +144,7 @@ func TestHotUpgradeE2E(t *testing.T) {
 	if !waitSock(sock) {
 		t.Fatal("daemon socket never came up")
 	}
-	wcDone := attachWireClient(t, sock)
+	wcDone, instanceA := attachWireClient(t, sock)
 	defer wcDone()
 
 	if !waitSock(mcpSock) {
@@ -246,6 +246,16 @@ func TestHotUpgradeE2E(t *testing.T) {
 	if _, err := probe2.call("tab/input", map[string]any{"tab_id": tabID, "bytes": "echo AGAIN_$$\r"}); err != nil {
 		t.Fatalf("post-upgrade input: %v", err)
 	}
+
+	// InstanceID continuity: a fresh wire attach must see the SAME
+	// instance — a hot upgrade is the same logical daemon, so
+	// clients keep their tombstones instead of dropping them like
+	// they would for a genuine restart.
+	wcDone2, instanceB := attachWireClient(t, sock)
+	defer wcDone2()
+	if instanceA == "" || instanceA != instanceB {
+		t.Fatalf("InstanceID changed across hot upgrade: %q -> %q", instanceA, instanceB)
+	}
 	want := "AGAIN_" + shellPID
 	deadline = time.Now().Add(8 * time.Second)
 	var lastErr error
@@ -272,7 +282,7 @@ func TestHotUpgradeE2E(t *testing.T) {
 // way a GUI would (the daemon only materializes a session on wire
 // attach). Keeps draining frames until the daemon hangs up on it at
 // upgrade time — which is expected and fine.
-func attachWireClient(t *testing.T, sock string) (cleanup func()) {
+func attachWireClient(t *testing.T, sock string) (cleanup func(), instanceID string) {
 	t.Helper()
 	cli, err := clientproto.Dial(sock)
 	if err != nil {
@@ -286,7 +296,8 @@ func attachWireClient(t *testing.T, sock string) (cleanup func()) {
 		t.Fatalf("wire attach: %v", err)
 	}
 	select {
-	case <-cli.Attached():
+	case att := <-cli.Attached():
+		instanceID = att.InstanceID
 	case <-time.After(5 * time.Second):
 		t.Fatal("never attached")
 	}
@@ -307,5 +318,5 @@ func attachWireClient(t *testing.T, sock string) (cleanup func()) {
 			}
 		}
 	}()
-	return func() { cli.Close() }
+	return func() { cli.Close() }, instanceID
 }
