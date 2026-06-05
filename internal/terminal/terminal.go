@@ -27,11 +27,11 @@ var Wake func()
 
 // Terminal wraps a SafeEmulator + PTY + reader goroutines for one tab.
 type Terminal struct {
-	Emu      *vt.SafeEmulator
-	ptmx     *os.File
-	cmd      *exec.Cmd
-	DataCh   chan struct{} // signals new data for rendering (buffered, cap 1)
-	OnTitle  func(string)  // called when OSC 0/2 sets window title
+	Emu     *vt.SafeEmulator
+	ptmx    *os.File
+	cmd     *exec.Cmd
+	DataCh  chan struct{} // signals new data for rendering (buffered, cap 1)
+	OnTitle func(string)  // called when OSC 0/2 sets window title
 
 	// OnChildExit fires from the waitChild goroutine the instant
 	// the PTY child reaps. Caller gets the exit code; the daemon
@@ -71,6 +71,7 @@ type Terminal struct {
 
 	cols        int
 	rows        int
+	released    bool // ReleaseForHandoff() ran — fds surrendered, goroutines stopped
 	closed      bool // Close() has run and released resources
 	childExited bool // child process has exited (Wait() returned)
 	ExitCode    int  // exit code of child process (-1 = still running or unknown)
@@ -113,6 +114,12 @@ type Terminal struct {
 	// ring for the rest.
 	disk       *DiskScrollback
 	liveWindow int // soft cap on in-mem scrollback when disk-backed
+
+	// adoptedProc is set instead of cmd for terminals rebuilt around
+	// an inherited PTY + child PID (hot-upgrade resume, see
+	// handoff.go). waitChild/Close use it when cmd is nil — legal
+	// only because exec-in-place keeps us the child's parent.
+	adoptedProc *os.Process
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -158,7 +165,15 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 	t.cursorVisible.Store(true)
 	t.cursorStyle.Store(packCursorStyle(0, true)) // style 0 = block, blink
 
-	emu.Emulator.SetCallbacks(vt.Callbacks{
+	t.installCallbacks()
+	t.startPipelines()
+	return t, nil
+}
+
+// installCallbacks wires the vt emulator's event callbacks to this
+// Terminal's state + observer hooks. Shared by New and Adopt.
+func (t *Terminal) installCallbacks() {
+	t.Emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
 			// Snapshot OnTitle under t.mu so this read doesn't
 			// race a concurrent SetOnTitle. The callback itself
@@ -217,15 +232,17 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 			}
 		},
 	})
+}
 
+// startPipelines launches the PTY reader, the emulator-response
+// reader, and the child waiter. Shared by New and Adopt.
+func (t *Terminal) startPipelines() {
 	// PTY Reader goroutine: PTY → SafeEmulator
 	go t.readPTY()
 	// Emulator Reader goroutine: SafeEmulator → PTY (device responses)
 	go t.readEmu()
 	// Wait for child process exit
 	go t.waitChild()
-
-	return t, nil
 }
 
 // liveWindowDefault is how many recent lines we keep in vt's
@@ -387,10 +404,10 @@ func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
 // emulator. Defined here so callers can use *terminal.Terminal as
 // the renderer.EmulatorView interface without changing every site
 // to dig through .Emu.
-func (t *Terminal) Width() int                  { return t.Emu.Width() }
-func (t *Terminal) Height() int                 { return t.Emu.Height() }
+func (t *Terminal) Width() int                   { return t.Emu.Width() }
+func (t *Terminal) Height() int                  { return t.Emu.Height() }
 func (t *Terminal) CellAt(col, row int) *uv.Cell { return t.Emu.CellAt(col, row) }
-func (t *Terminal) CursorPosition() uv.Position { return t.Emu.CursorPosition() }
+func (t *Terminal) CursorPosition() uv.Position  { return t.Emu.CursorPosition() }
 
 // Write sends data to the PTY (keyboard input).
 func (t *Terminal) Write(p []byte) (int, error) {
@@ -432,8 +449,10 @@ func (t *Terminal) Close() {
 		if pw, ok := t.Emu.InputPipe().(*io.PipeWriter); ok {
 			_ = pw.CloseWithError(io.EOF)
 		}
-		if t.cmd.Process != nil {
+		if t.cmd != nil && t.cmd.Process != nil {
 			_ = t.cmd.Process.Kill()
+		} else if t.adoptedProc != nil {
+			_ = t.adoptedProc.Kill()
 		}
 		_ = t.ptmx.Close()
 		// waitChild goroutine handles cmd.Wait()
@@ -723,18 +742,31 @@ func (t *Terminal) IsClosed() bool {
 // reader has nothing to read; no MsgChildExit because nobody sent
 // it).
 func (t *Terminal) waitChild() {
-	err := t.cmd.Wait()
-	t.mu.Lock()
-	if err == nil {
-		t.ExitCode = 0
-	} else if exitErr, ok := err.(*exec.ExitError); ok {
-		t.ExitCode = exitErr.ExitCode()
+	var code int
+	if t.cmd != nil {
+		err := t.cmd.Wait()
+		if err == nil {
+			code = 0
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else {
+			code = 1
+		}
 	} else {
-		t.ExitCode = 1
+		// Adopted child (hot-upgrade resume): wait by pid. Works
+		// because exec-in-place preserved our PID, so the shell is
+		// still OUR child.
+		st, err := t.adoptedProc.Wait()
+		if err == nil && st != nil {
+			code = st.ExitCode()
+		} else {
+			code = 1
+		}
 	}
+	t.mu.Lock()
+	t.ExitCode = code
 	t.childExited = true
 	cb := t.OnChildExit
-	code := t.ExitCode
 	t.mu.Unlock()
 	if cb != nil {
 		cb(code)
