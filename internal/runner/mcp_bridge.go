@@ -184,6 +184,14 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 			swallowReplay = true
 			fmt.Fprintf(os.Stderr, "xerotty mcp: re-asserted mode %q after reconnect\n", lastMode)
 		}
+		if !firstDial {
+			// The server behind the socket may be a NEW BINARY (that
+			// is the whole point of hot upgrades) with a different
+			// tool catalog. Nudge the client to re-fetch tools/list —
+			// without this, new tools stay invisible until the user
+			// restarts their session.
+			fmt.Fprintln(out, `{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}`)
+		}
 		firstDial = false
 		connStart := time.Now()
 

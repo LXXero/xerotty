@@ -27,7 +27,11 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 	return ok(req.ID, map[string]any{
 		"protocolVersion": mcpProtocolVersion,
 		"capabilities": map[string]any{
-			"tools": map[string]any{},
+			// listChanged: the BRIDGE emits the notification after a
+			// reconnect (a daemon upgrade may have changed the tool
+			// catalog); declaring the capability is what makes the
+			// client honor it.
+			"tools": map[string]any{"listChanged": true},
 		},
 		"serverInfo": map[string]any{
 			"name":    "xerotty",

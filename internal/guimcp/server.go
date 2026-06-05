@@ -169,7 +169,7 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 	case "initialize":
 		return okResp(req.ID, map[string]any{
 			"protocolVersion": "2025-06-18",
-			"capabilities":    map[string]any{"tools": map[string]any{}},
+			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": true}},
 			"serverInfo":      map[string]any{"name": "xerotty-gui", "version": "0.1.0"},
 			// Usage briefing injected into the agent's context by the
 			// client (same idea as the daemon server's instructions).
