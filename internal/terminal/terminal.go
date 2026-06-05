@@ -1004,10 +1004,23 @@ func (t *Terminal) GetCWD() string {
 	// Bail once closed: Close() sets t.closed (under t.mu) BEFORE it
 	// closes the PTY, so checking it here under the same lock keeps us
 	// from touching the process/fd as it's torn down.
-	if t.closed || t.cmd == nil || t.cmd.Process == nil {
+	if t.closed {
 		return ""
 	}
-	return processCWD(t.cmd.Process.Pid)
+	// The child pid lives in cmd for spawned terminals and in
+	// adoptedProc for hot-upgrade-adopted ones — checking only cmd
+	// made every tab's cwd read as empty after an upgrade.
+	pid := 0
+	switch {
+	case t.cmd != nil && t.cmd.Process != nil:
+		pid = t.cmd.Process.Pid
+	case t.adoptedProc != nil:
+		pid = t.adoptedProc.Pid
+	}
+	if pid <= 0 {
+		return ""
+	}
+	return processCWD(pid)
 }
 
 // ForegroundProcessName returns the executable name of the PTY's

@@ -123,6 +123,12 @@ func TestReleaseAdoptShellSurvives(t *testing.T) {
 		t.Fatal("scrollback rows unreadable after adopt")
 	}
 
+	// CWD must resolve through the adopted pid (regression: cmd-only
+	// lookup read "" for every tab after a hot upgrade).
+	if cwd := neu.GetCWD(); cwd == "" {
+		t.Error("GetCWD empty on adopted terminal")
+	}
+
 	// And it's STILL THE SAME LIVE SHELL: new input round-trips.
 	if _, err := neu.Write([]byte("echo ALIVE_AFTER_$((40+2))\r")); err != nil {
 		t.Fatalf("post-adopt write: %v", err)
