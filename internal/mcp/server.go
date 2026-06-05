@@ -41,9 +41,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/handoff"
+	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
@@ -427,7 +430,43 @@ func (c *agentConn) handleServerInfo(req *rpcRequest) *rpcResponse {
 	return ok(req.ID, map[string]any{
 		"hostname": host,
 		"pid":      os.Getpid(),
+		// Build identity — the reliable "did the hot upgrade actually
+		// swap the code?" probe. PID and process start time both
+		// survive exec-in-place, so they can't answer that; the VCS
+		// revision baked into the binary can.
+		"revision":         buildRevision(),
+		"protocol_version": int(protocol.ProtocolVersion),
+		"handoff_version":  int(handoff.Version),
 	})
+}
+
+// buildRevision returns the VCS revision Go embedded at build time
+// ("+dirty" when the tree was modified), or "unknown" for non-VCS
+// builds (go test binaries etc.).
+func buildRevision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev, dirty := "", false
+	for _, kv := range bi.Settings {
+		switch kv.Key {
+		case "vcs.revision":
+			rev = kv.Value
+		case "vcs.modified":
+			dirty = kv.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "unknown"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "+dirty"
+	}
+	return rev
 }
 
 func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
