@@ -783,7 +783,7 @@ func (c *agentConn) requireWrite() error {
 	case "auto", "propose":
 		return nil
 	default:
-		return fmt.Errorf("write blocked in observe mode; set agent/mode to auto or propose first")
+		return fmt.Errorf(`write blocked in observe mode — call the set_agent_mode tool with {"mode":"auto"} (or "propose") on this connection first, then retry`)
 	}
 }
 

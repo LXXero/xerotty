@@ -57,6 +57,13 @@ connection — the client's retry covers it). The bridge exits only
 when its stdin closes (the client is gone) or nothing comes back
 within the window.
 
+Because the daemon's trust mode is **per-connection** state, the
+bridge also re-asserts the client's last requested mode (from
+`set_agent_mode`) on every reconnect — without that, each daemon
+upgrade silently demoted agents back to `observe` and their next
+write failed mysteriously. A flap guard backs off when connections
+die young so a bouncing server can't induce a reconnect storm.
+
 ### How discovery works
 
 Servers **record** where they actually bound (a pathfile under

@@ -2,6 +2,8 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -93,6 +95,43 @@ func MCPBridge(args []string) int {
 // daemon hot upgrade or a GUI restart comfortably.
 const reconnectWindow = 30 * time.Second
 
+// bridgeModeReplayID tags the synthetic agent/mode request the
+// bridge injects after a reconnect; its response is swallowed so the
+// client never sees traffic it didn't send.
+const bridgeModeReplayID = "xerotty-bridge-mode-replay"
+
+// sniffModeSet inspects an outbound request line for a mode change
+// (native agent/mode or the set_agent_mode tool) and returns the
+// requested mode. The daemon's trust mode is per-CONNECTION state —
+// without replaying it after a reconnect, every daemon hot upgrade
+// silently demoted agents back to observe and their next write
+// failed mysteriously.
+func sniffModeSet(line []byte) (string, bool) {
+	if !bytes.Contains(line, []byte("mode")) {
+		return "", false
+	}
+	var req struct {
+		Method string `json:"method"`
+		Params struct {
+			Mode      string `json:"mode"`
+			Name      string `json:"name"`
+			Arguments struct {
+				Mode string `json:"mode"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(line, &req); err != nil {
+		return "", false
+	}
+	switch {
+	case req.Method == "agent/mode" && req.Params.Mode != "":
+		return req.Params.Mode, true
+	case req.Method == "tools/call" && req.Params.Name == "set_agent_mode" && req.Params.Arguments.Mode != "":
+		return req.Params.Arguments.Mode, true
+	}
+	return "", false
+}
+
 // runBridge pumps newline-delimited JSON-RPC between in/out and
 // whatever discover() connects to, reconnecting on socket loss.
 // Reads from `in` are line-framed so a reconnect can never split a
@@ -112,6 +151,7 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 	}()
 
 	firstDial := true
+	lastMode := "" // last client-requested trust mode, replayed on reconnect
 	for {
 		var conn net.Conn
 		deadline := time.Now().Add(reconnectWindow)
@@ -134,13 +174,36 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 			fmt.Fprintf(os.Stderr, "xerotty mcp: no MCP socket came back within %s — giving up\n", reconnectWindow)
 			return 1
 		}
+		// Re-assert the client's trust mode on the fresh connection
+		// (per-connection daemon state — see sniffModeSet). The
+		// response is swallowed below by its synthetic id.
+		swallowReplay := false
+		if !firstDial && lastMode != "" {
+			fmt.Fprintf(conn, `{"jsonrpc":"2.0","id":%q,"method":"agent/mode","params":{"mode":%q}}`+"\n",
+				bridgeModeReplayID, lastMode)
+			swallowReplay = true
+			fmt.Fprintf(os.Stderr, "xerotty mcp: re-asserted mode %q after reconnect\n", lastMode)
+		}
 		firstDial = false
+		connStart := time.Now()
 
-		// Server → client, until the server hangs up.
+		// Server → client, line-framed so the mode-replay response
+		// can be filtered out; everything else passes through.
 		done := make(chan struct{})
 		go func() {
-			_, _ = io.Copy(out, conn)
-			close(done)
+			defer close(done)
+			sc := bufio.NewScanner(conn)
+			sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
+			for sc.Scan() {
+				line := sc.Bytes()
+				if swallowReplay && bytes.Contains(line, []byte(bridgeModeReplayID)) {
+					swallowReplay = false
+					continue
+				}
+				if _, err := out.Write(append(append([]byte{}, line...), '\n')); err != nil {
+					return
+				}
+			}
 		}()
 
 		alive := true
@@ -158,6 +221,9 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 					<-done
 					return 0
 				}
+				if m, ok := sniffModeSet(b); ok {
+					lastMode = m
+				}
 				if _, err := conn.Write(b); err != nil {
 					// This request is lost (its response would have
 					// died with the conn anyway). The client's
@@ -173,5 +239,10 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 		}
 		_ = conn.Close()
 		<-done
+		// Flap guard: a connection that died young means the server
+		// is bouncing — don't tight-loop redial+replay against it.
+		if time.Since(connStart) < time.Second {
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 }

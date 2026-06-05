@@ -119,3 +119,98 @@ func TestBridgeReconnects(t *testing.T) {
 		t.Fatalf("bridge never reconnected (dials=%d)", dials.Load())
 	}
 }
+
+// TestBridgeReplaysModeAcrossReconnect: the daemon's trust mode is
+// per-connection, so the bridge must re-assert the client's last
+// requested mode on every reconnect — otherwise a daemon hot upgrade
+// silently demotes agents to observe and their writes start failing.
+func TestBridgeReplaysModeAcrossReconnect(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	received := make(chan string, 64)
+	var connN atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			n := connN.Add(1)
+			go func(c net.Conn, n int32) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				for i := 0; ; i++ {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					received <- line
+					fmt.Fprintf(c, `{"jsonrpc":"2.0","id":"resp-%d","result":{}}`+"\n", i)
+					if n == 1 {
+						return // first conn drops after one request → forces ONE reconnect
+					}
+				}
+			}(c, n)
+		}
+	}()
+
+	pr, pw := io.Pipe()
+	go func() {
+		// Elevate via the MCP tool shape, then send a write after the
+		// server has dropped the first conn.
+		fmt.Fprintln(pw, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"set_agent_mode","arguments":{"mode":"auto"}}}`)
+		time.Sleep(400 * time.Millisecond)
+		fmt.Fprintln(pw, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_input","arguments":{"tab_id":1,"bytes":"x"}}}`)
+		time.Sleep(1200 * time.Millisecond) // span the flap-guard backoff
+		pw.Close()
+	}()
+	var out bytes.Buffer
+	discover := func() net.Conn {
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			return nil
+		}
+		return c
+	}
+	if code := runBridge(discover, pr, &out); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+
+	var lines []string
+	for {
+		select {
+		case l := <-received:
+			lines = append(lines, l)
+		default:
+			goto donedrain
+		}
+	}
+donedrain:
+	// Expect: conn1 got set_agent_mode; conn2 (post-drop) got the
+	// REPLAYED agent/mode BEFORE the send_input.
+	replayed := -1
+	input := -1
+	for i, l := range lines {
+		if strings.Contains(l, bridgeModeReplayID) && strings.Contains(l, `"auto"`) {
+			replayed = i
+		}
+		if strings.Contains(l, "send_input") {
+			input = i
+		}
+	}
+	if replayed == -1 {
+		t.Fatalf("mode never replayed on reconnect; server saw:\n%s", strings.Join(lines, ""))
+	}
+	if input != -1 && replayed > input {
+		t.Fatalf("replay arrived after the write it was meant to protect")
+	}
+	// And the client must never see the synthetic replay response.
+	if strings.Contains(out.String(), bridgeModeReplayID) {
+		t.Fatalf("replay response leaked to client: %q", out.String())
+	}
+}
