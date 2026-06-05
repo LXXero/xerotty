@@ -1041,9 +1041,8 @@ func (a *Window) renderPrefAppearance() {
 		if imgui.BeginTableV("##pair_blink", 2, 0, imgui.NewVec2(0, 0), 0) {
 			imgui.TableNextColumn()
 			imgui.Checkbox("Cursor Blink", &d.cursorBlink)
-			imgui.SameLineV(0, 16)
-			imgui.Text("Blink Rate (ms)")
 			imgui.TableNextColumn()
+			imgui.Text("Blink Rate (ms)")
 			imgui.SetNextItemWidth(w)
 			imgui.SliderInt("##blinkrate", &d.blinkRate, 100, 2000)
 			imgui.EndTable()
@@ -1060,9 +1059,8 @@ func (a *Window) renderPrefAppearance() {
 		if imgui.BeginTableV("##pair_overlay", 2, 0, imgui.NewVec2(0, 0), 0) {
 			imgui.TableNextColumn()
 			imgui.Checkbox("Resize Overlay", &d.resizeOverlay)
-			imgui.SameLineV(0, 16)
-			imgui.Text("Overlay Duration (s)")
 			imgui.TableNextColumn()
+			imgui.Text("Overlay Duration (s)")
 			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##resizedur", &d.resizeOverlayDur, 0.1, 5.0)
 			imgui.EndTable()
