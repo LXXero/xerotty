@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/handoff"
 	"github.com/LXXero/xerotty/internal/mcp"
@@ -84,10 +86,12 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 
 	// Everything that must survive the exec loses FD_CLOEXEC now —
 	// Go opens fds cloexec by design, survival is opt-in per fd.
+	// unix.FcntlInt, not a raw syscall: raw syscalls are deprecated
+	// on darwin (libc is the only supported gate there).
 	for _, f := range keepFiles {
 		fd := int(f.Fd())
-		if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, uintptr(fd), syscall.F_SETFD, 0); errno != 0 {
-			return fmt.Errorf("upgrade: clear cloexec on fd %d: %v", fd, errno)
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, 0); err != nil {
+			return fmt.Errorf("upgrade: clear cloexec on fd %d: %w", fd, err)
 		}
 	}
 
