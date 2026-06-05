@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/handoff"
@@ -41,6 +42,25 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 	}
 	if bin, err = filepath.Abs(bin); err != nil {
 		return fmt.Errorf("upgrade: abs: %w", err)
+	}
+
+	// VALIDATION GATE — runs while aborting is still free. The new
+	// binary must prove it executes and speaks this handoff version
+	// by validating a synthetic probe file as a child process.
+	// After SerializeUpgrade the terminals are released and there is
+	// no way back, so a broken/incompatible target binary has to be
+	// caught HERE to mean "upgrade aborted, sessions intact" rather
+	// than "sessions lost".
+	probe := filepath.Join(filepath.Dir(socketPath), "xerottyd.handoff.probe")
+	probeState := &handoff.State{WireListenFD: -1, MCPListenFD: -1}
+	if err := probeState.WriteFile(probe); err != nil {
+		return fmt.Errorf("upgrade: write probe: %w", err)
+	}
+	vout, verr := exec.Command(bin, "serve", "--validate-handoff", probe).CombinedOutput()
+	_ = os.Remove(probe)
+	if verr != nil {
+		return fmt.Errorf("upgrade: validation gate: %s rejected handoff v%d (%v: %s) — aborted with sessions intact",
+			bin, handoff.Version, verr, strings.TrimSpace(string(vout)))
 	}
 
 	// Point of no return starts here: terminals release inside.
@@ -162,6 +182,57 @@ func upgradeOnSignal(d *daemon.Daemon, mcpSrv *mcp.Server, socketPath, mcpSocket
 		}
 	}()
 	return upgrading
+}
+
+// upgradeCLI implements `xerotty serve --upgrade`: find the running
+// daemon through its socket (SO_PEERCRED — no pidfile to go stale),
+// send SIGUSR2, and confirm the daemon is still answering after.
+// The daemon does the rest (see upgradeOnSignal).
+func upgradeCLI(socketPath string) int {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: no daemon on %s: %v\n", socketPath, err)
+		return 1
+	}
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		conn.Close()
+		fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: not a unix socket connection")
+		return 1
+	}
+	pid, err := peerPID(uc)
+	conn.Close()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: peer pid: %v\n", err)
+		return 1
+	}
+	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: signal daemon %d: %v\n", pid, err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: triggered hot upgrade of daemon %d\n", pid)
+	// Confirm the (same-pid) daemon is serving again. The listener
+	// fd passes through the exec so dial keeps succeeding; the
+	// meaningful check is that the PROCESS survived — exec failure
+	// exits it.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(pid, 0); err != nil {
+			fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: daemon died during upgrade — check its log; sessions may be lost")
+			return 1
+		}
+		if c, err := net.Dial("unix", socketPath); err == nil {
+			c.Close()
+			time.Sleep(300 * time.Millisecond) // let the exec land
+			if err := syscall.Kill(pid, 0); err == nil {
+				fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: daemon %d upgraded and serving\n", pid)
+				return 0
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: timed out confirming; check the daemon log")
+	return 1
 }
 
 // upgradeTargetBinary picks what to exec, in order:

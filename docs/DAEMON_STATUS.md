@@ -41,6 +41,10 @@ Key end-to-end tests:
 - `mcp.TestMCPStandardProtocol`, `TestMCPTrustBoundary`.
 - `terminal.TestCursorStyleDECSCUSR`.
 
+Hot upgrade: after installing a new build, `xerotty serve --upgrade`
+swaps the running daemon's binary in place — shells, scrollback, tab
+IDs, and InstanceID survive (`docs/UPGRADE_PLAN.md`).
+
 Try daemon mode live: put `source = "daemon"` under `[tabs]` in
 your config, launch `xerotty`. It auto-spawns `xerotty serve`
 (detached), and tabs now survive closing the GUI.

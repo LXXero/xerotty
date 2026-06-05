@@ -59,6 +59,7 @@
 - [x] multi-attach + topology broadcast + snapshot/revision resync
 - [x] connection resilience — dead/hung/slept client detection (async bounded writers, app heartbeat, write deadlines, SSH keepalive); live-validated
 - [x] `./build.sh headless` — lean `serve` + `connect` binary, no SDL3/GL/ImGui linked, for server installs
+- [x] daemon hot upgrade — `xerotty serve --upgrade` / SIGUSR2 exec-in-place binary swap; shells + scrollback + tab IDs + InstanceID survive, wire listener fd passes through the exec, pre-exec validation gate (`docs/UPGRADE_PLAN.md`)
 - [x] `xerotty mcp` — stdio↔socket bridge so MCP clients (`claude mcp add xerotty -- xerotty mcp`) get the tool surface natively; `docs/MCP.md`
 
 ## Open
@@ -69,7 +70,6 @@
 - [ ] iTerm2-style "smart selection" — URL / path / IP / git-hash auto-detect on quad-click or modifier-drag
 - [ ] daemon: SHM local cell-grid transport (Plan Phase 8) — deferred; msgpack is fast enough so far
 - [ ] daemon: per-host color badges + destructive-command gate for remote sessions (Plan Phase 6 future)
-- [ ] daemon: hot upgrade (`serve --upgrade`) — pass PTY master fds + session state to a freshly-exec'd new daemon over SCM_RIGHTS (nginx/haproxy-style), so a binary swap no longer kills sessions. GUI upgrades already survive via detach/reattach; this closes the daemon half. Hard parts: emulator-state serialization (or scrollback replay) + a version-stable handoff mini-protocol.
 
 ## Notes
 

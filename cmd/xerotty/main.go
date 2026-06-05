@@ -49,6 +49,11 @@ USAGE
                              socket, falling back to the local
                              daemon's. See docs/MCP.md.
 
+  xerotty serve --upgrade    Hot-upgrade the RUNNING daemon to the
+                             currently-installed binary. Shells and
+                             tabs survive (exec-in-place; see
+                             docs/UPGRADE_PLAN.md).
+
   xerotty serve   --help     Show flags for the serve subcommand.
   xerotty connect --help     Show flags for the connect subcommand.
   xerotty mcp     --help     Show flags for the mcp bridge.
@@ -62,6 +67,10 @@ COMMON RECIPES
     $ xerotty connect --ssh user@host
     (spawns "ssh user@host xerotty serve --stdio" — make sure the
      same xerotty is on that box's PATH, or use --remote-cmd.)
+
+  Upgrade a running daemon after installing a new build (sessions
+  survive — no more losing tabs to a binary swap):
+    $ xerotty serve --upgrade
 
   Let Claude Code drive xerotty tabs as MCP tools (one-time setup):
     $ claude mcp add xerotty -- xerotty mcp

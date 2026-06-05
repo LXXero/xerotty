@@ -14,6 +14,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/handoff"
 	"github.com/LXXero/xerotty/internal/mcp"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/sockpath"
@@ -47,8 +48,30 @@ func Serve(args []string) int {
 	fs.BoolVar(&stdioEphemeral, "stdio-ephemeral", false, "old --stdio behavior: serve one client on stdin/stdout from an in-process daemon that dies with the connection. Loses tabs on disconnect.")
 	var resumeFile string
 	fs.StringVar(&resumeFile, "resume", "", "resume from a hot-upgrade handoff file (internal: set by the exec-in-place upgrade)")
+	var validateHandoff string
+	fs.StringVar(&validateHandoff, "validate-handoff", "", "validate a handoff file and exit (internal: the upgrade's pre-exec gate)")
+	var doUpgrade bool
+	fs.BoolVar(&doUpgrade, "upgrade", false, "hot-upgrade the RUNNING daemon to the currently-installed binary (shells survive), then exit")
 	if err := fs.Parse(args); err != nil {
 		return 1
+	}
+
+	if validateHandoff != "" {
+		// Pre-exec gate: prove this binary parses + version-accepts
+		// the handoff format. Exit code is the whole contract.
+		if _, err := handoff.ReadFile(validateHandoff); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty serve: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	if doUpgrade {
+		target := socketPath
+		if target == "" {
+			target = defaultSocketPath()
+		}
+		return upgradeCLI(target)
 	}
 
 	cfg, err := config.Load()

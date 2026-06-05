@@ -194,8 +194,12 @@ func TestHotUpgradeE2E(t *testing.T) {
 	}
 
 	// ---- THE UPGRADE ----
-	if err := srv.Process.Signal(syscall.SIGUSR2); err != nil {
-		t.Fatalf("signal: %v", err)
+	// Through the real CLI: peer-pid discovery via SO_PEERCRED, the
+	// SIGUSR2 trigger, the pre-exec validation gate, the exec.
+	up := exec.Command(bin, "serve", "--upgrade", "--socket", sock)
+	up.Env = srv.Env
+	if out, err := up.CombinedOutput(); err != nil {
+		t.Fatalf("serve --upgrade: %v\n%s", err, out)
 	}
 
 	// Wait for the OLD listener to actually go down first —

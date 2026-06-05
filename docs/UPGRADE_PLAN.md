@@ -1,5 +1,13 @@
 # Daemon hot upgrade — design + phases
 
+**Status: SHIPPED (all phases).** `xerotty serve --upgrade` (or
+`kill -USR2`) replaces the running daemon binary without killing
+the shells it hosts; the wire listener fd passes through the exec
+so clients reconnect with zero refused-connection window, and
+InstanceID is preserved (same logical daemon). The pre-exec
+validation gate aborts cleanly on an incompatible target binary.
+E2E: internal/runner/upgrade_e2e_test.go.
+
 Goal: `xerotty serve --upgrade` replaces the running daemon binary
 WITHOUT killing the shells it hosts. Today a daemon binary swap
 costs every session (the "daemon dance"); the GUI half already
