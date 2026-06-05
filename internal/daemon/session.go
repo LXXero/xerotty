@@ -403,6 +403,38 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string) (*Ta
 	if name != "" {
 		s.tabsByName[name] = t.ID
 	}
+	s.wireTabCallbacks(t)
+
+	var w *Window
+	if windowID != 0 {
+		for _, candidate := range s.windows {
+			if candidate.ID == windowID {
+				w = candidate
+				break
+			}
+		}
+	}
+	if w == nil {
+		w = s.ensureDefaultWindowLocked()
+	}
+	w.TabIDs = append(w.TabIDs, t.ID)
+	if w.FocusedTabID == 0 {
+		w.FocusedTabID = t.ID
+	}
+	if s.focusedTabID == 0 {
+		s.focusedTabID = t.ID
+	}
+	s.revision++
+	return t, w, nil
+}
+
+// wireTabCallbacks installs the Terminal → Session/Daemon event
+// plumbing for a tab: title, bell + OSC 52 fan-out, child-exit
+// latching. Shared by NewTab and the hot-upgrade resume path
+// (restoreTab), which rebuilds tabs around adopted terminals and
+// must not drift from the live-create wiring.
+func (s *Session) wireTabCallbacks(t *Tab) {
+	term := t.Term
 	term.SetOnTitle(func(title string) {
 		t.SetTitle(title)
 	})
@@ -439,28 +471,6 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string) (*Ta
 		atomic.StoreInt32(&t.ExitCode, int32(code))
 		close(t.Exited)
 	})
-
-	var w *Window
-	if windowID != 0 {
-		for _, candidate := range s.windows {
-			if candidate.ID == windowID {
-				w = candidate
-				break
-			}
-		}
-	}
-	if w == nil {
-		w = s.ensureDefaultWindowLocked()
-	}
-	w.TabIDs = append(w.TabIDs, t.ID)
-	if w.FocusedTabID == 0 {
-		w.FocusedTabID = t.ID
-	}
-	if s.focusedTabID == 0 {
-		s.focusedTabID = t.ID
-	}
-	s.revision++
-	return t, w, nil
 }
 
 // EnsureInitialTab atomically guarantees the session has at least

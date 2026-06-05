@@ -3,6 +3,7 @@ package terminal
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -760,6 +761,7 @@ func (t *Terminal) waitChild() {
 		if err == nil && st != nil {
 			code = st.ExitCode()
 		} else {
+			fmt.Fprintf(os.Stderr, "xerotty: adopted waitChild pid %d: err=%v st=%v\n", t.adoptedProc.Pid, err, st)
 			code = 1
 		}
 	}

@@ -44,6 +44,8 @@ func Serve(args []string) int {
 	fs.BoolVar(&stdio, "stdio", false, "bridge stdin/stdout to the persistent daemon socket (for SSH transport). Auto-spawns a daemon if none is running.")
 	var stdioEphemeral bool
 	fs.BoolVar(&stdioEphemeral, "stdio-ephemeral", false, "old --stdio behavior: serve one client on stdin/stdout from an in-process daemon that dies with the connection. Loses tabs on disconnect.")
+	var resumeFile string
+	fs.StringVar(&resumeFile, "resume", "", "resume from a hot-upgrade handoff file (internal: set by the exec-in-place upgrade)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -87,6 +89,16 @@ func Serve(args []string) int {
 
 	d := daemon.New(&cfg, socketPath)
 
+	if resumeFile != "" {
+		if err := resumeFromFile(d, resumeFile); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty serve: resume: %v\n", err)
+			// Carry on as a fresh daemon: a partial resume already
+			// adopted what it could; a failed parse adopted nothing.
+		} else {
+			fmt.Fprintln(os.Stderr, "xerotty serve: resumed session from hot upgrade")
+		}
+	}
+
 	var mcpSrv *mcp.Server
 	if !noMCP {
 		if mcpSocketPath == "" {
@@ -112,9 +124,22 @@ func Serve(args []string) int {
 		_ = d.Stop()
 	}()
 
+	upgrading := upgradeOnSignal(d, mcpSrv, socketPath, mcpSocketPath)
+
 	fmt.Fprintf(os.Stderr, "xerotty serve: listening on %s\n", socketPath)
 	fmt.Println(socketPath) // stdout so auto-spawn can locate the socket
-	if err := d.Run(); err != nil {
+	err = d.Run()
+	select {
+	case <-upgrading:
+		// An exec-in-place upgrade owns the process now: quiesce
+		// stopped the listener (that's why Run returned) and the
+		// upgrade goroutine is between serialize and exec. Park —
+		// the exec replaces this image, or the goroutine exits the
+		// process itself on failure.
+		select {}
+	default:
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "xerotty serve: %v\n", err)
 		return 1
 	}

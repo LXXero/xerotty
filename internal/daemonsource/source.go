@@ -1,14 +1,13 @@
 package daemonsource
 
 import (
-	"image/color"
 	"sync"
 	"sync/atomic"
 
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/x/ansi"
 	vt "github.com/charmbracelet/x/vt"
 
+	"github.com/LXXero/xerotty/internal/cellconv"
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -36,10 +35,10 @@ type Source struct {
 	hub   *Hub
 	tabID uint32
 
-	mu      sync.Mutex
-	emu     *vt.SafeEmulator
-	cols    int
-	rows    int
+	mu   sync.Mutex
+	emu  *vt.SafeEmulator
+	cols int
+	rows int
 
 	// onTitle is the GUI's title callback (tabs.go uses this to set
 	// tab.Title from OSC 0/2). Daemon ships titles as Title frames;
@@ -48,8 +47,8 @@ type Source struct {
 
 	// Cached TabState fields. Updated by applyTabState; read by
 	// GetCWD / ForegroundProcessName / AppCursorMode.
-	cwd      string
-	fgName   string
+	cwd       string
+	fgName    string
 	appCursor atomic.Bool
 
 	// Client-side scrollback ring, fed by MsgScrollbackAppend. Each
@@ -641,95 +640,11 @@ func (s *Source) signalDirty() {
 // --- Helpers ---
 
 // uvCellFromProto converts a wire-format Cell back to the
-// ultraviolet.Cell the emulator expects. Reverses
-// daemon/cell_convert.go::cellFromUV — including the per-bit attr
-// remap: protocol's attr bit layout (Bold,Italic,Faint,…) does NOT
-// match ultraviolet's (Bold,Faint,Italic,…), so the raw bits must be
-// translated, not copied. Copying them straight swapped faint↔italic
-// and reverse/strike, which made faint text render un-dimmed.
-func uvCellFromProto(p protocol.Cell) uv.Cell {
-	attrs, ulStyle, fgSet, fgIdx, fgIsRGB, bgSet, bgIdx, bgIsRGB := protocol.UnpackStyle(p.Style)
-	style := uv.Style{
-		Attrs:     uvAttrsFromProto(attrs),
-		Underline: uv.Underline(ulStyle),
-	}
-	if fgSet {
-		if fgIsRGB {
-			style.Fg = rgbColor(p.FgRGB)
-		} else {
-			// Includes palette index 0 (ANSI black). The fgSet
-			// bit is what distinguishes that from "no color".
-			style.Fg = ansi.ExtendedColor(fgIdx)
-		}
-	}
-	if bgSet {
-		if bgIsRGB {
-			style.Bg = rgbColor(p.BgRGB)
-		} else {
-			style.Bg = ansi.ExtendedColor(bgIdx)
-		}
-	}
-	c := uv.Cell{
-		Content: p.Content,
-		Style:   style,
-		Width:   int(p.Width),
-	}
-	if c.Width == 0 {
-		// Wide-cell placeholder — the column under a width-2 glyph's
-		// right half. Must stay a true zero cell: forcing it to a
-		// width-1 space made scrollback rows overdraw the glyph's
-		// right half, and viewport applies (via Line.Set's partial-
-		// overwrite handling) blank the wide glyph entirely.
-		return uv.Cell{}
-	}
-	if c.Content == "" {
-		c.Content = " "
-	}
-	return c
-}
-
-// uvAttrsFromProto translates protocol attr bits to ultraviolet attr
-// bits. The two enums are NOT bit-compatible (protocol orders
-// Bold,Italic,Faint,Blink,Reverse,Strike,Conceal; ultraviolet orders
-// Bold,Faint,Italic,Blink,RapidBlink,Reverse,Conceal,Strikethrough),
-// so each flag is mapped explicitly — the exact inverse of
-// daemon/cell_convert.go's uv→protocol mapping.
-func uvAttrsFromProto(a uint32) uint8 {
-	var out uint8
-	if a&protocol.AttrBold != 0 {
-		out |= uv.AttrBold
-	}
-	if a&protocol.AttrItalic != 0 {
-		out |= uv.AttrItalic
-	}
-	if a&protocol.AttrFaint != 0 {
-		out |= uv.AttrFaint
-	}
-	if a&protocol.AttrBlink != 0 {
-		out |= uv.AttrBlink
-	}
-	if a&protocol.AttrReverse != 0 {
-		out |= uv.AttrReverse
-	}
-	if a&protocol.AttrStrike != 0 {
-		out |= uv.AttrStrikethrough
-	}
-	if a&protocol.AttrConceal != 0 {
-		out |= uv.AttrConceal
-	}
-	return out
-}
-
-// rgbColor unpacks a packed 0xRRGGBB integer into a stdlib
-// color.RGBA the emulator can render. Alpha = 255 (opaque).
-func rgbColor(rgb uint32) color.Color {
-	return color.RGBA{
-		R: uint8(rgb >> 16),
-		G: uint8(rgb >> 8),
-		B: uint8(rgb),
-		A: 0xFF,
-	}
-}
+// ultraviolet.Cell the emulator expects. Delegates to
+// internal/cellconv (shared with the daemon's hot-upgrade resume
+// path) — see that package for the attr-bit remap and the
+// wide-cell-placeholder rules.
+func uvCellFromProto(p protocol.Cell) uv.Cell { return cellconv.ToUV(p) }
 
 // itoa is a 0-alloc int-to-decimal-string for small positive ints.
 // Used in applyCursor's escape construction (hot path on every
