@@ -171,6 +171,15 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 			"protocolVersion": "2025-06-18",
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "xerotty-gui", "version": "0.1.0"},
+			// Usage briefing injected into the agent's context by the
+			// client (same idea as the daemon server's instructions).
+			"instructions": "xerotty GUI aggregator: every terminal tab across all daemons this GUI is attached to " +
+				"(local + remote hosts). Tab IDs are namespaced '<host>:<id>' (e.g. 'local:1', 'kh:3') — list_tabs " +
+				"shows cwd/foreground/focused for triage. No trust gating here (this is the user's own GUI). " +
+				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
+				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse. get_screen always " +
+				"returns cursor {row,col}; styled=true returns styled runs — faint text at/after the cursor is " +
+				"autocomplete ghost text, NOT user input.",
 		})
 	case "tools/list":
 		return okResp(req.ID, map[string]any{"tools": toolCatalog()})

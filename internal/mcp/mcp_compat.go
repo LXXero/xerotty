@@ -33,6 +33,20 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 			"name":    "xerotty",
 			"version": "0.1.0",
 		},
+		// The spec's usage briefing — clients inject this into the
+		// agent's context, so the trust-mode dance is known BEFORE
+		// the first blocked write instead of discovered through
+		// error archaeology.
+		"instructions": "xerotty terminal daemon. You control real terminal tabs (PTYs with running shells).\n\n" +
+			"TRUST MODE: every connection starts in '" + c.srv.defaultMode + "' mode. In observe mode all writes " +
+			"(send_input, send_keys, create_tab, ...) are blocked. To write, FIRST call set_agent_mode with " +
+			"{\"mode\":\"auto\"} (direct writes) or {\"mode\":\"propose\"} (writes queue for human approval). " +
+			"If the connection ever drops and reconnects, mode may reset — on an unexpected 'observe mode' error, " +
+			"call set_agent_mode again.\n\n" +
+			"TIPS: use send_keys (named keys: enter, ctrl+c, arrows — e.g. {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
+			"instead of raw escape bytes in send_input. Pass a stable `name` to create_tab to reuse a tab instead of " +
+			"stacking duplicates. get_screen always returns cursor {row,col}; styled=true returns styled runs — " +
+			"faint text at/after the cursor is a TUI's autocomplete ghost text, NOT user input.",
 	})
 }
 
