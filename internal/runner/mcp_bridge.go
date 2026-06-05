@@ -56,32 +56,48 @@ func MCPBridge(args []string) int {
 		return 2
 	}
 
+	// flavor locks the SERVER SCHEMA the client handshook with. The
+	// GUI aggregator and a single daemon expose the same tool names
+	// with DIFFERENT tab_id types (namespaced strings vs integers) —
+	// if a reconnect silently fell through from one to the other
+	// (GUI restarting while the daemon lives, or vice versa), the
+	// client's cached ids and tool schemas would all turn invalid.
+	// Once connected, reconnects only consider same-flavor sockets.
+	flavor := ""
 	discover := func() net.Conn {
-		var candidates []string
+		type candidate struct {
+			path string
+			kind string
+		}
+		var candidates []candidate
 		seen := map[string]bool{}
-		add := func(p string) {
+		add := func(p, kind string) {
 			if p != "" && !seen[p] {
 				seen[p] = true
-				candidates = append(candidates, p)
+				candidates = append(candidates, candidate{p, kind})
 			}
 		}
 		if socketPath != "" {
-			add(socketPath)
+			add(socketPath, "explicit")
 		} else {
 			if !daemonOnly {
-				add(sockpath.Recorded(sockpath.RecordGUIMCP))
-				add(sockpath.GUIMCPSocket())
+				add(sockpath.Recorded(sockpath.RecordGUIMCP), "gui")
+				add(sockpath.GUIMCPSocket(), "gui")
 			}
-			add(sockpath.Recorded(sockpath.RecordDaemonMCP))
+			add(sockpath.Recorded(sockpath.RecordDaemonMCP), "daemon")
 			if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
-				add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket))
+				add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket), "daemon")
 			}
-			add(sockpath.MCPSocketFor(sockpath.DaemonSocket()))
+			add(sockpath.MCPSocketFor(sockpath.DaemonSocket()), "daemon")
 		}
-		for _, p := range candidates {
-			if c, err := net.Dial("unix", p); err == nil {
+		for _, cand := range candidates {
+			if flavor != "" && cand.kind != flavor {
+				continue
+			}
+			if c, err := net.Dial("unix", cand.path); err == nil {
+				flavor = cand.kind
 				// stderr only — stdout belongs to the JSON-RPC stream.
-				fmt.Fprintf(os.Stderr, "xerotty mcp: bridging stdio <-> %s\n", p)
+				fmt.Fprintf(os.Stderr, "xerotty mcp: bridging stdio <-> %s (%s)\n", cand.path, cand.kind)
 				return c
 			}
 		}

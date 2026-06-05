@@ -303,7 +303,7 @@ func (c *agentConn) handleTabClose(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
-		TabID uint32 `json:"tab_id"`
+		TabID tabIDParam `json:"tab_id"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -314,7 +314,7 @@ func (c *agentConn) handleTabClose(req *rpcRequest) *rpcResponse {
 	}
 	// Funnel through the daemon so the close broadcasts to every
 	// attached wire client.
-	c.srv.d.CloseTab(sess, p.TabID)
+	c.srv.d.CloseTab(sess, uint32(p.TabID))
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 
@@ -323,7 +323,7 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
-		TabID uint32 `json:"tab_id"`
+		TabID tabIDParam `json:"tab_id"`
 		Cols  int    `json:"cols"`
 		Rows  int    `json:"rows"`
 	}
@@ -337,7 +337,7 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
@@ -345,7 +345,7 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 	// Fan out to every subscriber so all attached clients re-paint at
 	// the new size (a resize emits no PTY output). Mirrors the wire
 	// handler.
-	c.srv.d.WakeTabSubscribers(p.TabID)
+	c.srv.d.WakeTabSubscribers(uint32(p.TabID))
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 
@@ -510,7 +510,7 @@ func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
@@ -557,7 +557,7 @@ func (c *agentConn) handleTabScrollback(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
@@ -594,7 +594,7 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
-		TabID uint32 `json:"tab_id"`
+		TabID tabIDParam `json:"tab_id"`
 		Bytes string `json:"bytes"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -604,13 +604,13 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
 	if c.modeIs("propose") {
 		// Queue silently — UI gate consumer lands later.
-		sess.QueueProposedInput(p.TabID, []byte(p.Bytes))
+		sess.QueueProposedInput(uint32(p.TabID), []byte(p.Bytes))
 		return ok(req.ID, map[string]bool{"queued": true})
 	}
 	if _, err := t.Term.Write([]byte(p.Bytes)); err != nil {
@@ -628,7 +628,7 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
-		TabID uint32   `json:"tab_id"`
+		TabID tabIDParam `json:"tab_id"`
 		Text  string   `json:"text,omitempty"`
 		Keys  []string `json:"keys,omitempty"`
 	}
@@ -639,7 +639,7 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
@@ -653,7 +653,7 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 		return invalidParams(req.ID, "nothing to send: pass text and/or keys")
 	}
 	if c.modeIs("propose") {
-		sess.QueueProposedInput(p.TabID, buf)
+		sess.QueueProposedInput(uint32(p.TabID), buf)
 		return ok(req.ID, map[string]bool{"queued": true})
 	}
 	if _, err := t.Term.Write(buf); err != nil {
@@ -667,7 +667,7 @@ func (c *agentConn) handleTabPaste(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32099, err.Error(), nil)
 	}
 	var p struct {
-		TabID uint32 `json:"tab_id"`
+		TabID tabIDParam `json:"tab_id"`
 		Text  string `json:"text"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
@@ -677,12 +677,12 @@ func (c *agentConn) handleTabPaste(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return rpcErr(req.ID, -32004, "no default session", nil)
 	}
-	t := sess.Tab(p.TabID)
+	t := sess.Tab(uint32(p.TabID))
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
 	if c.modeIs("propose") {
-		sess.QueueProposedPaste(p.TabID, p.Text)
+		sess.QueueProposedPaste(uint32(p.TabID), p.Text)
 		return ok(req.ID, map[string]bool{"queued": true})
 	}
 	t.Term.Paste(p.Text)

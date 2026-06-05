@@ -2,6 +2,9 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/LXXero/xerotty/internal/screentext"
 )
@@ -66,6 +69,37 @@ type tabSummary struct {
 	Rows     uint16 `json:"rows"`
 	WindowID uint32 `json:"window_id"`
 	Focused  bool   `json:"focused"`
+}
+
+// tabIDParam decodes a tab_id that agents express sloppily: a JSON
+// number (canonical), a numeric string ("3" — common agent slip), or
+// — the important teaching case — a NAMESPACED id like "local:3",
+// which belongs to the GUI aggregator's schema, not a single
+// daemon's. Namespaced ids are REJECTED with an error explaining the
+// schema split rather than a cryptic type failure: silently taking
+// the numeric tail could target the wrong tab entirely (the "kh:3"
+// an agent cached from the aggregator is NOT this daemon's tab 3).
+type tabIDParam uint32
+
+func (t *tabIDParam) UnmarshalJSON(b []byte) error {
+	var n uint32
+	if err := json.Unmarshal(b, &n); err == nil {
+		*t = tabIDParam(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("tab_id must be a number")
+	}
+	if strings.Contains(s, ":") {
+		return fmt.Errorf("tab_id %q is a NAMESPACED id from the GUI aggregator socket; this is a single daemon whose ids are plain integers — call list_tabs here and use those ids", s)
+	}
+	v, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return fmt.Errorf("tab_id %q is not a number", s)
+	}
+	*t = tabIDParam(v)
+	return nil
 }
 
 // screenResult is the result of tab/screen. Lines XOR Runs is set,
