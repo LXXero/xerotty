@@ -1036,7 +1036,11 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Checkbox("Cursor Blink", &d.cursorBlink)
 	if d.cursorBlink {
+		// Inline on the same row, after the checkbox+label — the
+		// dependent control rides its toggle instead of stacking.
+		imgui.SameLineV(0, 16)
 		imgui.Text("Blink Rate (ms)")
+		imgui.SameLineV(0, 8)
 		imgui.SetNextItemWidth(w)
 		imgui.SliderInt("##blinkrate", &d.blinkRate, 100, 2000)
 	}
@@ -1047,7 +1051,9 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Checkbox("Resize Overlay", &d.resizeOverlay)
 	if d.resizeOverlay {
+		imgui.SameLineV(0, 16)
 		imgui.Text("Overlay Duration (s)")
+		imgui.SameLineV(0, 8)
 		imgui.SetNextItemWidth(w)
 		imgui.SliderFloat("##resizedur", &d.resizeOverlayDur, 0.1, 5.0)
 	}
