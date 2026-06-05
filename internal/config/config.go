@@ -11,22 +11,22 @@ import (
 
 // Config is the top-level configuration struct parsed from config.toml.
 type Config struct {
-	Shell      string     `toml:"shell"`
-	Term       string     `toml:"term"`
-	Appearance Appearance `toml:"appearance"`
-	Font       FontConfig `toml:"font"`
+	Shell      string            `toml:"shell"`
+	Term       string            `toml:"term"`
+	Appearance Appearance        `toml:"appearance"`
+	Font       FontConfig        `toml:"font"`
 	Keybinds   map[string]string `toml:"keybinds"`
-	Keys       KeyConfig  `toml:"keys"`
-	Menu       MenuConfig `toml:"menu"`
-	Scrollback ScrollbackConfig `toml:"scrollback"`
-	Scrollbar  ScrollbarConfig  `toml:"scrollbar"`
-	Links      LinksConfig      `toml:"links"`
-	Clipboard  ClipboardConfig  `toml:"clipboard"`
+	Keys       KeyConfig         `toml:"keys"`
+	Menu       MenuConfig        `toml:"menu"`
+	Scrollback ScrollbackConfig  `toml:"scrollback"`
+	Scrollbar  ScrollbarConfig   `toml:"scrollbar"`
+	Links      LinksConfig       `toml:"links"`
+	Clipboard  ClipboardConfig   `toml:"clipboard"`
 	Env        map[string]string `toml:"env"`
-	Tabs       TabConfig    `toml:"tabs"`
-	Hosts      []RemoteHost `toml:"hosts"`
-	Window     WindowConfig `toml:"window"`
-	MCP        MCPConfig    `toml:"mcp"`
+	Tabs       TabConfig         `toml:"tabs"`
+	Hosts      []RemoteHost      `toml:"hosts"`
+	Window     WindowConfig      `toml:"window"`
+	MCP        MCPConfig         `toml:"mcp"`
 }
 
 // MCPConfig controls the AI-agent control socket's trust model.
@@ -59,20 +59,37 @@ type MCPConfig struct {
 	ApprovalToken string `toml:"approval_token"`
 }
 
+// GlowConfig is the animated background ("lava lamp") layer: soft
+// color blobs drifting behind the terminal cells. Opt-in — it
+// self-wakes the otherwise event-driven render loop at FPS while
+// enabled. Colors empty = derive from the active theme's accents.
+type GlowConfig struct {
+	Enabled   bool     `toml:"enabled"`
+	Style     string   `toml:"style"` // "lava" (reserved for future styles)
+	Colors    []string `toml:"colors"`
+	Blobs     int      `toml:"blobs"`
+	Speed     float64  `toml:"speed"`
+	Scale     float64  `toml:"scale"`
+	Intensity float64  `toml:"intensity"`
+	FPS       int      `toml:"fps"`
+}
+
 // Appearance controls visual settings.
 type Appearance struct {
-	Theme                string  `toml:"theme"`
-	Opacity              float32 `toml:"opacity"`
-	Padding              int     `toml:"padding"`
-	CursorStyle          string  `toml:"cursor_style"`
-	CursorBlink          bool    `toml:"cursor_blink"`
-	BlinkRate            int     `toml:"blink_rate_ms"`
-	BoldIsBright         bool    `toml:"bold_is_bright"`
-	TerminalColors       string  `toml:"terminal_colors"`
-	TabColors            string  `toml:"tab_colors"`
-	ScrollbarColors      string  `toml:"scrollbar_colors"`
-	ResizeOverlay        bool    `toml:"resize_overlay"`
+	Theme                 string  `toml:"theme"`
+	Opacity               float32 `toml:"opacity"`
+	Padding               int     `toml:"padding"`
+	CursorStyle           string  `toml:"cursor_style"`
+	CursorBlink           bool    `toml:"cursor_blink"`
+	BlinkRate             int     `toml:"blink_rate_ms"`
+	BoldIsBright          bool    `toml:"bold_is_bright"`
+	TerminalColors        string  `toml:"terminal_colors"`
+	TabColors             string  `toml:"tab_colors"`
+	ScrollbarColors       string  `toml:"scrollbar_colors"`
+	ResizeOverlay         bool    `toml:"resize_overlay"`
 	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
+	// Glow is the animated lava-lamp backdrop (see internal/app/glow.go).
+	Glow GlowConfig `toml:"glow"`
 	// Custom color overrides (hex strings, used when *_colors = "custom")
 	Foreground     string `toml:"foreground"`
 	Background     string `toml:"background"`
@@ -87,9 +104,9 @@ type Appearance struct {
 
 // FontConfig controls font loading.
 type FontConfig struct {
-	Family      string  `toml:"family"`
-	Size        float32 `toml:"size"`
-	Path        string  `toml:"path"`
+	Family string  `toml:"family"`
+	Size   float32 `toml:"size"`
+	Path   string  `toml:"path"`
 }
 
 // KeyConfig controls special key behavior.
@@ -106,10 +123,10 @@ type MenuConfig struct {
 
 // MenuItem is a single context menu entry.
 type MenuItem struct {
-	Label    string     `toml:"label"`
-	Action   string     `toml:"action"`
-	Shortcut string     `toml:"shortcut"`
-	Enabled  string     `toml:"enabled"`
+	Label    string `toml:"label"`
+	Action   string `toml:"action"`
+	Shortcut string `toml:"shortcut"`
+	Enabled  string `toml:"enabled"`
 	// Checked is an optional state predicate (like Enabled). When it
 	// evaluates true the item renders with a "toggled on" highlight —
 	// e.g. "force_opaque" for the opacity toggle. Empty = never checked.
@@ -120,7 +137,7 @@ type MenuItem struct {
 // ScrollbackConfig controls scrollback buffer behavior.
 type ScrollbackConfig struct {
 	Lines             int    `toml:"lines"`
-	Mode              string `toml:"mode"`               // "memory" | "unlimited"
+	Mode              string `toml:"mode"`                // "memory" | "unlimited"
 	ScrollSpeed       int    `toml:"scroll_speed"`        // lines per mouse wheel tick
 	ScrollOnKeystroke bool   `toml:"scroll_on_keystroke"` // snap to bottom on keypress
 	ScrollOnOutput    bool   `toml:"scroll_on_output"`    // snap to bottom on new output
@@ -128,7 +145,7 @@ type ScrollbackConfig struct {
 
 // ScrollbarConfig controls the scrollbar.
 type ScrollbarConfig struct {
-	Visible        string `toml:"visible"`          // "always" | "never" | "auto"
+	Visible        string `toml:"visible"` // "always" | "never" | "auto"
 	Width          int    `toml:"width"`
 	MinThumbHeight int    `toml:"min_thumb_height"`
 }
@@ -173,8 +190,8 @@ type RemoteHost struct {
 }
 
 type TabConfig struct {
-	OnChildExit        string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
-	InheritCWD         bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
+	OnChildExit         string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
+	InheritCWD          bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
 	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
 
 	// Source picks where new tabs get their PTY:
@@ -207,15 +224,23 @@ func Default() Config {
 		Shell: "",
 		Term:  "xterm-256color",
 		Appearance: Appearance{
-			Theme:                 "dracula",
-			Opacity:               1.0,
-			Padding:               2,
-			CursorStyle:           "block",
-			CursorBlink:           true,
-			BlinkRate:             530,
-			BoldIsBright:          true,
-			TerminalColors:        "theme",
-			TabColors:             "theme",
+			Theme:          "dracula",
+			Opacity:        1.0,
+			Padding:        2,
+			CursorStyle:    "block",
+			CursorBlink:    true,
+			BlinkRate:      530,
+			BoldIsBright:   true,
+			TerminalColors: "theme",
+			TabColors:      "theme",
+			Glow: GlowConfig{
+				Style:     "lava",
+				Blobs:     5,
+				Speed:     1.0,
+				Scale:     0.7,
+				Intensity: 0.35,
+				FPS:       20,
+			},
 			ScrollbarColors:       "theme",
 			ResizeOverlay:         true,
 			ResizeOverlayDuration: 1.0,
@@ -418,35 +443,35 @@ func defaultKeybindsLinux() map[string]string {
 // ModCtrl flag, so "Ctrl+T" in this map fires on physical Cmd+T.
 func defaultKeybindsDarwin() map[string]string {
 	return map[string]string{
-		"Ctrl+T":          "new_tab",
-		"Ctrl+W":          "close_tab",
-		"Ctrl+N":          "new_window",
-		"Ctrl+Tab":        "next_tab",
-		"Ctrl+Shift+Tab":  "prev_tab",
-		"Ctrl+1":          "goto_tab:1",
-		"Ctrl+2":          "goto_tab:2",
-		"Ctrl+3":          "goto_tab:3",
-		"Ctrl+4":          "goto_tab:4",
-		"Ctrl+5":          "goto_tab:5",
-		"Ctrl+6":          "goto_tab:6",
-		"Ctrl+7":          "goto_tab:7",
-		"Ctrl+8":          "goto_tab:8",
-		"Ctrl+9":          "goto_tab:9",
-		"Ctrl+C":          "copy",
-		"Ctrl+V":          "paste",
-		"Shift+Insert":    "paste_selection",
-		"Shift+PageUp":    "scroll_page_up",
-		"Shift+PageDown":  "scroll_page_down",
-		"Ctrl+F":          "search",
-		"F11":             "fullscreen",
-		"Ctrl+Plus":       "font_size_up",
-		"Ctrl+Minus":      "font_size_down",
-		"Ctrl+0":          "font_size_reset",
-		"Ctrl+Shift+R":    "rename_tab",
-		"Shift+Home":      "scroll_top",
-		"Shift+End":       "scroll_bottom",
-		"Ctrl+Comma":      "preferences",
-		"Ctrl+Shift+O":    "toggle_opacity",
+		"Ctrl+T":         "new_tab",
+		"Ctrl+W":         "close_tab",
+		"Ctrl+N":         "new_window",
+		"Ctrl+Tab":       "next_tab",
+		"Ctrl+Shift+Tab": "prev_tab",
+		"Ctrl+1":         "goto_tab:1",
+		"Ctrl+2":         "goto_tab:2",
+		"Ctrl+3":         "goto_tab:3",
+		"Ctrl+4":         "goto_tab:4",
+		"Ctrl+5":         "goto_tab:5",
+		"Ctrl+6":         "goto_tab:6",
+		"Ctrl+7":         "goto_tab:7",
+		"Ctrl+8":         "goto_tab:8",
+		"Ctrl+9":         "goto_tab:9",
+		"Ctrl+C":         "copy",
+		"Ctrl+V":         "paste",
+		"Shift+Insert":   "paste_selection",
+		"Shift+PageUp":   "scroll_page_up",
+		"Shift+PageDown": "scroll_page_down",
+		"Ctrl+F":         "search",
+		"F11":            "fullscreen",
+		"Ctrl+Plus":      "font_size_up",
+		"Ctrl+Minus":     "font_size_down",
+		"Ctrl+0":         "font_size_reset",
+		"Ctrl+Shift+R":   "rename_tab",
+		"Shift+Home":     "scroll_top",
+		"Shift+End":      "scroll_bottom",
+		"Ctrl+Comma":     "preferences",
+		"Ctrl+Shift+O":   "toggle_opacity",
 	}
 }
 

@@ -54,6 +54,7 @@ func init() {
 type App struct {
 	cfg             config.Config
 	theme           renderer.Theme
+	glowStop        chan struct{} // lava-lamp self-wake ticker (glow.go)
 	baseFontSize    float32 // font size the atlas was built at
 	baseCellW       float32 // cell width at base font size
 	baseCellH       float32 // cell height at base font size
@@ -271,6 +272,7 @@ type tabDrag struct {
 // initialized.
 func New(cfg config.Config) *App {
 	a := &App{cfg: cfg}
+	a.ensureGlowTicker()
 	// Tab-source modes:
 	//   "" / "pty"      — in-process PTY (default)
 	//   "daemon"        — local auto-spawned daemon
@@ -3695,6 +3697,16 @@ func (a *Window) frame() {
 			}
 		}
 		a.resizeTerminals()
+	}
+
+	// Lava-lamp glow layer: under everything (cells, tab bar). The
+	// renderer skips default-background cells, so the blobs show
+	// through all "empty" terminal area while colored runs float on
+	// top. Drawn from the same content origin the cells use so it
+	// tracks the window in multi-viewport space.
+	if a.app.cfg.Appearance.Glow.Enabled {
+		drawGlow(a.bgDrawList(), a.contentOriginX, a.contentOriginY,
+			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow)
 	}
 
 	// Render terminal cells FIRST into the wrapper's window drawlist,

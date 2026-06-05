@@ -204,6 +204,9 @@ type configDialog struct {
 	// Appearance
 	themeIdx          int32
 	opacity           float32
+	glowOn            bool
+	glowIntensity     float32
+	glowSpeed         float32
 	padding           int32
 	cursorIdx         int32
 	cursorBlink       bool
@@ -425,6 +428,15 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 
 	d.themeIdx = prefIndexOf(d.themeNames, cfg.Appearance.Theme)
 	d.opacity = cfg.Appearance.Opacity
+	d.glowOn = cfg.Appearance.Glow.Enabled
+	d.glowIntensity = float32(cfg.Appearance.Glow.Intensity)
+	if d.glowIntensity <= 0 {
+		d.glowIntensity = 0.35
+	}
+	d.glowSpeed = float32(cfg.Appearance.Glow.Speed)
+	if d.glowSpeed <= 0 {
+		d.glowSpeed = 1.0
+	}
 	d.padding = int32(cfg.Appearance.Padding)
 	d.cursorIdx = prefIndexOf(prefCursorStyles, cfg.Appearance.CursorStyle)
 	d.cursorBlink = cfg.Appearance.CursorBlink
@@ -532,6 +544,9 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Appearance.Theme = d.themeNames[d.themeIdx]
 	}
 	cfg.Appearance.Opacity = d.opacity
+	cfg.Appearance.Glow.Enabled = d.glowOn
+	cfg.Appearance.Glow.Intensity = float64(d.glowIntensity)
+	cfg.Appearance.Glow.Speed = float64(d.glowSpeed)
 	cfg.Appearance.Padding = int(d.padding)
 	if int(d.cursorIdx) < len(prefCursorStyles) {
 		cfg.Appearance.CursorStyle = prefCursorStyles[d.cursorIdx]
@@ -657,6 +672,7 @@ func (a *Window) applyPreferences() {
 	prevPad := a.app.cfg.Appearance.Padding
 
 	a.prefDialog.applyTo(&a.app.cfg)
+	a.app.ensureGlowTicker()
 
 	// Tab source mode flip. Only honor pty → daemon switches that
 	// previously had no hub (auto-spawn the daemon now). Going
@@ -965,6 +981,16 @@ func (a *Window) renderPrefAppearance() {
 	imgui.Text("Padding (px)")
 	imgui.SetNextItemWidth(w)
 	imgui.SliderInt("##padding", &d.padding, 0, 20)
+
+	imgui.Checkbox("Lava Lamp Background", &d.glowOn)
+	if d.glowOn {
+		imgui.Text("Glow Intensity")
+		imgui.SetNextItemWidth(w)
+		imgui.SliderFloat("##glowintensity", &d.glowIntensity, 0.05, 1.0)
+		imgui.Text("Glow Speed")
+		imgui.SetNextItemWidth(w)
+		imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
+	}
 
 	imgui.Separator()
 
