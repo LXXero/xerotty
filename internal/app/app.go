@@ -1470,6 +1470,16 @@ func (a *App) relocateDaemonTab(hub *daemonsource.Hub, tabID, daemonWinID uint32
 		return
 	}
 	cli := hub.Client()
+	// A locally-initiated move may still be in flight (pending drain)
+	// — the snapshot predates it. Relocating now would yank the tab
+	// out from under the user's drag; the daemon will catch up when
+	// the move lands and the next snapshot agrees with the GUI.
+	for _, w := range a.windows {
+		if ds, ok := w.pendingDaemonMove.(*daemonsource.Source); ok &&
+			ds.HubClient() == cli && ds.TabID() == tabID {
+			return
+		}
+	}
 	// Locate the tab's current GUI window + index.
 	var srcWin *Window
 	srcIdx := -1
@@ -2013,15 +2023,13 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			adopt.Resize(cols, rows)
 		}
 		newTab := w.tabs.AdoptTab(adopt)
-		// Cross-window tab drag: tell the owning daemon the tab
-		// moved to the new GUI window's daemon window. Persists
-		// the layout across reattach. For a fresh GUI window the
-		// daemonWindowID isn't set yet — push the move once
-		// SendWindowCreate completes via the deferred path below.
-		// For now, store the move + replay after window ID is
-		// known. Simpler: defer the move-fire to next frame via
-		// a pending field.
-		w.pendingDaemonMove = adopt
+		// Cross-window tab drag: persist the move to the owning
+		// daemon NOW (minting this window's daemon window
+		// synchronously). Deferring this left a window where the
+		// daemon's topology disagreed with the GUI — new tabs
+		// routed to the old daemon window and the next broadcast
+		// yanked the dragged tab back to its old group.
+		w.persistDaemonTabMove(adopt)
 		_ = newTab
 	} else if len(a.daemonAdoptQueue) > 0 && a.daemonHub != nil {
 		snap := a.daemonAdoptQueue[0]
@@ -2912,6 +2920,39 @@ func (w *Window) adoptDraggedTab(d *tabDrag) {
 		d.Term.Resize(cols, rows)
 	}
 	w.tabs.AdoptTab(d.Term)
+	w.persistDaemonTabMove(d.Term)
+}
+
+// persistDaemonTabMove pushes a tab's new GUI-window membership to
+// its owning daemon, SYNCHRONOUSLY minting this window's daemon
+// window if it doesn't have one yet. Called whenever a drag lands a
+// daemon-backed tab in a window — without it the daemon's topology
+// still shows the OLD window, and the next broadcast (e.g. from a
+// new_tab) "corrects" the GUI by yanking the tab back, while the
+// stale daemonWindowID==0 routed this window's new tabs into the
+// daemon's default (old) window. Falls back to the per-frame
+// pendingDaemonMove drain only when the mint fails (daemon busy).
+func (w *Window) persistDaemonTabMove(src terminal.Source) {
+	ds, ok := src.(*daemonsource.Source)
+	if !ok {
+		return // in-process PTY tab — nothing daemon-side to persist
+	}
+	hub := w.app.findHubForClient(ds.HubClient())
+	if hub == nil {
+		return
+	}
+	id := w.windowIDForHub(hub) // mints via CreateWindow when needed
+	if id == 0 {
+		w.pendingDaemonMove = src // daemon didn't answer; retry per frame
+		return
+	}
+	if hub == w.app.daemonHub && w.daemonWindowID == 0 {
+		// SourceFactory routes new tabs by daemonWindowID — set it so
+		// "new tab" in this window lands HERE, not in the daemon's
+		// default (the dragged-from) window.
+		w.daemonWindowID = id
+	}
+	_ = ds.HubClient().SendWindowMoveTab(ds.TabID(), id, -1)
 }
 
 func validMousePos(mp imgui.Vec2) bool {
