@@ -98,6 +98,19 @@ Bundled themes live in [`themes/`](themes/) and are referenced by name:
 theme = "dracula"  # or "gruvbox-dark", "monokai", "solarized-dark", "solarized-light", "tango"
 ```
 
+The lava-lamp glow backdrop, in full (everything optional except `enabled`):
+
+```toml
+[appearance.glow]
+enabled   = true
+colors    = ["#ff79c6", "#bd93f9"]  # omit to derive from the active theme's accents
+blobs     = 5      # lava clusters (1-16)
+speed     = 1.0    # drift / morph speed multiplier
+scale     = 0.7    # blob size relative to the window
+intensity = 0.35   # glow alpha (0-1)
+fps       = 20     # animation tick — only while enabled
+```
+
 To convert an iTerm2 theme:
 
 ```bash
