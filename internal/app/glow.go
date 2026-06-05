@@ -124,6 +124,18 @@ func drawGlow(dl *imgui.DrawList, originX, originY, width, height float32, theme
 	dl.PushClipRectV(minV, maxV, false)
 	defer dl.PopClipRect()
 
+	// splat draws one soft elliptical gradient. Overlapping splats
+	// SUM alpha where they intersect — that brighter shared region
+	// is what sells the "one connected mass" illusion below.
+	splat := func(cx, cy, rx, ry float64, col uint32) {
+		dl.AddImageV(
+			tex,
+			imgui.Vec2{X: float32(cx - rx), Y: float32(cy - ry)},
+			imgui.Vec2{X: float32(cx + rx), Y: float32(cy + ry)},
+			imgui.Vec2{X: 0, Y: 0}, imgui.Vec2{X: 1, Y: 1},
+			col,
+		)
+	}
 	base := float64(max32(width, height))
 	for i := 0; i < blobs; i++ {
 		fi := float64(i)
@@ -133,20 +145,51 @@ func drawGlow(dl *imgui.DrawList, originX, originY, width, height float32, theme
 		p1 := fi * 2.39996
 		p2 := fi*1.7 + 1.3
 		p3 := fi*0.9 + 4.1
-		cx := float64(originX) + float64(width)*(0.5+0.42*math.Sin(t*0.071+p1)*math.Cos(t*0.043+p2))
-		cy := float64(originY) + float64(height)*(0.5+0.42*math.Sin(t*0.057+p2)*math.Cos(t*0.031+p1))
-		rad := scale * float32(base) * float32(0.32+0.14*math.Sin(t*0.083+p3))
-		// Per-blob alpha breathes a little around the configured
-		// intensity so the field feels alive even when paths align.
+
+		// Lava drift: mostly VERTICAL travel with a lazy horizontal
+		// wander — lamps convect up and down, they don't orbit.
+		cx := float64(originX) + float64(width)*(0.5+0.36*math.Sin(t*0.043+p1)*math.Cos(t*0.029+p2))
+		cy := float64(originY) + float64(height)*(0.5+0.46*math.Sin(t*0.067+p2))
+		rad := float64(scale) * base * (0.26 + 0.08*math.Sin(t*0.083+p3))
+
+		// The pinch cycle: sep runs 0→1→0 on a slow per-blob period.
+		//   sep≈0   — lobes coincide: one fat blob
+		//   sep mid — overlapping gradients form the peanut/neck
+		//   sep≈1   — the small lobe has pinched off and drifts free
+		// sin² gives long dwell at the extremes (blobby most of the
+		// time, the dramatic split is the event, not the steady state).
+		sepPhase := math.Sin(t*0.047 + p3)
+		sep := sepPhase * sepPhase
+		gap := rad * 1.9 * sep
+
+		// Pinch direction: mostly vertical (the daughter blob rises
+		// away), wobbling a little so splits aren't all parallel.
+		ang := math.Pi/2 + 0.5*math.Sin(t*0.031+p2)
+		dx, dy := math.Cos(ang), -math.Sin(ang)
+
+		// Vertical stretch grows as the blob pinches — taffy physics.
+		stretch := 1 + 0.45*sep
+
 		a := intensity * (0.75 + 0.25*math.Sin(t*0.11+p3))
-		col := palette[i%len(palette)]&0x00FFFFFF | uint32(a*255)<<24
-		dl.AddImageV(
-			tex,
-			imgui.Vec2{X: float32(cx) - rad, Y: float32(cy) - rad},
-			imgui.Vec2{X: float32(cx) + rad, Y: float32(cy) + rad},
-			imgui.Vec2{X: 0, Y: 0}, imgui.Vec2{X: 1, Y: 1},
-			col,
-		)
+		rgb := palette[i%len(palette)] & 0x00FFFFFF
+		colA := rgb | uint32(a*255)<<24
+		colB := rgb | uint32(a*0.9*255)<<24
+
+		// Parent lobe: thins slightly as it donates mass.
+		rA := rad * (1 - 0.22*sep)
+		splat(cx-dx*gap*0.35, cy-dy*gap*0.35, rA, rA*stretch, colA)
+		// Daughter lobe: smaller, breathing, rides the far end of
+		// the neck and ends up a free-floating blob at full sep.
+		rB := rad * (0.55 + 0.08*math.Sin(t*0.097+p1))
+		splat(cx+dx*gap*0.65, cy+dy*gap*0.65, rB, rB*(1+0.3*sep), colB)
+		// Neck filler: a faint splat at the midpoint that fades out
+		// exactly as the pinch completes — the membrane that snaps.
+		if sep > 0.05 && sep < 0.92 {
+			neck := (1 - sep) * 0.5
+			colN := rgb | uint32(a*neck*255)<<24
+			rN := rad * 0.45
+			splat(cx+dx*gap*0.15, cy+dy*gap*0.15, rN, rN*1.2, colN)
+		}
 	}
 }
 
