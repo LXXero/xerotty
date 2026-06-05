@@ -202,32 +202,33 @@ type configDialog struct {
 	themeNames []string
 
 	// Appearance
-	themeIdx          int32
-	opacity           float32
-	glowOn            bool
-	glowIntensity     float32
-	glowSpeed         float32
-	glowScale         float32
-	glowBlobs         int32
-	padding           int32
-	cursorIdx         int32
-	cursorBlink       bool
-	blinkRate         int32
-	boldIsBright      bool
-	terminalColorsIdx int32
-	tabColorsIdx      int32
-	sbColorsIdx       int32
-	resizeOverlay     bool
-	resizeOverlayDur  float32
-	foregroundHex     string
-	backgroundHex     string
-	tabBarBg          string
-	tabActiveBg       string
-	tabActiveFg       string
-	tabInactiveBg     string
-	tabInactiveFg     string
-	scrollbarBgHex    string
-	scrollbarThumbHex string
+	themeIdx           int32
+	chooserClosedFrame map[string]int
+	opacity            float32
+	glowOn             bool
+	glowIntensity      float32
+	glowSpeed          float32
+	glowScale          float32
+	glowBlobs          int32
+	padding            int32
+	cursorIdx          int32
+	cursorBlink        bool
+	blinkRate          int32
+	boldIsBright       bool
+	terminalColorsIdx  int32
+	tabColorsIdx       int32
+	sbColorsIdx        int32
+	resizeOverlay      bool
+	resizeOverlayDur   float32
+	foregroundHex      string
+	backgroundHex      string
+	tabBarBg           string
+	tabActiveBg        string
+	tabActiveFg        string
+	tabInactiveBg      string
+	tabInactiveFg      string
+	scrollbarBgHex     string
+	scrollbarThumbHex  string
 
 	// Font
 	fontFamily string
@@ -970,14 +971,13 @@ func (a *Window) renderPreferences() {
 // row instead of stacking into a scrollbar. Each draw func should
 // emit exactly one widget; the item width is set for it already.
 func prefPairRow(w float32, l1 string, draw1 func(), l2 string, draw2 func()) {
+	_ = w
 	if imgui.BeginTableV("##pair_"+l1, 2, 0, imgui.NewVec2(0, 0), 0) {
 		imgui.TableNextColumn()
 		imgui.Text(l1)
-		imgui.SetNextItemWidth(w)
 		draw1()
 		imgui.TableNextColumn()
 		imgui.Text(l2)
-		imgui.SetNextItemWidth(w)
 		draw2()
 		imgui.EndTable()
 	}
@@ -988,35 +988,43 @@ func (a *Window) renderPrefAppearance() {
 	w := float32(200)
 
 	prefPairRow(w, "Theme", func() {
-		imgui.ComboStrarr("##theme", &d.themeIdx, d.themeNames, int32(len(d.themeNames)))
+		a.prefCombo("theme", &d.themeIdx, d.themeNames, w)
 	}, "Terminal Colors", func() {
-		imgui.ComboStrarr("##termcolors", &d.terminalColorsIdx, prefColorModes, int32(len(prefColorModes)))
+		a.prefCombo("termcolors", &d.terminalColorsIdx, prefColorModes, w)
 	})
 
 	if d.terminalColorsIdx == 1 {
 		prefPairRow(w, "Foreground", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.InputTextWithHint("##fg", "#RRGGBB", &d.foregroundHex, 0, nil)
 		}, "Background", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.InputTextWithHint("##bg", "#RRGGBB", &d.backgroundHex, 0, nil)
 		})
 	}
 
 	prefPairRow(w, "Opacity", func() {
+		imgui.SetNextItemWidth(w)
 		imgui.SliderFloat("##opacity", &d.opacity, 0.1, 1.0)
 	}, "Padding (px)", func() {
+		imgui.SetNextItemWidth(w)
 		imgui.SliderInt("##padding", &d.padding, 0, 20)
 	})
 
 	imgui.Checkbox("Lava Lamp Background", &d.glowOn)
 	if d.glowOn {
 		prefPairRow(w, "Glow Intensity", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowintensity", &d.glowIntensity, 0.05, 1.0)
 		}, "Glow Speed", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
 		})
 		prefPairRow(w, "Blob Size", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)
 		}, "Blob Count", func() {
+			imgui.SetNextItemWidth(w)
 			imgui.SliderInt("##glowblobs", &d.glowBlobs, 1, 16)
 		})
 	}
@@ -1024,8 +1032,7 @@ func (a *Window) renderPrefAppearance() {
 	imgui.Separator()
 
 	imgui.Text("Cursor Style")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##cursor", &d.cursorIdx, prefCursorStyles, int32(len(prefCursorStyles)))
+	a.prefCombo("cursor", &d.cursorIdx, prefCursorStyles, w)
 
 	imgui.Checkbox("Cursor Blink", &d.cursorBlink)
 	if d.cursorBlink {
@@ -1047,23 +1054,27 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Separator()
 
-	imgui.Text("Tab Colors")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##tabcolors", &d.tabColorsIdx, prefColorModes, int32(len(prefColorModes)))
+	prefPairRow(w, "Tab Colors", func() {
+		a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
+	}, "Scrollbar Colors", func() {
+		a.prefCombo("sbcolors", &d.sbColorsIdx, prefColorModes, w)
+	})
 
 	if d.tabColorsIdx == 1 {
-		imgui.Text("Tab Bar BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabbarbg", "#RRGGBB", &d.tabBarBg, 0, nil)
-		imgui.Text("Active Tab BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabactbg", "#RRGGBB", &d.tabActiveBg, 0, nil)
-		imgui.Text("Active Tab FG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabactfg", "#RRGGBB", &d.tabActiveFg, 0, nil)
-		imgui.Text("Inactive Tab BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabinbg", "#RRGGBB", &d.tabInactiveBg, 0, nil)
+		prefPairRow(w, "Tab Bar BG", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##tabbarbg", "#RRGGBB", &d.tabBarBg, 0, nil)
+		}, "Active Tab BG", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##tabactbg", "#RRGGBB", &d.tabActiveBg, 0, nil)
+		})
+		prefPairRow(w, "Active Tab FG", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##tabactfg", "#RRGGBB", &d.tabActiveFg, 0, nil)
+		}, "Inactive Tab BG", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##tabinbg", "#RRGGBB", &d.tabInactiveBg, 0, nil)
+		})
 		imgui.Text("Inactive Tab FG")
 		imgui.SetNextItemWidth(w)
 		imgui.InputTextWithHint("##tabinfg", "#RRGGBB", &d.tabInactiveFg, 0, nil)
@@ -1071,17 +1082,14 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Separator()
 
-	imgui.Text("Scrollbar Colors")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##sbcolors", &d.sbColorsIdx, prefColorModes, int32(len(prefColorModes)))
-
 	if d.sbColorsIdx == 1 {
-		imgui.Text("Scrollbar BG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##sbbg", "#RRGGBB", &d.scrollbarBgHex, 0, nil)
-		imgui.Text("Scrollbar Thumb")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##sbthumb", "#RRGGBB", &d.scrollbarThumbHex, 0, nil)
+		prefPairRow(w, "Scrollbar BG", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##sbbg", "#RRGGBB", &d.scrollbarBgHex, 0, nil)
+		}, "Scrollbar Thumb", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##sbthumb", "#RRGGBB", &d.scrollbarThumbHex, 0, nil)
+		})
 	}
 }
 
@@ -1120,10 +1128,9 @@ func (a *Window) renderPrefFont() {
 		}
 	}
 
-	imgui.SetNextItemWidth(w)
 	if len(labels) == 0 {
 		imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
-	} else if imgui.ComboStrarr("##fontpick", &selIdx, labels, int32(len(labels))) {
+	} else if a.prefCombo("fontpick", &selIdx, labels, w) {
 		if selIdx >= 0 && int(selIdx) < len(d.fontList) {
 			d.fontFamily = d.fontList[selIdx].Family
 			d.fontPath = d.fontList[selIdx].Path
@@ -1183,8 +1190,7 @@ func (a *Window) renderPrefFontSize(w float32) {
 		if selIdx < 0 {
 			d.fontSizeCustom = true
 		} else {
-			imgui.SetNextItemWidth(w)
-			if imgui.ComboStrarr("##fontsize", &selIdx, labels, int32(len(labels))) {
+			if a.prefCombo("fontsize", &selIdx, labels, w) {
 				if int(selIdx) == len(prefFontSizes) {
 					d.fontSizeCustom = true
 				} else {
@@ -1310,20 +1316,17 @@ func (a *Window) renderPrefShellTabs() {
 	imgui.Separator()
 
 	imgui.Text("On Child Exit")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##childexit", &d.childExitIdx, prefChildExits, int32(len(prefChildExits)))
+	a.prefCombo("childexit", &d.childExitIdx, prefChildExits, w)
 
 	imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
 
 	imgui.Text("Close Button Position")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##closebtn", &d.closeBtnIdx, prefCloseBtnPos, int32(len(prefCloseBtnPos)))
+	a.prefCombo("closebtn", &d.closeBtnIdx, prefCloseBtnPos, w)
 
 	imgui.Separator()
 
 	imgui.Text("Tab Source")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##tabsource", &d.tabSourceIdx, d.tabSourceOpts, int32(len(d.tabSourceOpts)))
+	a.prefCombo("tabsource", &d.tabSourceIdx, d.tabSourceOpts, w)
 	imgui.TextDisabled("pty: in-process. daemon: routes through xerotty serve")
 	imgui.TextDisabled("(auto-spawns one if no daemon is running). Takes effect on")
 	imgui.TextDisabled("the next tab — existing tabs stay on their current source.")
@@ -1340,8 +1343,7 @@ func (a *Window) renderPrefScrollback() {
 	w := float32(200)
 
 	imgui.Text("Mode")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##sbmode", &d.sbModeIdx, prefSBModes, int32(len(prefSBModes)))
+	a.prefCombo("sbmode", &d.sbModeIdx, prefSBModes, w)
 
 	// Lines is only meaningful in "memory" mode — under "unlimited"
 	// the buffer grows without bound, so the number wouldn't do
@@ -1373,8 +1375,7 @@ func (a *Window) renderPrefScrollbar() {
 	w := float32(200)
 
 	imgui.Text("Visibility")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##sbvis", &d.sbVisIdx, prefSBVisible, int32(len(prefSBVisible)))
+	a.prefCombo("sbvis", &d.sbVisIdx, prefSBVisible, w)
 
 	imgui.Text("Width (px)")
 	imgui.SetNextItemWidth(w)
@@ -1430,16 +1431,13 @@ func (a *Window) renderPrefKeys() {
 	w := float32(200)
 
 	imgui.Text("Backspace Sends")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##bsmode", &d.bsIdx, prefBSModes, int32(len(prefBSModes)))
+	a.prefCombo("bsmode", &d.bsIdx, prefBSModes, w)
 
 	imgui.Text("Delete Sends")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##delmode", &d.delIdx, prefDelModes, int32(len(prefDelModes)))
+	a.prefCombo("delmode", &d.delIdx, prefDelModes, w)
 
 	imgui.Text("Shift+Enter Sends")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##shenter", &d.shEnIdx, prefShiftEnters, int32(len(prefShiftEnters)))
+	a.prefCombo("shenter", &d.shEnIdx, prefShiftEnters, w)
 }
 
 // renderPrefMenu draws the scrollable item list. The Add controls are
@@ -1455,6 +1453,210 @@ func (a *Window) renderPrefMenu() {
 	imgui.Separator()
 
 	a.renderMenuLevel(&d.menuItems, 0, "m")
+}
+
+// prefCombo renders a combo-style chooser whose dropdown is a NATIVE
+// SDL3 popup (platform.RunImGuiPopup) instead of ImGui's BeginCombo.
+// ImGui's own combo popup embeds fine while it fits inside the prefs
+// viewport, but the moment it would overflow (a combo near the
+// window's bottom edge — e.g. after a custom-colors block expands
+// above it) ImGui promotes it to its own OS window, and Wayland
+// forbids positioning toplevels — the compositor drops it anywhere.
+// Same disease that made menu.go and the add-action chooser go
+// native. Returns true when the selection changed.
+func (a *Window) prefCombo(id string, idx *int32, items []string, w float32) bool {
+	d := &a.prefDialog
+	preview := "(choose)"
+	if int(*idx) >= 0 && int(*idx) < len(items) {
+		preview = items[*idx]
+	}
+	open := imgui.ButtonV(preview+"##"+id, imgui.Vec2{X: w, Y: 0})
+	// Same dismiss-click reopen race as the add-chooser: the popup's
+	// context eats the DOWN, main gets the UP and reads it as a
+	// click on this button. Swallow opens shortly after a close.
+	if d.chooserClosedFrame == nil {
+		d.chooserClosedFrame = map[string]int{}
+	}
+	if open {
+		if cf, ok := d.chooserClosedFrame[id]; ok && int(imgui.FrameCount())-cf < 20 {
+			open = false
+		}
+	}
+	btnMin := imgui.ItemRectMin()
+	btnMax := imgui.ItemRectMax()
+	vp := imgui.WindowViewport()
+	if !open || vp == nil {
+		return false
+	}
+	sel, picked := a.runChooserPopup(vp, btnMin, btnMax, items, *idx)
+	d.chooserClosedFrame[id] = int(imgui.FrameCount())
+	if picked && sel != *idx {
+		*idx = sel
+		return true
+	}
+	return false
+}
+
+// runChooserPopup opens a native popup listing items anchored to the
+// trigger button's CURRENT rect (captured this frame, so it can never
+// go stale no matter how the layout above reflowed). Prefers opening
+// BELOW like a normal combo, falling back above → right → left within
+// the usable screen bounds. Blocks until dismissed; returns the
+// picked index. Shares the type-to-jump machinery with the
+// add-action chooser.
+func (a *Window) runChooserPopup(vp *imgui.Viewport, btnMin, btnMax imgui.Vec2, items []string, cur int32) (int32, bool) {
+	parentID := vp.PlatformHandle()
+	vpPos := vp.Pos()
+
+	rowH := imgui.TextLineHeightWithSpacing()
+	if rowH < 18 {
+		rowH = 18
+	}
+	popupW := int(btnMax.X - btnMin.X)
+	if popupW < 160 {
+		popupW = 160
+	}
+	popupH := int(rowH)*len(items) + 16
+	if popupH > 420 {
+		popupH = 420
+	}
+
+	const gap = 4
+	belowY := int(btnMax.Y) + gap
+	aboveY := int(btnMin.Y) - popupH - gap
+	rightX := int(btnMax.X) + gap
+	leftX := int(btnMin.X) - popupW - gap
+	topY := int(btnMin.Y)
+
+	usableX, usableY, usableW, usableH := 0, 0, 0, 0
+	haveUsable := false
+	if x, y, ww, hh, ok := platform.WindowUsableBounds(parentID); ok {
+		usableX, usableY, usableW, usableH = x, y, ww, hh
+		haveUsable = true
+	}
+	fits := func(absX, absY int) bool {
+		if !haveUsable {
+			return true
+		}
+		return absX >= usableX && absY >= usableY &&
+			absX+popupW <= usableX+usableW && absY+popupH <= usableY+usableH
+	}
+	clampY := func(absY int) int {
+		if !haveUsable {
+			return absY
+		}
+		if absY+popupH > usableY+usableH {
+			absY = usableY + usableH - popupH
+		}
+		if absY < usableY {
+			absY = usableY
+		}
+		return absY
+	}
+
+	var absX, absY int
+	placedAbove := false
+	switch {
+	case fits(int(btnMin.X), belowY):
+		absX, absY = int(btnMin.X), belowY
+	case fits(int(btnMin.X), aboveY):
+		absX, absY = int(btnMin.X), aboveY
+		placedAbove = true
+	case fits(rightX, topY):
+		absX, absY = rightX, topY
+	case fits(leftX, topY):
+		absX, absY = leftX, topY
+	default:
+		absX, absY = int(btnMin.X), clampY(belowY)
+	}
+
+	relX := absX - int(vpPos.X)
+	relY := absY - int(vpPos.Y)
+	if relX < 0 {
+		relX = 0
+	}
+	if relY < 0 {
+		relY = 0
+	}
+
+	picked := int32(-1)
+	platform.RunImGuiPopup(parentID, relX, relY, popupW, popupH,
+		func() platform.PopupMenuDrawResult {
+			if placedAbove {
+				imgui.SetNextWindowPosV(imgui.Vec2{X: 0, Y: float32(popupH)}, imgui.CondAlways, imgui.Vec2{X: 0, Y: 1})
+			} else {
+				imgui.SetNextWindowPos(imgui.Vec2{X: 0, Y: 0})
+			}
+			flags := imgui.WindowFlagsNoTitleBar |
+				imgui.WindowFlagsNoResize |
+				imgui.WindowFlagsNoMove |
+				imgui.WindowFlagsNoSavedSettings |
+				imgui.WindowFlagsNoCollapse |
+				imgui.WindowFlagsAlwaysAutoResize
+			var res platform.PopupMenuDrawResult
+			if imgui.BeginV("##prefchooserpopup", nil, flags) {
+				tmTarget := -1
+				if imgui.IsWindowFocusedV(imgui.FocusedFlagsNone) {
+					tmTarget = chooserTypematchTarget(items)
+				}
+				for i, label := range items {
+					selected := int32(i) == cur
+					if i == tmTarget {
+						imgui.SetKeyboardFocusHereV(0)
+						imgui.InternalSetNavCursorVisibleAfterMove()
+						imgui.CurrentContext().SetNavInputSource(imgui.InputSourceKeyboard)
+					}
+					clicked := imgui.SelectableBoolV(label+fmt.Sprintf("##pc%d", i), selected, 0, imgui.Vec2{X: 0, Y: 0})
+					if selected {
+						imgui.SetItemDefaultFocus()
+					}
+					if clicked {
+						picked = int32(i)
+						res.Close = true
+					}
+				}
+			}
+			imgui.End()
+			if imgui.IsMouseClickedBool(imgui.MouseButtonLeft) || imgui.IsMouseClickedBool(imgui.MouseButtonRight) {
+				if !imgui.CurrentIO().WantCaptureMouse() {
+					res.Close = true
+				}
+			}
+			return res
+		})
+	platform.PostWake()
+	return picked, picked >= 0
+}
+
+// chooserTypematchTarget is addChooserTypematchTarget for an arbitrary
+// label list (same shared prefix state — one popup runs at a time).
+func chooserTypematchTarget(labels []string) int {
+	nowNano := time.Now().UnixNano()
+	if nowNano-addChooserTMLastNano > int64(700*time.Millisecond) {
+		addChooserTMPrefix = ""
+	}
+	var typed string
+	for _, ch := range imgui.CurrentIO().InputQueueCharacters().Slice() {
+		if ch >= 0x20 && ch < 0x7f {
+			typed += string(rune(ch))
+		}
+	}
+	if typed == "" {
+		return -1
+	}
+	addChooserTMLastNano = nowNano
+	addChooserTMPrefix += strings.ToLower(typed)
+	for i, l := range labels {
+		if strings.HasPrefix(strings.ToLower(l), addChooserTMPrefix) {
+			return i
+		}
+	}
+	for i, l := range labels {
+		if strings.Contains(strings.ToLower(l), addChooserTMPrefix) {
+			return i
+		}
+	}
+	return -1
 }
 
 // renderPrefMenuAddFooter draws the "Add Item" button + a selection
