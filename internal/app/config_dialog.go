@@ -965,49 +965,60 @@ func (a *Window) renderPreferences() {
 
 // --- Tab renderers ---
 
+// prefPairRow lays two labeled controls side by side — the prefs
+// window is much taller than it is wide, so paired numerics share a
+// row instead of stacking into a scrollbar. Each draw func should
+// emit exactly one widget; the item width is set for it already.
+func prefPairRow(w float32, l1 string, draw1 func(), l2 string, draw2 func()) {
+	if imgui.BeginTableV("##pair_"+l1, 2, 0, imgui.NewVec2(0, 0), 0) {
+		imgui.TableNextColumn()
+		imgui.Text(l1)
+		imgui.SetNextItemWidth(w)
+		draw1()
+		imgui.TableNextColumn()
+		imgui.Text(l2)
+		imgui.SetNextItemWidth(w)
+		draw2()
+		imgui.EndTable()
+	}
+}
+
 func (a *Window) renderPrefAppearance() {
 	d := &a.prefDialog
 	w := float32(200)
 
-	imgui.Text("Theme")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##theme", &d.themeIdx, d.themeNames, int32(len(d.themeNames)))
-
-	imgui.Text("Terminal Colors")
-	imgui.SetNextItemWidth(w)
-	imgui.ComboStrarr("##termcolors", &d.terminalColorsIdx, prefColorModes, int32(len(prefColorModes)))
+	prefPairRow(w, "Theme", func() {
+		imgui.ComboStrarr("##theme", &d.themeIdx, d.themeNames, int32(len(d.themeNames)))
+	}, "Terminal Colors", func() {
+		imgui.ComboStrarr("##termcolors", &d.terminalColorsIdx, prefColorModes, int32(len(prefColorModes)))
+	})
 
 	if d.terminalColorsIdx == 1 {
-		imgui.Text("Foreground")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##fg", "#RRGGBB", &d.foregroundHex, 0, nil)
-		imgui.Text("Background")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##bg", "#RRGGBB", &d.backgroundHex, 0, nil)
+		prefPairRow(w, "Foreground", func() {
+			imgui.InputTextWithHint("##fg", "#RRGGBB", &d.foregroundHex, 0, nil)
+		}, "Background", func() {
+			imgui.InputTextWithHint("##bg", "#RRGGBB", &d.backgroundHex, 0, nil)
+		})
 	}
 
-	imgui.Text("Opacity")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderFloat("##opacity", &d.opacity, 0.1, 1.0)
-
-	imgui.Text("Padding (px)")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderInt("##padding", &d.padding, 0, 20)
+	prefPairRow(w, "Opacity", func() {
+		imgui.SliderFloat("##opacity", &d.opacity, 0.1, 1.0)
+	}, "Padding (px)", func() {
+		imgui.SliderInt("##padding", &d.padding, 0, 20)
+	})
 
 	imgui.Checkbox("Lava Lamp Background", &d.glowOn)
 	if d.glowOn {
-		imgui.Text("Glow Intensity")
-		imgui.SetNextItemWidth(w)
-		imgui.SliderFloat("##glowintensity", &d.glowIntensity, 0.05, 1.0)
-		imgui.Text("Glow Speed")
-		imgui.SetNextItemWidth(w)
-		imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
-		imgui.Text("Blob Size")
-		imgui.SetNextItemWidth(w)
-		imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)
-		imgui.Text("Blob Count")
-		imgui.SetNextItemWidth(w)
-		imgui.SliderInt("##glowblobs", &d.glowBlobs, 1, 16)
+		prefPairRow(w, "Glow Intensity", func() {
+			imgui.SliderFloat("##glowintensity", &d.glowIntensity, 0.05, 1.0)
+		}, "Glow Speed", func() {
+			imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
+		})
+		prefPairRow(w, "Blob Size", func() {
+			imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)
+		}, "Blob Count", func() {
+			imgui.SliderInt("##glowblobs", &d.glowBlobs, 1, 16)
+		})
 	}
 
 	imgui.Separator()
