@@ -1054,11 +1054,8 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Separator()
 
-	prefPairRow(w, "Tab Colors", func() {
-		a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
-	}, "Scrollbar Colors", func() {
-		a.prefCombo("sbcolors", &d.sbColorsIdx, prefColorModes, w)
-	})
+	imgui.Text("Tab Colors")
+	a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
 
 	if d.tabColorsIdx == 1 {
 		prefPairRow(w, "Tab Bar BG", func() {
@@ -1081,6 +1078,9 @@ func (a *Window) renderPrefAppearance() {
 	}
 
 	imgui.Separator()
+
+	imgui.Text("Scrollbar Colors")
+	a.prefCombo("sbcolors", &d.sbColorsIdx, prefColorModes, w)
 
 	if d.sbColorsIdx == 1 {
 		prefPairRow(w, "Scrollbar BG", func() {
