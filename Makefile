@@ -37,7 +37,7 @@ all: build
 generate:
 	@command -v msgp >/dev/null 2>&1 || { \
 		echo "make: installing tinylib/msgp..."; \
-		$(GO) install github.com/tinylib/msgp; \
+		$(GO) install github.com/tinylib/msgp@$$($(GO) list -m -f '{{.Version}}' github.com/tinylib/msgp); \
 	}
 	$(GO) generate ./...
 

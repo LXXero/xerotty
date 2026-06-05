@@ -29,9 +29,13 @@ esac
 
 # Install msgp if missing — first-clone friendly. Pinned to the
 # version go.mod tracks so the generator matches the runtime lib.
+# MUST use the @version form: a versionless `go install` resolves
+# against THIS module's go.sum, which doesn't carry the msgp
+# BINARY's own deps (x/tools/imports) — fresh clones failed with
+# "missing go.sum entry". @version builds against msgp's own sums.
 if ! command -v msgp >/dev/null 2>&1; then
     echo "build.sh: installing tinylib/msgp..."
-    go install github.com/tinylib/msgp
+    go install github.com/tinylib/msgp@"$(go list -m -f '{{.Version}}' github.com/tinylib/msgp)"
 fi
 
 go generate ./...
