@@ -1120,8 +1120,6 @@ func (a *Window) renderPrefFont() {
 		d.fontPickerInit = true
 	}
 
-	imgui.Text("Font")
-
 	// Build display labels for the combo. Each entry shows family name
 	// only; the path is in fontList[i].Path.
 	labels := make([]string, len(d.fontList))
@@ -1145,26 +1143,38 @@ func (a *Window) renderPrefFont() {
 		}
 	}
 
-	if len(labels) == 0 {
-		imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
-	} else if a.prefCombo("fontpick", &selIdx, labels, w) {
-		if selIdx >= 0 && int(selIdx) < len(d.fontList) {
-			d.fontFamily = d.fontList[selIdx].Family
-			d.fontPath = d.fontList[selIdx].Path
-			d.fontResolved = d.fontPath
+	// Two-column grid: Font | Size on row one, then the
+	// non-monospace toggle under the font picker with the custom
+	// file path beside it.
+	if imgui.BeginTableV("##pair_font", 2, 0, imgui.NewVec2(0, 0), 0) {
+		imgui.TableNextColumn()
+		imgui.Text("Font")
+		if len(labels) == 0 {
+			imgui.TextDisabled("(no fonts found — check ~/.fonts or ~/Library/Fonts)")
+		} else if a.prefCombo("fontpick", &selIdx, labels, w) {
+			if selIdx >= 0 && int(selIdx) < len(d.fontList) {
+				d.fontFamily = d.fontList[selIdx].Family
+				d.fontPath = d.fontList[selIdx].Path
+				d.fontResolved = d.fontPath
+			}
 		}
-	}
-	imgui.SameLineV(0, 8)
-	if imgui.Checkbox("Include non-monospace", &d.fontShowAll) {
-		d.refreshFontList()
-	}
+		imgui.TableNextColumn()
+		imgui.Text("Size")
+		a.renderPrefFontSize(w)
 
-	// Custom path — for fonts not in the system database (e.g. a .ttf
-	// in ~/Downloads). When set, this overrides the family dropdown.
-	imgui.TextDisabled("Or load a font file directly:")
-	imgui.SetNextItemWidth(w)
-	if imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf (optional)", &d.fontPath, 0, nil) {
-		d.refreshResolved()
+		imgui.TableNextColumn()
+		if imgui.Checkbox("Include non-monospace", &d.fontShowAll) {
+			d.refreshFontList()
+		}
+		imgui.TableNextColumn()
+		// Custom path — for fonts not in the system database (e.g. a
+		// .ttf in ~/Downloads). When set, this overrides the dropdown.
+		imgui.TextDisabled("Or load a font file directly:")
+		imgui.SetNextItemWidth(w)
+		if imgui.InputTextWithHint("##fontpath", "/path/to/font.ttf (optional)", &d.fontPath, 0, nil) {
+			d.refreshResolved()
+		}
+		imgui.EndTable()
 	}
 
 	// Status line — what will actually load.
@@ -1173,11 +1183,6 @@ func (a *Window) renderPrefFont() {
 	} else {
 		imgui.TextColored(imgui.Vec4{X: 1, Y: 0.5, Z: 0.5, W: 1}, "→ not found (will use ImGui default)")
 	}
-
-	imgui.Separator()
-
-	imgui.Text("Size")
-	a.renderPrefFontSize(w)
 }
 
 // renderPrefFontSize draws a combo of standard sizes with a "Custom..." escape
@@ -1332,13 +1337,13 @@ func (a *Window) renderPrefShellTabs() {
 
 	imgui.Separator()
 
-	imgui.Text("On Child Exit")
-	a.prefCombo("childexit", &d.childExitIdx, prefChildExits, w)
+	prefPairRow(w, "On Child Exit", func() {
+		a.prefCombo("childexit", &d.childExitIdx, prefChildExits, w)
+	}, "Close Button Position", func() {
+		a.prefCombo("closebtn", &d.closeBtnIdx, prefCloseBtnPos, w)
+	})
 
 	imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
-
-	imgui.Text("Close Button Position")
-	a.prefCombo("closebtn", &d.closeBtnIdx, prefCloseBtnPos, w)
 
 	imgui.Separator()
 
@@ -1359,8 +1364,12 @@ func (a *Window) renderPrefScrollback() {
 	d := &a.prefDialog
 	w := float32(200)
 
-	imgui.Text("Mode")
-	a.prefCombo("sbmode", &d.sbModeIdx, prefSBModes, w)
+	prefPairRow(w, "Mode", func() {
+		a.prefCombo("sbmode", &d.sbModeIdx, prefSBModes, w)
+	}, "Scroll Speed (lines per tick)", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.SliderInt("##scrollspd", &d.scrollSpd, 1, 20)
+	})
 
 	// Lines is only meaningful in "memory" mode — under "unlimited"
 	// the buffer grows without bound, so the number wouldn't do
@@ -1379,12 +1388,13 @@ func (a *Window) renderPrefScrollback() {
 
 	imgui.Separator()
 
-	imgui.Text("Scroll Speed (lines per tick)")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderInt("##scrollspd", &d.scrollSpd, 1, 20)
-
-	imgui.Checkbox("Scroll to Bottom on Keystroke", &d.scrollKey)
-	imgui.Checkbox("Scroll to Bottom on Output", &d.scrollOut)
+	if imgui.BeginTableV("##pair_scrollbottom", 2, 0, imgui.NewVec2(0, 0), 0) {
+		imgui.TableNextColumn()
+		imgui.Checkbox("Scroll to Bottom on Keystroke", &d.scrollKey)
+		imgui.TableNextColumn()
+		imgui.Checkbox("Scroll to Bottom on Output", &d.scrollOut)
+		imgui.EndTable()
+	}
 }
 
 func (a *Window) renderPrefScrollbar() {
@@ -1394,13 +1404,13 @@ func (a *Window) renderPrefScrollbar() {
 	imgui.Text("Visibility")
 	a.prefCombo("sbvis", &d.sbVisIdx, prefSBVisible, w)
 
-	imgui.Text("Width (px)")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderInt("##sbwidth", &d.sbWidth, 4, 30)
-
-	imgui.Text("Min Thumb Height (px)")
-	imgui.SetNextItemWidth(w)
-	imgui.SliderInt("##sbminthumb", &d.sbMinThumb, 10, 100)
+	prefPairRow(w, "Width (px)", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.SliderInt("##sbwidth", &d.sbWidth, 4, 30)
+	}, "Min Thumb Height (px)", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.SliderInt("##sbminthumb", &d.sbMinThumb, 10, 100)
+	})
 }
 
 func (a *Window) renderPrefClipboard() {
