@@ -207,6 +207,8 @@ type configDialog struct {
 	glowOn            bool
 	glowIntensity     float32
 	glowSpeed         float32
+	glowScale         float32
+	glowBlobs         int32
 	padding           int32
 	cursorIdx         int32
 	cursorBlink       bool
@@ -437,6 +439,14 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	if d.glowSpeed <= 0 {
 		d.glowSpeed = 1.0
 	}
+	d.glowScale = float32(cfg.Appearance.Glow.Scale)
+	if d.glowScale <= 0 {
+		d.glowScale = 0.7
+	}
+	d.glowBlobs = int32(cfg.Appearance.Glow.Blobs)
+	if d.glowBlobs <= 0 {
+		d.glowBlobs = 5
+	}
 	d.padding = int32(cfg.Appearance.Padding)
 	d.cursorIdx = prefIndexOf(prefCursorStyles, cfg.Appearance.CursorStyle)
 	d.cursorBlink = cfg.Appearance.CursorBlink
@@ -547,6 +557,8 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.Glow.Enabled = d.glowOn
 	cfg.Appearance.Glow.Intensity = float64(d.glowIntensity)
 	cfg.Appearance.Glow.Speed = float64(d.glowSpeed)
+	cfg.Appearance.Glow.Scale = float64(d.glowScale)
+	cfg.Appearance.Glow.Blobs = int(d.glowBlobs)
 	cfg.Appearance.Padding = int(d.padding)
 	if int(d.cursorIdx) < len(prefCursorStyles) {
 		cfg.Appearance.CursorStyle = prefCursorStyles[d.cursorIdx]
@@ -990,6 +1002,12 @@ func (a *Window) renderPrefAppearance() {
 		imgui.Text("Glow Speed")
 		imgui.SetNextItemWidth(w)
 		imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
+		imgui.Text("Blob Size")
+		imgui.SetNextItemWidth(w)
+		imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)
+		imgui.Text("Blob Count")
+		imgui.SetNextItemWidth(w)
+		imgui.SliderInt("##glowblobs", &d.glowBlobs, 1, 16)
 	}
 
 	imgui.Separator()
