@@ -1,11 +1,13 @@
 package runner
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/sockpath"
@@ -34,6 +36,14 @@ import (
 // the temp dir comes from $TMPDIR, which differs per launch context,
 // so the bind side and an agent-spawned bridge can compute different
 // "defaults". See internal/sockpath.
+//
+// The bridge SURVIVES the socket dying (daemon hot upgrade, GUI
+// restart): it re-runs discovery and reconnects, so the MCP client
+// never sees its server process exit. One in-flight request can be
+// lost per reconnect (its response died with the old connection) —
+// the client's retry handles that. The bridge only exits when its
+// STDIN closes (the client is gone) or reconnection fails for a
+// sustained window.
 func MCPBridge(args []string) int {
 	fs := flag.NewFlagSet("mcp", flag.ExitOnError)
 	var socketPath string
@@ -44,64 +54,124 @@ func MCPBridge(args []string) int {
 		return 2
 	}
 
-	var candidates []string
-	seen := map[string]bool{}
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			candidates = append(candidates, p)
+	discover := func() net.Conn {
+		var candidates []string
+		seen := map[string]bool{}
+		add := func(p string) {
+			if p != "" && !seen[p] {
+				seen[p] = true
+				candidates = append(candidates, p)
+			}
 		}
-	}
-	if socketPath != "" {
-		add(socketPath)
-	} else {
-		if !daemonOnly {
-			add(sockpath.Recorded(sockpath.RecordGUIMCP))
-			add(sockpath.GUIMCPSocket())
+		if socketPath != "" {
+			add(socketPath)
+		} else {
+			if !daemonOnly {
+				add(sockpath.Recorded(sockpath.RecordGUIMCP))
+				add(sockpath.GUIMCPSocket())
+			}
+			add(sockpath.Recorded(sockpath.RecordDaemonMCP))
+			if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
+				add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket))
+			}
+			add(sockpath.MCPSocketFor(sockpath.DaemonSocket()))
 		}
-		add(sockpath.Recorded(sockpath.RecordDaemonMCP))
-		if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
-			add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket))
+		for _, p := range candidates {
+			if c, err := net.Dial("unix", p); err == nil {
+				// stderr only — stdout belongs to the JSON-RPC stream.
+				fmt.Fprintf(os.Stderr, "xerotty mcp: bridging stdio <-> %s\n", p)
+				return c
+			}
 		}
-		add(sockpath.MCPSocketFor(sockpath.DaemonSocket()))
+		return nil
 	}
-
-	var conn net.Conn
-	for _, p := range candidates {
-		c, err := net.Dial("unix", p)
-		if err == nil {
-			conn = c
-			// stderr only — stdout belongs to the JSON-RPC stream.
-			fmt.Fprintf(os.Stderr, "xerotty mcp: bridging stdio <-> %s\n", p)
-			break
-		}
-	}
-	if conn == nil {
-		fmt.Fprintf(os.Stderr, "xerotty mcp: no MCP socket reachable (tried %v)\n", candidates)
-		fmt.Fprintln(os.Stderr, "  start the GUI (aggregator socket) or `xerotty serve` (daemon socket) first,")
-		fmt.Fprintln(os.Stderr, "  or point at one explicitly with --socket <path>. See docs/MCP.md.")
-		return 1
-	}
-	defer conn.Close()
-	return bridgeStdio(conn, os.Stdin, os.Stdout)
+	return runBridge(discover, os.Stdin, os.Stdout)
 }
 
-// bridgeStdio pumps bytes both ways until either side hangs up.
-// stdin EOF half-closes the socket (CloseWrite) so the server sees
-// a clean disconnect and can finish flushing responses; the bridge
-// exits when the server side closes.
-func bridgeStdio(conn net.Conn, in io.Reader, out io.Writer) int {
+// reconnectWindow is how long the bridge keeps retrying discovery
+// after losing its socket before giving up. Long enough to span a
+// daemon hot upgrade or a GUI restart comfortably.
+const reconnectWindow = 30 * time.Second
+
+// runBridge pumps newline-delimited JSON-RPC between in/out and
+// whatever discover() connects to, reconnecting on socket loss.
+// Reads from `in` are line-framed so a reconnect can never split a
+// request mid-frame.
+func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
+	// Single stdin reader for the bridge's lifetime; lines fan into
+	// the per-connection forward loop. Closed channel = client gone.
+	lines := make(chan []byte, 16)
 	go func() {
-		_, _ = io.Copy(conn, in)
-		if uc, ok := conn.(*net.UnixConn); ok {
-			_ = uc.CloseWrite()
-		} else {
-			_ = conn.Close()
+		sc := bufio.NewScanner(in)
+		sc.Buffer(make([]byte, 64*1024), 16*1024*1024) // big screens, big frames
+		for sc.Scan() {
+			b := append(append([]byte{}, sc.Bytes()...), '\n')
+			lines <- b
 		}
+		close(lines)
 	}()
-	if _, err := io.Copy(out, conn); err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty mcp: %v\n", err)
-		return 1
+
+	firstDial := true
+	for {
+		var conn net.Conn
+		deadline := time.Now().Add(reconnectWindow)
+		for time.Now().Before(deadline) {
+			if conn = discover(); conn != nil {
+				break
+			}
+			if firstDial {
+				// Nothing listening on first launch: fail fast with
+				// guidance instead of silently spinning — the MCP
+				// client surfaces this error to the user.
+				fmt.Fprintln(os.Stderr, "xerotty mcp: no MCP socket reachable")
+				fmt.Fprintln(os.Stderr, "  start the GUI (aggregator socket) or `xerotty serve` (daemon socket) first,")
+				fmt.Fprintln(os.Stderr, "  or point at one explicitly with --socket <path>. See docs/MCP.md.")
+				return 1
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if conn == nil {
+			fmt.Fprintf(os.Stderr, "xerotty mcp: no MCP socket came back within %s — giving up\n", reconnectWindow)
+			return 1
+		}
+		firstDial = false
+
+		// Server → client, until the server hangs up.
+		done := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(out, conn)
+			close(done)
+		}()
+
+		alive := true
+		for alive {
+			select {
+			case b, ok := <-lines:
+				if !ok {
+					// Client closed stdin: flush the half-close so
+					// the server can finish responding, then leave.
+					if uc, isUnix := conn.(*net.UnixConn); isUnix {
+						_ = uc.CloseWrite()
+					} else {
+						_ = conn.Close()
+					}
+					<-done
+					return 0
+				}
+				if _, err := conn.Write(b); err != nil {
+					// This request is lost (its response would have
+					// died with the conn anyway). The client's
+					// timeout/retry covers it.
+					fmt.Fprintln(os.Stderr, "xerotty mcp: connection lost mid-request — re-dialing")
+					alive = false
+				}
+			case <-done:
+				// Server hung up (daemon upgrade, GUI restart).
+				fmt.Fprintln(os.Stderr, "xerotty mcp: server closed the connection — re-dialing")
+				alive = false
+			}
+		}
+		_ = conn.Close()
+		<-done
 	}
-	return 0
 }

@@ -49,6 +49,14 @@ xerotty mcp --socket PATH    explicit socket (e.g. a daemon started with --socke
 Stderr carries diagnostics (which socket it bridged to); stdout is
 exclusively the JSON-RPC stream.
 
+The bridge **survives its socket dying** (daemon hot upgrade, GUI
+restart): it re-runs discovery and reconnects for up to 30s, so the
+MCP client never sees its server process exit. At most one in-flight
+request is lost per reconnect (its response died with the old
+connection — the client's retry covers it). The bridge exits only
+when its stdin closes (the client is gone) or nothing comes back
+within the window.
+
 ### How discovery works
 
 Servers **record** where they actually bound (a pathfile under
