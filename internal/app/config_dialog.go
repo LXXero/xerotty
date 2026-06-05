@@ -1034,28 +1034,41 @@ func (a *Window) renderPrefAppearance() {
 	imgui.Text("Cursor Style")
 	a.prefCombo("cursor", &d.cursorIdx, prefCursorStyles, w)
 
-	imgui.Checkbox("Cursor Blink", &d.cursorBlink)
 	if d.cursorBlink {
-		// Inline on the same row, after the checkbox+label — the
-		// dependent control rides its toggle instead of stacking.
-		imgui.SameLineV(0, 16)
-		imgui.Text("Blink Rate (ms)")
-		imgui.SameLineV(0, 8)
-		imgui.SetNextItemWidth(w)
-		imgui.SliderInt("##blinkrate", &d.blinkRate, 100, 2000)
+		// Same 2-col grid as prefPairRow so the slider's X lines up
+		// with the right-column sliders above; checkbox + the
+		// dependent control's label share the left cell.
+		if imgui.BeginTableV("##pair_blink", 2, 0, imgui.NewVec2(0, 0), 0) {
+			imgui.TableNextColumn()
+			imgui.Checkbox("Cursor Blink", &d.cursorBlink)
+			imgui.SameLineV(0, 16)
+			imgui.Text("Blink Rate (ms)")
+			imgui.TableNextColumn()
+			imgui.SetNextItemWidth(w)
+			imgui.SliderInt("##blinkrate", &d.blinkRate, 100, 2000)
+			imgui.EndTable()
+		}
+	} else {
+		imgui.Checkbox("Cursor Blink", &d.cursorBlink)
 	}
 
 	imgui.Checkbox("Bold is Bright", &d.boldIsBright)
 
 	imgui.Separator()
 
-	imgui.Checkbox("Resize Overlay", &d.resizeOverlay)
 	if d.resizeOverlay {
-		imgui.SameLineV(0, 16)
-		imgui.Text("Overlay Duration (s)")
-		imgui.SameLineV(0, 8)
-		imgui.SetNextItemWidth(w)
-		imgui.SliderFloat("##resizedur", &d.resizeOverlayDur, 0.1, 5.0)
+		if imgui.BeginTableV("##pair_overlay", 2, 0, imgui.NewVec2(0, 0), 0) {
+			imgui.TableNextColumn()
+			imgui.Checkbox("Resize Overlay", &d.resizeOverlay)
+			imgui.SameLineV(0, 16)
+			imgui.Text("Overlay Duration (s)")
+			imgui.TableNextColumn()
+			imgui.SetNextItemWidth(w)
+			imgui.SliderFloat("##resizedur", &d.resizeOverlayDur, 0.1, 5.0)
+			imgui.EndTable()
+		}
+	} else {
+		imgui.Checkbox("Resize Overlay", &d.resizeOverlay)
 	}
 
 	imgui.Separator()
