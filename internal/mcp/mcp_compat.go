@@ -41,7 +41,7 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 		// agent's context, so the trust-mode dance is known BEFORE
 		// the first blocked write instead of discovered through
 		// error archaeology.
-		"instructions": "xerotty terminal daemon. You control real terminal tabs (PTYs with running shells).\n\n" +
+		"instructions": "xerotty terminal daemon (single-daemon socket). You control real terminal tabs (PTYs with running shells) on THIS daemon only; tab ids are plain integers from list_tabs. xerotty also has a separate GUI-aggregator MCP (serverInfo name 'xerotty-gui') with namespaced string ids like 'local:3' spanning every host the user's GUI is attached to — which server you are connected to was fixed when this connection was created and cannot be switched mid-session; if you need the other view, ask the user to register it (`xerotty mcp` = GUI view, `xerotty mcp --daemon` = this view).\n\n" +
 			"TRUST MODE: every connection starts in '" + c.srv.defaultMode + "' mode. In observe mode all writes " +
 			"(send_input, send_keys, create_tab, ...) are blocked. To write, FIRST call set_agent_mode with " +
 			"{\"mode\":\"auto\"} (direct writes) or {\"mode\":\"propose\"} (writes queue for human approval). " +

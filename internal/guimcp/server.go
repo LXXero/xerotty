@@ -174,8 +174,10 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 			// Usage briefing injected into the agent's context by the
 			// client (same idea as the daemon server's instructions).
 			"instructions": "xerotty GUI aggregator: every terminal tab across all daemons this GUI is attached to " +
-				"(local + remote hosts). Tab IDs are namespaced '<host>:<id>' (e.g. 'local:1', 'kh:3') — list_tabs " +
+				"(local + remote hosts). Tab IDs are namespaced strings '<host>:<id>' (e.g. 'local:1', 'kh:3') — list_tabs " +
 				"shows cwd/foreground/focused for triage. No trust gating here (this is the user's own GUI). " +
+				"(xerotty also has per-daemon MCP sockets with plain-integer ids and a trust model; which server " +
+				"you are connected to was fixed when this connection was created and cannot switch mid-session.) " +
 				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
 				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse. get_screen always " +
 				"returns cursor {row,col}; styled=true returns styled runs — faint text at/after the cursor is " +
