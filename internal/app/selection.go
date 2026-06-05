@@ -17,6 +17,7 @@ import (
 // selection from scrollback yielded nothing on daemon-backed tabs.
 type cellGrid interface {
 	Width() int
+	Height() int
 	CellAt(col, row int) *uv.Cell
 	ScrollbackLen() int
 	ScrollbackCellAt(col, row int) *uv.Cell
@@ -35,6 +36,15 @@ const (
 )
 
 // selection tracks mouse-driven text selection state.
+//
+// ALL row coordinates are CONTENT rows — absolute indices into the
+// scrollback+screen stream (0 = oldest scrollback line; the visible
+// screen starts at ScrollbackLen()). Content rows are stable under
+// scrolling AND under new output (a line keeps its index as it moves
+// from screen into scrollback), so a selection stays glued to its
+// text instead of to the glass. Viewport→content conversion happens
+// once, at the mouse event (contentRowAt); rendering converts back
+// per frame (renderer.Draw's selRowBase).
 type selection struct {
 	active   bool // true when a selection exists
 	dragging bool // true while mouse button is held
@@ -101,7 +111,7 @@ func (s *selection) contains(col, row int) bool {
 // rather than the grid padding. With trimTrailing=false the full
 // padded row is preserved — useful for copying ASCII art or
 // alignment-sensitive content where column position matters.
-func (s *selection) extractText(emu cellGrid, scrollOffset int, trimTrailing bool) string {
+func (s *selection) extractText(emu cellGrid, trimTrailing bool) string {
 	if !s.active {
 		return ""
 	}
@@ -121,7 +131,7 @@ func (s *selection) extractText(emu cellGrid, scrollOffset int, trimTrailing boo
 
 		var line strings.Builder
 		for col := lineStart; col <= lineEnd; col++ {
-			cell := cellAtViewport(emu, col, row, scrollOffset)
+			cell := cellAtContent(emu, col, row)
 			if cell == nil {
 				line.WriteByte(' ')
 				continue
@@ -163,12 +173,12 @@ func (s *selection) startCharDrag(row, col int) {
 
 // selectWord selects the word under (col, row) using word-character rules.
 // Sets mode=word, the anchor brackets the word, and active=true.
-func (s *selection) selectWord(emu cellGrid, col, row, scrollOffset int) {
-	cell := cellAtViewport(emu, col, row, scrollOffset)
+func (s *selection) selectWord(emu cellGrid, col, row int) {
+	cell := cellAtContent(emu, col, row)
 	if cell == nil || !isSelWordChar(cell.Content) {
 		return
 	}
-	startCol, endCol := wordBoundsAt(emu, col, row, scrollOffset)
+	startCol, endCol := wordBoundsAt(emu, col, row)
 	s.mode = modeWord
 	s.anchorR1, s.anchorR2 = row, row
 	s.anchorC1, s.anchorC2 = startCol, endCol
@@ -182,12 +192,12 @@ func (s *selection) selectWord(emu cellGrid, col, row, scrollOffset int) {
 // xfce4-terminal behavior: double-click on blank = select the blank run.
 // Mode stays modeWord so drag-extend treats the run as a single unit
 // and snaps to neighbouring word/whitespace runs.
-func (s *selection) selectSpace(emu cellGrid, col, row, scrollOffset int) {
-	cell := cellAtViewport(emu, col, row, scrollOffset)
+func (s *selection) selectSpace(emu cellGrid, col, row int) {
+	cell := cellAtContent(emu, col, row)
 	if cell != nil && isSelWordChar(cell.Content) {
 		return // not blank — selectWord should handle this
 	}
-	startCol, endCol := wordBoundsAt(emu, col, row, scrollOffset)
+	startCol, endCol := wordBoundsAt(emu, col, row)
 	s.mode = modeWord
 	s.anchorR1, s.anchorR2 = row, row
 	s.anchorC1, s.anchorC2 = startCol, endCol
@@ -199,7 +209,7 @@ func (s *selection) selectSpace(emu cellGrid, col, row, scrollOffset int) {
 
 // selectLine selects the entire line at the given row.
 // xfce4-terminal behavior: triple-click = select line.
-func (s *selection) selectLine(emu cellGrid, row, scrollOffset int) {
+func (s *selection) selectLine(emu cellGrid, row int) {
 	cols := emu.Width()
 	s.mode = modeLine
 	s.anchorR1, s.anchorR2 = row, row
@@ -214,7 +224,7 @@ func (s *selection) selectLine(emu cellGrid, row, scrollOffset int) {
 // cursor at (curRow, curCol). Mode controls how the cursor end snaps:
 // modeChar uses the exact cell, modeWord expands to the word /
 // whitespace run under the cursor, modeLine selects whole rows.
-func (s *selection) extendDrag(curRow, curCol int, emu cellGrid, scrollOffset int) {
+func (s *selection) extendDrag(curRow, curCol int, emu cellGrid) {
 	cols := emu.Width()
 	if curCol < 0 {
 		curCol = 0
@@ -226,7 +236,7 @@ func (s *selection) extendDrag(curRow, curCol int, emu cellGrid, scrollOffset in
 	var cursorStartCol, cursorEndCol int
 	switch s.mode {
 	case modeWord:
-		cursorStartCol, cursorEndCol = wordBoundsAt(emu, curCol, curRow, scrollOffset)
+		cursorStartCol, cursorEndCol = wordBoundsAt(emu, curCol, curRow)
 	case modeLine:
 		cursorStartCol, cursorEndCol = 0, cols-1
 	default: // modeChar
@@ -294,22 +304,22 @@ func cellClass(c *uv.Cell) charClass {
 // contiguous whitespace run, or a single punctuation cell. Used by
 // selectWord / selectSpace for the initial pick and by extendDrag in
 // modeWord.
-func wordBoundsAt(emu cellGrid, col, row, scrollOffset int) (startCol, endCol int) {
+func wordBoundsAt(emu cellGrid, col, row int) (startCol, endCol int) {
 	cols := emu.Width()
-	class := cellClass(cellAtViewport(emu, col, row, scrollOffset))
+	class := cellClass(cellAtContent(emu, col, row))
 	if class == classPunct {
 		return col, col
 	}
 	startCol = col
 	for startCol > 0 {
-		if cellClass(cellAtViewport(emu, startCol-1, row, scrollOffset)) != class {
+		if cellClass(cellAtContent(emu, startCol-1, row)) != class {
 			break
 		}
 		startCol--
 	}
 	endCol = col
 	for endCol < cols-1 {
-		if cellClass(cellAtViewport(emu, endCol+1, row, scrollOffset)) != class {
+		if cellClass(cellAtContent(emu, endCol+1, row)) != class {
 			break
 		}
 		endCol++
@@ -320,10 +330,29 @@ func wordBoundsAt(emu cellGrid, col, row, scrollOffset int) (startCol, endCol in
 // cellAtViewport returns the cell at viewport (col, row) accounting for scroll.
 // This mirrors renderer.cellAt but is accessible from the app package.
 func cellAtViewport(emu cellGrid, col, row, scrollOffset int) *uv.Cell {
+	return cellAtContent(emu, col, contentRowAt(emu, row, scrollOffset))
+}
+
+// cellAtContent reads a cell by CONTENT row (scrollback-absolute).
+func cellAtContent(emu cellGrid, col, row int) *uv.Cell {
 	sbLen := emu.ScrollbackLen()
-	contentIdx := sbLen - scrollOffset + row
-	if contentIdx < sbLen {
-		return emu.ScrollbackCellAt(col, contentIdx)
+	if row < sbLen {
+		return emu.ScrollbackCellAt(col, row)
 	}
-	return emu.CellAt(col, contentIdx-sbLen)
+	return emu.CellAt(col, row-sbLen)
+}
+
+// contentRowAt converts a viewport row (what the mouse hits) to a
+// content row under the given scroll offset, clamped to the valid
+// content range so drags past the window edges stay in bounds.
+func contentRowAt(emu cellGrid, vpRow, scrollOffset int) int {
+	sbLen := emu.ScrollbackLen()
+	row := sbLen - scrollOffset + vpRow
+	if row < 0 {
+		row = 0
+	}
+	if maxRow := sbLen + emu.Height() - 1; row > maxRow {
+		row = maxRow
+	}
+	return row
 }

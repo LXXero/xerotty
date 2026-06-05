@@ -31,13 +31,16 @@ type Renderer struct {
 	// SetSelection before Draw. When active, cells inside the range
 	// render with SelectionFg/SelectionBg so selected text stays
 	// readable — handled inside the normal bg+fg passes rather than as
-	// an opaque overlay (which buried the text). Rows are viewport
-	// rows; the range covers line-start→line-end on each row (full
-	// width on interior rows).
+	// an opaque overlay (which buried the text). Rows are CONTENT rows
+	// (scrollback-absolute — stable under scrolling); Draw records
+	// selRowBase each frame so cellSelected can translate the viewport
+	// row it's drawing. The range covers line-start→line-end on each
+	// row (full width on interior rows).
 	selActive    bool
 	selR1, selC1 int
 	selR2, selC2 int
 	selCols      int
+	selRowBase   int // content row of viewport row 0 this frame
 }
 
 // SetSelection records the current selection range for the next Draw.
@@ -53,7 +56,12 @@ func (r *Renderer) SetSelection(active bool, r1, c1, r2, c2, cols int) {
 // cellSelected reports whether viewport cell (col,row) is within the
 // current selection, using row-major geometry (first row from its
 // start col, interior rows full width, last row up to its end col).
+// The selection is stored in content rows; selRowBase (set by Draw)
+// maps this frame's viewport rows onto them — that's what keeps the
+// highlight glued to its TEXT when the user scrolls, instead of to
+// the glass.
 func (r *Renderer) cellSelected(col, row int) bool {
+	row += r.selRowBase
 	if !r.selActive || row < r.selR1 || row > r.selR2 {
 		return false
 	}
@@ -142,6 +150,9 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell, col, row int) (fg, bg uint32
 func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset int) {
 	cols := emu.Width()
 	rows := emu.Height()
+	// Content row of the first visible viewport row — cellSelected
+	// translates against this (selection rows are content-space).
+	r.selRowBase = emu.ScrollbackLen() - scrollOffset
 	cellW := r.Metrics.Width
 	cellH := r.Metrics.Height
 

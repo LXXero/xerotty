@@ -5857,11 +5857,14 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		cell := cellAtViewport(tab.Terminal, col, row, scrollOff)
+		// Selection lives in content rows (stable under scrolling) —
+		// convert from the viewport row once, here at the mouse event.
+		cRow := contentRowAt(tab.Terminal, row, scrollOff)
+		cell := cellAtContent(tab.Terminal, col, cRow)
 		if cell != nil && isSelWordChar(cell.Content) {
-			w.sel.selectWord(tab.Terminal, col, row, scrollOff)
+			w.sel.selectWord(tab.Terminal, col, cRow)
 		} else {
-			w.sel.selectSpace(tab.Terminal, col, row, scrollOff)
+			w.sel.selectSpace(tab.Terminal, col, cRow)
 		}
 		if w.sel.active {
 			// iTerm2-style: hold-and-drag after a double-click extends
@@ -5869,7 +5872,7 @@ func (w *Window) handleMouseSelection() {
 			// anchor. Release without movement just keeps the word
 			// selection.
 			w.sel.dragging = true
-			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 		w.lastDblClickTime = imgui.Time()
 		w.lastDblClickRow = row
@@ -5881,16 +5884,20 @@ func (w *Window) handleMouseSelection() {
 			if s, ok := w.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
 			}
-			w.sel.selectLine(tab.Terminal, row, scrollOff)
+			w.sel.selectLine(tab.Terminal, contentRowAt(tab.Terminal, row, scrollOff))
 			if w.sel.active {
 				// Drag after triple-click extends the selection by full rows.
 				w.sel.dragging = true
-				w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+				w.writeSelection(w.sel.extractText(tab.Terminal, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 			}
 			w.lastDblClickTime = 0 // consumed
 		} else if inTerminal {
+			scrollOff := 0
+			if s, ok := w.scroll[tab.ID]; ok {
+				scrollOff = s.Offset
+			}
 			w.sel.clear()
-			w.sel.startCharDrag(row, col)
+			w.sel.startCharDrag(contentRowAt(tab.Terminal, row, scrollOff), col)
 		}
 	}
 
@@ -5901,7 +5908,10 @@ func (w *Window) handleMouseSelection() {
 		if s, ok := w.scroll[tab.ID]; ok {
 			scrollOff = s.Offset
 		}
-		w.sel.extendDrag(row, col, tab.Terminal, scrollOff)
+		// Converting at the CURRENT offset means dragging while
+		// scrolling extends the selection through the content that
+		// scrolls past — the anchor stays glued to its text.
+		w.sel.extendDrag(contentRowAt(tab.Terminal, row, scrollOff), col, tab.Terminal)
 	}
 
 	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
@@ -5909,11 +5919,7 @@ func (w *Window) handleMouseSelection() {
 	if w.sel.dragging && imgui.IsMouseReleased(imgui.MouseButtonLeft) {
 		w.sel.dragging = false
 		if w.sel.active {
-			scrollOff := 0
-			if s, ok := w.scroll[tab.ID]; ok {
-				scrollOff = s.Offset
-			}
-			w.writeSelection(w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+			w.writeSelection(w.sel.extractText(tab.Terminal, w.app.cfg.Clipboard.TrimTrailingWhitespace))
 		}
 	}
 
@@ -5966,11 +5972,7 @@ func (w *Window) selectedText() string {
 	if tab == nil {
 		return ""
 	}
-	scrollOff := 0
-	if s, ok := w.scroll[tab.ID]; ok {
-		scrollOff = s.Offset
-	}
-	return w.sel.extractText(tab.Terminal, scrollOff, w.app.cfg.Clipboard.TrimTrailingWhitespace)
+	return w.sel.extractText(tab.Terminal, w.app.cfg.Clipboard.TrimTrailingWhitespace)
 }
 
 func getCWD(term interface{}) string {
