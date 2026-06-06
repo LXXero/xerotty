@@ -310,6 +310,31 @@ func (t TextureManager) CreateTextureRgba(img *image.RGBA, width, height int) im
 	return t.CreateTexture(unsafe.Pointer(&img.Pix[0]), width, height)
 }
 
+// GlyphQuad is one textured quad for DrawListAddQuads. Field order
+// and sizes mirror xt_glyph_quad in glyphbatch.cpp — keep in sync.
+type GlyphQuad struct {
+	X0, Y0, X1, Y1 float32
+	U0, V0, U1, V1 float32
+	Col            uint32
+	_              uint32 // padding to align Tex, matching the C struct
+	Tex            uint64
+}
+
+// DrawListAddQuads appends every quad to the draw list in ONE cgo
+// crossing, grouping consecutive same-texture quads into native
+// PrimReserve/PrimRectUV runs. With the glyph atlas, a whole text
+// frame is typically one group — the per-glyph AddImage path cost
+// ~20% of process CPU in crossing overhead alone on dense grids.
+func DrawListAddQuads(dl *imgui.DrawList, quads []GlyphQuad) {
+	if dl == nil || len(quads) == 0 {
+		return
+	}
+	// DrawList's first (only) field is its *C.ImDrawList — cimgui-go
+	// exports it but as a package-local C type, so reinterpret.
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(dl))
+	C.platform_drawlist_add_quads(ptr, unsafe.Pointer(&quads[0]), C.int(len(quads)))
+}
+
 // UpdateTexture overwrites a sub-rectangle of an existing texture
 // (glTexSubImage2D). The glyph atlas uses it to pack freshly
 // rasterized glyphs into shared pages instead of minting one GL

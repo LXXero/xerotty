@@ -73,6 +73,7 @@ unsigned long platform_mouse_focus_window_id(void);
 unsigned long long platform_create_texture(const unsigned char* pixels, int width, int height);
 void               platform_delete_texture(unsigned long long tex_id);
 void               platform_update_texture(unsigned long long tex_id, int x, int y, int width, int height, const unsigned char* pixels);
+void               platform_drawlist_add_quads(void* dl_ptr, const void* quads_ptr, int n);
 
 // platform_resync_modifiers reads the OS-level modifier state (Cmd /
 // Shift / Ctrl / Alt) and feeds it back into ImGui's IO as

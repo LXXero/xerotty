@@ -5,6 +5,7 @@ import (
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/glyphcache"
+	"github.com/LXXero/xerotty/internal/platform"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 )
@@ -41,6 +42,12 @@ type Renderer struct {
 	selR2, selC2 int
 	selCols      int
 	selRowBase   int // content row of viewport row 0 this frame
+
+	// quadBuf accumulates the frame's glyph quads; one
+	// platform.DrawListAddQuads call flushes them all in a single
+	// cgo crossing instead of one AddImage crossing per glyph
+	// (~20% of process CPU on dense grids). Reused across frames.
+	quadBuf []platform.GlyphQuad
 }
 
 // SetSelection records the current selection range for the next Draw.
@@ -277,6 +284,10 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			}
 		}
 	}
+
+	// Flush the frame's glyph quads in one cgo crossing.
+	platform.DrawListAddQuads(drawList, r.quadBuf)
+	r.quadBuf = r.quadBuf[:0]
 }
 
 // drawUnderline renders the appropriate underline style.
@@ -451,14 +462,14 @@ func (r *Renderer) drawGlyphFromCache(drawList *imgui.DrawList, content string, 
 			tint = 0xFFFFFFFF
 			px, py, w, h = fitColorGlyphToCell(x, y, cellW, cellH, w, h, scale)
 		}
-		drawList.AddImageV(
-			entry.Tex,
-			imgui.Vec2{X: px, Y: py},
-			imgui.Vec2{X: px + w, Y: py + h},
-			entry.UV0,
-			entry.UV1,
-			tint,
-		)
+		// Accumulate — flushed in one cgo call at the end of the text
+		// pass (see Draw). Z-order note: glyphs land above same-pass
+		// underlines/strikethroughs, which is the conventional layering.
+		r.quadBuf = append(r.quadBuf, platform.GlyphQuad{
+			X0: px, Y0: py, X1: px + w, Y1: py + h,
+			U0: entry.UV0.X, V0: entry.UV0.Y, U1: entry.UV1.X, V1: entry.UV1.Y,
+			Col: tint, Tex: uint64(entry.Tex.TexID()),
+		})
 	}
 }
 
