@@ -68,13 +68,15 @@ type Renderer struct {
 // drawCacheKey captures everything Draw's output depends on. Two
 // equal keys produce identical primitive lists by construction.
 type drawCacheKey struct {
-	emu        EmulatorView
-	gen        uint64
-	cfgGen     uint64
-	scrollOff  int
-	cols, rows int
-	offX, offY float32
-	selActive  bool
+	emu                        EmulatorView
+	gen                        uint64
+	cfgGen                     uint64
+	scrollOff                  int
+	cols, rows                 int
+	offX, offY                 float32
+	cellW, cellH               float32
+	fontSize                   float32
+	selActive                  bool
 	selR1, selC1, selR2, selC2 int
 }
 
@@ -214,8 +216,10 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			emu: emu, gen: emu.RenderGeneration(), cfgGen: r.cfgGen,
 			scrollOff: scrollOffset, cols: cols, rows: rows,
 			offX: r.OffsetX, offY: r.OffsetY,
+			cellW: r.Metrics.Width, cellH: r.Metrics.Height,
+			fontSize:  r.FontSize,
 			selActive: r.selActive,
-			selR1: r.selR1, selC1: r.selC1, selR2: r.selR2, selC2: r.selC2,
+			selR1:     r.selR1, selC1: r.selC1, selR2: r.selR2, selC2: r.selC2,
 		}
 		if r.cacheOK && key == r.cacheKey {
 			platform.DrawListAddQuads(drawList, r.cacheQuads)

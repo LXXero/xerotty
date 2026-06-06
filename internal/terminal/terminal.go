@@ -635,7 +635,6 @@ func sanitizeForFile(s string) string {
 // publishMu so a daemon-side bulk snapshot can't read a partially-
 // cleared state. Safe to call from any goroutine.
 func (t *Terminal) ClearScrollback() {
-	defer t.renderGen.Add(1)
 	t.publishMu.Lock()
 	t.Emu.ClearScrollback()
 	t.mu.Lock()
@@ -644,6 +643,7 @@ func (t *Terminal) ClearScrollback() {
 	if disk != nil {
 		_ = disk.Clear()
 	}
+	t.renderGen.Add(1)
 	t.publishMu.Unlock()
 	// Wake any DataChan waiter so the GUI repaints the now-empty
 	// scrollback region.
@@ -814,8 +814,11 @@ func (t *Terminal) readPTY() {
 				// mode. No-op otherwise. Runs on this goroutine so
 				// the mirror always sees writes in PTY-arrival order.
 				t.mirrorScrollback()
-				t.publishMu.Unlock()
+				// Inside publishMu: equal-gen ⇒ identical-content
+				// requires readers seeing the new gen to also see
+				// the completed write.
 				t.renderGen.Add(1)
+				t.publishMu.Unlock()
 			}
 			select {
 			case t.DataCh <- struct{}{}:

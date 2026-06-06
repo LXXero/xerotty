@@ -475,8 +475,8 @@ func (s *Source) applyCellFull(f *protocol.CellFull) {
 			s.emu.SetCell(int(c), int(r), &cell)
 		}
 	}
-	s.mu.Unlock()
 	s.renderGen.Add(1)
+	s.mu.Unlock()
 	s.signalDirty()
 }
 
@@ -492,8 +492,8 @@ func (s *Source) applyCellDiff(f *protocol.CellDiff) {
 		cell := uvCellFromProto(e.Cell)
 		s.emu.SetCell(int(e.Col), int(e.Row), &cell)
 	}
-	s.mu.Unlock()
 	s.renderGen.Add(1)
+	s.mu.Unlock()
 	s.signalDirty()
 }
 
@@ -613,8 +613,8 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.mu.Lock()
 	s.scrollback = nil
 	s.scrollbackLen.Store(0)
-	s.mu.Unlock()
 	s.renderGen.Add(1)
+	s.mu.Unlock()
 	s.signalDirty()
 }
 
@@ -625,7 +625,6 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 // recent tail.
 func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for _, row := range f.Rows {
 		uvRow := make([]uv.Cell, len(row))
 		for i, c := range row {
@@ -637,7 +636,16 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 		s.scrollback = s.scrollback[over:]
 	}
 	s.scrollbackLen.Store(int64(len(s.scrollback)))
+	// Gen bump BEFORE unlock: a reader that observes the new
+	// generation must be guaranteed to see the completed mutation
+	// (bump-after-unlock left a window where a frame could cache new
+	// content under the old generation — self-healing, but it
+	// violated the equal-gen ⇒ identical-content invariant).
 	s.renderGen.Add(1)
+	s.mu.Unlock()
+	// A scrolled-back view renders from this ring — wake the GUI so
+	// the change paints without waiting for an unrelated event.
+	s.signalDirty()
 }
 
 // Wake, if set, is called whenever a Source's visible state changes
