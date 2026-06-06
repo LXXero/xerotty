@@ -1,0 +1,76 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+  # Manual runs build the artifacts without publishing a release —
+  # for testing the pipeline itself.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            go gcc make pkgconf git \
+            sdl3 freetype2 fontconfig wayland libx11 mesa
+      - uses: actions/checkout@v6
+      - name: trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: build
+        run: |
+          ./build.sh
+          ./build.sh headless
+      - name: package
+        run: |
+          mkdir -p dist
+          tar czf dist/xerotty-linux-amd64.tar.gz xerotty themes README.md
+          tar czf dist/xerotty-headless-linux-amd64.tar.gz xerotty-headless README.md
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux
+          path: dist/*
+
+  darwin:
+    runs-on: macos-latest
+    steps:
+      - name: deps
+        run: brew install sdl3 freetype pkgconf go
+      - uses: actions/checkout@v6
+      - name: build app bundle
+        run: make app
+      - name: package
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent xerotty.app dist/xerotty-darwin-arm64.app.zip
+          # Bare binary too, for CLI/server use on macs.
+          tar czf dist/xerotty-darwin-arm64.tar.gz xerotty themes README.md
+      - uses: actions/upload-artifact@v6
+        with:
+          name: darwin
+          path: dist/*
+
+  release:
+    # Publish only on tag pushes; dispatch runs stop at artifacts.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          merge-multiple: true
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "xerotty $GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "Linux binaries need sdl3/freetype/fontconfig from your distro (headless build needs none). The macOS app expects \`brew install sdl3\` until dylibs are bundled."
