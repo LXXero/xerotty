@@ -140,6 +140,19 @@ else
 	@echo "installed: /Applications/$(APP_BUNDLE)"
 endif
 
+# Full test pyramid: unit + quad-stream renderer invariants + the
+# agent-shaped MCP functional e2e (spawns a real daemon). Mirrors CI.
+test: generate
+	$(GO) vet ./internal/... ./cmd/...
+	$(GO) test ./internal/...
+
+# test + visual smoke: renders a real window and captures a PNG you
+# can eyeball (needs a display; CI skips this).
+qa: test build
+	@mkdir -p /tmp/xerotty-qa
+	env XDG_CONFIG_HOME=/tmp/xerotty-qa ./xerotty --screenshot /tmp/xerotty-qa/shot.png --screenshot-frames 60
+	@echo "visual smoke: /tmp/xerotty-qa/shot.png — eyeball it (or let an agent)"
+
 clean:
 	rm -f $(BINARY) $(BINARY)-headless
 	rm -rf $(APP_BUNDLE)

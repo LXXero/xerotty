@@ -1,0 +1,28 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Arch container: SDL3 + current Go without PPA archaeology.
+    container: archlinux:latest
+    steps:
+      - name: deps
+        run: |
+          pacman -Syu --noconfirm --needed \
+            go gcc make pkgconf git \
+            sdl3 freetype2 fontconfig wayland libx11 mesa
+      - uses: actions/checkout@v4
+      - name: trust workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: build (gui)
+        run: ./build.sh
+      - name: build (headless)
+        run: ./build.sh headless
+      - name: tests
+        run: |
+          go vet ./internal/... ./cmd/...
+          go test ./internal/...
