@@ -296,14 +296,58 @@ func (c *Cache) atlasAlloc(w, h int) (int, int, *atlasPage) {
 			return 0, newY, p
 		}
 	}
-	// New page. Zero-initialized so gutters sample transparent.
+	// New page. Zero-initialized so gutters sample transparent. The
+	// first 6x6 corner is reserved: a 4x4 solid-white block (1px
+	// inset) that WhitePage() exposes so untextured rects (cell
+	// backgrounds, underlines, box drawing) can share the atlas
+	// texture — keeping the whole cell layer in ONE texture means
+	// the entire frame replays as a single native prim run.
 	zero := make([]byte, atlasPageSize*atlasPageSize*4)
 	p := &atlasPage{
 		tex:    c.tex.CreateTexture(unsafePtr(zero), atlasPageSize, atlasPageSize),
-		shelfY: 0, shelfH: h, cursorX: w,
+		shelfY: 0, shelfH: 6, cursorX: 6,
 	}
+	white := make([]byte, 4*4*4)
+	for i := range white {
+		white[i] = 0xFF
+	}
+	c.tex.UpdateTexture(p.tex, 1, 1, 4, 4, unsafePtr(white))
 	c.pages = append(c.pages, p)
+	// Retry the original allocation on the fresh page (the reserved
+	// corner consumed the first shelf slot).
+	if c.pagesAllocRetry(p, w, h) {
+		return p.cursorX - w, p.shelfY, p
+	}
 	return 0, 0, p
+}
+
+// pagesAllocRetry places w×h on page p after the white-block reserve,
+// opening a new shelf if the reserve shelf is too short.
+func (c *Cache) pagesAllocRetry(p *atlasPage, w, h int) bool {
+	if p.cursorX+w <= atlasPageSize && h <= p.shelfH {
+		p.cursorX += w
+		return true
+	}
+	if newY := p.shelfY + p.shelfH; newY+h <= atlasPageSize {
+		p.shelfY = newY
+		p.shelfH = h
+		p.cursorX = w
+		return true
+	}
+	return false
+}
+
+// WhitePage returns the first atlas page's texture and the UV of the
+// solid-white block's center — the texture+UV pair untextured rects
+// draw with so they batch with glyph quads. Creates the first page
+// if no glyph has been rasterized yet.
+func (c *Cache) WhitePage() (imgui.TextureRef, imgui.Vec2) {
+	if len(c.pages) == 0 {
+		// Force page creation via a zero-area alloc of the reserve.
+		c.atlasAlloc(0, 0)
+	}
+	const s = float32(atlasPageSize)
+	return c.pages[0].tex, imgui.Vec2{X: 3 / s, Y: 3 / s}
 }
 
 // isEmojiPresentationCandidate reports whether r is in a Unicode block

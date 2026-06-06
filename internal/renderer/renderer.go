@@ -43,11 +43,47 @@ type Renderer struct {
 	selCols      int
 	selRowBase   int // content row of viewport row 0 this frame
 
-	// quadBuf accumulates the frame's glyph quads; one
-	// platform.DrawListAddQuads call flushes them all in a single
-	// cgo crossing instead of one AddImage crossing per glyph
-	// (~20% of process CPU on dense grids). Reused across frames.
+	// quadBuf accumulates the frame's cell-layer primitives (glyph
+	// quads AND rects via the atlas white pixel); one
+	// platform.DrawListAddQuads call flushes them in a single cgo
+	// crossing. Reused across frames.
 	quadBuf []platform.GlyphQuad
+
+	// Cell-layer cache: when nothing draw-relevant changed since the
+	// last frame (same emulator, content generation, scroll,
+	// selection, dims, offsets), Draw skips the entire grid walk and
+	// replays cacheQuads — the previous frame's primitive list — in
+	// one cgo call. This is what makes animation-only frames (lava)
+	// cost ~nothing regardless of grid size: no per-cell reads, no
+	// locks, no color resolution, just a native memcpy-grade replay.
+	cacheKey   drawCacheKey
+	cacheQuads []platform.GlyphQuad
+	cacheOK    bool
+	// cfgGen invalidates the cache on out-of-band visual changes
+	// (theme switch, font/zoom rebuild, bold-is-bright toggle) that
+	// the key fields can't see. Bumped via InvalidateCellCache.
+	cfgGen uint64
+}
+
+// drawCacheKey captures everything Draw's output depends on. Two
+// equal keys produce identical primitive lists by construction.
+type drawCacheKey struct {
+	emu        EmulatorView
+	gen        uint64
+	cfgGen     uint64
+	scrollOff  int
+	cols, rows int
+	offX, offY float32
+	selActive  bool
+	selR1, selC1, selR2, selC2 int
+}
+
+// InvalidateCellCache forces the next Draw to rebuild — call after
+// theme switches, font/zoom changes, or anything visual the cache
+// key can't observe.
+func (r *Renderer) InvalidateCellCache() {
+	r.cfgGen++
+	r.cacheOK = false
 }
 
 // SetSelection records the current selection range for the next Draw.
@@ -102,6 +138,11 @@ type EmulatorView interface {
 	CellAt(col, row int) *uv.Cell
 	ScrollbackLen() int
 	ScrollbackCellAt(col, row int) *uv.Cell
+	// RenderGeneration is a monotonic counter the source bumps on
+	// every draw-relevant content change (PTY output, applied wire
+	// frames, resize, scrollback churn). Equal generations promise
+	// identical cell content — the cell-layer cache keys on it.
+	RenderGeneration() uint64
 }
 
 // cellAt returns the cell at viewport position (col, row) accounting for scroll offset.
@@ -162,6 +203,26 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell, col, row int) (fg, bg uint32
 func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset int) {
 	cols := emu.Width()
 	rows := emu.Height()
+
+	// Cell-layer cache: identical inputs produce identical primitive
+	// lists, so replay the previous frame's in one cgo call and skip
+	// the whole grid walk. Animation-only frames (lava) hit this
+	// every time content is idle. Legacy no-glyphcache builds skip
+	// caching (their text goes through ImGui's own font path).
+	if r.Glyphs != nil {
+		key := drawCacheKey{
+			emu: emu, gen: emu.RenderGeneration(), cfgGen: r.cfgGen,
+			scrollOff: scrollOffset, cols: cols, rows: rows,
+			offX: r.OffsetX, offY: r.OffsetY,
+			selActive: r.selActive,
+			selR1: r.selR1, selC1: r.selC1, selR2: r.selR2, selC2: r.selC2,
+		}
+		if r.cacheOK && key == r.cacheKey {
+			platform.DrawListAddQuads(drawList, r.cacheQuads)
+			return
+		}
+		r.cacheKey = key
+	}
 	// Content row of the first visible viewport row — cellSelected
 	// translates against this (selection rows are content-space).
 	// sbLen is also threaded into every cellAt call below (hoisted —
@@ -203,11 +264,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			}
 
 			x := r.OffsetX + float32(col)*cellW
-			drawList.AddRectFilled(
-				imgui.Vec2{X: x, Y: y},
-				imgui.Vec2{X: x + float32(runLen)*cellW, Y: y + cellH},
-				bg,
-			)
+			r.appendRect(drawList, x, y, x+float32(runLen)*cellW, y+cellH, bg)
 			col += runLen
 		}
 	}
@@ -235,9 +292,9 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 				if content != "" && content != " " {
 					// Block elements (U+2580-U+259F) — synthesize as
 					// filled rects so adjacent cells tile seamlessly.
-					if drawBlockGlyph(content, x, y, w, cellH, fg, drawList) {
+					if r.drawBlockGlyph(content, x, y, w, cellH, fg, drawList) {
 						// drawn — fall through to underline/strikethrough
-					} else if drawBoxDrawingGlyph(content, x, y, w, cellH, fg, drawList) {
+					} else if r.drawBoxDrawingGlyph(content, x, y, w, cellH, fg, drawList) {
 						// drawn
 					} else if r.Glyphs != nil {
 						bold := attrs&uv.AttrBold != 0
@@ -271,11 +328,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			// Strikethrough
 			if attrs&uv.AttrStrikethrough != 0 {
 				stY := y + cellH/2
-				drawList.AddLineV(
-					imgui.Vec2{X: x, Y: stY},
-					imgui.Vec2{X: x + w, Y: stY},
-					fg, 1.0,
-				)
+				r.appendRect(drawList, x, stY, x+w, stY+1, fg)
 			}
 
 			// Skip continuation cells for wide characters
@@ -285,46 +338,56 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 		}
 	}
 
-	// Flush the frame's glyph quads in one cgo crossing.
+	// Flush the frame's primitives in one cgo crossing, and stash a
+	// copy as the replay list for identical future frames.
 	platform.DrawListAddQuads(drawList, r.quadBuf)
+	if r.Glyphs != nil {
+		r.cacheQuads = append(r.cacheQuads[:0], r.quadBuf...)
+		r.cacheOK = true
+	}
 	r.quadBuf = r.quadBuf[:0]
 }
 
 // drawUnderline renders the appropriate underline style.
 func (r *Renderer) drawUnderline(drawList *imgui.DrawList, style ansi.Underline, x, y, w float32, color uint32) {
+	// All variants emit axis-aligned quads (via appendRect) so
+	// underlines live in the cacheable primitive stream with
+	// everything else. 1px quads on exact pixel rows render at least
+	// as crisp as the AA lines they replace; the curly is sampled
+	// from the same quadratic bezier into short segments.
 	switch style {
 	case ansi.SingleUnderlineStyle:
-		drawList.AddLineV(
-			imgui.Vec2{X: x, Y: y},
-			imgui.Vec2{X: x + w, Y: y},
-			color, 1.0,
-		)
+		r.appendRect(drawList, x, y, x+w, y+1, color)
 	case ansi.DoubleUnderlineStyle:
-		drawList.AddLineV(
-			imgui.Vec2{X: x, Y: y - 2},
-			imgui.Vec2{X: x + w, Y: y - 2},
-			color, 1.0,
-		)
-		drawList.AddLineV(
-			imgui.Vec2{X: x, Y: y},
-			imgui.Vec2{X: x + w, Y: y},
-			color, 1.0,
-		)
+		r.appendRect(drawList, x, y-2, x+w, y-1, color)
+		r.appendRect(drawList, x, y, x+w, y+1, color)
 	case ansi.CurlyUnderlineStyle:
 		mid := x + w/2
-		drawList.AddBezierQuadraticV(
-			imgui.Vec2{X: x, Y: y},
-			imgui.Vec2{X: mid, Y: y - 3},
-			imgui.Vec2{X: x + w, Y: y},
-			color, 1.0, 0,
-		)
+		steps := int(w / 2)
+		if steps < 4 {
+			steps = 4
+		}
+		prevX, prevY := x, y
+		for i := 1; i <= steps; i++ {
+			t := float32(i) / float32(steps)
+			// Quadratic bezier (x,y) (mid,y-3) (x+w,y).
+			it := 1 - t
+			bx := it*it*x + 2*it*t*mid + t*t*(x+w)
+			by := it*it*y + 2*it*t*(y-3) + t*t*y
+			x0, x1 := prevX, bx
+			if x1 < x0 {
+				x0, x1 = x1, x0
+			}
+			y0, y1 := prevY, by
+			if y1 < y0 {
+				y0, y1 = y1, y0
+			}
+			r.appendRect(drawList, x0, y0, x1+1, y1+1, color)
+			prevX, prevY = bx, by
+		}
 	case ansi.DottedUnderlineStyle:
 		for dx := float32(0); dx < w; dx += 3 {
-			drawList.AddRectFilled(
-				imgui.Vec2{X: x + dx, Y: y},
-				imgui.Vec2{X: x + dx + 1, Y: y + 1},
-				color,
-			)
+			r.appendRect(drawList, x+dx, y, x+dx+1, y+1, color)
 		}
 	case ansi.DashedUnderlineStyle:
 		dx := float32(0)
@@ -333,11 +396,7 @@ func (r *Renderer) drawUnderline(drawList *imgui.DrawList, style ansi.Underline,
 			if end > w {
 				end = w
 			}
-			drawList.AddLineV(
-				imgui.Vec2{X: x + dx, Y: y},
-				imgui.Vec2{X: x + end, Y: y},
-				color, 1.0,
-			)
+			r.appendRect(drawList, x+dx, y, x+end, y+1, color)
 			dx += 6
 		}
 	}
@@ -473,6 +532,23 @@ func (r *Renderer) drawGlyphFromCache(drawList *imgui.DrawList, content string, 
 	}
 }
 
+// appendRect queues an untextured rectangle into the frame's quad
+// stream using the atlas white pixel, so cell backgrounds and
+// decorations batch (and cache) together with glyphs. Falls back to
+// an immediate AddRectFilled on the legacy no-glyphcache path.
+func (r *Renderer) appendRect(drawList *imgui.DrawList, x0, y0, x1, y1 float32, col uint32) {
+	if r.Glyphs == nil {
+		drawList.AddRectFilled(imgui.Vec2{X: x0, Y: y0}, imgui.Vec2{X: x1, Y: y1}, col)
+		return
+	}
+	tex, uv := r.Glyphs.WhitePage()
+	r.quadBuf = append(r.quadBuf, platform.GlyphQuad{
+		X0: x0, Y0: y0, X1: x1, Y1: y1,
+		U0: uv.X, V0: uv.Y, U1: uv.X, V1: uv.Y,
+		Col: col, Tex: uint64(tex.TexID()),
+	})
+}
+
 func fitColorGlyphToCell(x, y, cellW, cellH, glyphW, glyphH, scale float32) (float32, float32, float32, float32) {
 	if glyphW <= 0 || glyphH <= 0 || cellW <= 0 || cellH <= 0 {
 		return x, y, glyphW, glyphH
@@ -520,17 +596,13 @@ func floor32(v float32) float32 {
 // Returns true if content matched a block element and was drawn. Shaded
 // blocks (U+2591-U+2593) fall through to font rendering — they're stipple
 // patterns that don't have a clean rectangle representation.
-func drawBlockGlyph(content string, x, y, w, h float32, fg uint32, drawList *imgui.DrawList) bool {
+func (rd *Renderer) drawBlockGlyph(content string, x, y, w, h float32, fg uint32, drawList *imgui.DrawList) bool {
 	r, size := utf8.DecodeRuneInString(content)
 	if size == 0 || r < 0x2580 || r > 0x259F {
 		return false
 	}
 	fillRect := func(x1, y1, x2, y2 float32) {
-		drawList.AddRectFilled(
-			imgui.Vec2{X: x + x1, Y: y + y1},
-			imgui.Vec2{X: x + x2, Y: y + y2},
-			fg,
-		)
+		rd.appendRect(drawList, x+x1, y+y1, x+x2, y+y2, fg)
 	}
 	switch r {
 	case 0x2580: // ▀ UPPER HALF BLOCK
@@ -623,7 +695,7 @@ func drawBlockGlyph(content string, x, y, w, h float32, fg uint32, drawList *img
 // (U+2504-U+250B, U+254C-U+254F, U+2550-U+2551 are not dashed but the
 // ┄ ┅ ┆ ┇ ┈ ┉ ┊ ┋ etc. range is) and diagonal lines (U+2571-U+2573)
 // fall through to the font.
-func drawBoxDrawingGlyph(content string, x, y, w, h float32, fg uint32, drawList *imgui.DrawList) bool {
+func (rd *Renderer) drawBoxDrawingGlyph(content string, x, y, w, h float32, fg uint32, drawList *imgui.DrawList) bool {
 	r, size := utf8.DecodeRuneInString(content)
 	if size == 0 || r < 0x2500 || r > 0x257F {
 		return false
@@ -646,11 +718,7 @@ func drawBoxDrawingGlyph(content string, x, y, w, h float32, fg uint32, drawList
 	cy := y + h/2
 
 	fill := func(x1, y1, x2, y2 float32) {
-		drawList.AddRectFilled(
-			imgui.Vec2{X: x1, Y: y1},
-			imgui.Vec2{X: x2, Y: y2},
-			fg,
-		)
+		rd.appendRect(drawList, x1, y1, x2, y2, fg)
 	}
 
 	// Span of one arm in the perpendicular axis.

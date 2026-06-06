@@ -112,6 +112,11 @@ type Source interface {
 	// sources answer GET server-side (no-op here).
 	SetClipboardProvider(fn func() string)
 
+	// RenderGeneration is a monotonic counter bumped on every
+	// draw-relevant content change — the renderer's cell-layer
+	// cache keys on it. See renderer.EmulatorView.
+	RenderGeneration() uint64
+
 	// CursorVisible reports whether the terminal cursor should be
 	// drawn (DECTCEM). The GUI hides the cursor when this is false
 	// (e.g. full-screen apps that hide it).

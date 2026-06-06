@@ -84,6 +84,11 @@ type Source struct {
 	cursorVisible atomic.Bool
 	cursorStyle   atomic.Uint32
 
+	// renderGen counts draw-relevant content changes (applied cell
+	// frames, scrollback churn, resize) for the renderer's
+	// cell-layer cache. See terminal.Terminal.renderGen.
+	renderGen atomic.Uint64
+
 	// Lifecycle.
 	dataCh   chan struct{}
 	closed   atomic.Bool
@@ -173,6 +178,9 @@ func (s *Source) Height() int {
 	defer s.mu.Unlock()
 	return s.rows
 }
+
+// RenderGeneration implements renderer.EmulatorView — see renderGen.
+func (s *Source) RenderGeneration() uint64 { return s.renderGen.Load() }
 
 func (s *Source) CellAt(col, row int) *uv.Cell {
 	// No s.mu here: s.emu is set once at construction and never
@@ -468,6 +476,7 @@ func (s *Source) applyCellFull(f *protocol.CellFull) {
 		}
 	}
 	s.mu.Unlock()
+	s.renderGen.Add(1)
 	s.signalDirty()
 }
 
@@ -484,6 +493,7 @@ func (s *Source) applyCellDiff(f *protocol.CellDiff) {
 		s.emu.SetCell(int(e.Col), int(e.Row), &cell)
 	}
 	s.mu.Unlock()
+	s.renderGen.Add(1)
 	s.signalDirty()
 }
 
@@ -604,6 +614,7 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.scrollback = nil
 	s.scrollbackLen.Store(0)
 	s.mu.Unlock()
+	s.renderGen.Add(1)
 	s.signalDirty()
 }
 
@@ -626,6 +637,7 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 		s.scrollback = s.scrollback[over:]
 	}
 	s.scrollbackLen.Store(int64(len(s.scrollback)))
+	s.renderGen.Add(1)
 }
 
 // Wake, if set, is called whenever a Source's visible state changes

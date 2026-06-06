@@ -1647,6 +1647,7 @@ func (a *App) reapClosedWindows() {
 		if w.renderer != nil && w.renderer.Glyphs != nil {
 			w.renderer.Glyphs.Close()
 			w.renderer.Glyphs = nil
+			w.renderer.InvalidateCellCache()
 		}
 	}
 	a.windows = survivors
@@ -1989,6 +1990,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			// have a different zoom).
 			if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, w.fontSize, fbScale); err == nil {
 				w.renderer.Glyphs = c
+				w.renderer.InvalidateCellCache()
 			}
 		}
 	}
@@ -2770,6 +2772,7 @@ func (a *App) beforeRender() {
 			if w.renderer.Glyphs != nil {
 				w.renderer.Glyphs.Close()
 				w.renderer.Glyphs = nil
+				w.renderer.InvalidateCellCache()
 			}
 		}
 	}
@@ -2793,6 +2796,7 @@ func (a *App) beforeRender() {
 				}
 				if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, size, fbScale); err == nil {
 					w.renderer.Glyphs = c
+					w.renderer.InvalidateCellCache()
 				}
 			}
 		}
@@ -3264,6 +3268,7 @@ func (a *Window) frame() {
 				}
 				if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, a.app.baseFontSize, fbScale); err == nil {
 					a.renderer.Glyphs = c
+					a.renderer.InvalidateCellCache()
 				}
 			}
 		}
@@ -3403,6 +3408,7 @@ func (a *Window) frame() {
 			a.cellW, a.cellH = ceilCell(metrics.Width, metrics.Height)
 			a.renderer.Metrics = renderer.CellMetrics{Width: a.cellW, Height: a.cellH}
 			a.renderer.FontSize = a.fontSize
+			a.renderer.InvalidateCellCache()
 			a.resizeTerminals()
 			// (Resize-increment refresh handled at end of frame() —
 			// same retry-until-handle-valid path used by first-frame
@@ -4509,6 +4515,7 @@ func (w *Window) dispatchAction(action string) {
 				for _, win := range w.app.windows {
 					if win.renderer != nil {
 						win.renderer.Theme = t
+						win.renderer.InvalidateCellCache()
 					}
 				}
 				// Update SDL background color to match new theme.
@@ -4577,6 +4584,7 @@ func (w *Window) updateFontMetrics() {
 			if c, err := glyphcache.New(fontsys.Default, platform.Textures(), primaryPath, pxSize, fbScale); err == nil {
 				w.renderer.Glyphs.Close()
 				w.renderer.Glyphs = c
+				w.renderer.InvalidateCellCache()
 			}
 		}
 	}

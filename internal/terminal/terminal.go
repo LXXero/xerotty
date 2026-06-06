@@ -92,6 +92,13 @@ type Terminal struct {
 	// and per snapshot; nothing nested under it.
 	publishMu sync.Mutex
 
+	// renderGen counts draw-relevant content changes — bumped after
+	// every emulator ingest (readPTY batch), resize, clear, adopt
+	// replay. The renderer's cell-layer cache keys on it: equal
+	// generations promise an identical grid, letting animation-only
+	// frames replay the previous primitive list untouched.
+	renderGen atomic.Uint64
+
 	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
 	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
 	// less, vim insert-mode movement) recognize them. Flipped on the PTY
@@ -426,6 +433,7 @@ func (t *Terminal) Resize(cols, rows int) {
 		Cols: uint16(cols),
 	})
 	t.Emu.Resize(cols, rows)
+	t.renderGen.Add(1)
 }
 
 // Close shuts down the terminal: kills the child, closes the PTY, stops
@@ -627,6 +635,7 @@ func sanitizeForFile(s string) string {
 // publishMu so a daemon-side bulk snapshot can't read a partially-
 // cleared state. Safe to call from any goroutine.
 func (t *Terminal) ClearScrollback() {
+	defer t.renderGen.Add(1)
 	t.publishMu.Lock()
 	t.Emu.ClearScrollback()
 	t.mu.Lock()
@@ -806,6 +815,7 @@ func (t *Terminal) readPTY() {
 				// the mirror always sees writes in PTY-arrival order.
 				t.mirrorScrollback()
 				t.publishMu.Unlock()
+				t.renderGen.Add(1)
 			}
 			select {
 			case t.DataCh <- struct{}{}:
@@ -1120,3 +1130,9 @@ func (t *Terminal) LoadScrollback(filePath string) ([][]scrollbackCell, error) {
 
 	return lines, nil
 }
+
+// RenderGeneration implements renderer.EmulatorView / Source: a
+// monotonic counter of draw-relevant content changes (PTY ingest,
+// resize, scrollback clear). The renderer's cell-layer cache keys on
+// it — equal generations promise an identical grid.
+func (t *Terminal) RenderGeneration() uint64 { return t.renderGen.Load() }

@@ -721,6 +721,7 @@ func (a *Window) applyPreferences() {
 		for _, win := range a.app.windows {
 			if win.renderer != nil {
 				win.renderer.Theme = t
+				win.renderer.InvalidateCellCache()
 			}
 		}
 		bgR := float32((t.Background>>0)&0xFF) / 255.0
@@ -732,6 +733,7 @@ func (a *Window) applyPreferences() {
 	for _, win := range a.app.windows {
 		if win.renderer != nil {
 			win.renderer.BoldIsBright = a.app.cfg.Appearance.BoldIsBright
+			win.renderer.InvalidateCellCache()
 		}
 	}
 
