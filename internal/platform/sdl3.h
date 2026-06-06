@@ -109,6 +109,8 @@ int platform_get_window_usable_bounds(unsigned long window_id,
 // the SDL2→SDL3 migration dropped. No-op if the compositor doesn't
 // support per-window opacity.
 void platform_set_window_opacity(unsigned long window_id, float opacity);
+int platform_window_input_focus(unsigned long window_id);
+int platform_any_window_input_focus(void);
 
 // platform_ensure_text_input re-asserts SDL text input on the given
 // window if not already active, so the terminal keeps receiving

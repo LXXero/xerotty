@@ -388,6 +388,24 @@ extern "C" void platform_raise_window(unsigned long window_id) {
     SDL_RaiseWindow(w);
 }
 
+extern "C" int platform_window_input_focus(unsigned long window_id) {
+    SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!w) return 0;
+    return (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0;
+}
+
+extern "C" int platform_any_window_input_focus(void) {
+    int count = 0;
+    SDL_Window** ws = SDL_GetWindows(&count);
+    if (!ws) return 0;
+    int any = 0;
+    for (int i = 0; i < count; i++) {
+        if (SDL_GetWindowFlags(ws[i]) & SDL_WINDOW_INPUT_FOCUS) { any = 1; break; }
+    }
+    SDL_free(ws);
+    return any;
+}
+
 extern "C" void platform_set_window_opacity(unsigned long window_id, float opacity) {
     SDL_Window* w = SDL_GetWindowFromID((SDL_WindowID)window_id);
     if (!w) return;

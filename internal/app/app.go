@@ -2500,7 +2500,11 @@ func (a *App) Run() error {
 		if focused != nil {
 			a.active = focused
 		}
-		a.glowFocusActive.Store(focused != nil)
+		// Real OS-level focus for the glow pause: ImGui's focused
+		// state never goes nil when the whole APP loses focus, so ask
+		// SDL across ALL our windows (terminals AND popped-out prefs —
+		// tweaking glow sliders must not freeze the preview).
+		a.glowFocusActive.Store(platform.AnyWindowHasInputFocus())
 		// Override the focus-from-ImGui result if focus was explicitly
 		// requested for a Window (new Window spawn, or focus returning
 		// from an auxiliary viewport such as preferences). Two timing
