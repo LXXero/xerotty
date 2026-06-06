@@ -107,14 +107,33 @@ func main() {
 	// code runs (and before config load — a running GUI already has
 	// its own config). serve/connect dispatch above is unaffected.
 	newTab, separate := false, false
-	for _, arg := range os.Args[1:] {
-		switch arg {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--tab", "-t":
 			newTab = true
 		case "--separate":
 			separate = true
+		case "--screenshot":
+			// Visual-regression mode: render, dump the framebuffer as
+			// PNG, exit. Implies --separate (a forwarded request can't
+			// screenshot). Frames-to-settle via --screenshot-frames.
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "xerotty: --screenshot needs a path")
+				os.Exit(2)
+			}
+			i++
+			os.Setenv("XEROTTY_SCREENSHOT", args[i])
+			separate = true
+		case "--screenshot-frames":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "xerotty: --screenshot-frames needs a count")
+				os.Exit(2)
+			}
+			i++
+			os.Setenv("XEROTTY_SCREENSHOT_FRAMES", args[i])
 		default:
-			fmt.Fprintf(os.Stderr, "xerotty: unknown argument %q (see xerotty --help)\n", arg)
+			fmt.Fprintf(os.Stderr, "xerotty: unknown argument %q (see xerotty --help)\n", args[i])
 			os.Exit(2)
 		}
 	}

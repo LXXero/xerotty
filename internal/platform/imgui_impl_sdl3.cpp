@@ -1249,12 +1249,19 @@ static void ImGui_ImplSDL3_RenderWindow(ImGuiViewport* viewport, void*)
         SDL_GL_MakeCurrent(vd->Window, vd->GLContext);
 }
 
+// xerotty: pre-swap capture hook (see sdl3.cpp). Lets --screenshot
+// read back a CHILD viewport's framebuffer — terminal windows are
+// their own OS windows under multi-viewport, so the main-window
+// pre-swap point never sees their pixels.
+extern "C" void platform_capture_maybe(SDL_Window* win);
+
 static void ImGui_ImplSDL3_SwapBuffers(ImGuiViewport* viewport, void*)
 {
     ImGui_ImplSDL3_ViewportData* vd = (ImGui_ImplSDL3_ViewportData*)viewport->PlatformUserData;
     if (vd->GLContext)
     {
         SDL_GL_MakeCurrent(vd->Window, vd->GLContext);
+        platform_capture_maybe(vd->Window);
         SDL_GL_SwapWindow(vd->Window);
     }
 }

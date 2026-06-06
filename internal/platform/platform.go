@@ -310,6 +310,40 @@ func (t TextureManager) CreateTextureRgba(img *image.RGBA, width, height int) im
 	return t.CreateTexture(unsafe.Pointer(&img.Pix[0]), width, height)
 }
 
+// captureBuf pins the capture target between RequestCapture and
+// CollectCapture (the C side holds a pointer into it across frames).
+var captureBuf []byte
+
+// RequestCapture arms a framebuffer capture: the NEXT rendered frame
+// is read back post-render/pre-swap (post-swap contents are
+// undefined, so this can't be done from outside the render path).
+// Collect with CollectCapture after the next Frame() returns. Powers
+// `xerotty --screenshot` for automated visual regression tests.
+// windowID selects WHICH window to capture (a viewport
+// PlatformHandle); 0 captures the main scaffolding window.
+func RequestCapture(windowID uintptr, maxW, maxH int) {
+	captureBuf = make([]byte, maxW*maxH*4)
+	C.platform_request_capture(C.ulong(windowID), (*C.uchar)(unsafe.Pointer(&captureBuf[0])), C.int(len(captureBuf)))
+}
+
+// CollectCapture returns the captured RGBA image (top-down rows), or
+// ok=false if no capture completed yet.
+func CollectCapture() (pix []byte, w, h int, ok bool) {
+	var cw, ch C.int
+	if C.platform_capture_result(&cw, &ch) == 0 {
+		return nil, 0, 0, false
+	}
+	w, h = int(cw), int(ch)
+	// GL rows are bottom-up; flip to image convention.
+	flipped := make([]byte, w*h*4)
+	stride := w * 4
+	for y := 0; y < h; y++ {
+		copy(flipped[y*stride:(y+1)*stride], captureBuf[(h-1-y)*stride:(h-y)*stride])
+	}
+	captureBuf = nil
+	return flipped, w, h, true
+}
+
 // GlyphQuad is one textured quad for DrawListAddQuads. Field order
 // and sizes mirror xt_glyph_quad in glyphbatch.cpp — keep in sync.
 type GlyphQuad struct {

@@ -321,6 +321,64 @@ extern "C" void platform_set_idle_timeout_ms(int ms) {
     g_idle_timeout_ms = ms;
 }
 
+// Framebuffer capture must happen INSIDE the render path, after
+// RenderDrawData and before SwapWindow (post-swap back-buffer
+// contents are undefined). Go requests a capture; the next frame's
+// pre-swap point fills the buffer.
+static unsigned char* g_cap_buf = nullptr;
+static int g_cap_max = 0;
+static int g_cap_w = 0, g_cap_h = 0;
+static int g_cap_pending = 0, g_cap_ok = 0;
+static unsigned int g_cap_window_id = 0; // 0 = main window
+
+extern "C" void platform_request_capture(unsigned long window_id, unsigned char* out, int max_bytes) {
+    g_cap_buf = out;
+    g_cap_max = max_bytes;
+    g_cap_w = g_cap_h = 0;
+    g_cap_ok = 0;
+    g_cap_window_id = (unsigned int)window_id;
+    g_cap_pending = 1;
+}
+
+// Called from the backend's per-viewport pre-swap point with that
+// viewport's GL context current.
+extern "C" void platform_capture_maybe(SDL_Window* win) {
+    if (!g_cap_pending || !win) return;
+    if (SDL_GetWindowID(win) != g_cap_window_id) return;
+    g_cap_pending = 0;
+    int fw = 0, fh = 0;
+    SDL_GetWindowSizeInPixels(win, &fw, &fh);
+    if (fw <= 0 || fh <= 0 || fw * fh * 4 > g_cap_max || !g_cap_buf) return;
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, g_cap_buf);
+    g_cap_w = fw;
+    g_cap_h = fh;
+    g_cap_ok = 1;
+}
+
+extern "C" int platform_capture_result(int* w, int* h) {
+    if (!g_cap_ok) return 0;
+    *w = g_cap_w;
+    *h = g_cap_h;
+    return 1;
+}
+
+static void platform_do_capture_locked(void) {
+    // Called with g_window's context current, post-render pre-swap.
+    g_cap_pending = 0;
+    int fw = 0, fh = 0;
+    SDL_GetWindowSizeInPixels(g_window, &fw, &fh);
+    if (fw <= 0 || fh <= 0 || fw * fh * 4 > g_cap_max || !g_cap_buf) return;
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, g_cap_buf);
+    g_cap_w = fw;
+    g_cap_h = fh;
+    g_cap_ok = 1;
+}
+
+
 extern "C" void platform_end_frame(void) {
     // Caller (Go) has already called ImGui::Render via cimgui-go.
     int w = 0, h = 0;
@@ -347,6 +405,13 @@ extern "C" void platform_end_frame(void) {
         SDL_GL_MakeCurrent(backup_win, backup_ctx);
     }
 
+    // Capture targeting the main window (or unspecified) happens at
+    // the main pre-swap; child viewports capture in the backend's
+    // per-viewport swap hook (platform_capture_maybe).
+    if (g_cap_pending && (g_cap_window_id == 0 || (g_window && SDL_GetWindowID(g_window) == g_cap_window_id))) {
+        SDL_GL_MakeCurrent(g_window, g_gl_ctx);
+        platform_do_capture_locked();
+    }
     SDL_GL_SwapWindow(g_window);
 
     // (Frame cap is enforced in platform_begin_frame via

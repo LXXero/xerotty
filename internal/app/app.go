@@ -3,6 +3,8 @@ package app
 
 import (
 	"fmt"
+	"image"
+	"image/png"
 	"math"
 	"os"
 	"regexp"
@@ -2159,6 +2161,26 @@ func (w *Window) initialWindowSize() (int, int) {
 // 1 fps idle is ~0% CPU but never lets the UI freeze for over a second.
 const idleSafetyNetMs = 1000
 
+// writeScreenshot captures the main window's framebuffer to a PNG.
+func writeScreenshot(path string) error {
+	pix, w, h, ok := platform.CollectCapture()
+	if !ok {
+		return fmt.Errorf("framebuffer capture did not complete")
+	}
+	img := &image.RGBA{Pix: pix, Stride: w * 4, Rect: image.Rect(0, 0, w, h)}
+	// Readback alpha can be <255 where the terminal background is
+	// translucent; force opaque so diffs compare color, not blend.
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 0xFF
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return png.Encode(f, img)
+}
+
 // Run starts the application main loop.
 func (a *App) Run() error {
 	w := a.active // initial Window allocated by New()
@@ -2603,12 +2625,46 @@ func (a *App) Run() error {
 	stopMouseWakePoller := a.startMouseMirrorWakePoller()
 	defer stopMouseWakePoller()
 
+	// Screenshot mode (--screenshot): run a fixed number of frames
+	// so layout/fonts settle, capture the framebuffer, write a PNG,
+	// and exit. The CI visual-regression harness builds on this.
+	shotPath := os.Getenv("XEROTTY_SCREENSHOT")
+	shotFrames := 8
+	if n, err := strconv.Atoi(os.Getenv("XEROTTY_SCREENSHOT_FRAMES")); err == nil && n > 0 {
+		shotFrames = n
+	}
+	frameN := 0
+
 	// Main loop — event-driven via SDL_WaitEventTimeout inside
 	// platform.Frame. CPU goes to kernel-sleep when nothing's
 	// happening; PTY arrival, mouse, keys, timers all wake it.
 	// beforeRender was registered above via platform.SetBeforeRenderHook
 	// and fires automatically before each NewFrame inside Frame().
 	for platform.Frame(wrappedFrame) {
+		if shotPath == "" {
+			continue
+		}
+		frameN++
+		platform.PostWake() // keep frames flowing while settling
+		if frameN == shotFrames-1 {
+			// Arm: the NEXT frame is read back pre-swap. Target the
+			// active terminal window's viewport — under multi-viewport
+			// it's its own OS window, not the main scaffolding one.
+			var winID uintptr
+			if a.active != nil && a.active.imViewport != nil {
+				winID = uintptr(a.active.imViewport.PlatformHandle())
+			}
+			platform.RequestCapture(winID, 8192, 8192)
+		}
+		if frameN < shotFrames {
+			continue
+		}
+		if err := writeScreenshot(shotPath); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: screenshot: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(shotPath)
+		break
 	}
 	platform.Shutdown()
 

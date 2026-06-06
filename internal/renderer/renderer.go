@@ -4,6 +4,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/AllenDang/cimgui-go/imgui"
+	"github.com/LXXero/xerotty/internal/fontsys"
 	"github.com/LXXero/xerotty/internal/glyphcache"
 	"github.com/LXXero/xerotty/internal/platform"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -20,13 +21,17 @@ type Renderer struct {
 	OffsetX      float32
 	OffsetY      float32
 	BoldIsBright bool // when true, bold text also uses the bright ANSI color
+	// GlyphSource is what the renderer needs from the glyph cache —
+	// an interface so tests can inject synthetic glyphs and capture
+	// the resulting quad stream without fonts or a GPU.
+	//
 	// Glyphs is the per-codepoint glyph cache. When non-nil it's the
 	// authoritative source for cell text glyphs and bypasses ImGui's
 	// font atlas — so emoji, Nerd Font icons, and any glyph not in the
 	// primary terminal font fall back via OS-provided font discovery.
 	// When nil, the renderer uses the ImGui Font field instead (legacy
 	// path for builds without OS font services).
-	Glyphs *glyphcache.Cache
+	Glyphs GlyphSource
 
 	// Selection state for the current frame, set by the app via
 	// SetSelection before Draw. When active, cells inside the range
@@ -134,6 +139,17 @@ func New(theme Theme, metrics CellMetrics, font *imgui.Font, fontSize float32) *
 // renderer needs. Both *vt.SafeEmulator (in-memory only) and
 // *terminal.Terminal (in-memory + disk-backed scrollback under
 // "unlimited" mode) satisfy it.
+// GlyphSource abstracts glyphcache.Cache for the renderer (and for
+// quad-stream tests, which substitute deterministic fake glyphs).
+type GlyphSource interface {
+	Get(r rune, bold bool) *glyphcache.Entry
+	LineMetrics() fontsys.LineMetrics
+	FbScale() float32
+	WhitePage() (imgui.TextureRef, imgui.Vec2)
+	PrimaryAdvance() float32
+	Close()
+}
+
 type EmulatorView interface {
 	Width() int
 	Height() int
