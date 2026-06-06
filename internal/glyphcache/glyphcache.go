@@ -89,6 +89,12 @@ type Cache struct {
 	glyphs       map[glyphKey]*Entry
 	missing      map[glyphKey]bool
 	pages        []*atlasPage
+	// metrics memoizes LineMetrics: the underlying call crosses cgo
+	// into FreeType/CoreText (and re-applies the face's pixel size)
+	// for a value fixed at construction — and the renderer asks once
+	// per text cell per rebuilt frame.
+	metrics   fontsys.LineMetrics
+	metricsOK bool
 	// dedicated tracks oversized glyphs that got their own texture
 	// (too big for a page) so Close can free them; page textures are
 	// freed via pages.
@@ -417,15 +423,20 @@ func (c *Cache) Close() {
 // (i.e. already divided by fbScale so the renderer can use them
 // directly for cell layout).
 func (c *Cache) LineMetrics() fontsys.LineMetrics {
+	if c.metricsOK {
+		return c.metrics
+	}
 	if c.primary == nil {
 		return fontsys.LineMetrics{}
 	}
 	m := c.primary.LineMetrics(c.pxSize * c.fbScale)
-	return fontsys.LineMetrics{
+	c.metrics = fontsys.LineMetrics{
 		Ascent:     m.Ascent / c.fbScale,
 		Descent:    m.Descent / c.fbScale,
 		LineHeight: m.LineHeight / c.fbScale,
 	}
+	c.metricsOK = true
+	return c.metrics
 }
 
 // PrimaryAdvance returns the logical-pixel advance width of a
