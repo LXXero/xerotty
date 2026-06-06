@@ -160,23 +160,6 @@ func RaiseWindow(windowID uintptr) {
 	C.platform_raise_window(C.ulong(windowID))
 }
 
-// WindowHasInputFocus reports whether the SDL_Window with the given
-// ID holds OS-level keyboard focus (SDL_WINDOW_INPUT_FOCUS). ImGui's
-// IsWindowFocused tracks which IMGUI window was focused LAST and
-// never goes false when the whole app loses focus — this is the
-// truthful signal for "is the user actually looking at us" checks
-// like pausing the glow animation.
-func WindowHasInputFocus(windowID uintptr) bool {
-	return C.platform_window_input_focus(C.ulong(windowID)) != 0
-}
-
-// AnyWindowHasInputFocus reports whether ANY of the process's SDL
-// windows (terminal windows, popped-out prefs, popups) holds OS
-// keyboard focus — "is the user looking at this app at all".
-func AnyWindowHasInputFocus() bool {
-	return C.platform_any_window_input_focus() != 0
-}
-
 // SetWindowOpacity sets whole-window opacity (0..1) on the SDL_Window
 // with the given ID (a viewport PlatformHandle). Restores the documented
 // `opacity` config the SDL2→SDL3 migration dropped.

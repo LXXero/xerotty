@@ -55,21 +55,10 @@ type App struct {
 	cfg             config.Config
 	theme           renderer.Theme
 	glowStop        chan struct{} // lava-lamp self-wake ticker (glow.go)
-	// glowFocusActive mirrors "some xerotty window has input focus"
-	// for the glow ticker: an unfocused backdrop doesn't animate, so
-	// the render loop goes back to fully event-driven (0% idle CPU)
-	// the moment focus leaves. Updated by the frame loop's focus
-	// tracking — losing/gaining focus generates events, which run
-	// frames, which refresh this. Default true so the first frames
-	// after startup animate before focus state is known.
-	glowFocusActive atomic.Bool
-	// glowPauseUnfocused mirrors cfg.Appearance.Glow.PauseUnfocused
-	// for the ticker goroutine (cfg itself is main-thread-mutated).
-	glowPauseUnfocused atomic.Bool
-	baseFontSize    float32 // font size the atlas was built at
-	baseCellW       float32 // cell width at base font size
-	baseCellH       float32 // cell height at base font size
-	pendingFontFace bool    // rebuild font atlas at start of next frame
+	baseFontSize    float32       // font size the atlas was built at
+	baseCellW       float32       // cell width at base font size
+	baseCellH       float32       // cell height at base font size
+	pendingFontFace bool          // rebuild font atlas at start of next frame
 
 	// forceOpaque overrides cfg.Appearance.Opacity to 1.0 while set.
 	// Toggled by the "toggle_opacity" action (keybind / menu) so the
@@ -2503,11 +2492,6 @@ func (a *App) Run() error {
 		if focused != nil {
 			a.active = focused
 		}
-		// Real OS-level focus for the glow pause: ImGui's focused
-		// state never goes nil when the whole APP loses focus, so ask
-		// SDL across ALL our windows (terminals AND popped-out prefs —
-		// tweaking glow sliders must not freeze the preview).
-		a.glowFocusActive.Store(platform.AnyWindowHasInputFocus())
 		// Override the focus-from-ImGui result if focus was explicitly
 		// requested for a Window (new Window spawn, or focus returning
 		// from an auxiliary viewport such as preferences). Two timing
@@ -3762,9 +3746,8 @@ func (a *Window) frame() {
 	// top. Drawn from the same content origin the cells use so it
 	// tracks the window in multi-viewport space.
 	if a.app.cfg.Appearance.Glow.Enabled {
-		animate := !a.app.glowPauseUnfocused.Load() || a.app.glowFocusActive.Load()
 		drawGlow(a.bgDrawList(), a.contentOriginX, a.contentOriginY,
-			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow, animate)
+			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow)
 	}
 
 	// Render terminal cells FIRST into the wrapper's window drawlist,

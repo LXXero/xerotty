@@ -65,10 +65,6 @@ type MCPConfig struct {
 // enabled. Colors empty = derive from the active theme's accents.
 type GlowConfig struct {
 	Enabled   bool     `toml:"enabled"`
-	// PauseUnfocused freezes the animation (clock and wakes) while
-	// no xerotty window holds OS focus — battery-friendly default.
-	// Set false for an eternally-drifting lamp.
-	PauseUnfocused bool `toml:"pause_unfocused"`
 	Style     string   `toml:"style"` // "lava" (reserved for future styles)
 	Colors    []string `toml:"colors"`
 	Blobs     int      `toml:"blobs"`
@@ -238,8 +234,7 @@ func Default() Config {
 			TerminalColors: "theme",
 			TabColors:      "theme",
 			Glow: GlowConfig{
-				Style:          "lava",
-				PauseUnfocused: true,
+				Style:     "lava",
 				Blobs:     5,
 				Speed:     1.0,
 				Scale:     0.7,

@@ -448,7 +448,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	if d.glowBlobs <= 0 {
 		d.glowBlobs = 5
 	}
-	d.glowPause = cfg.Appearance.Glow.PauseUnfocused
 	d.padding = int32(cfg.Appearance.Padding)
 	d.cursorIdx = prefIndexOf(prefCursorStyles, cfg.Appearance.CursorStyle)
 	d.cursorBlink = cfg.Appearance.CursorBlink
@@ -561,7 +560,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.Glow.Speed = float64(d.glowSpeed)
 	cfg.Appearance.Glow.Scale = float64(d.glowScale)
 	cfg.Appearance.Glow.Blobs = int(d.glowBlobs)
-	cfg.Appearance.Glow.PauseUnfocused = d.glowPause
 	cfg.Appearance.Padding = int(d.padding)
 	if int(d.cursorIdx) < len(prefCursorStyles) {
 		cfg.Appearance.CursorStyle = prefCursorStyles[d.cursorIdx]
@@ -1022,7 +1020,6 @@ func (a *Window) renderPrefAppearance() {
 			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
 		})
-		imgui.Checkbox("Pause When Unfocused", &d.glowPause)
 		prefPairRow(w, "Blob Size", func() {
 			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)
