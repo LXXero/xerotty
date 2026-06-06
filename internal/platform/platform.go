@@ -310,6 +310,16 @@ func (t TextureManager) CreateTextureRgba(img *image.RGBA, width, height int) im
 	return t.CreateTexture(unsafe.Pointer(&img.Pix[0]), width, height)
 }
 
+// UpdateTexture overwrites a sub-rectangle of an existing texture
+// (glTexSubImage2D). The glyph atlas uses it to pack freshly
+// rasterized glyphs into shared pages instead of minting one GL
+// texture per glyph — per-glyph textures forced a texture bind per
+// glyph draw, which profiled as the dominant render cost (Mesa
+// driver time) on large grids.
+func (TextureManager) UpdateTexture(ref imgui.TextureRef, x, y, width, height int, pixels unsafe.Pointer) {
+	C.platform_update_texture(C.ulonglong(ref.TexID()), C.int(x), C.int(y), C.int(width), C.int(height), (*C.uchar)(pixels))
+}
+
 func (TextureManager) DeleteTexture(ref imgui.TextureRef) {
 	C.platform_delete_texture(C.ulonglong(ref.TexID()))
 }

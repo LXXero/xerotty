@@ -10,10 +10,14 @@
 //   - supports the full Unicode range including supplementary plane
 //     emoji as long as a font on the system can render them.
 //
-// Each cached glyph is its own GL texture. That trades a few extra texture
-// switches per frame for skipping all the atlas bookkeeping (shelf
-// packing, growing, eviction). Terminal apps emit a bounded set of
-// distinct glyphs so this stays in single-digit MB of GPU memory.
+// Glyphs are shelf-packed into shared atlas pages (1024² RGBA) so the
+// renderer's text pass batches into a handful of GL draw commands.
+// The original one-texture-per-glyph design forced a texture bind per
+// glyph draw, which profiled as the DOMINANT render cost on large
+// grids (~19% of process CPU inside the GL driver). Oversized glyphs
+// (huge color emoji at big font sizes) fall back to a dedicated
+// texture. Terminal apps emit a bounded set of distinct glyphs so a
+// page or two covers a session.
 package glyphcache
 
 import (
@@ -22,8 +26,9 @@ import (
 	"github.com/LXXero/xerotty/internal/platform"
 )
 
-// Entry is one cached glyph. The texture is the size of the rasterized
-// bitmap (Width × Height). UV is implicit (0,0)-(1,1). HasTex reports
+// Entry is one cached glyph. Tex is the atlas page (or a dedicated
+// texture for oversized glyphs) and UV0/UV1 select the glyph's
+// sub-rectangle within it. HasTex reports
 // whether Tex is a real GPU texture (zero-sized glyphs like a blank
 // space have no texture but still carry a valid Advance). IsColor
 // reports whether the glyph is a color emoji — renderers should draw
@@ -31,6 +36,7 @@ import (
 // through, and monochrome glyphs with the foreground color.
 type Entry struct {
 	Tex      imgui.TextureRef
+	UV0, UV1 imgui.Vec2
 	HasTex   bool
 	IsColor  bool
 	Width    int
@@ -38,6 +44,25 @@ type Entry struct {
 	BearingX int
 	BearingY int
 	Advance  float32
+}
+
+// atlasPageSize is each shared page's edge in texels. 1024² RGBA =
+// 4 MiB GPU; at typical glyph sizes one page holds a few thousand
+// glyphs — more than a session's working set.
+const atlasPageSize = 1024
+
+// atlasPad is the empty gutter around each packed glyph so GL_LINEAR
+// sampling at the quad edge can't bleed a neighbor in.
+const atlasPad = 1
+
+// atlasPage is one shared texture plus its shelf-packing state: rows
+// ("shelves") fill left to right; a glyph opens a new shelf when no
+// existing shelf fits it.
+type atlasPage struct {
+	tex     imgui.TextureRef
+	shelfY  int // top of the open (newest) shelf
+	shelfH  int // height of the open shelf
+	cursorX int // next free x within the open shelf
 }
 
 // Cache stores rasterized glyphs across a session. Lifetime is tied to a
@@ -63,6 +88,11 @@ type Cache struct {
 	resolveCache map[rune]string
 	glyphs       map[glyphKey]*Entry
 	missing      map[glyphKey]bool
+	pages        []*atlasPage
+	// dedicated tracks oversized glyphs that got their own texture
+	// (too big for a page) so Close can free them; page textures are
+	// freed via pages.
+	dedicated []imgui.TextureRef
 }
 
 // glyphKey identifies a cached glyph. Bold is treated as a separate
@@ -152,7 +182,7 @@ func (c *Cache) Get(r rune, bold bool) *Entry {
 		Advance:  g.Advance,
 	}
 	if g.Width > 0 && g.Height > 0 {
-		e.Tex = c.uploadGlyph(g)
+		e.Tex, e.UV0, e.UV1 = c.uploadGlyph(g)
 		e.HasTex = true
 	}
 	c.glyphs[key] = e
@@ -223,14 +253,57 @@ func (c *Cache) fontFor(r rune) fontsys.Font {
 	return font
 }
 
-// uploadGlyph uploads a fontsys.Glyph's RGBA pixels into a GL texture
-// and returns the ImGui TextureRef. For monochrome glyphs CoreText
-// writes white into RGB and the glyph mask into alpha, so drawing with
-// AddImageV(col=fg) multiplies through to the correct foreground tint.
-// For color glyphs (emoji), the natural per-pixel colors are present
-// in RGB and the renderer must draw with col=white to preserve them.
-func (c *Cache) uploadGlyph(g *fontsys.Glyph) imgui.TextureRef {
-	return c.tex.CreateTexture(unsafePtr(g.Pixels), g.Width, g.Height)
+// uploadGlyph places a fontsys.Glyph's RGBA pixels on an atlas page
+// (or a dedicated texture when it can't fit a page) and returns the
+// texture + the glyph's UV sub-rectangle. For monochrome glyphs the
+// rasterizer writes white into RGB and the glyph mask into alpha, so
+// drawing with AddImageV(col=fg) multiplies through to the correct
+// foreground tint; color glyphs draw with col=white.
+func (c *Cache) uploadGlyph(g *fontsys.Glyph) (imgui.TextureRef, imgui.Vec2, imgui.Vec2) {
+	w, h := g.Width, g.Height
+	if w+2*atlasPad > atlasPageSize || h+2*atlasPad > atlasPageSize {
+		// Oversized (giant emoji at huge font sizes): dedicated
+		// texture, full-rect UVs — the pre-atlas behavior.
+		tex := c.tex.CreateTexture(unsafePtr(g.Pixels), w, h)
+		c.dedicated = append(c.dedicated, tex)
+		return tex, imgui.Vec2{X: 0, Y: 0}, imgui.Vec2{X: 1, Y: 1}
+	}
+	x, y, page := c.atlasAlloc(w+2*atlasPad, h+2*atlasPad)
+	c.tex.UpdateTexture(page.tex, x+atlasPad, y+atlasPad, w, h, unsafePtr(g.Pixels))
+	const s = float32(atlasPageSize)
+	uv0 := imgui.Vec2{X: float32(x + atlasPad) / s, Y: float32(y + atlasPad) / s}
+	uv1 := imgui.Vec2{X: float32(x+atlasPad+w) / s, Y: float32(y+atlasPad+h) / s}
+	return page.tex, uv0, uv1
+}
+
+// atlasAlloc finds room for a w×h rect (pad included by the caller),
+// opening shelves and pages as needed. Returns the rect's top-left and
+// the page it lives on.
+func (c *Cache) atlasAlloc(w, h int) (int, int, *atlasPage) {
+	if n := len(c.pages); n > 0 {
+		p := c.pages[n-1]
+		// Fits on the open shelf?
+		if p.cursorX+w <= atlasPageSize && p.shelfY+h <= atlasPageSize && h <= p.shelfH {
+			x := p.cursorX
+			p.cursorX += w
+			return x, p.shelfY, p
+		}
+		// Open a new shelf below?
+		if newY := p.shelfY + p.shelfH; newY+h <= atlasPageSize && w <= atlasPageSize {
+			p.shelfY = newY
+			p.shelfH = h
+			p.cursorX = w
+			return 0, newY, p
+		}
+	}
+	// New page. Zero-initialized so gutters sample transparent.
+	zero := make([]byte, atlasPageSize*atlasPageSize*4)
+	p := &atlasPage{
+		tex:    c.tex.CreateTexture(unsafePtr(zero), atlasPageSize, atlasPageSize),
+		shelfY: 0, shelfH: h, cursorX: w,
+	}
+	c.pages = append(c.pages, p)
+	return 0, 0, p
 }
 
 // isEmojiPresentationCandidate reports whether r is in a Unicode block
@@ -273,11 +346,14 @@ func isEmojiPresentationCandidate(r rune) bool {
 
 // Close releases all GPU textures and OS font handles.
 func (c *Cache) Close() {
-	for _, e := range c.glyphs {
-		if e.HasTex {
-			c.tex.DeleteTexture(e.Tex)
-		}
+	for _, p := range c.pages {
+		c.tex.DeleteTexture(p.tex)
 	}
+	c.pages = nil
+	for _, t := range c.dedicated {
+		c.tex.DeleteTexture(t)
+	}
+	c.dedicated = nil
 	if c.primary != nil {
 		c.primary.Close()
 	}

@@ -525,6 +525,17 @@ extern "C" unsigned long long platform_create_texture(const unsigned char* pixel
     return (unsigned long long)tex_id;
 }
 
+extern "C" void platform_update_texture(unsigned long long tex_id, int x, int y,
+                                        int width, int height,
+                                        const unsigned char* pixels) {
+    GLint last_texture;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
+    glBindTexture(GL_TEXTURE_2D, (GLuint)tex_id);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
+                    GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, last_texture);
+}
+
 extern "C" void platform_delete_texture(unsigned long long tex_id) {
     GLuint id = (GLuint)tex_id;
     glBindTexture(GL_TEXTURE_2D, 0);

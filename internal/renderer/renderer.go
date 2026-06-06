@@ -455,8 +455,8 @@ func (r *Renderer) drawGlyphFromCache(drawList *imgui.DrawList, content string, 
 			entry.Tex,
 			imgui.Vec2{X: px, Y: py},
 			imgui.Vec2{X: px + w, Y: py + h},
-			imgui.Vec2{X: 0, Y: 0},
-			imgui.Vec2{X: 1, Y: 1},
+			entry.UV0,
+			entry.UV1,
 			tint,
 		)
 	}
