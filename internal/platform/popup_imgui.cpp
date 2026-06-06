@@ -156,6 +156,14 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
         bool         app_was_active = platform_cocoa_app_is_active() != 0;
 #endif
 
+        // ImGui defers several layout decisions by one frame — menu
+        // column offsets (the submenu ">" arrow position), auto-resize,
+        // nav focus rects all converge on frame 2 from what frame 1
+        // submitted. At this loop's event-paced ~33fps cadence that
+        // convergence is VISIBLE (the arrow walks right as the menu
+        // opens). Warm up: render the first frame without presenting,
+        // immediately render again, and present only the settled frame.
+        bool warmup = true;
         while (!done && !g_quit) {
             if (dirty) {
                 dirty = false;
@@ -169,6 +177,12 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
                 if (draw_result != 0) done = true;
 
                 ImGui::Render();
+
+                if (warmup && !done) {
+                    warmup = false;
+                    dirty = true; // render the settled frame right away
+                    continue;     // ...without presenting this one
+                }
 
                 // Clear to fully transparent (not the old opaque
                 // 38,38,46) so only the ImGui menu/submenu windows are
