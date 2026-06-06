@@ -3524,7 +3524,7 @@ func (a *Window) frame() {
 				if s, ok := a.scroll[tab.ID]; ok {
 					scrollOff = s.Offset
 				}
-				a.hoveredLink = detectLinkAt(tab.Terminal.Emulator(), col, row, scrollOff)
+				a.hoveredLink = detectLinkAt(tab.Terminal, col, row, scrollOff)
 
 				// Ctrl+click opens link
 				if a.hoveredLink != nil && a.app.cfg.Links.CtrlClick && imgui.IsKeyDown(imgui.ModCtrl) && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {

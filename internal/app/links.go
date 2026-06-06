@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/LXXero/xerotty/internal/config"
-	"github.com/charmbracelet/x/vt"
+	uv "github.com/charmbracelet/ultraviolet"
 )
 
 // urlPattern matches common URLs in terminal output.
@@ -22,7 +22,21 @@ type linkHit struct {
 
 // detectLinkAt scans the line at the given viewport row for a URL under col.
 // scrollOffset accounts for scrollback position.
-func detectLinkAt(emu *vt.SafeEmulator, col, row, scrollOffset int) *linkHit {
+// linkGrid is the read surface link detection needs — satisfied by
+// both in-process Terminals and daemon Sources. Hit-testing MUST go
+// through this (not the raw shadow emulator): daemon tabs mirror
+// scrollback in the Source ring and pty tabs can spill it to disk,
+// so the raw emulator's ScrollbackLen is 0/partial and scrolled-up
+// rows computed negative content indices — links silently died
+// anywhere above the live screen.
+type linkGrid interface {
+	Width() int
+	ScrollbackLen() int
+	CellAt(col, row int) *uv.Cell
+	ScrollbackCellAt(col, row int) *uv.Cell
+}
+
+func detectLinkAt(emu linkGrid, col, row, scrollOffset int) *linkHit {
 	cols := emu.Width()
 	line := extractLineText(emu, row, scrollOffset, cols)
 
@@ -40,7 +54,7 @@ func detectLinkAt(emu *vt.SafeEmulator, col, row, scrollOffset int) *linkHit {
 }
 
 // extractLineText builds a string from a viewport row's cell contents.
-func extractLineText(emu *vt.SafeEmulator, row, scrollOffset, cols int) string {
+func extractLineText(emu linkGrid, row, scrollOffset, cols int) string {
 	var b strings.Builder
 	b.Grow(cols)
 
