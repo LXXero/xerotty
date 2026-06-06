@@ -99,8 +99,13 @@ type EmulatorView interface {
 
 // cellAt returns the cell at viewport position (col, row) accounting for scroll offset.
 // When scrollOffset > 0, top rows come from the scrollback buffer.
-func cellAt(emu EmulatorView, col, row, scrollOffset int) *uv.Cell {
-	sbLen := emu.ScrollbackLen()
+// cellAt resolves a viewport cell through scrollback. sbLen is
+// HOISTED to once-per-Draw: this function runs per cell per pass
+// (~25k times/frame on a large grid), and ScrollbackLen takes a
+// mutex — re-asking per cell was ~30% of total CPU under the lava
+// animation (perf-verified). The value can't change mid-Draw anyway:
+// publishMu/frame ordering means the grid is stable while we walk it.
+func cellAt(emu EmulatorView, col, row, sbLen, scrollOffset int) *uv.Cell {
 	contentIdx := sbLen - scrollOffset + row
 	if contentIdx < sbLen {
 		return emu.ScrollbackCellAt(col, contentIdx)
@@ -152,7 +157,10 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	rows := emu.Height()
 	// Content row of the first visible viewport row — cellSelected
 	// translates against this (selection rows are content-space).
-	r.selRowBase = emu.ScrollbackLen() - scrollOffset
+	// sbLen is also threaded into every cellAt call below (hoisted —
+	// see cellAt).
+	sbLen := emu.ScrollbackLen()
+	r.selRowBase = sbLen - scrollOffset
 	cellW := r.Metrics.Width
 	cellH := r.Metrics.Height
 
@@ -161,7 +169,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 		y := r.OffsetY + float32(row)*cellH
 		col := 0
 		for col < cols {
-			cell := cellAt(emu, col, row, scrollOffset)
+			cell := cellAt(emu, col, row, sbLen, scrollOffset)
 			if cell == nil {
 				col++
 				continue
@@ -176,7 +184,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			// RLE: count consecutive cells with same bg
 			runLen := 1
 			for col+runLen < cols {
-				next := cellAt(emu, col+runLen, row, scrollOffset)
+				next := cellAt(emu, col+runLen, row, sbLen, scrollOffset)
 				if next == nil {
 					break
 				}
@@ -201,7 +209,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	for row := 0; row < rows; row++ {
 		y := r.OffsetY + float32(row)*cellH
 		for col := 0; col < cols; col++ {
-			cell := cellAt(emu, col, row, scrollOffset)
+			cell := cellAt(emu, col, row, sbLen, scrollOffset)
 			if cell == nil {
 				continue
 			}

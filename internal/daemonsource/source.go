@@ -62,6 +62,12 @@ type Source struct {
 	// the recent tail. Older rows are dropped on overflow (FIFO).
 	scrollback    [][]uv.Cell
 	scrollbackCap int
+	// scrollbackLen mirrors len(scrollback) atomically. The renderer
+	// historically asked ScrollbackLen once PER CELL (via cellAt) —
+	// even now that it's hoisted to once per frame, lock-free reads
+	// keep this getter off any future hot path for free. Updated
+	// under s.mu wherever scrollback mutates.
+	scrollbackLen atomic.Int64
 
 	// lastTitle suppresses redundant SetOnTitle callbacks when the
 	// daemon re-ships the same title on each TabState tick.
@@ -169,8 +175,11 @@ func (s *Source) Height() int {
 }
 
 func (s *Source) CellAt(col, row int) *uv.Cell {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// No s.mu here: s.emu is set once at construction and never
+	// reassigned, and SafeEmulator is internally synchronized — the
+	// outer lock added nothing but per-cell mutex+defer overhead
+	// (perf-visible under animation). Frame coherence is unchanged:
+	// per-cell reads could always interleave with router applies.
 	return s.emu.CellAt(col, row)
 }
 
@@ -242,9 +251,10 @@ func (s *Source) ScrollbackCellAt(col, row int) *uv.Cell {
 // pre-attach rows aren't back-filled in this phase, and the local
 // ring drops oldest rows on overflow.
 func (s *Source) ScrollbackLen() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.scrollback)
+	// Lock-free: see the scrollbackLen field comment. perf showed the
+	// locked version + its defer at ~30% of total CPU when the lava
+	// animation made every frame walk the grid.
+	return int(s.scrollbackLen.Load())
 }
 
 func (s *Source) Write(p []byte) (int, error) {
@@ -407,6 +417,7 @@ func (s *Source) ClearScrollback() {
 	}
 	s.mu.Lock()
 	s.scrollback = nil
+	s.scrollbackLen.Store(0)
 	s.mu.Unlock()
 	_ = s.hub.client().SendClearScrollback(s.tabID)
 	s.signalDirty()
@@ -591,6 +602,7 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.mu.Lock()
 	s.scrollback = nil
+	s.scrollbackLen.Store(0)
 	s.mu.Unlock()
 	s.signalDirty()
 }
@@ -613,6 +625,7 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 	if over := len(s.scrollback) - s.scrollbackCap; over > 0 {
 		s.scrollback = s.scrollback[over:]
 	}
+	s.scrollbackLen.Store(int64(len(s.scrollback)))
 }
 
 // Wake, if set, is called whenever a Source's visible state changes
