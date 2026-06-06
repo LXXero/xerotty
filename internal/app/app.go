@@ -63,6 +63,9 @@ type App struct {
 	// frames, which refresh this. Default true so the first frames
 	// after startup animate before focus state is known.
 	glowFocusActive atomic.Bool
+	// glowPauseUnfocused mirrors cfg.Appearance.Glow.PauseUnfocused
+	// for the ticker goroutine (cfg itself is main-thread-mutated).
+	glowPauseUnfocused atomic.Bool
 	baseFontSize    float32 // font size the atlas was built at
 	baseCellW       float32 // cell width at base font size
 	baseCellH       float32 // cell height at base font size
@@ -3759,8 +3762,9 @@ func (a *Window) frame() {
 	// top. Drawn from the same content origin the cells use so it
 	// tracks the window in multi-viewport space.
 	if a.app.cfg.Appearance.Glow.Enabled {
+		animate := !a.app.glowPauseUnfocused.Load() || a.app.glowFocusActive.Load()
 		drawGlow(a.bgDrawList(), a.contentOriginX, a.contentOriginY,
-			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow)
+			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow, animate)
 	}
 
 	// Render terminal cells FIRST into the wrapper's window drawlist,

@@ -34,8 +34,30 @@ const glowTexSize = 256
 var (
 	glowTex   imgui.TextureRef
 	glowTexOK bool
-	glowEpoch = time.Now()
+	// Animation clock: advances only while animating. Pausing the
+	// wake ticker alone is NOT enough to freeze the lamp — frames
+	// triggered by unrelated events (shell output, daemon frames)
+	// would sample wall-clock time and make the blobs lurch between
+	// positions. Freezing the clock makes those frames render
+	// byte-identical, motionless goo.
+	glowClock    float64
+	glowLastNano int64
 )
+
+// glowTime advances and returns the animation clock. Only the main
+// render goroutine calls this (one frame at a time), so plain vars
+// are fine.
+func glowTime(animate bool) float64 {
+	now := time.Now().UnixNano()
+	if glowLastNano == 0 {
+		glowLastNano = now
+	}
+	if animate {
+		glowClock += float64(now-glowLastNano) / 1e9
+	}
+	glowLastNano = now
+	return glowClock
+}
 
 // glowTexture lazily builds the soft radial-falloff disc: white RGB,
 // alpha = (1-r²)² — a Wendland-style kernel that's smooth at both
@@ -86,7 +108,7 @@ func glowColors(cfg *config.GlowConfig, theme *renderer.Theme) []uint32 {
 // drawGlow paints the blob layer into dl, covering the window rect
 // (origin..origin+size, drawlist space). Deterministic from time —
 // no per-window animation state, so every window shares the lamp.
-func drawGlow(dl *imgui.DrawList, originX, originY, width, height float32, theme *renderer.Theme, cfg *config.GlowConfig) {
+func drawGlow(dl *imgui.DrawList, originX, originY, width, height float32, theme *renderer.Theme, cfg *config.GlowConfig, animate bool) {
 	if width <= 0 || height <= 0 {
 		return
 	}
@@ -117,7 +139,7 @@ func drawGlow(dl *imgui.DrawList, originX, originY, width, height float32, theme
 		intensity = 1
 	}
 	palette := glowColors(cfg, theme)
-	t := time.Since(glowEpoch).Seconds() * speed
+	t := glowTime(animate) * speed
 
 	minV := imgui.Vec2{X: originX, Y: originY}
 	maxV := imgui.Vec2{X: originX + width, Y: originY + height}
@@ -207,6 +229,7 @@ func max32(a, b float32) float32 {
 // prefs apply.
 func (a *App) ensureGlowTicker() {
 	enabled := a.cfg.Appearance.Glow.Enabled
+	a.glowPauseUnfocused.Store(a.cfg.Appearance.Glow.PauseUnfocused)
 	if enabled && a.glowStop == nil {
 		fps := a.cfg.Appearance.Glow.FPS
 		if fps <= 0 {
@@ -226,10 +249,10 @@ func (a *App) ensureGlowTicker() {
 				case <-stop:
 					return
 				case <-tick.C:
-					// Don't animate (or burn frames) while no xerotty
-					// window has focus — the focus-change event itself
-					// runs a frame that flips this back on return.
-					if a.glowFocusActive.Load() {
+					// Don't burn frames while no xerotty window has
+					// focus (unless configured to) — the focus-change
+					// event itself runs a frame on return.
+					if !a.glowPauseUnfocused.Load() || a.glowFocusActive.Load() {
 						platform.PostWake()
 					}
 				}
