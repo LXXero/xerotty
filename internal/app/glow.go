@@ -217,6 +217,7 @@ func (a *App) ensureGlowTicker() {
 		}
 		stop := make(chan struct{})
 		a.glowStop = stop
+		a.glowFocusActive.Store(true)
 		go func() {
 			tick := time.NewTicker(time.Second / time.Duration(fps))
 			defer tick.Stop()
@@ -225,7 +226,12 @@ func (a *App) ensureGlowTicker() {
 				case <-stop:
 					return
 				case <-tick.C:
-					platform.PostWake()
+					// Don't animate (or burn frames) while no xerotty
+					// window has focus — the focus-change event itself
+					// runs a frame that flips this back on return.
+					if a.glowFocusActive.Load() {
+						platform.PostWake()
+					}
 				}
 			}
 		}()

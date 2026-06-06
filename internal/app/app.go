@@ -55,6 +55,14 @@ type App struct {
 	cfg             config.Config
 	theme           renderer.Theme
 	glowStop        chan struct{} // lava-lamp self-wake ticker (glow.go)
+	// glowFocusActive mirrors "some xerotty window has input focus"
+	// for the glow ticker: an unfocused backdrop doesn't animate, so
+	// the render loop goes back to fully event-driven (0% idle CPU)
+	// the moment focus leaves. Updated by the frame loop's focus
+	// tracking — losing/gaining focus generates events, which run
+	// frames, which refresh this. Default true so the first frames
+	// after startup animate before focus state is known.
+	glowFocusActive atomic.Bool
 	baseFontSize    float32 // font size the atlas was built at
 	baseCellW       float32 // cell width at base font size
 	baseCellH       float32 // cell height at base font size
@@ -2492,6 +2500,7 @@ func (a *App) Run() error {
 		if focused != nil {
 			a.active = focused
 		}
+		a.glowFocusActive.Store(focused != nil)
 		// Override the focus-from-ImGui result if focus was explicitly
 		// requested for a Window (new Window spawn, or focus returning
 		// from an auxiliary viewport such as preferences). Two timing
