@@ -44,6 +44,16 @@ jobs:
       - uses: actions/checkout@v6
       - name: build app bundle
         run: make app
+      - name: verify self-contained bundle
+        run: |
+          # The load command must point inside the bundle...
+          otool -L xerotty.app/Contents/MacOS/xerotty | grep -q "@executable_path/../Frameworks/libSDL3"             || { echo "SDL3 not rewritten to bundled path"; otool -L xerotty.app/Contents/MacOS/xerotty; exit 1; }
+          # ...and the binary must actually launch through dyld with
+          # brew's copy hidden (proves the bundled dylib resolves).
+          BREW_PREFIX=$(brew --prefix)
+          sudo mv "$BREW_PREFIX/lib" "$BREW_PREFIX/lib.hidden" || true
+          ./xerotty.app/Contents/MacOS/xerotty --help >/dev/null
+          sudo mv "$BREW_PREFIX/lib.hidden" "$BREW_PREFIX/lib" || true
       - name: package
         run: |
           mkdir -p dist

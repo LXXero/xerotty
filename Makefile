@@ -70,6 +70,11 @@ else
 	mkdir -p $(APP_BUNDLE)/Contents/Resources
 	cp -f $(BINARY) $(APP_BUNDLE)/Contents/MacOS/$(BINARY)
 	cp -Rf themes $(APP_BUNDLE)/Contents/Resources/themes
+	# Bundle libSDL3 into the .app so downloads don't need brew.
+	# Rewrites the binary's load command to @executable_path/../
+	# Frameworks and re-signs ad-hoc (install_name_tool invalidates
+	# the linker's signature; arm64 refuses unsigned binaries).
+	@SDL_PATH=$$(otool -L $(APP_BUNDLE)/Contents/MacOS/$(BINARY) | awk '/libSDL3/{print $$1; exit}'); 	if [ -n "$$SDL_PATH" ] && [ -f "$$SDL_PATH" ]; then 		mkdir -p $(APP_BUNDLE)/Contents/Frameworks; 		cp -f "$$SDL_PATH" $(APP_BUNDLE)/Contents/Frameworks/; 		SDL_BASE=$$(basename "$$SDL_PATH"); 		install_name_tool -change "$$SDL_PATH" 			"@executable_path/../Frameworks/$$SDL_BASE" 			$(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		codesign -f -s - $(APP_BUNDLE)/Contents/Frameworks/$$SDL_BASE; 		codesign -f -s - $(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		echo "bundled $$SDL_BASE into Frameworks/"; 	else 		echo "warning: libSDL3 dylib not found via otool — bundle needs system SDL3"; 	fi
 	# App icon: pre-built .icns lives in icon/. Build it from icon/xerotty.svg
 	# with `make icns` if missing; here we just copy the result into the bundle.
 	@if [ -f icon/xerotty.icns ]; then \
