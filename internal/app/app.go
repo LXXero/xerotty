@@ -5911,6 +5911,11 @@ func (w *Window) handleMouseSelection() {
 	mousePos := imgui.MousePos()
 	col := int((mousePos.X - w.renderer.OffsetX) / w.cellW)
 	row := int((mousePos.Y - w.renderer.OffsetY) / w.cellH)
+	// Unclamped row, kept for drag auto-scroll: when the user drags a
+	// selection past the top/bottom edge, rawRow goes negative / past
+	// rows and we scroll the view to extend the selection beyond one
+	// screen (row itself is clamped to the grid just below).
+	rawRow := row
 
 	// Window-local pixel coordinates. ImGui draw lists and MousePos() are in
 	// absolute desktop space when multi-viewport is enabled, but w.width /
@@ -6020,14 +6025,36 @@ func (w *Window) handleMouseSelection() {
 	// Dragging extends selection. Mode (set when the drag started)
 	// decides whether the moving end snaps to char / word / line.
 	if w.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
-		scrollOff := 0
-		if s, ok := w.scroll[tab.ID]; ok {
-			scrollOff = s.Offset
+		s := w.getScroll(tab.ID)
+		// Auto-scroll while dragging past an edge so a selection can
+		// span more than one screen. Speed ramps with how far beyond
+		// the edge the cursor is (1 row at the edge, more as you pull
+		// further), capped so it stays controllable. row is already
+		// clamped to the visible grid, so extendDrag below anchors the
+		// moving end to the new top/bottom row after the scroll.
+		if rawRow < 0 {
+			n := 1 - rawRow
+			if n > 5 {
+				n = 5
+			}
+			s.ScrollUp(n, tab.Terminal.ScrollbackLen())
+		} else if rawRow >= rows {
+			n := rawRow - rows + 1
+			if n > 5 {
+				n = 5
+			}
+			s.ScrollDown(n)
 		}
 		// Converting at the CURRENT offset means dragging while
 		// scrolling extends the selection through the content that
 		// scrolls past — the anchor stays glued to its text.
-		w.sel.extendDrag(contentRowAt(tab.Terminal, row, scrollOff), col, tab.Terminal)
+		w.sel.extendDrag(contentRowAt(tab.Terminal, row, s.Offset), col, tab.Terminal)
+		// Keep frames flowing while the cursor is parked past the edge
+		// (no mouse motion events arrive when it's held still), so the
+		// auto-scroll continues every frame instead of stalling.
+		if rawRow < 0 || rawRow >= rows {
+			platform.PostWake()
+		}
 	}
 
 	// Release finalizes selection and copies to PRIMARY (+ CLIPBOARD
