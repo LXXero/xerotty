@@ -3902,7 +3902,7 @@ func (a *Window) frame() {
 			if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
 				_, visRows := a.gridSize()
 				savedIdx := s.MatchIdx
-				s.Search(tab.Terminal.Emulator(), visRows)
+				s.Search(tab.Terminal, visRows)
 				if savedIdx < len(s.Matches) {
 					s.MatchIdx = savedIdx
 				}
@@ -5266,7 +5266,7 @@ func (w *Window) renderSearchOverlay() {
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
 		w.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
-			s.Search(tab.Terminal.Emulator(), rows)
+			s.Search(tab.Terminal, rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 		// Counter: render into a fixed-width Dummy slot via drawList
@@ -5330,7 +5330,7 @@ func (w *Window) renderSearchOverlay() {
 		imgui.SameLineV(0, 8)
 		optChanged = imgui.Checkbox("WRAP", &s.WrapAround) || optChanged
 		if optChanged && s.Query != "" {
-			s.Search(tab.Terminal.Emulator(), rows)
+			s.Search(tab.Terminal, rows)
 			s.ScrollToCurrentMatch(rows)
 		}
 	}

@@ -6,8 +6,22 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/x/vt"
+	uv "github.com/charmbracelet/ultraviolet"
 )
+
+// Grid is the read surface search needs — satisfied by both
+// in-process Terminals and daemon Sources. Search MUST go through
+// this, not the raw shadow emulator: daemon tabs keep scrollback in
+// the Source's mirror ring (the shadow emulator's ScrollbackLen is
+// 0), so reading the emulator directly searched only the visible
+// screen. Same shape the renderer and link detection use.
+type Grid interface {
+	Width() int
+	Height() int
+	ScrollbackLen() int
+	CellAt(col, row int) *uv.Cell
+	ScrollbackCellAt(col, row int) *uv.Cell
+}
 
 // State tracks the scroll position and search state for a terminal.
 type State struct {
@@ -90,7 +104,7 @@ func (s *State) CloseSearch() {
 
 // Search runs an incremental search across visible screen + scrollback.
 // visibleRows is used to pick the starting match near the viewport bottom.
-func (s *State) Search(emu *vt.SafeEmulator, visibleRows int) {
+func (s *State) Search(emu Grid, visibleRows int) {
 	s.Matches = nil
 	s.MatchIdx = 0
 
@@ -283,7 +297,7 @@ func findMatchesRegex(matches *[]Match, line string, re *regexp.Regexp, lineIdx 
 	}
 }
 
-func extractScreenLine(emu *vt.SafeEmulator, row, cols int) string {
+func extractScreenLine(emu Grid, row, cols int) string {
 	var b strings.Builder
 	for col := 0; col < cols; col++ {
 		cell := emu.CellAt(col, row)
@@ -296,7 +310,7 @@ func extractScreenLine(emu *vt.SafeEmulator, row, cols int) string {
 	return b.String()
 }
 
-func extractScrollbackLine(emu *vt.SafeEmulator, row, cols int) string {
+func extractScrollbackLine(emu Grid, row, cols int) string {
 	var b strings.Builder
 	for col := 0; col < cols; col++ {
 		cell := emu.ScrollbackCellAt(col, row)
