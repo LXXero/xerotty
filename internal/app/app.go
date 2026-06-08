@@ -2054,6 +2054,16 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			w.initialPosX, w.initialPosY = float32(snap.PosX), float32(snap.PosY)
 			w.hasInitialPos = true
 		}
+		// Recompute the grid from the RESTORED geometry: cols,rows
+		// above were measured before snap.Width/Height was applied,
+		// so they size the adopted sources wrong. The per-frame size
+		// sync only calls resizeTerminals() when the detected window
+		// size DIFFERS from w.width/w.height — but pendingResize
+		// opens the OS window at exactly the restored size, so
+		// detected==stored and no resize ever fires. That left the
+		// content not filling to the bottom until the user manually
+		// resized (the only thing that makes detected != stored).
+		aCols, aRows := w.gridSize()
 		var focusIdx = -1
 		for i, ts := range snap.Tabs {
 			src := a.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
@@ -2061,8 +2071,8 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 			if ts.Title != "" {
 				tab.SetTitle(ts.Title)
 			}
-			if cols > 1 && rows > 1 {
-				src.Resize(cols, rows)
+			if aCols > 1 && aRows > 1 {
+				src.Resize(aCols, aRows)
 			}
 			if ts.ID == snap.FocusedTabID {
 				focusIdx = i
