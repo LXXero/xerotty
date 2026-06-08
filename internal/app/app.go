@@ -4174,6 +4174,7 @@ func (w *Window) processKeys() {
 		Backspace:  w.app.cfg.Keys.Backspace,
 		Delete:     w.app.cfg.Keys.Delete,
 		ShiftEnter: w.app.cfg.Keys.ShiftEnter,
+		HomeEnd:    w.app.cfg.Keys.HomeEnd,
 	})
 	actionDispatched := false
 

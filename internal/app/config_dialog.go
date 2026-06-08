@@ -45,6 +45,7 @@ var (
 	prefBSModes        = []string{"ascii_del", "ascii_bs"}
 	prefDelModes       = []string{"vt_sequence", "ascii_del"}
 	prefShiftEnters    = []string{"newline", "escape_sequence"}
+	prefHomeEnds       = []string{"auto", "ss3", "csi", "vt"}
 
 	// Standard terminal font sizes. TTF/OTF fonts scale to any size, but
 	// readable terminal sizes cluster in this range — exposing arbitrary
@@ -280,9 +281,10 @@ type configDialog struct {
 	opener    string
 
 	// Keys
-	bsIdx   int32
-	delIdx  int32
-	shEnIdx int32
+	bsIdx      int32
+	delIdx     int32
+	shEnIdx    int32
+	homeEndIdx int32
 
 	// Window
 	winCols  int32
@@ -540,6 +542,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.bsIdx = prefIndexOf(prefBSModes, cfg.Keys.Backspace)
 	d.delIdx = prefIndexOf(prefDelModes, cfg.Keys.Delete)
 	d.shEnIdx = prefIndexOf(prefShiftEnters, cfg.Keys.ShiftEnter)
+	d.homeEndIdx = prefIndexOf(prefHomeEnds, cfg.Keys.HomeEnd)
 
 	d.winCols = int32(cfg.Window.Columns)
 	d.winRows = int32(cfg.Window.Rows)
@@ -647,6 +650,9 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	}
 	if int(d.shEnIdx) < len(prefShiftEnters) {
 		cfg.Keys.ShiftEnter = prefShiftEnters[d.shEnIdx]
+	}
+	if int(d.homeEndIdx) < len(prefHomeEnds) {
+		cfg.Keys.HomeEnd = prefHomeEnds[d.homeEndIdx]
 	}
 
 	cfg.Window.Columns = int(d.winCols)
@@ -1467,6 +1473,18 @@ func (a *Window) renderPrefKeys() {
 
 	imgui.Text("Shift+Enter Sends")
 	a.prefCombo("shenter", &d.shEnIdx, prefShiftEnters, w)
+
+	imgui.Text("Home / End Sends")
+	a.prefCombo("homeend", &d.homeEndIdx, prefHomeEnds, w)
+	if d.homeEndIdx == 0 {
+		imgui.TextDisabled("auto: SS3 in app-cursor mode, CSI otherwise (xterm)")
+	} else if d.homeEndIdx == 1 {
+		imgui.TextDisabled("ss3 (ESC O H/F) = terminfo khome/kend — most zsh-friendly")
+	} else if d.homeEndIdx == 2 {
+		imgui.TextDisabled("csi: always ESC [ H/F")
+	} else {
+		imgui.TextDisabled("vt: ESC [ 1~ / ESC [ 4~")
+	}
 }
 
 // renderPrefMenu draws the scrollable item list. The Add controls are

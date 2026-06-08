@@ -26,6 +26,38 @@ type KeyOptions struct {
 	Backspace  string // "ascii_del" (0x7F, default) | "ascii_bs" (0x08)
 	Delete     string // "vt_sequence" (\x1b[3~, default) | "ascii_del" (0x7F)
 	ShiftEnter string // "newline" (\n, default) | "escape_sequence" (\x1bOM)
+	// HomeEnd picks the Home/End encoding:
+	//   "auto" (default) — SS3 (\x1bOH/\x1bOF) in application cursor
+	//     mode, CSI (\x1b[H/\x1b[F) otherwise. xterm-faithful.
+	//   "ss3"  — always \x1bOH/\x1bOF. This is terminfo khome/kend
+	//     for xterm-256color, so the standard zsh incantation
+	//     `bindkey "${terminfo[khome]}" beginning-of-line` works even
+	//     when the shell never enables application mode (no smkx).
+	//   "csi"  — always \x1b[H/\x1b[F.
+	//   "vt"   — \x1b[1~/\x1b[4~ (VT220 / linux console form).
+	HomeEnd string
+}
+
+// homeEndSeq returns the byte sequence for Home (which="H") or End
+// (which="F") under the configured encoding and current app-cursor
+// mode.
+func homeEndSeq(which string, mode string, app bool) []byte {
+	switch mode {
+	case "ss3":
+		return []byte("\x1bO" + which)
+	case "csi":
+		return []byte("\x1b[" + which)
+	case "vt":
+		if which == "H" {
+			return []byte("\x1b[1~")
+		}
+		return []byte("\x1b[4~")
+	default: // "auto"
+		if app {
+			return []byte("\x1bO" + which)
+		}
+		return []byte("\x1b[" + which)
+	}
 }
 
 // PollKeys checks ImGui's key state and returns all pending key events.
@@ -201,16 +233,10 @@ func PollKeys(keybinds map[string]string, appMode bool, opts KeyOptions) []KeyEv
 			return arrowKey('D', ctrl, shift, app)
 		}},
 		{imgui.KeyHome, true, func(_, _, _, app bool) KeyEvent {
-			if app {
-				return KeyEvent{Bytes: []byte("\x1bOH")}
-			}
-			return KeyEvent{Bytes: []byte("\x1b[H")}
+			return KeyEvent{Bytes: homeEndSeq("H", opts.HomeEnd, app)}
 		}},
 		{imgui.KeyEnd, true, func(_, _, _, app bool) KeyEvent {
-			if app {
-				return KeyEvent{Bytes: []byte("\x1bOF")}
-			}
-			return KeyEvent{Bytes: []byte("\x1b[F")}
+			return KeyEvent{Bytes: homeEndSeq("F", opts.HomeEnd, app)}
 		}},
 		{imgui.KeyPageUp, true, func(_, shift, _, _ bool) KeyEvent {
 			if shift {
@@ -245,16 +271,10 @@ func PollKeys(keybinds map[string]string, appMode bool, opts KeyOptions) []KeyEv
 			specialKey{imgui.KeyKeypad6, true, func(c, s, _, app bool) KeyEvent { return arrowKey('C', c, s, app) }},
 			specialKey{imgui.KeyKeypad4, true, func(c, s, _, app bool) KeyEvent { return arrowKey('D', c, s, app) }},
 			specialKey{imgui.KeyKeypad7, true, func(_, _, _, app bool) KeyEvent {
-				if app {
-					return KeyEvent{Bytes: []byte("\x1bOH")}
-				}
-				return KeyEvent{Bytes: []byte("\x1b[H")}
+				return KeyEvent{Bytes: homeEndSeq("H", opts.HomeEnd, app)}
 			}},
 			specialKey{imgui.KeyKeypad1, true, func(_, _, _, app bool) KeyEvent {
-				if app {
-					return KeyEvent{Bytes: []byte("\x1bOF")}
-				}
-				return KeyEvent{Bytes: []byte("\x1b[F")}
+				return KeyEvent{Bytes: homeEndSeq("F", opts.HomeEnd, app)}
 			}},
 			specialKey{imgui.KeyKeypad9, true, func(_, shift, _, _ bool) KeyEvent {
 				if shift {

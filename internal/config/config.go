@@ -114,6 +114,7 @@ type KeyConfig struct {
 	Backspace  string `toml:"backspace"`
 	Delete     string `toml:"delete"`
 	ShiftEnter string `toml:"shift_enter"`
+	HomeEnd    string `toml:"home_end"`
 }
 
 // MenuConfig holds the right-click context menu definition.
@@ -252,6 +253,7 @@ func Default() Config {
 		Keybinds: defaultKeybinds(),
 		Keys: KeyConfig{
 			Backspace:  "ascii_del",
+			HomeEnd:    "auto",
 			Delete:     "vt_sequence",
 			ShiftEnter: "newline",
 		},
