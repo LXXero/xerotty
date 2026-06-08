@@ -484,6 +484,26 @@ func nameToImGuiKey(name string) imgui.Key {
 		return imgui.KeyMinus
 	case "Plus":
 		return imgui.KeyEqual
+	case "Comma":
+		return imgui.KeyComma
+	case "Period":
+		return imgui.KeyPeriod
+	case "Slash":
+		return imgui.KeySlash
+	case "Semicolon":
+		return imgui.KeySemicolon
+	case "Equal":
+		return imgui.KeyEqual
+	case "Backslash":
+		return imgui.KeyBackslash
+	case "LeftBracket":
+		return imgui.KeyLeftBracket
+	case "RightBracket":
+		return imgui.KeyRightBracket
+	case "Apostrophe":
+		return imgui.KeyApostrophe
+	case "Grave":
+		return imgui.KeyGraveAccent
 	}
 	return imgui.KeyNone
 }

@@ -467,11 +467,11 @@ func defaultKeybindsDarwin() map[string]string {
 		"Ctrl+Plus":      "font_size_up",
 		"Ctrl+Minus":     "font_size_down",
 		"Ctrl+0":         "font_size_reset",
-		"Ctrl+Shift+R":   "rename_tab",
+		"Ctrl+R":         "rename_tab",
 		"Shift+Home":     "scroll_top",
 		"Shift+End":      "scroll_bottom",
 		"Ctrl+Comma":     "preferences",
-		"Ctrl+Shift+O":   "toggle_opacity",
+		"Ctrl+O":         "toggle_opacity",
 	}
 }
 
@@ -529,11 +529,22 @@ func defaultMenuDarwin() MenuConfig {
 			{Action: "separator"},
 			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
 			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
-			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+Shift+O", Checked: "force_opaque"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+O", Checked: "force_opaque"},
 			{Action: "separator"},
-			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+Shift+R"},
+			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+R"},
 			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},
 			{Label: "Close Tab", Action: "close_tab", Shortcut: "Cmd+W"},
 		},
 	}
+}
+
+// DefaultKeybindsForTest exposes the per-platform default keybind
+// maps so tests can validate bindings for BOTH platforms regardless
+// of the OS the test runs on. plat is "darwin" or anything else
+// (Linux).
+func DefaultKeybindsForTest(plat string) map[string]string {
+	if plat == "darwin" {
+		return defaultKeybindsDarwin()
+	}
+	return defaultKeybindsLinux()
 }
