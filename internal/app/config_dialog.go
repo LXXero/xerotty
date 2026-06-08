@@ -45,7 +45,7 @@ var (
 	prefBSModes        = []string{"ascii_del", "ascii_bs"}
 	prefDelModes       = []string{"vt_sequence", "ascii_del"}
 	prefShiftEnters    = []string{"newline", "escape_sequence"}
-	prefHomeEnds       = []string{"auto", "ss3", "csi", "vt"}
+	prefHomeEnds       = []string{"ss3", "auto", "csi", "vt"}
 
 	// Standard terminal font sizes. TTF/OTF fonts scale to any size, but
 	// readable terminal sizes cluster in this range — exposing arbitrary
@@ -1476,13 +1476,14 @@ func (a *Window) renderPrefKeys() {
 
 	imgui.Text("Home / End Sends")
 	a.prefCombo("homeend", &d.homeEndIdx, prefHomeEnds, w)
-	if d.homeEndIdx == 0 {
+	switch d.homeEndIdx {
+	case 0:
+		imgui.TextDisabled("ss3 (ESC O H/F) = terminfo khome/kend — works in zsh/bash")
+	case 1:
 		imgui.TextDisabled("auto: SS3 in app-cursor mode, CSI otherwise (xterm)")
-	} else if d.homeEndIdx == 1 {
-		imgui.TextDisabled("ss3 (ESC O H/F) = terminfo khome/kend — most zsh-friendly")
-	} else if d.homeEndIdx == 2 {
+	case 2:
 		imgui.TextDisabled("csi: always ESC [ H/F")
-	} else {
+	default:
 		imgui.TextDisabled("vt: ESC [ 1~ / ESC [ 4~")
 	}
 }

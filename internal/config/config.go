@@ -253,7 +253,14 @@ func Default() Config {
 		Keybinds: defaultKeybinds(),
 		Keys: KeyConfig{
 			Backspace:  "ascii_del",
-			HomeEnd:    "auto",
+			// ss3 (ESC O H/F) is terminfo khome/kend for
+			// xterm-256color, so the standard zsh key-binding
+			// boilerplate (`bindkey "${terminfo[khome]}" ...`) and
+			// readline both act on it WITHOUT the shell having to
+			// enable application-cursor mode (smkx). "auto" only sent
+			// SS3 in app mode, so Home/End silently did nothing in a
+			// normal-mode interactive shell. ss3 "just works".
+			HomeEnd: "ss3",
 			Delete:     "vt_sequence",
 			ShiftEnter: "newline",
 		},
