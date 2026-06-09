@@ -6042,6 +6042,22 @@ func (w *Window) handleMouseSelection() {
 		}
 	}
 
+	// If this window lost OS focus mid-drag, the button-up went to
+	// ANOTHER window and ImGui never delivered it here — so dragging
+	// stays true and IsMouseDown stays stuck true, while MousePos is
+	// now off in the other window. Left unchecked, the edge
+	// auto-scroll below reads a wildly out-of-range rawRow and scrolls
+	// the terminal away on its own (it even PostWakes itself to keep
+	// going). End the drag when focus leaves: finalize the selection
+	// we have and stop tracking. (A real in-window drag keeps focus,
+	// so this only fires on the cross-window click-away.)
+	if w.sel.dragging && !w.hasOSFocus() {
+		w.sel.dragging = false
+		if w.sel.active {
+			w.writeSelection(w.sel.extractText(tab.Terminal, w.app.cfg.Clipboard.TrimTrailingWhitespace))
+		}
+	}
+
 	// Dragging extends selection. Mode (set when the drag started)
 	// decides whether the moving end snaps to char / word / line.
 	if w.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
