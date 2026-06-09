@@ -3625,6 +3625,16 @@ func (a *Window) frame() {
 					}
 				}
 			}
+			// Clamp: scrollback can SHRINK below the current offset —
+			// a clear, an alt-screen switch, or a resize, all common
+			// during a big output burst. Without this the offset
+			// strands the viewport off the bottom showing blank rows
+			// (contentIdx goes negative) until the user manually
+			// scrolls — the "won't stay scrolled to the bottom" bug. A
+			// shrink to 0 (full clear) pins offset to 0 = live bottom.
+			if s.Offset > sbLen {
+				s.Offset = sbLen
+			}
 			s.PrevSBLen = sbLen
 		}
 	}
