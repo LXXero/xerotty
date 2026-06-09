@@ -5,6 +5,7 @@ import (
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabs"
@@ -365,6 +366,24 @@ func (w *Window) sdlWindowHandle() uintptr {
 		return 0
 	}
 	return vp.PlatformHandle()
+}
+
+// hasOSFocus reports whether this Window's OS window currently holds
+// input focus, per SDL (the OS truth). Used to gate click-DOWN
+// handling so a click that actually landed on a DIFFERENT window —
+// another xerotty window or another application entirely — doesn't
+// leak into this window's selection or tab bar. ImGui's own hover/
+// focus state can't be trusted here: on mac multi-viewport it never
+// receives a mouse-leave when focus jumps to another OS window, so
+// it keeps reporting the wrapper hovered and the leaked click slips
+// through. Returns true when the handle is unknown (0) so behavior
+// degrades to the pre-gate state rather than swallowing every click.
+func (w *Window) hasOSFocus() bool {
+	h := w.sdlWindowHandle()
+	if h == 0 {
+		return true
+	}
+	return platform.WindowHasInputFocus(h)
 }
 
 // bgDrawList returns the draw list terminal cells / cursor /

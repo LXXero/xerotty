@@ -4927,7 +4927,10 @@ func (w *Window) renderTabBar() {
 		// Enter/Space. Without this gate, hitting Enter in the terminal
 		// re-"clicked" a previously-focused tab button and jumped focus
 		// to it (the "Enter jumps to the first tab" bug).
-		if clicked && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) {
+		// Same cross-window leak guard as selection: only treat this
+		// as our click if the OS window has focus. Without it, clicking
+		// another window selected the "highlighted" (hovered) tab here.
+		if clicked && imgui.IsMouseClickedBool(imgui.MouseButtonLeft) && w.hasOSFocus() {
 			if mouseInClose {
 				closedIdx = i
 			} else {
@@ -5958,7 +5961,14 @@ func (w *Window) handleMouseSelection() {
 	onSearch := tab != nil && w.getScroll(tab.ID).Searching &&
 		wmX >= float32(w.width)-w.searchOverlayW &&
 		wmY <= w.tabBarH+65
-	wrapperHovered := imgui.IsWindowHovered()
+	// A click-DOWN is only ours if this OS window actually has input
+	// focus. On mac multi-viewport ImGui keeps reporting the wrapper
+	// hovered after focus jumps to another window (no mouse-leave is
+	// delivered), so without this gate a click on a DIFFERENT window
+	// leaks in as a selection start / triple-click here. An in-flight
+	// drag (w.sel.dragging) is exempt below so a drag that began here
+	// still tracks even if the focus probe flickers mid-drag.
+	wrapperHovered := imgui.IsWindowHovered() && w.hasOSFocus()
 	inTerminal := wrapperHovered && wmY >= w.tabBarH && !onScrollbar && !onSearch && !w.sbDragging
 
 	if imgui.IsMouseDoubleClicked(imgui.MouseButtonLeft) && inTerminal {

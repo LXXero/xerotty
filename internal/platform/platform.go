@@ -160,6 +160,19 @@ func RaiseWindow(windowID uintptr) {
 	C.platform_raise_window(C.ulong(windowID))
 }
 
+// WindowHasInputFocus reports whether the SDL_Window with the given
+// ID (a viewport PlatformHandle) currently holds OS-level keyboard
+// focus (SDL_WINDOW_INPUT_FOCUS). This is the OS truth — unlike
+// ImGui's IsWindowFocused, it stays correct when focus crosses to a
+// DIFFERENT application's window, which ImGui never sees. Used to gate
+// click handling so a click that actually went to another window
+// doesn't leak into this one's selection / tab bar (a mac
+// multi-viewport hazard: ImGui can keep reporting the wrapper hovered
+// because it never receives a mouse-leave when focus jumps away).
+func WindowHasInputFocus(windowID uintptr) bool {
+	return C.platform_window_input_focus(C.ulong(windowID)) != 0
+}
+
 // SetWindowOpacity sets whole-window opacity (0..1) on the SDL_Window
 // with the given ID (a viewport PlatformHandle). Restores the documented
 // `opacity` config the SDL2→SDL3 migration dropped.
