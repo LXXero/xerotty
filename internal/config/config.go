@@ -140,6 +140,7 @@ type ScrollbackConfig struct {
 	Lines             int    `toml:"lines"`
 	Mode              string `toml:"mode"`                // "memory" | "unlimited"
 	ScrollSpeed       int    `toml:"scroll_speed"`        // lines per mouse wheel tick
+	DragScrollSpeed   int    `toml:"drag_scroll_speed"`   // rows/second when drag-selecting past an edge
 	ScrollOnKeystroke bool   `toml:"scroll_on_keystroke"` // snap to bottom on keypress
 	ScrollOnOutput    bool   `toml:"scroll_on_output"`    // snap to bottom on new output
 }
@@ -269,6 +270,7 @@ func Default() Config {
 			Lines:             10000,
 			Mode:              "memory",
 			ScrollSpeed:       3,
+			DragScrollSpeed:   25,
 			ScrollOnKeystroke: true,
 			ScrollOnOutput:    false,
 		},

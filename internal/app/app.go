@@ -6063,23 +6063,45 @@ func (w *Window) handleMouseSelection() {
 	if w.sel.dragging && imgui.IsMouseDown(imgui.MouseButtonLeft) {
 		s := w.getScroll(tab.ID)
 		// Auto-scroll while dragging past an edge so a selection can
-		// span more than one screen. Speed ramps with how far beyond
-		// the edge the cursor is (1 row at the edge, more as you pull
-		// further), capped so it stays controllable. row is already
-		// clamped to the visible grid, so extendDrag below anchors the
-		// moving end to the new top/bottom row after the scroll.
+		// span more than one screen. TIME-based (rows/second via
+		// cfg.Scrollback.DragScrollSpeed, fractional rows accumulate
+		// across frames) — the first cut scrolled N rows per FRAME,
+		// which tied the speed to the render rate (~240+ rows/sec at
+		// the frame cap: way too fast, and faster on faster machines).
+		// Speed ramps up to 4x as the cursor pulls further past the
+		// edge. row is already clamped to the visible grid, so
+		// extendDrag below anchors the moving end to the new
+		// top/bottom row after the scroll.
+		dist := 0
 		if rawRow < 0 {
-			n := 1 - rawRow
-			if n > 5 {
-				n = 5
-			}
-			s.ScrollUp(n, tab.Terminal.ScrollbackLen())
+			dist = -rawRow
 		} else if rawRow >= rows {
-			n := rawRow - rows + 1
-			if n > 5 {
-				n = 5
+			dist = rawRow - rows + 1
+		}
+		if dist > 0 {
+			base := float64(w.app.cfg.Scrollback.DragScrollSpeed)
+			if base <= 0 {
+				base = 25
 			}
-			s.ScrollDown(n)
+			mult := 1.0 + float64(dist-1)*0.25
+			if mult > 4 {
+				mult = 4
+			}
+			dt := float64(imgui.CurrentIO().DeltaTime())
+			if dt > 0.1 {
+				dt = 0.1 // a stalled frame must not teleport the view
+			}
+			w.dragScrollAccum += base * mult * dt
+			if n := int(w.dragScrollAccum); n > 0 {
+				w.dragScrollAccum -= float64(n)
+				if rawRow < 0 {
+					s.ScrollUp(n, tab.Terminal.ScrollbackLen())
+				} else {
+					s.ScrollDown(n)
+				}
+			}
+		} else {
+			w.dragScrollAccum = 0
 		}
 		// Converting at the CURRENT offset means dragging while
 		// scrolling extends the selection through the content that

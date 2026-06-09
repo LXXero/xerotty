@@ -96,11 +96,15 @@ type Window struct {
 	// of this to App would couple two open Windows together (e.g.,
 	// dragging a selection in Window A would extend a selection in
 	// Window B).
-	fullscreen         bool
-	tabBarHovered      bool
-	tabSwitchReq       int
-	ready              bool
-	sel                selection
+	fullscreen    bool
+	tabBarHovered bool
+	tabSwitchReq  int
+	ready         bool
+	sel           selection
+	// dragScrollAccum carries fractional rows of edge auto-scroll
+	// across frames (drag-selection past the top/bottom edge is
+	// time-based: rows/sec × frame dt rarely lands on whole rows).
+	dragScrollAccum    float64
 	pendingPaste       string
 	resizeTime         float64
 	resizeOverlay      bool

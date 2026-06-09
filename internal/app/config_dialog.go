@@ -256,6 +256,7 @@ type configDialog struct {
 	// Scrollback
 	sbLines   int32
 	sbModeIdx int32
+	dragSpd   int32
 	scrollSpd int32
 	scrollKey bool
 	scrollOut bool
@@ -519,6 +520,10 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.sbLines = int32(cfg.Scrollback.Lines)
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
 	d.scrollSpd = int32(cfg.Scrollback.ScrollSpeed)
+	d.dragSpd = int32(cfg.Scrollback.DragScrollSpeed)
+	if d.dragSpd <= 0 {
+		d.dragSpd = 25
+	}
 	d.scrollKey = cfg.Scrollback.ScrollOnKeystroke
 	d.scrollOut = cfg.Scrollback.ScrollOnOutput
 
@@ -614,6 +619,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Scrollback.Mode = prefSBModes[d.sbModeIdx]
 	}
 	cfg.Scrollback.ScrollSpeed = int(d.scrollSpd)
+	cfg.Scrollback.DragScrollSpeed = int(d.dragSpd)
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 
@@ -1378,6 +1384,10 @@ func (a *Window) renderPrefScrollback() {
 		imgui.SetNextItemWidth(w)
 		imgui.SliderInt("##scrollspd", &d.scrollSpd, 1, 20)
 	})
+
+	imgui.Text("Drag Scroll Speed (rows per second)")
+	imgui.SetNextItemWidth(w)
+	imgui.SliderInt("##dragspd", &d.dragSpd, 5, 150)
 
 	// Lines is only meaningful in "memory" mode — under "unlimited"
 	// the buffer grows without bound, so the number wouldn't do
