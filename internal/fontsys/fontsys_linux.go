@@ -4,6 +4,7 @@ package fontsys
 
 /*
 #cgo pkg-config: fontconfig freetype2
+#cgo LDFLAGS: -lm
 
 #include <fontconfig/fontconfig.h>
 #include <ft2build.h>
@@ -416,7 +417,16 @@ static int xt_ft_rasterize(
     if (w > max_w) w = max_w;
     if (h > max_h) h = max_h;
 
-    int is_color = 0;
+    // is_color is decided by the PIXEL MODE, not by sampling pixel
+    // content. A BGRA glyph is a color bitmap STRIKE — rendered at a
+    // fixed large size (~136px) by xt_ft_set_size because the font has
+    // no scalable outline — so the renderer MUST downscale it to the
+    // cell, and that fit-to-cell path is gated on is_color. The old
+    // heuristic only set is_color when a pixel had r!=g||g!=b, so a
+    // muted emoji like the plug (mostly gold + dark gray) came back
+    // flagged monochrome, skipped the downscale, and rendered at full
+    // strike size — spilling several rows past its cell.
+    int is_color = (bm->pixel_mode == FT_PIXEL_MODE_BGRA) ? 1 : 0;
     // Copy bitmap into out_pixels as premultiplied RGBA. Three pixel modes
     // we may receive:
     //   FT_PIXEL_MODE_GRAY:  monochrome glyph as 8-bit alpha mask (most fonts)
@@ -437,7 +447,6 @@ static int xt_ft_rasterize(
                 g = src[x*4 + 1];
                 r = src[x*4 + 2];
                 a = src[x*4 + 3];
-                if (a > 0 && (r != g || g != b)) is_color = 1;
                 break;
             case FT_PIXEL_MODE_MONO:
                 a = (src[x >> 3] & (0x80 >> (x & 7))) ? 255 : 0;
