@@ -62,8 +62,6 @@ type Window struct {
 	// daemon's layout matches the GUI's. Cleared after fire.
 	pendingDaemonMove terminal.Source
 
-
-
 	// (Old: per-Window cimgui-go backend handle. Removed during the
 	// SDL3 platform migration — the platform layer owns lifecycle
 	// process-wide; per-Window state is just OS-window metadata
@@ -204,9 +202,9 @@ type Window struct {
 	// iteration removes the Window from a.windows and tears down
 	// its tabs/renderer. When a.windows becomes empty, the app
 	// quits.
-	imguiName     string // stable ImGui ID suffix (e.g. "win0")
-	imViewport    *imgui.Viewport
-	pendingClose  bool
+	imguiName    string // stable ImGui ID suffix (e.g. "win0")
+	imViewport   *imgui.Viewport
+	pendingClose bool
 	// daemonReseatPending is set when this Window emptied because its
 	// daemon-backed tabs all VANISHED (the daemon process restarted and
 	// took the shells with it) rather than the user closing them. Closing
@@ -233,8 +231,8 @@ type Window struct {
 	// the hub's current InstanceID detects that and forces a re-mint on
 	// the new daemon, so focus/move don't keep targeting a stale window.
 	daemonReseatInstance string
-	lastOSTitle   string // last OS-window title we set; avoids redundant syscalls
-	pendingResize bool   // next frame, force SetNextWindowSize with CondAlways
+	lastOSTitle          string // last OS-window title we set; avoids redundant syscalls
+	pendingResize        bool   // next frame, force SetNextWindowSize with CondAlways
 	// pendingFocus asks the main loop to raise + key-focus this Window's
 	// SDL viewport after the frame. Used when a new Window is spawned
 	// and when an auxiliary viewport (preferences) closes and focus

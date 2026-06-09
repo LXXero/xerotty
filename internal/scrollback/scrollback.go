@@ -126,7 +126,7 @@ func (s *State) Search(emu Grid, visibleRows int) {
 		sbLen := emu.ScrollbackLen()
 		for row := 0; row < sbLen; row++ {
 			line := extractScrollbackLine(emu, row, cols)
-			findMatchesRegex(&s.Matches, line, re, -(sbLen-row), s.WholeWord)
+			findMatchesRegex(&s.Matches, line, re, -(sbLen - row), s.WholeWord)
 		}
 		rows := emu.Height()
 		for row := 0; row < rows; row++ {
@@ -141,7 +141,7 @@ func (s *State) Search(emu Grid, visibleRows int) {
 		sbLen := emu.ScrollbackLen()
 		for row := 0; row < sbLen; row++ {
 			line := extractScrollbackLine(emu, row, cols)
-			findMatchesPlain(&s.Matches, line, query, -(sbLen-row), s.CaseSensitive, s.WholeWord)
+			findMatchesPlain(&s.Matches, line, query, -(sbLen - row), s.CaseSensitive, s.WholeWord)
 		}
 		rows := emu.Height()
 		for row := 0; row < rows; row++ {
