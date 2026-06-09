@@ -15,3 +15,4 @@ func CocoaWindowInLiveResize(_ uintptr) bool { return false }
 // from any path that might be shared cross-platform.
 func CocoaEventOnChrome() bool  { return false }
 func CocoaAnyWindowMoved() bool { return false }
+func CocoaAppActive() bool      { return true }

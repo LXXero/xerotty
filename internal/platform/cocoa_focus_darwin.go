@@ -28,6 +28,17 @@ func CocoaWindowInLiveResize(windowID uintptr) bool {
 	return C.platform_cocoa_window_in_live_resize(C.ulong(windowID)) != 0
 }
 
+// CocoaAppActive reports whether xerotty is the frontmost app
+// (NSApp.isActive). Flips to false the moment the user clicks into
+// another application — unlike SDL's per-window INPUT_FOCUS flags,
+// which can lag a frame behind during Cocoa focus transitions. The
+// mouse mirror keys on this so a physical click that belongs to
+// ANOTHER app (IOHID sees every click on the desktop) is never
+// injected into our ImGui context.
+func CocoaAppActive() bool {
+	return C.platform_cocoa_app_is_active() != 0
+}
+
 // CocoaEventOnChrome reports whether the most recent NSEvent
 // (NSApp.currentEvent) is a mouse event whose location is on window
 // chrome (title bar / resize edges) rather than inside the

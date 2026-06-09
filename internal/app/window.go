@@ -12,6 +12,13 @@ import (
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
+// resizeRequest records one in-flight terminal resize request for
+// the reconciliation loop (see frame()'s "Resize reconciliation").
+type resizeRequest struct {
+	cols, rows int
+	at         float64 // imgui.Time() when sent
+}
+
 // Window owns the per-OS-window state. One Window = one SDL_Window =
 // one terminal grid + tab bar + per-window UI overlays.
 //
@@ -101,6 +108,12 @@ type Window struct {
 	tabSwitchReq  int
 	ready         bool
 	sel           selection
+	// resizeReq tracks the last terminal-resize request per tab ID
+	// for the per-frame resize reconciliation: dedupes re-requests
+	// while a daemon round-trip is in flight (the shadow grid keeps
+	// reporting the old size until the daemon's frames land).
+	resizeReq map[int]resizeRequest
+
 	// dragScrollAccum carries fractional rows of edge auto-scroll
 	// across frames (drag-selection past the top/bottom edge is
 	// time-based: rows/sec × frame dt rarely lands on whole rows).

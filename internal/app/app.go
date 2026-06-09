@@ -3178,6 +3178,17 @@ func (a *Window) frame() {
 			return dx*dx+dy*dy >= mirrorAbortMotionPx*mirrorAbortMotionPx, dx, dy
 		}
 		abortPendingReason := func() string {
+			// A click that deactivated the app belongs to ANOTHER
+			// application — the IOHID-level button probe sees every
+			// click on the desktop, and the rectangle test below
+			// can't tell when a foreign window is stacked ON TOP of
+			// ours. NSApp.isActive is the authoritative "that click
+			// was not for us" signal (reported as: clicking another
+			// app un-highlighted text / page-jumped the scrollbar
+			// when the windows overlapped).
+			if !platform.CocoaAppActive() {
+				return "app deactivated"
+			}
 			if a.app.anyWindowMovingThisFrame {
 				return "window moved"
 			}
@@ -3213,7 +3224,7 @@ func (a *Window) frame() {
 			}
 			over, inViewportPos := a.app.mouseOverOwnedContentPos()
 			onChrome := platform.CocoaEventOnChrome()
-			if !inLiveResizeWatch() && over && !onChrome {
+			if !inLiveResizeWatch() && over && !onChrome && platform.CocoaAppActive() {
 				gx, gy := sdlhack.GlobalMousePos()
 				a.app.mirrorPendingDown = true
 				a.app.mirrorPendingPos = inViewportPos
@@ -3509,6 +3520,45 @@ func (a *Window) frame() {
 				a.resizeTime = imgui.Time()
 				a.resizeOverlay = true
 				a.resizeOverlayText = "" // drag-resize: live cols×rows
+			}
+		}
+	}
+
+	// Resize reconciliation — level-triggered, not edge-triggered.
+	// Everything above only resizes terminals on CHANGE events, and
+	// missed edges have produced repeated "stuck at the wrong size
+	// until the user wiggles the window" bugs: stale geometry at
+	// reattach-adopt time, and resize requests racing daemon attach
+	// and getting dropped (mac report: tab stuck ~80x24 on resume
+	// until a manual resize "kicked" it). Enforce the invariant
+	// directly instead: any tab whose ACTUAL grid differs from this
+	// window's desired grid gets a (re-)request. Daemon resizes are
+	// async — the shadow grid reports the old size until the daemon's
+	// frames land — so requests are deduped per target size and
+	// retried at most every half second while the mismatch persists.
+	// Matched tabs cost two int compares per frame; a lost request
+	// now self-heals in ≤0.5s instead of waiting for a human.
+	if a.ready {
+		cols, rows := a.gridSize()
+		if cols > 2 && rows > 2 {
+			now := imgui.Time()
+			for _, tab := range a.tabs.Tabs {
+				if tab.Closed || tab.Terminal == nil {
+					continue
+				}
+				if tab.Terminal.Width() == cols && tab.Terminal.Height() == rows {
+					delete(a.resizeReq, tab.ID)
+					continue
+				}
+				if req, ok := a.resizeReq[tab.ID]; ok &&
+					req.cols == cols && req.rows == rows && now-req.at < 0.5 {
+					continue // request in flight — give it time to land
+				}
+				tab.Terminal.Resize(cols, rows)
+				if a.resizeReq == nil {
+					a.resizeReq = make(map[int]resizeRequest)
+				}
+				a.resizeReq[tab.ID] = resizeRequest{cols: cols, rows: rows, at: now}
 			}
 		}
 	}
@@ -5598,8 +5648,10 @@ func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.Dra
 		Hovered:        hovered,
 	}, drawList)
 
-	// Handle scrollbar click-drag
-	if imgui.IsMouseClickedBool(0) && hovered {
+	// Handle scrollbar click-drag. hasOSFocus: same cross-window
+	// click-leak guard as selection/tab-bar — a click that landed on
+	// another window must not page-jump this one's scrollbar.
+	if imgui.IsMouseClickedBool(0) && hovered && w.hasOSFocus() {
 		if mpos.Y >= thumbY && mpos.Y <= thumbY+thumbH {
 			// Click ON the thumb — start drag
 			w.sbDragging = true
