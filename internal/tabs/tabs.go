@@ -2,6 +2,7 @@
 package tabs
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,12 +97,27 @@ func (t *Tab) BellPending() bool { return t.bellPending.Load() }
 func (t *Tab) SetBellPending(b bool) { t.bellPending.Store(b) }
 
 func (t *Tab) titleBase() string {
+	// Refresh the foreground process (throttled) BEFORE reading the
+	// OSC title, so a stale title can be cleared first.
+	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {
+		fg := t.Terminal.ForegroundProcessName()
+		// An OSC title belongs to the process that set it. When the
+		// foreground goes from an app back to a SHELL, that app's
+		// title is stale — e.g. vim's "Thanks for flying Vim!"
+		// farewell, which a shell with no title precmd never
+		// overrides, so it'd otherwise stick forever. Drop it so the
+		// title falls back to the live foreground name. Gated on
+		// app→shell specifically: don't clear a shell's own title on
+		// the first poll, and don't clobber an app's fresh title when
+		// ENTERING it (shell→app).
+		if t.foregroundCache != "" && !isShellProcess(t.foregroundCache) && isShellProcess(fg) {
+			t.SetTitle("")
+		}
+		t.foregroundCache = fg
+		t.foregroundAt = time.Now()
+	}
 	if tt := t.Title(); tt != "" {
 		return tt
-	}
-	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {
-		t.foregroundCache = t.Terminal.ForegroundProcessName()
-		t.foregroundAt = time.Now()
 	}
 	if t.foregroundCache != "" {
 		return t.foregroundCache
@@ -355,4 +371,17 @@ func (m *Manager) CheckClosed() {
 			tab.Closed = true
 		}
 	}
+}
+
+// isShellProcess reports whether name looks like an interactive shell
+// — used to detect "an app exited back to the shell" so a stale OSC
+// title set by the app (e.g. vim's farewell) can be dropped. Matches
+// the bare executable name (ForegroundProcessName returns comm, not a
+// path), tolerating the leading-dash login-shell form (e.g. "-zsh").
+func isShellProcess(name string) bool {
+	switch strings.TrimPrefix(name, "-") {
+	case "zsh", "bash", "sh", "dash", "fish", "ksh", "tcsh", "csh", "nu", "elvish", "xonsh", "ash", "mksh":
+		return true
+	}
+	return false
 }
