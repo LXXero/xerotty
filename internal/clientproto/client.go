@@ -173,12 +173,12 @@ type Client struct {
 
 	// Inbound channels. Each is buffered to absorb a small burst
 	// before back-pressuring the daemon's send loop.
-	cellFull   chan *protocol.CellFull
-	cellDiff   chan *protocol.CellDiff
-	cursor     chan *protocol.Cursor
-	title      chan *protocol.Title
-	bell       chan *protocol.Bell
-	childExit  chan *protocol.ChildExit
+	cellFull      chan *protocol.CellFull
+	cellDiff      chan *protocol.CellDiff
+	cursor        chan *protocol.Cursor
+	title         chan *protocol.Title
+	bell          chan *protocol.Bell
+	childExit     chan *protocol.ChildExit
 	tabCreated    chan *protocol.TabCreated
 	windowCreated chan *protocol.WindowCreated
 	attached      chan *protocol.Attached
@@ -189,13 +189,13 @@ type Client struct {
 	proposals     chan *protocol.ProposalsChanged
 	topology      chan *protocol.TopologyChanged
 	errCh         chan *protocol.Error
-	closed     chan struct{}
+	closed        chan struct{}
 
 	// Closed once Run returns. Hand-rolled because we want
 	// "read loop exited cleanly or because of an error" to be
 	// observable.
-	doneMu sync.Mutex
-	done   bool
+	doneMu  sync.Mutex
+	done    bool
 	exitErr error
 }
 
@@ -216,30 +216,30 @@ func Wrap(conn net.Conn) *Client {
 
 func wrap(conn net.Conn) *Client {
 	c := &Client{
-		conn:       conn,
-		outCh:      make(chan outFrame, outQueueCap),
-		outDone:    make(chan struct{}),
-		coalesceCh: make(chan struct{}, 1),
-		dw:         &deadlineWriter{conn: conn, window: clientWriteProgressWindow},
+		conn:              conn,
+		outCh:             make(chan outFrame, outQueueCap),
+		outDone:           make(chan struct{}),
+		coalesceCh:        make(chan struct{}, 1),
+		dw:                &deadlineWriter{conn: conn, window: clientWriteProgressWindow},
 		heartbeatInterval: clientHeartbeatInterval,
 		livenessWindow:    clientLivenessWindow,
-		cellFull:   make(chan *protocol.CellFull, 16),
-		cellDiff:   make(chan *protocol.CellDiff, 64),
-		cursor:     make(chan *protocol.Cursor, 64),
-		title:      make(chan *protocol.Title, 16),
-		bell:       make(chan *protocol.Bell, 16),
-		childExit:  make(chan *protocol.ChildExit, 16),
-		tabCreated:    make(chan *protocol.TabCreated, 4),
-		windowCreated: make(chan *protocol.WindowCreated, 4),
-		attached:      make(chan *protocol.Attached, 1),
-		tabState:      make(chan *protocol.TabState, 32),
-		scrollback:    make(chan *protocol.ScrollbackAppend, 32),
-		sbCleared:     make(chan *protocol.ScrollbackCleared, 8),
-		clipboardSet:  make(chan *protocol.ClipboardSet, 8),
-		proposals:     make(chan *protocol.ProposalsChanged, 8),
-		topology:      make(chan *protocol.TopologyChanged, 8),
-		errCh:         make(chan *protocol.Error, 4),
-		closed:     make(chan struct{}),
+		cellFull:          make(chan *protocol.CellFull, 16),
+		cellDiff:          make(chan *protocol.CellDiff, 64),
+		cursor:            make(chan *protocol.Cursor, 64),
+		title:             make(chan *protocol.Title, 16),
+		bell:              make(chan *protocol.Bell, 16),
+		childExit:         make(chan *protocol.ChildExit, 16),
+		tabCreated:        make(chan *protocol.TabCreated, 4),
+		windowCreated:     make(chan *protocol.WindowCreated, 4),
+		attached:          make(chan *protocol.Attached, 1),
+		tabState:          make(chan *protocol.TabState, 32),
+		scrollback:        make(chan *protocol.ScrollbackAppend, 32),
+		sbCleared:         make(chan *protocol.ScrollbackCleared, 8),
+		clipboardSet:      make(chan *protocol.ClipboardSet, 8),
+		proposals:         make(chan *protocol.ProposalsChanged, 8),
+		topology:          make(chan *protocol.TopologyChanged, 8),
+		errCh:             make(chan *protocol.Error, 4),
+		closed:            make(chan struct{}),
 	}
 	// Wrap the reader so EVERY successful read bumps lastInbound at byte
 	// granularity (not just on completed frames) — a single long inbound
@@ -392,7 +392,26 @@ func (c *Client) Hello(clientID string) (*protocol.HelloAck, error) {
 	}
 	t, body, err := c.reader.ReadFrame()
 	if err != nil {
+		// A bare EOF here is almost always a version-refused
+		// handshake against a daemon too old to send MsgError (or
+		// whose refusal raced the close). "read HelloAck: EOF"
+		// taught users nothing — say what to actually do.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("server closed during handshake — likely a protocol version mismatch (this client speaks v%d); update xerotty on the host, then hot-swap its daemon with `xerotty serve --upgrade` (sessions survive)", protocol.ProtocolVersion)
+		}
 		return nil, fmt.Errorf("read HelloAck: %w", err)
+	}
+	if t == protocol.MsgError {
+		// The daemon refused us and said why (e.g. version mismatch).
+		// Surface its message verbatim instead of a type-confusion
+		// error — plus the fix, since a stale REMOTE daemon is the
+		// common cause: a freshly-built binary on disk does not
+		// replace the daemon process already holding the socket.
+		var e protocol.Error
+		if _, err := e.UnmarshalMsg(body); err == nil && e.Message != "" {
+			return nil, fmt.Errorf("%s — update xerotty on the host, then run `xerotty serve --upgrade` there (sessions survive)", e.Message)
+		}
+		return nil, fmt.Errorf("server refused handshake")
 	}
 	if t != protocol.MsgHelloAck {
 		return nil, fmt.Errorf("expected HelloAck, got %v", t)
