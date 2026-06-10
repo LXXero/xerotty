@@ -225,6 +225,69 @@ extern "C" const char* platform_video_driver(void) {
     return d ? d : "(unknown)";
 }
 
+// Occluded-window tracking. SDL3 reports SDL_EVENT_WINDOW_OCCLUDED /
+// EXPOSED (macOS: NSWindow.occlusionState; some Wayland compositors:
+// frame-callback suspension). A fully covered or hidden window's
+// pixels are unreachable, so rendering + vsync-swapping it every
+// lava tick is pure waste — with a dozen stacked terminal windows
+// that waste DOMINATES (the user-visible report: 14 windows, 75%
+// CPU). drain_events maintains the set; the per-viewport render
+// loop and the Go draw path skip members. Absence of these events
+// (older SDL, X11) leaves every window "visible" = old behavior.
+static Uint32 g_occluded_ids[256];
+static int    g_occluded_n = 0;
+
+static void occluded_set(Uint32 id, int on) {
+    int i = 0;
+    for (; i < g_occluded_n; i++) if (g_occluded_ids[i] == id) break;
+    if (on) {
+        if (i == g_occluded_n && g_occluded_n < 256) g_occluded_ids[g_occluded_n++] = id;
+    } else if (i < g_occluded_n) {
+        g_occluded_ids[i] = g_occluded_ids[--g_occluded_n];
+    }
+}
+
+// Per-window damage tracking. The render loop historically rendered
+// and vsync-swapped EVERY visible viewport on EVERY frame — so one
+// tab streaming output re-painted a dozen idle windows at streaming
+// rate. Each frame, a viewport renders only when (a) an SDL event
+// addressed its window this frame (input, expose, move, resize), or
+// (b) the Go side marked it dirty (content change, focus, glow,
+// overlays). g_damage_enabled=0 reverts to render-everything.
+static Uint32 g_evented_ids[256];
+static int    g_evented_n = 0;
+static Uint32 g_dirty_ids[256];
+static int    g_dirty_n = 0;
+static int    g_damage_enabled = 1;
+
+static void evented_add(Uint32 id) {
+    if (id == 0) return;
+    for (int i = 0; i < g_evented_n; i++) if (g_evented_ids[i] == id) return;
+    if (g_evented_n < 256) g_evented_ids[g_evented_n++] = id;
+}
+
+extern "C" void platform_set_damage_enabled(int on) { g_damage_enabled = on; }
+
+extern "C" void platform_mark_viewport_dirty(unsigned long window_id) {
+    Uint32 id = (Uint32)window_id;
+    if (id == 0) return;
+    for (int i = 0; i < g_dirty_n; i++) if (g_dirty_ids[i] == id) return;
+    if (g_dirty_n < 256) g_dirty_ids[g_dirty_n++] = id;
+}
+
+static int window_wants_render(Uint32 id) {
+    if (!g_damage_enabled) return 1;
+    for (int i = 0; i < g_evented_n; i++) if (g_evented_ids[i] == id) return 1;
+    for (int i = 0; i < g_dirty_n; i++) if (g_dirty_ids[i] == id) return 1;
+    return 0;
+}
+
+extern "C" int platform_window_occluded(unsigned long window_id) {
+    for (int i = 0; i < g_occluded_n; i++)
+        if (g_occluded_ids[i] == (Uint32)window_id) return 1;
+    return 0;
+}
+
 // Drain all currently queued SDL events into ImGui + our quit flag.
 // Doesn't block. Returns the number of events processed so the caller
 // can decide whether anything happened that warrants a render.
@@ -234,6 +297,24 @@ static int drain_events() {
     while (SDL_PollEvent(&e)) {
         n++;
         ImGui_ImplSDL3_ProcessEvent(&e);
+        // Damage: remember which windows events addressed this frame.
+        // The windowID field lives at the same struct offset for the
+        // event families we care about; read it per family.
+        if (e.type >= SDL_EVENT_WINDOW_FIRST && e.type <= SDL_EVENT_WINDOW_LAST) {
+            evented_add(e.window.windowID);
+        } else switch (e.type) {
+            case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
+                evented_add(e.key.windowID); break;
+            case SDL_EVENT_TEXT_INPUT:
+                evented_add(e.text.windowID); break;
+            case SDL_EVENT_MOUSE_MOTION:
+                evented_add(e.motion.windowID); break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+                evented_add(e.button.windowID); break;
+            case SDL_EVENT_MOUSE_WHEEL:
+                evented_add(e.wheel.windowID); break;
+            default: break;
+        }
         switch (e.type) {
             case SDL_EVENT_QUIT:
                 g_quit = true;
@@ -241,6 +322,18 @@ static int drain_events() {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 if (SDL_GetWindowFromID(e.window.windowID) == g_window)
                     g_quit = true;
+                break;
+            case SDL_EVENT_WINDOW_OCCLUDED:
+                occluded_set(e.window.windowID, 1);
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
+            case SDL_EVENT_WINDOW_SHOWN:
+            case SDL_EVENT_WINDOW_RESTORED:
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                occluded_set(e.window.windowID, 0);
+                break;
+            case SDL_EVENT_WINDOW_DESTROYED:
+                occluded_set(e.window.windowID, 0);
                 break;
             default:
                 break;
@@ -250,6 +343,10 @@ static int drain_events() {
 }
 
 extern "C" int platform_begin_frame(void) {
+    // New frame: previous frame's damage/evented sets expire.
+    g_evented_n = 0;
+    g_dirty_n = 0;
+
     // Render-on-demand with a frame cap.
     //
     // ACTIVE (we owe render credits — recent input/wake): pace to the
@@ -401,7 +498,25 @@ extern "C" void platform_end_frame(void) {
         SDL_Window*   backup_win = SDL_GL_GetCurrentWindow();
         SDL_GLContext backup_ctx = SDL_GL_GetCurrentContext();
         ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
+        // Hand-rolled RenderPlatformWindowsDefault: identical loop,
+        // plus an occlusion skip — a fully covered window's render +
+        // vsync swap is pure waste (see g_occluded_ids above). The
+        // viewport keeps existing; on EXPOSED the event wakes the
+        // loop and the next frame repaints it with current content.
+        {
+            ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+            for (int i = 1; i < pio.Viewports.Size; i++) {
+                ImGuiViewport* vp = pio.Viewports[i];
+                if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
+                Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
+                if (platform_window_occluded((unsigned long)vpid)) continue;
+                if (!window_wants_render(vpid)) continue;
+                if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
+                if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
+                if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
+                if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(vp, nullptr);
+            }
+        }
         SDL_GL_MakeCurrent(backup_win, backup_ctx);
     }
 

@@ -2638,6 +2638,7 @@ func (a *App) Run() error {
 	// Screenshot mode (--screenshot): run a fixed number of frames
 	// so layout/fonts settle, capture the framebuffer, write a PNG,
 	// and exit. The CI visual-regression harness builds on this.
+	platform.SetDamageEnabled(os.Getenv("XEROTTY_NO_DAMAGE") == "" && os.Getenv("XEROTTY_SCREENSHOT") == "")
 	shotPath := os.Getenv("XEROTTY_SCREENSHOT")
 	shotFrames := 8
 	if n, err := strconv.Atoi(os.Getenv("XEROTTY_SCREENSHOT_FRAMES")); err == nil && n > 0 {
@@ -3872,12 +3873,32 @@ func (a *Window) frame() {
 		a.resizeTerminals()
 	}
 
+	// Occluded windows (fully covered / hidden — see
+	// platform.WindowOccluded) skip ALL visual work: glow quads,
+	// the cell-layer Draw (including rebuilds while a hidden tab
+	// streams output), cursor, scrollbar. Their viewport render +
+	// swap is also skipped C-side. The EXPOSED event wakes the loop
+	// and the next frame repaints with current emulator content, so
+	// nothing on screen is ever stale. With a dozen stacked terminal
+	// windows this is the difference between paying for 14 and
+	// paying for the ones actually visible.
+	occluded := false
+	if h := a.sdlWindowHandle(); h != 0 {
+		occluded = platform.WindowOccluded(h)
+		// Damage: only windows marked dirty (or addressed by an SDL
+		// event) render + swap this frame. The glow animates every
+		// visible window, so lava-on marks unconditionally.
+		if !occluded && (a.app.cfg.Appearance.Glow.Enabled || a.windowVisuallyDirty()) {
+			platform.MarkViewportDirty(h)
+		}
+	}
+
 	// Lava-lamp glow layer: under everything (cells, tab bar). The
 	// renderer skips default-background cells, so the blobs show
 	// through all "empty" terminal area while colored runs float on
 	// top. Drawn from the same content origin the cells use so it
 	// tracks the window in multi-viewport space.
-	if a.app.cfg.Appearance.Glow.Enabled {
+	if a.app.cfg.Appearance.Glow.Enabled && !occluded {
 		drawGlow(a.bgDrawList(), a.contentOriginX, a.contentOriginY,
 			float32(a.width), float32(a.height), &a.app.theme, &a.app.cfg.Appearance.Glow)
 	}
@@ -3888,7 +3909,7 @@ func (a *Window) frame() {
 	// on top of the earlier ones (terminal cells). Without this
 	// ordering the cells would draw over the tab bar's bottom edge
 	// and clip the first terminal row when both share a drawlist.
-	if tab := a.tabs.Active(); tab != nil {
+	if tab := a.tabs.Active(); tab != nil && !occluded {
 		drawList := a.bgDrawList()
 		if drawList != nil {
 			scrollOff := 0

@@ -114,6 +114,12 @@ type Window struct {
 	// reporting the old size until the daemon's frames land).
 	resizeReq map[int]resizeRequest
 
+	// damageLastGen / damageLastTitle remember each tab's last seen
+	// content generation and display title so windowVisuallyDirty can
+	// detect "something the user can see changed" cheaply per frame.
+	damageLastGen   map[int]uint64
+	damageLastTitle map[int]string
+
 	// dragScrollAccum carries fractional rows of edge auto-scroll
 	// across frames (drag-selection past the top/bottom edge is
 	// time-based: rows/sec × frame dt rarely lands on whole rows).
@@ -465,4 +471,57 @@ func (w *Window) pushGeometry() {
 		w.geomPushed = true
 		w.lastGeomX, w.lastGeomY, w.lastGeomW, w.lastGeomH = x, y, width, height
 	}
+}
+
+// windowVisuallyDirty reports whether anything in this Window could
+// have changed on screen this frame — content generations, tab
+// titles, bells, focus/hover (blink, hover effects), or any open
+// overlay/interaction. Windows that aren't dirty (and got no SDL
+// events) skip their GL render + vsync swap for the frame: one tab
+// streaming output stops costing every other window its paint. Errs
+// dirty on anything uncertain — a wasted paint is invisible, a
+// missed one is a stale-pixel bug.
+func (w *Window) windowVisuallyDirty() bool {
+	dirty := false
+	if w.damageLastGen == nil {
+		w.damageLastGen = make(map[int]uint64)
+		w.damageLastTitle = make(map[int]string)
+	}
+	for _, tab := range w.tabs.Tabs {
+		if tab.Terminal == nil {
+			continue
+		}
+		if g := tab.Terminal.RenderGeneration(); g != w.damageLastGen[tab.ID] {
+			w.damageLastGen[tab.ID] = g
+			dirty = true
+		}
+		if t := tab.DisplayTitle(); t != w.damageLastTitle[tab.ID] {
+			w.damageLastTitle[tab.ID] = t
+			dirty = true
+		}
+		if tab.BellPending() {
+			dirty = true
+		}
+	}
+	if dirty || !w.ready || w.pendingResize || w.pendingRemeasure ||
+		w.renamingTab || w.connectingHost || w.prefDialog.open ||
+		w.sel.dragging || w.sel.active || w.tabDragIdx >= 0 ||
+		w.contextMenuOpen || w.resizeOverlay {
+		return true
+	}
+	// Focused window repaints every frame: cursor blink arrives as a
+	// timer wake with NO events, and typing echo must never lag.
+	// Hovered window repaints for ImGui hover transitions.
+	if w.hasOSFocus() {
+		return true
+	}
+	if h := w.sdlWindowHandle(); h != 0 && platform.MouseFocusWindowID() == h {
+		return true
+	}
+	if tab := w.tabs.Active(); tab != nil {
+		if s, ok := w.scroll[tab.ID]; ok && s.Searching {
+			return true
+		}
+	}
+	return false
 }

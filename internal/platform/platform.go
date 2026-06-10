@@ -173,6 +173,37 @@ func WindowHasInputFocus(windowID uintptr) bool {
 	return C.platform_window_input_focus(C.ulong(windowID)) != 0
 }
 
+// WindowOccluded reports whether the OS says this window's pixels
+// are currently unreachable (fully covered / hidden — macOS
+// occlusionState via SDL_EVENT_WINDOW_OCCLUDED). Draw paths skip
+// occluded windows; the EXPOSED event wakes the loop and the next
+// frame repaints with current content, so nothing is ever stale
+// on screen.
+func WindowOccluded(windowID uintptr) bool {
+	return C.platform_window_occluded(C.ulong(windowID)) != 0
+}
+
+// MarkViewportDirty tells the render loop this window's pixels must
+// be re-rendered this frame. Cleared every frame; the app re-marks
+// while a window has changing content, focus, glow, or open
+// overlays. Unmarked windows (idle, no events) skip their GL render
+// + vsync swap entirely — the difference between one streaming tab
+// costing one window and costing every window.
+func MarkViewportDirty(windowID uintptr) {
+	C.platform_mark_viewport_dirty(C.ulong(windowID))
+}
+
+// SetDamageEnabled toggles per-window damage tracking. Disabled =
+// every visible viewport renders every frame (the old behavior);
+// the XEROTTY_NO_DAMAGE escape hatch and --screenshot mode use it.
+func SetDamageEnabled(on bool) {
+	v := C.int(0)
+	if on {
+		v = 1
+	}
+	C.platform_set_damage_enabled(v)
+}
+
 // SetWindowOpacity sets whole-window opacity (0..1) on the SDL_Window
 // with the given ID (a viewport PlatformHandle). Restores the documented
 // `opacity` config the SDL2→SDL3 migration dropped.
