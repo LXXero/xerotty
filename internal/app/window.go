@@ -120,6 +120,10 @@ type Window struct {
 	damageLastGen   map[int]uint64
 	damageLastTitle map[int]string
 
+	// lastBgMark is when this window last marked itself dirty while
+	// in the background — the background_fps throttle clock.
+	lastBgMark float64
+
 	// dragScrollAccum carries fractional rows of edge auto-scroll
 	// across frames (drag-selection past the top/bottom edge is
 	// time-based: rows/sec × frame dt rarely lands on whole rows).

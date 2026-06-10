@@ -86,6 +86,14 @@ type Appearance struct {
 	TerminalColors        string  `toml:"terminal_colors"`
 	TabColors             string  `toml:"tab_colors"`
 	ScrollbarColors       string  `toml:"scrollbar_colors"`
+	// BackgroundFPS caps how often UNFOCUSED, un-hovered windows
+	// repaint (glow animation ticks and streaming-content updates
+	// alike). The focused/hovered window always renders at full
+	// rate; direct input and expose events always render. 0 = no
+	// cap. A background window's lava still drifts and its text
+	// stays current to within 1/fps — it just stops costing full
+	// rate for pixels nobody is reading.
+	BackgroundFPS         int     `toml:"background_fps"`
 	ResizeOverlay         bool    `toml:"resize_overlay"`
 	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
 	// Glow is the animated lava-lamp backdrop (see internal/app/glow.go).
@@ -244,6 +252,7 @@ func Default() Config {
 				FPS:       20,
 			},
 			ScrollbarColors:       "theme",
+			BackgroundFPS:         10,
 			ResizeOverlay:         true,
 			ResizeOverlayDuration: 1.0,
 		},

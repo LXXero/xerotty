@@ -98,6 +98,11 @@ Bundled themes live in [`themes/`](themes/) and are referenced by name:
 theme = "dracula"  # or "gruvbox-dark", "monokai", "solarized-dark", "solarized-light", "tango"
 ```
 
+`background_fps` (under `[appearance]`, default 10) caps how often
+unfocused windows repaint — glow ticks and streaming output alike.
+The focused/hovered window always runs at full rate; typing and
+window events always render immediately. 0 uncaps.
+
 The lava-lamp glow backdrop, in full (everything optional except `enabled`):
 
 ```toml
