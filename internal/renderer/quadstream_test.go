@@ -67,9 +67,9 @@ type quadGrid struct {
 	styled map[[2]int]uv.Style // optional per-(row,col) screen styles
 }
 
-func (g *quadGrid) Width() int             { return g.cols }
-func (g *quadGrid) Height() int            { return len(g.screen) }
-func (g *quadGrid) ScrollbackLen() int     { return len(g.sb) }
+func (g *quadGrid) Width() int               { return g.cols }
+func (g *quadGrid) Height() int              { return len(g.screen) }
+func (g *quadGrid) ScrollbackLen() int       { return len(g.sb) }
 func (g *quadGrid) RenderGeneration() uint64 { return g.gen }
 func (g *quadGrid) cell(line string, col, row int, scrollback bool) *uv.Cell {
 	if col < 0 || col >= len(line) {

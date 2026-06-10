@@ -11,23 +11,23 @@ import (
 
 // Theme holds resolved colors for rendering.
 type Theme struct {
-	Foreground      uint32
-	Background      uint32
-	Bold            uint32 // explicit bold-text color override; 0 = none
-	Cursor          uint32
-	SelectionFg     uint32
-	SelectionBg     uint32
-	ScrollbarBg     uint32
-	ScrollbarThumb  uint32
-	ScrollbarHover  uint32
-	ANSI            [16]uint32
+	Foreground     uint32
+	Background     uint32
+	Bold           uint32 // explicit bold-text color override; 0 = none
+	Cursor         uint32
+	SelectionFg    uint32
+	SelectionBg    uint32
+	ScrollbarBg    uint32
+	ScrollbarThumb uint32
+	ScrollbarHover uint32
+	ANSI           [16]uint32
 }
 
 // DefaultTheme returns the Dracula theme.
 func DefaultTheme() Theme {
 	return Theme{
-		Foreground:  0xFFF2F8F8, // #F8F8F2 in ABGR
-		Background:  0xFF36282A, // #282A36 in ABGR (note: ABGR = 0xAABBGGRR)
+		Foreground:     0xFFF2F8F8, // #F8F8F2 in ABGR
+		Background:     0xFF36282A, // #282A36 in ABGR (note: ABGR = 0xAABBGGRR)
 		Cursor:         0xFFF2F8F8,
 		SelectionFg:    0xFFF2F8F8,
 		SelectionBg:    0xFF5A4744,
