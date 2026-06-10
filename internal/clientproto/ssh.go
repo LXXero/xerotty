@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -59,7 +61,50 @@ func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) 
 	// critical: we're shipping binary msgpack frames and don't want
 	// ssh's tty layer translating CR/LF on us.
 	args = append(args, "-T", sshDest, daemonCmd)
-	return DialCommand("ssh", args...)
+	// GUI processes spawned by a compositor (labwc autostart, app
+	// menus) often lack SSH_AUTH_SOCK, so their ssh child can't reach
+	// the user's agent and dies with "Permission denied" — which used
+	// to surface as an inscrutable handshake EOF. If the env doesn't
+	// carry an agent but one lives at the standard systemd-user path,
+	// hand it to ssh.
+	var env []string
+	if os.Getenv("SSH_AUTH_SOCK") == "" {
+		if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+			if p := filepath.Join(rd, "ssh-agent.socket"); sockExists(p) {
+				env = append(os.Environ(), "SSH_AUTH_SOCK="+p)
+			}
+		}
+	}
+	return dialCommandEnv(env, "ssh", args...)
+}
+
+func sockExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode()&os.ModeSocket != 0
+}
+
+// tailBuffer keeps the last few KB written to it — enough to carry
+// ssh's parting words ("Permission denied (publickey)", host key
+// complaints) into our error messages.
+type tailBuffer struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > 4096 {
+		t.buf = t.buf[len(t.buf)-4096:]
+	}
+	t.mu.Unlock()
+	return len(p), nil
+}
+
+func (t *tailBuffer) Tail() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return strings.TrimSpace(string(t.buf))
 }
 
 // DialCommand spawns an arbitrary subprocess and treats its stdin +
@@ -75,7 +120,14 @@ func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) 
 // returned Client closes the subprocess's stdin, signaling EOF to
 // the daemon, and reaps the process.
 func DialCommand(name string, args ...string) (*Client, error) {
+	return dialCommandEnv(nil, name, args...)
+}
+
+func dialCommandEnv(env []string, name string, args ...string) (*Client, error) {
 	cmd := exec.Command(name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -86,14 +138,20 @@ func DialCommand(name string, args ...string) (*Client, error) {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("%s stdout: %w", name, err)
 	}
-	cmd.Stderr = os.Stderr
+	// Tee the transport's stderr: visible for CLI users, captured so
+	// handshake failures can say WHY the transport died ("Permission
+	// denied (publickey)") instead of a bare EOF.
+	tail := &tailBuffer{}
+	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%s start: %w", name, err)
 	}
 
 	conn := newSSHConn(stdout, stdin, cmd)
-	return wrap(conn), nil
+	c := wrap(conn)
+	c.transportStderr = tail
+	return c, nil
 }
 
 // sshConn is a net.Conn wrapper around an `ssh ... xerottyd --stdio`
@@ -154,4 +212,3 @@ type sshAddr string
 
 func (sshAddr) Network() string  { return "ssh" }
 func (a sshAddr) String() string { return "ssh:" + string(a) }
-

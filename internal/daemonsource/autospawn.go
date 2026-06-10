@@ -46,7 +46,11 @@ func EnsureLocalDaemon(socketPath string) (*clientproto.Client, error) {
 	cmd.SysProcAttr = detachSysProcAttr()
 	cmd.Stdin = nil
 	cmd.Stdout = nil
-	cmd.Stderr = os.Stderr // surface daemon log lines so failures are visible
+	// The daemon must outlive the GUI — including the GUI's stderr.
+	// Inheriting it means a daemon whose spawning terminal/session
+	// closes dies of SIGPIPE on its next log line (Go re-raises
+	// EPIPE on fds 1/2). Log to the canonical file instead.
+	cmd.Stderr = sockpath.DaemonLogFile()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("ensure daemon: start: %w", err)
 	}

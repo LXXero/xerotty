@@ -9,6 +9,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/sockpath"
 )
 
 // runStdioBridge proxies the calling process's stdin/stdout to a
@@ -77,7 +79,11 @@ func connectOrSpawnDaemon(socketPath string) (net.Conn, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdin = nil
 	cmd.Stdout = nil
-	cmd.Stderr = os.Stderr // surface daemon log lines for debugging
+	// NEVER the spawner's stderr: over ssh that's the session's pipe,
+	// and the daemon would die of SIGPIPE on its first log line after
+	// the session ends (see sockpath.DaemonLogFile). nil = /dev/null
+	// when the log can't be opened.
+	cmd.Stderr = sockpath.DaemonLogFile()
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("auto-spawn daemon: %w", err)
 	}

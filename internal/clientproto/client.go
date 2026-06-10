@@ -116,6 +116,11 @@ func (ir *inboundReader) Read(b []byte) (int, error) {
 // writer's bounded queue). Callers must consume from the channels
 // returned by On* methods or back-pressure the read goroutine.
 type Client struct {
+	// transportStderr, when the transport is a subprocess (ssh),
+	// holds the tail of its stderr so handshake failures can quote
+	// the real reason instead of a bare EOF. Nil for unix sockets.
+	transportStderr interface{ Tail() string }
+
 	conn   net.Conn
 	reader *protocol.FrameReader
 
@@ -397,6 +402,14 @@ func (c *Client) Hello(clientID string) (*protocol.HelloAck, error) {
 		// whose refusal raced the close). "read HelloAck: EOF"
 		// taught users nothing — say what to actually do.
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			// The transport's own stderr usually knows why (ssh auth
+			// failures, host key trouble). Only when it's silent does
+			// a version-mismatch hint apply.
+			if c.transportStderr != nil {
+				if tail := c.transportStderr.Tail(); tail != "" {
+					return nil, fmt.Errorf("connection died during handshake: %s", tail)
+				}
+			}
 			return nil, fmt.Errorf("server closed during handshake — likely a protocol version mismatch (this client speaks v%d); update xerotty on the host, then hot-swap its daemon with `xerotty serve --upgrade` (sessions survive)", protocol.ProtocolVersion)
 		}
 		return nil, fmt.Errorf("read HelloAck: %w", err)

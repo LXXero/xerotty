@@ -126,3 +126,32 @@ func Recorded(name string) string {
 	}
 	return strings.TrimSpace(string(b))
 }
+
+// DaemonLogFile opens the canonical daemon log
+// (<UserCacheDir>/xerotty/xerottyd.log, append mode, truncated when
+// it grows past ~5MB). Spawned daemons MUST point stderr here rather
+// than inheriting the spawner's: an ssh-spawned daemon that inherits
+// the ssh session's pipe dies of SIGPIPE on its FIRST log line after
+// that session ends (Go intentionally re-raises EPIPE on fds 1/2) —
+// which silently killed remote daemons that were supposed to outlive
+// their client, and murdered one mid-`serve --upgrade`. Returns nil
+// (caller should treat as /dev/null) when the cache dir is unusable.
+func DaemonLogFile() *os.File {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return nil
+	}
+	d := filepath.Join(dir, "xerotty")
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		return nil
+	}
+	path := filepath.Join(d, "xerottyd.log")
+	if st, err := os.Stat(path); err == nil && st.Size() > 5<<20 {
+		_ = os.Truncate(path, 0)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil
+	}
+	return f
+}
