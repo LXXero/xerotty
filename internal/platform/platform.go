@@ -382,6 +382,44 @@ func DrawListAddQuads(dl *imgui.DrawList, quads []GlyphQuad) {
 	C.platform_drawlist_add_quads(ptr, unsafe.Pointer(&quads[0]), C.int(len(quads)))
 }
 
+// RenderQuadsToTexture renders a quad stream into *tex (created on
+// first use; reallocated when realloc is set) through ImGui's own GL
+// backend, making the result pixel-identical to drawing the quads
+// directly. disp* give the logical-coordinate rect the quads occupy;
+// pxW/pxH the texture size in framebuffer pixels. Returns false when
+// offscreen rendering isn't available (no FBO support, no context) —
+// callers must fall back to direct drawing.
+func RenderQuadsToTexture(tex *uint64, realloc bool, pxW, pxH int, dispX, dispY, dispW, dispH float32, quads []GlyphQuad) bool {
+	var qp unsafe.Pointer
+	if len(quads) > 0 {
+		qp = unsafe.Pointer(&quads[0])
+	}
+	ct := C.ulonglong(*tex)
+	r := C.int(0)
+	if realloc {
+		r = 1
+	}
+	ok := C.platform_render_quads_to_texture(&ct, r,
+		C.int(pxW), C.int(pxH),
+		C.float(dispX), C.float(dispY), C.float(dispW), C.float(dispH),
+		qp, C.int(len(quads)))
+	*tex = uint64(ct)
+	return ok == 1
+}
+
+// DrawListBlitPremul draws a RenderQuadsToTexture result. The
+// offscreen pass leaves PREMULTIPLIED color in the texture, so the
+// blit runs under (ONE, ONE_MINUS_SRC_ALPHA) via draw callbacks —
+// blitting through the normal SRC_ALPHA pipeline would double-darken
+// every anti-aliased glyph edge.
+func DrawListBlitPremul(dl *imgui.DrawList, tex uint64, x0, y0, x1, y1 float32) {
+	if dl == nil || tex == 0 {
+		return
+	}
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(dl))
+	C.platform_drawlist_blit_premul(ptr, C.ulonglong(tex), C.float(x0), C.float(y0), C.float(x1), C.float(y1))
+}
+
 // UpdateTexture overwrites a sub-rectangle of an existing texture
 // (glTexSubImage2D). The glyph atlas uses it to pack freshly
 // rasterized glyphs into shared pages instead of minting one GL

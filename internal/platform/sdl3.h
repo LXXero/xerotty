@@ -74,6 +74,8 @@ unsigned long long platform_create_texture(const unsigned char* pixels, int widt
 void               platform_delete_texture(unsigned long long tex_id);
 void               platform_update_texture(unsigned long long tex_id, int x, int y, int width, int height, const unsigned char* pixels);
 void               platform_drawlist_add_quads(void* dl_ptr, const void* quads_ptr, int n);
+int                platform_render_quads_to_texture(unsigned long long* tex_inout, int realloc_tex, int px_w, int px_h, float disp_x, float disp_y, float disp_w, float disp_h, const void* quads_ptr, int n);
+void               platform_drawlist_blit_premul(void* dl_ptr, unsigned long long tex, float x0, float y0, float x1, float y1);
 void               platform_request_capture(unsigned long window_id, unsigned char* out, int max_bytes);
 int                platform_capture_result(int* w, int* h);
 

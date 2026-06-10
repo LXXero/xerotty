@@ -1,6 +1,9 @@
 package renderer
 
 import (
+	"fmt"
+	"math"
+	"os"
 	"unicode/utf8"
 
 	"github.com/AllenDang/cimgui-go/imgui"
@@ -68,7 +71,26 @@ type Renderer struct {
 	// (theme switch, font/zoom rebuild, bold-is-bright toggle) that
 	// the key fields can't see. Bumped via InvalidateCellCache.
 	cfgGen uint64
+
+	// Offscreen cell-layer composite: on rebuild the quad stream is
+	// rendered once into fboTex (through ImGui's own GL backend —
+	// pixel-identical by construction); replay frames then draw ONE
+	// premultiplied textured quad instead of re-stamping ~20k quads
+	// into vertex buffers. This is what makes lava-lamp ticks cheap,
+	// and makes them cheap PER WINDOW — previously every glow tick
+	// re-painted every window's full text grid. fboOK gates the blit;
+	// false falls back to replaying cacheQuads directly.
+	fboTex         uint64
+	fboPxW, fboPxH int
+	fboX0, fboY0   float32
+	fboX1, fboY1   float32
+	fboOK          bool
 }
+
+// fboDisabled is an escape hatch for GL drivers that misbehave with
+// offscreen framebuffer rendering: XEROTTY_NO_FBO=1 reverts replay
+// frames to direct quad re-stamping (visually identical, more CPU).
+var fboDisabled = os.Getenv("XEROTTY_NO_FBO") != ""
 
 // drawCacheKey captures everything Draw's output depends on. Two
 // equal keys produce identical primitive lists by construction.
@@ -91,6 +113,7 @@ type drawCacheKey struct {
 func (r *Renderer) InvalidateCellCache() {
 	r.cfgGen++
 	r.cacheOK = false
+	r.fboOK = false
 }
 
 // SetSelection records the current selection range for the next Draw.
@@ -238,6 +261,10 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			selR1:     r.selR1, selC1: r.selC1, selR2: r.selR2, selC2: r.selC2,
 		}
 		if r.cacheOK && key == r.cacheKey {
+			if r.fboOK && drawList != nil {
+				platform.DrawListBlitPremul(drawList, r.fboTex, r.fboX0, r.fboY0, r.fboX1, r.fboY1)
+				return
+			}
 			platform.DrawListAddQuads(drawList, r.cacheQuads)
 			return
 		}
@@ -358,9 +385,53 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 		}
 	}
 
-	// Flush the frame's primitives in one cgo crossing, and stash a
-	// copy as the replay list for identical future frames.
-	platform.DrawListAddQuads(drawList, r.quadBuf)
+	// Flush the frame's primitives. With the offscreen composite
+	// available, render them once into the cell-layer texture and
+	// draw the texture; otherwise stamp the quads directly. Either
+	// way stash the replay list (tests read it; it's also the
+	// fallback when the FBO path is unavailable mid-session).
+	r.fboOK = false
+	if r.Glyphs != nil && drawList != nil && !fboDisabled {
+		fbScale := r.Glyphs.FbScale()
+		if fbScale <= 0 {
+			fbScale = 1
+		}
+		// Slack covers ink outside the cell grid: curly-underline dip,
+		// negative bearings, color-emoji 1.16x cell overshoot.
+		const slack = 4
+		// Snap the texture rect to the PHYSICAL pixel grid. The
+		// texture must map 1:1 onto framebuffer pixels: if the
+		// logical rect × fbScale isn't a whole number of pixels
+		// (fractional HiDPI scales make that the common case), the
+		// implied projection scale differs from the real one and
+		// NEAREST sampling lands up to a pixel off — every glyph's
+		// AA edge renders visibly wrong. Floor the origin and derive
+		// the logical extent back FROM the integer pixel size so
+		// dispW*fbScale == pxW exactly.
+		x0 := floor32((r.OffsetX-slack)*fbScale) / fbScale
+		y0 := floor32((r.OffsetY-slack)*fbScale) / fbScale
+		x1raw := r.OffsetX + float32(cols)*r.Metrics.Width + slack
+		y1raw := r.OffsetY + float32(rows)*r.Metrics.Height + slack
+		pxW := int(math.Ceil(float64((x1raw - x0) * fbScale)))
+		pxH := int(math.Ceil(float64((y1raw - y0) * fbScale)))
+		dispW := float32(pxW) / fbScale
+		dispH := float32(pxH) / fbScale
+		if os.Getenv("XEROTTY_DEBUG_FBO") != "" {
+			ds := imgui.CurrentIO().DisplayFramebufferScale()
+			fmt.Fprintf(os.Stderr, "[fbo] glyphScale=%.4f ioFbScale=%.4f,%.4f px=%dx%d disp=%.2fx%.2f\n",
+				fbScale, ds.X, ds.Y, pxW, pxH, dispW, dispH)
+		}
+		realloc := pxW != r.fboPxW || pxH != r.fboPxH
+		if platform.RenderQuadsToTexture(&r.fboTex, realloc, pxW, pxH, x0, y0, dispW, dispH, r.quadBuf) {
+			r.fboPxW, r.fboPxH = pxW, pxH
+			r.fboX0, r.fboY0, r.fboX1, r.fboY1 = x0, y0, x0+dispW, y0+dispH
+			r.fboOK = true
+			platform.DrawListBlitPremul(drawList, r.fboTex, r.fboX0, r.fboY0, r.fboX1, r.fboY1)
+		}
+	}
+	if !r.fboOK {
+		platform.DrawListAddQuads(drawList, r.quadBuf)
+	}
 	if r.Glyphs != nil {
 		r.cacheQuads = append(r.cacheQuads[:0], r.quadBuf...)
 		r.cacheOK = true
