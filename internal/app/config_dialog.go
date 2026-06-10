@@ -452,7 +452,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	if d.glowBlobs <= 0 {
 		d.glowBlobs = 5
 	}
-	d.bgFPS = int32(cfg.Appearance.BackgroundFPS)
+	d.bgFPS = int32(cfg.Appearance.Glow.BackgroundFPS)
 	d.padding = int32(cfg.Appearance.Padding)
 	d.cursorIdx = prefIndexOf(prefCursorStyles, cfg.Appearance.CursorStyle)
 	d.cursorBlink = cfg.Appearance.CursorBlink
@@ -570,7 +570,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.Glow.Speed = float64(d.glowSpeed)
 	cfg.Appearance.Glow.Scale = float64(d.glowScale)
 	cfg.Appearance.Glow.Blobs = int(d.glowBlobs)
-	cfg.Appearance.BackgroundFPS = int(d.bgFPS)
+	cfg.Appearance.Glow.BackgroundFPS = int(d.bgFPS)
 	cfg.Appearance.Padding = int(d.padding)
 	if int(d.cursorIdx) < len(prefCursorStyles) {
 		cfg.Appearance.CursorStyle = prefCursorStyles[d.cursorIdx]
@@ -1028,11 +1028,6 @@ func (a *Window) renderPrefAppearance() {
 		imgui.SliderInt("##padding", &d.padding, 0, 20)
 	})
 
-	prefPairRow(w, "Background Window FPS (0 = uncapped)", func() {
-		imgui.SetNextItemWidth(w)
-		imgui.SliderInt("##bgfps", &d.bgFPS, 0, 60)
-	}, "", func() {})
-
 	imgui.Checkbox("Lava Lamp Background", &d.glowOn)
 	if d.glowOn {
 		prefPairRow(w, "Glow Intensity", func() {
@@ -1042,6 +1037,10 @@ func (a *Window) renderPrefAppearance() {
 			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowspeed", &d.glowSpeed, 0.1, 4.0)
 		})
+		prefPairRow(w, "Background Glow FPS (0 = full)", func() {
+			imgui.SetNextItemWidth(w)
+			imgui.SliderInt("##bgfps", &d.bgFPS, 0, 60)
+		}, "", func() {})
 		prefPairRow(w, "Blob Size", func() {
 			imgui.SetNextItemWidth(w)
 			imgui.SliderFloat("##glowscale", &d.glowScale, 0.2, 1.5)

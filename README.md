@@ -98,11 +98,6 @@ Bundled themes live in [`themes/`](themes/) and are referenced by name:
 theme = "dracula"  # or "gruvbox-dark", "monokai", "solarized-dark", "solarized-light", "tango"
 ```
 
-`background_fps` (under `[appearance]`, default 10) caps how often
-unfocused windows repaint — glow ticks and streaming output alike.
-The focused/hovered window always runs at full rate; typing and
-window events always render immediately. 0 uncaps.
-
 The lava-lamp glow backdrop, in full (everything optional except `enabled`):
 
 ```toml
@@ -110,6 +105,7 @@ The lava-lamp glow backdrop, in full (everything optional except `enabled`):
 enabled   = true
 colors    = ["#ff79c6", "#bd93f9"]  # omit to derive from the active theme's accents
 blobs     = 5      # lava clusters (1-16)
+background_fps = 10 # lamp animation cap in unfocused windows (0 = full rate; text is never throttled)
 speed     = 1.0    # drift / morph speed multiplier
 scale     = 0.7    # blob size relative to the window
 intensity = 0.35   # glow alpha (0-1)

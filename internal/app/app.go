@@ -3889,27 +3889,29 @@ func (a *Window) frame() {
 		// event) render + swap this frame. The glow animates every
 		// visible window, so lava-on marks unconditionally.
 		//
-		// Background throttle: an unfocused, un-hovered window's
-		// repaints (glow ticks AND content updates) are capped at
-		// cfg background_fps — a mostly-covered sliver or an idle
-		// side window keeps a live lamp and current-ish text without
-		// paying full rate. The throttle skips the dirty CHECK too,
-		// deferring change detection to the next allowed tick, so
-		// nothing is lost — just coalesced. Direct input/expose
-		// events bypass all of this via the C-side evented set.
 		if !occluded {
-			throttled := false
-			if bgFPS := a.app.cfg.Appearance.BackgroundFPS; bgFPS > 0 {
-				if !a.hasOSFocus() && platform.MouseFocusWindowID() != h {
+			// Content is NEVER throttled: a tab's streaming output
+			// repaints its window the moment it changes (and only
+			// that window — that's the damage win). Only the
+			// decorative glow coalesces in background windows:
+			// glow.background_fps caps the lamp's animation rate for
+			// windows that are neither focused nor hovered, so a
+			// dozen idle lava windows stop costing full tick rate.
+			dirty := a.windowVisuallyDirty()
+			if !dirty && a.app.cfg.Appearance.Glow.Enabled {
+				dirty = true
+				if bgFPS := a.app.cfg.Appearance.Glow.BackgroundFPS; bgFPS > 0 &&
+					!a.hasOSFocus() && platform.MouseFocusWindowID() != h {
 					now := imgui.Time()
 					if now-a.lastBgMark < 1.0/float64(bgFPS) {
-						throttled = true
+						dirty = false
+					} else {
+						a.lastBgMark = now
 					}
 				}
 			}
-			if !throttled && (a.app.cfg.Appearance.Glow.Enabled || a.windowVisuallyDirty()) {
+			if dirty {
 				platform.MarkViewportDirty(h)
-				a.lastBgMark = imgui.Time()
 			}
 		}
 	}

@@ -64,14 +64,21 @@ type MCPConfig struct {
 // self-wakes the otherwise event-driven render loop at FPS while
 // enabled. Colors empty = derive from the active theme's accents.
 type GlowConfig struct {
-	Enabled   bool     `toml:"enabled"`
-	Style     string   `toml:"style"` // "lava" (reserved for future styles)
-	Colors    []string `toml:"colors"`
-	Blobs     int      `toml:"blobs"`
-	Speed     float64  `toml:"speed"`
-	Scale     float64  `toml:"scale"`
-	Intensity float64  `toml:"intensity"`
-	FPS       int      `toml:"fps"`
+	Enabled bool `toml:"enabled"`
+	// BackgroundFPS caps the glow ANIMATION rate in windows that are
+	// neither OS-focused nor under the mouse (default 10, 0 = full
+	// FPS everywhere). Content updates are never throttled — a
+	// background window's streaming text renders the moment it
+	// changes; only the decorative lamp coalesces. The focused /
+	// hovered window always animates at full FPS.
+	BackgroundFPS int      `toml:"background_fps"`
+	Style         string   `toml:"style"` // "lava" (reserved for future styles)
+	Colors        []string `toml:"colors"`
+	Blobs         int      `toml:"blobs"`
+	Speed         float64  `toml:"speed"`
+	Scale         float64  `toml:"scale"`
+	Intensity     float64  `toml:"intensity"`
+	FPS           int      `toml:"fps"`
 }
 
 // Appearance controls visual settings.
@@ -86,14 +93,6 @@ type Appearance struct {
 	TerminalColors        string  `toml:"terminal_colors"`
 	TabColors             string  `toml:"tab_colors"`
 	ScrollbarColors       string  `toml:"scrollbar_colors"`
-	// BackgroundFPS caps how often UNFOCUSED, un-hovered windows
-	// repaint (glow animation ticks and streaming-content updates
-	// alike). The focused/hovered window always renders at full
-	// rate; direct input and expose events always render. 0 = no
-	// cap. A background window's lava still drifts and its text
-	// stays current to within 1/fps — it just stops costing full
-	// rate for pixels nobody is reading.
-	BackgroundFPS         int     `toml:"background_fps"`
 	ResizeOverlay         bool    `toml:"resize_overlay"`
 	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
 	// Glow is the animated lava-lamp backdrop (see internal/app/glow.go).
@@ -244,15 +243,15 @@ func Default() Config {
 			TerminalColors: "theme",
 			TabColors:      "theme",
 			Glow: GlowConfig{
-				Style:     "lava",
-				Blobs:     5,
-				Speed:     1.0,
-				Scale:     0.7,
-				Intensity: 0.35,
-				FPS:       20,
+				Style:         "lava",
+				BackgroundFPS: 10,
+				Blobs:         5,
+				Speed:         1.0,
+				Scale:         0.7,
+				Intensity:     0.35,
+				FPS:           20,
 			},
 			ScrollbarColors:       "theme",
-			BackgroundFPS:         10,
 			ResizeOverlay:         true,
 			ResizeOverlayDuration: 1.0,
 		},
