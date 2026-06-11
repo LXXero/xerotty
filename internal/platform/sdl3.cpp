@@ -166,6 +166,22 @@ extern "C" int platform_init(const char* title, int width, int height) {
         g_use_gpu = !(gp[0] == '\0' || gp[0] == '0' ||
                       SDL_strcasecmp(gp, "false") == 0 || SDL_strcasecmp(gp, "off") == 0);
     }
+    // Broken-GPU graceful fallback: probe the device BEFORE window
+    // creation (the SDL_WINDOW_OPENGL flag must be decided up front).
+    // A box with no Vulkan driver / broken Metal falls back to GL
+    // with a warning instead of refusing to launch — the env var is
+    // for people who know the trick; this is for everyone else.
+    if (g_use_gpu) {
+        g_gpu_dev = SDL_CreateGPUDevice(
+            SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL |
+            SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_METALLIB,
+            false, nullptr);
+        if (!g_gpu_dev) {
+            fprintf(stderr, "xerotty: SDL_GPU unavailable (%s) — falling back to OpenGL\n",
+                    SDL_GetError());
+            g_use_gpu = 0;
+        }
+    }
     SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE
                           | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (!g_use_gpu) flags |= SDL_WINDOW_OPENGL;
@@ -221,14 +237,7 @@ extern "C" int platform_init(const char* title, int width, int height) {
     ImGui::StyleColorsDark();
 
     if (g_use_gpu) {
-        g_gpu_dev = SDL_CreateGPUDevice(
-            SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL |
-            SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_METALLIB,
-            false, nullptr);
-        if (!g_gpu_dev) {
-            set_err("SDL_CreateGPUDevice");
-            return 0;
-        }
+        // Device was probed before window creation (fallback path).
         if (!SDL_ClaimWindowForGPUDevice(g_gpu_dev, g_window)) {
             set_err("SDL_ClaimWindowForGPUDevice");
             return 0;
