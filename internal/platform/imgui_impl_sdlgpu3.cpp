@@ -39,6 +39,10 @@
 #include "imgui.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_sdlgpu3.h"
+#ifdef __APPLE__
+// XEROTTY PATCH: defined in cocoa_focus_darwin.m (C linkage).
+extern "C" void platform_cocoa_cap_drawables(unsigned long window_id);
+#endif
 #include "imgui_impl_sdlgpu3_shaders.h"
 
 // SDL_GPU Data
@@ -752,10 +756,8 @@ static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
     SDL_Window* window = SDL_GetWindowFromID((SDL_WindowID)(intptr_t)viewport->PlatformHandle);
     SDL_ClaimWindowForGPUDevice(data->InitInfo.Device, window);
 #ifdef __APPLE__
-    { // XEROTTY PATCH: cap the metal layer's drawable pool (memory).
-        extern void platform_cocoa_cap_drawables(unsigned long window_id);
-        platform_cocoa_cap_drawables((unsigned long)SDL_GetWindowID(window));
-    }
+    // XEROTTY PATCH: cap the metal layer's drawable pool (memory).
+    platform_cocoa_cap_drawables((unsigned long)SDL_GetWindowID(window));
 #endif
     SDL_SetGPUSwapchainParameters(data->InitInfo.Device, window, data->InitInfo.SwapchainComposition, data->InitInfo.PresentMode);
     viewport->RendererUserData = (void*)1;
