@@ -367,6 +367,18 @@ static void warmup_note(Uint32 id) {
     if (g_warm_n < 64) { g_warm_ids[g_warm_n] = id; g_warm_until[g_warm_n] = until; g_warm_n++; }
 }
 
+// warmup_seen warms a window id the first time it is ever observed
+// in the viewport loop — belt-and-suspenders for SHOWN events that
+// raced or predated our event watch.
+static Uint32 g_seen_ids[256];
+static int    g_seen_n = 0;
+static void warmup_seen(Uint32 id) {
+    if (id == 0) return;
+    for (int i = 0; i < g_seen_n; i++) if (g_seen_ids[i] == id) return;
+    if (g_seen_n < 256) g_seen_ids[g_seen_n++] = id;
+    warmup_note(id);
+}
+
 static int warmup_active(Uint32 id) {
     Uint64 now = SDL_GetTicks();
     for (int i = 0; i < g_warm_n; i++) {
@@ -429,6 +441,8 @@ static int drain_events() {
                     g_quit = true;
                 break;
             case SDL_EVENT_WINDOW_OCCLUDED:
+                if (SDL_getenv("XEROTTY_DEBUG_OCCLUSION"))
+                    fprintf(stderr, "[occl] window %u OCCLUDED\n", e.window.windowID);
                 occluded_set(e.window.windowID, 1);
                 break;
             case SDL_EVENT_WINDOW_SHOWN:
@@ -440,6 +454,8 @@ static int drain_events() {
             case SDL_EVENT_WINDOW_EXPOSED:
             case SDL_EVENT_WINDOW_RESTORED:
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                if (SDL_getenv("XEROTTY_DEBUG_OCCLUSION"))
+                    fprintf(stderr, "[occl] window %u visible (ev %u)\n", e.window.windowID, e.type);
                 occluded_set(e.window.windowID, 0);
                 break;
             case SDL_EVENT_WINDOW_DESTROYED:
@@ -649,8 +665,19 @@ static void backend_present(int respect_damage) {
                 ImGuiViewport* vp = pio.Viewports[i];
                 if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
                 Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
-                if (platform_window_occluded((unsigned long)vpid)) continue;
-                if (respect_damage && !window_wants_render(vpid)) continue;
+                // First sighting of a viewport warms it up even if its
+                // SHOWN event was missed or preceded our tracking.
+                warmup_seen(vpid);
+                // Warm-up overrides BOTH skip gates: on macOS a fresh
+                // window is born with occlusionState "not visible" —
+                // SDL marks it OCCLUDED at creation, and if EXPOSED
+                // never follows (or beat our tracking), the occlusion
+                // gate alone left it skipped FOREVER: blank until a
+                // click's FOCUS_GAINED cleared the flag.
+                if (!warmup_active(vpid)) {
+                    if (platform_window_occluded((unsigned long)vpid)) continue;
+                    if (respect_damage && !window_wants_render(vpid)) continue;
+                }
                 if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
                 if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
                 if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
@@ -693,8 +720,19 @@ static void backend_present(int respect_damage) {
                 ImGuiViewport* vp = pio.Viewports[i];
                 if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
                 Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
-                if (platform_window_occluded((unsigned long)vpid)) continue;
-                if (respect_damage && !window_wants_render(vpid)) continue;
+                // First sighting of a viewport warms it up even if its
+                // SHOWN event was missed or preceded our tracking.
+                warmup_seen(vpid);
+                // Warm-up overrides BOTH skip gates: on macOS a fresh
+                // window is born with occlusionState "not visible" —
+                // SDL marks it OCCLUDED at creation, and if EXPOSED
+                // never follows (or beat our tracking), the occlusion
+                // gate alone left it skipped FOREVER: blank until a
+                // click's FOCUS_GAINED cleared the flag.
+                if (!warmup_active(vpid)) {
+                    if (platform_window_occluded((unsigned long)vpid)) continue;
+                    if (respect_damage && !window_wants_render(vpid)) continue;
+                }
                 if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
                 if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
                 if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
