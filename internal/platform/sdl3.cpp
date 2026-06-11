@@ -307,8 +307,29 @@ extern "C" int platform_init(const char* title, int width, int height) {
         gi.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(g_gpu_dev, g_window);
         gi.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
         gi.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-        gi.PresentMode = SDL_getenv("XEROTTY_NO_VSYNC")
-            ? SDL_GPU_PRESENTMODE_IMMEDIATE : SDL_GPU_PRESENTMODE_VSYNC;
+        // Present mode for every viewport window. VSYNC holds each
+        // window's drawables until the display's composite, so with
+        // N windows rendered serially the main thread queues behind
+        // nextDrawable semaphores (work-laptop sample: 18% of main
+        // thread parked there — and Go's sysmon polls hot against
+        // the long blocked-cgo stretches, multiplying wakeups). We
+        // SELF-pace (glow ticks + event-driven frames), so the vsync
+        // block buys nothing: on macOS the WindowServer composites
+        // at its own rhythm regardless. Prefer MAILBOX (no block, no
+        // tear), fall back IMMEDIATE on darwin; Linux keeps VSYNC by
+        // default. XEROTTY_NO_VSYNC forces IMMEDIATE anywhere.
+        gi.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+#ifdef __APPLE__
+        if (SDL_WindowSupportsGPUPresentMode(g_gpu_dev, g_window, SDL_GPU_PRESENTMODE_MAILBOX))
+            gi.PresentMode = SDL_GPU_PRESENTMODE_MAILBOX;
+        else if (SDL_WindowSupportsGPUPresentMode(g_gpu_dev, g_window, SDL_GPU_PRESENTMODE_IMMEDIATE))
+            gi.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
+#endif
+        if (SDL_getenv("XEROTTY_NO_VSYNC"))
+            gi.PresentMode = SDL_GPU_PRESENTMODE_IMMEDIATE;
+        // Main (hidden) window's swapchain follows the same mode.
+        SDL_SetGPUSwapchainParameters(g_gpu_dev, g_window,
+            SDL_GPU_SWAPCHAINCOMPOSITION_SDR, gi.PresentMode);
         if (!ImGui_ImplSDLGPU3_Init(&gi)) {
             std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDLGPU3_Init failed");
             return 0;
