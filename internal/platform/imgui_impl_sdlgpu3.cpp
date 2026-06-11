@@ -154,6 +154,73 @@ static void CreateOrResizeBuffers(SDL_GPUBuffer** buffer, SDL_GPUTransferBuffer*
 // SDL_GPU doesn't allow copy passes to occur while a render or compute pass is bound!
 // The only way to allow a user to supply their own RenderPass (to render to a texture instead of the window for example),
 // is to split the upload part of ImGui_ImplSDLGPU3_RenderDrawData() to another function that needs to be called by the user before rendering.
+// XEROTTY PATCH: see header. Mirrors ImGui_ImplSDLGPU3_CreateGraphicsPipeline
+// exactly, with caller-supplied blend state.
+static void ImGui_ImplSDLGPU3_CreateShaders();
+SDL_GPUGraphicsPipeline* ImGui_ImplSDLGPU3_CreatePipelineWithBlend(const SDL_GPUColorTargetBlendState* blend)
+{
+    ImGui_ImplSDLGPU3_Data* bd = ImGui_ImplSDLGPU3_GetBackendData();
+    if (!bd) return nullptr;
+    ImGui_ImplSDLGPU3_InitInfo* v = &bd->InitInfo;
+    ImGui_ImplSDLGPU3_CreateShaders();
+
+    SDL_GPUVertexBufferDescription vertex_buffer_desc[1];
+    vertex_buffer_desc[0].slot = 0;
+    vertex_buffer_desc[0].input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+    vertex_buffer_desc[0].instance_step_rate = 0;
+    vertex_buffer_desc[0].pitch = sizeof(ImDrawVert);
+
+    SDL_GPUVertexAttribute vertex_attributes[3];
+    vertex_attributes[0].buffer_slot = 0;
+    vertex_attributes[0].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+    vertex_attributes[0].location = 0;
+    vertex_attributes[0].offset = offsetof(ImDrawVert,pos);
+    vertex_attributes[1].buffer_slot = 0;
+    vertex_attributes[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2;
+    vertex_attributes[1].location = 1;
+    vertex_attributes[1].offset = offsetof(ImDrawVert, uv);
+    vertex_attributes[2].buffer_slot = 0;
+    vertex_attributes[2].format = SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM;
+    vertex_attributes[2].location = 2;
+    vertex_attributes[2].offset = offsetof(ImDrawVert, col);
+
+    SDL_GPUVertexInputState vertex_input_state = {};
+    vertex_input_state.num_vertex_attributes = 3;
+    vertex_input_state.vertex_attributes = vertex_attributes;
+    vertex_input_state.num_vertex_buffers = 1;
+    vertex_input_state.vertex_buffer_descriptions = vertex_buffer_desc;
+
+    SDL_GPURasterizerState rasterizer_state = {};
+    rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+
+    SDL_GPUMultisampleState multisample_state = {};
+    multisample_state.sample_count = v->MSAASamples;
+
+    SDL_GPUDepthStencilState depth_stencil_state = {};
+
+    SDL_GPUColorTargetDescription color_target_desc[1];
+    color_target_desc[0].format = v->ColorTargetFormat;
+    color_target_desc[0].blend_state = *blend;
+
+    SDL_GPUGraphicsPipelineTargetInfo target_info = {};
+    target_info.num_color_targets = 1;
+    target_info.color_target_descriptions = color_target_desc;
+    target_info.has_depth_stencil_target = false;
+
+    SDL_GPUGraphicsPipelineCreateInfo pipeline_info = {};
+    pipeline_info.vertex_shader = bd->VertexShader;
+    pipeline_info.fragment_shader = bd->FragmentShader;
+    pipeline_info.vertex_input_state = vertex_input_state;
+    pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pipeline_info.rasterizer_state = rasterizer_state;
+    pipeline_info.multisample_state = multisample_state;
+    pipeline_info.depth_stencil_state = depth_stencil_state;
+    pipeline_info.target_info = target_info;
+    return SDL_CreateGPUGraphicsPipeline(v->Device, &pipeline_info);
+}
+
 void ImGui_ImplSDLGPU3_PrepareDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffer* command_buffer)
 {
     // Avoid rendering when minimized, scale coordinates for retina displays (screen coordinates != framebuffer coordinates)
@@ -236,6 +303,8 @@ void ImGui_ImplSDLGPU3_RenderDrawData(ImDrawData* draw_data, SDL_GPUCommandBuffe
     // Setup render state structure (for callbacks and custom texture bindings)
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
     ImGui_ImplSDLGPU3_RenderState render_state;
+    render_state.CommandBuffer = command_buffer;   // XEROTTY PATCH
+    render_state.RenderPass = render_pass;         // XEROTTY PATCH
     render_state.Device = bd->InitInfo.Device;
     render_state.SamplerDefault = render_state.SamplerCurrent = bd->TexSamplerLinear;
     platform_io.Renderer_RenderState = &render_state;
@@ -686,6 +755,11 @@ static void ImGui_ImplSDLGPU3_CreateWindow(ImGuiViewport* viewport)
     viewport->RendererUserData = (void*)1;
 }
 
+// XEROTTY PATCH: secondary-viewport clear color hook. Upstream
+// hardcodes black; xerotty clears every window to the THEME
+// background (same color the main window and screenshot path use).
+extern "C" void xt_viewport_clear_color(float* r, float* g, float* b, float* a);
+
 static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
 {
     ImGui_ImplSDLGPU3_Data* data = ImGui_ImplSDLGPU3_GetBackendData();
@@ -703,7 +777,9 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
         ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer); // FIXME-OPT: Not optimal, may this be done earlier?
         SDL_GPUColorTargetInfo target_info = {};
         target_info.texture = swapchain_texture;
-        target_info.clear_color = SDL_FColor{ 0.0f,0.0f,0.0f,1.0f };
+        float xr, xg, xb, xa; // XEROTTY PATCH
+        xt_viewport_clear_color(&xr, &xg, &xb, &xa);
+        target_info.clear_color = SDL_FColor{ xr, xg, xb, xa };
         target_info.load_op = SDL_GPU_LOADOP_CLEAR;
         target_info.store_op = SDL_GPU_STOREOP_STORE;
         target_info.mip_level = 0;

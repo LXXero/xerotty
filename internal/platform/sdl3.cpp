@@ -65,11 +65,64 @@ static SDL_GPUDevice* g_gpu_dev = nullptr;
 
 extern "C" int platform_use_gpu(void) { return g_use_gpu; }
 
+extern "C" void* platform_gpu_device(void) { return g_gpu_dev; }
+
+// Premultiplied-alpha pipeline + nearest sampler for the offscreen
+// cell-layer blit (created lazily — the backend must be initialized
+// first so its shaders exist). See glyphbatch.cpp for why premul.
+static SDL_GPUGraphicsPipeline* g_gpu_premul_pipeline = nullptr;
+static SDL_GPUSampler*          g_gpu_nearest = nullptr;
+
+extern "C" void* platform_gpu_premul_pipeline(void) {
+    if (!g_gpu_premul_pipeline && g_gpu_dev) {
+        SDL_GPUColorTargetBlendState b = {};
+        b.enable_blend = true;
+        b.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        b.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        b.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        b.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        b.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        b.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+        b.color_write_mask = SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+                             SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+        g_gpu_premul_pipeline = ImGui_ImplSDLGPU3_CreatePipelineWithBlend(&b);
+    }
+    return g_gpu_premul_pipeline;
+}
+
+extern "C" void* platform_gpu_nearest_sampler(void) {
+    if (!g_gpu_nearest && g_gpu_dev) {
+        SDL_GPUSamplerCreateInfo si = {};
+        si.min_filter = SDL_GPU_FILTER_NEAREST;
+        si.mag_filter = SDL_GPU_FILTER_NEAREST;
+        si.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+        si.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        si.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        si.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+        g_gpu_nearest = SDL_CreateGPUSampler(g_gpu_dev, &si);
+    }
+    return g_gpu_nearest;
+}
+
+extern "C" SDL_GPUTextureFormat platform_gpu_target_format(void) {
+    return g_gpu_dev ? SDL_GetGPUSwapchainTextureFormat(g_gpu_dev, g_window)
+                     : SDL_GPU_TEXTUREFORMAT_INVALID;
+}
+
 namespace {
 
 char          g_err[512] = {0};
 Uint64        g_target_frame_ns = 1000000000ull / 60;  // updated in init
 float         g_bg_r = 0.10f, g_bg_g = 0.10f, g_bg_b = 0.12f, g_bg_a = 1.0f;
+
+// Theme background for secondary-viewport clears (both backends).
+// ImGui's stock backends hardcode BLACK for viewport windows — the
+// theme clear only ever applied to the (hidden) main window, so
+// every real terminal window sat on black instead of the theme
+// background. Discovered via the GL-vs-GPU screenshot A/B.
+extern "C" void xt_viewport_clear_color(float* r, float* g, float* b, float* a) {
+    *r = g_bg_r; *g = g_bg_g; *b = g_bg_b; *a = 1.0f;
+}
 
 // Render-on-demand state. The loop only renders when there's a reason
 // to (an SDL event, a PTY/daemon wake, or a requested settle frame);
@@ -677,6 +730,93 @@ static void backend_present(int respect_damage) {
                 SDL_SubmitGPUCommandBuffer(cmd);
             }
         }
+        // Screenshot capture under GPU: render the target viewport's
+        // draw data into a throwaway texture and synchronously
+        // download it. Rare path (screenshot mode only) — the fence
+        // wait is irrelevant there.
+        if (g_cap_pending && g_cap_buf) {
+            ImGuiPlatformIO& cpio = ImGui::GetPlatformIO();
+            for (int i = 0; i < cpio.Viewports.Size; i++) {
+                ImGuiViewport* vp = cpio.Viewports[i];
+                Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
+                if (vpid != g_cap_window_id || !vp->DrawData) continue;
+                g_cap_pending = 0;
+                ImDrawData* dd = vp->DrawData;
+                int fw = (int)(dd->DisplaySize.x * dd->FramebufferScale.x);
+                int fh = (int)(dd->DisplaySize.y * dd->FramebufferScale.y);
+                if (fw <= 0 || fh <= 0 || fw * fh * 4 > g_cap_max) break;
+                SDL_GPUTextureCreateInfo ci = {};
+                ci.type = SDL_GPU_TEXTURETYPE_2D;
+                ci.format = platform_gpu_target_format();
+                ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+                ci.width = (Uint32)fw; ci.height = (Uint32)fh;
+                ci.layer_count_or_depth = 1; ci.num_levels = 1;
+                SDL_GPUTexture* cap = SDL_CreateGPUTexture(g_gpu_dev, &ci);
+                if (!cap) break;
+                SDL_GPUTransferBufferCreateInfo tci = {};
+                tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+                tci.size = (Uint32)(fw * fh * 4);
+                SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_gpu_dev, &tci);
+                SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu_dev);
+                if (tb && cmd) {
+                    ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
+                    SDL_GPUColorTargetInfo ct = {};
+                    ct.texture = cap;
+                    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+                    ct.store_op = SDL_GPU_STOREOP_STORE;
+                    ct.clear_color = { g_bg_r, g_bg_g, g_bg_b, 1.0f };
+                    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+                    ImGui_ImplSDLGPU3_RenderDrawData(dd, cmd, pass);
+                    SDL_EndGPURenderPass(pass);
+                    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+                    SDL_GPUTextureRegion srcr = {};
+                    srcr.texture = cap;
+                    srcr.w = (Uint32)fw; srcr.h = (Uint32)fh; srcr.d = 1;
+                    SDL_GPUTextureTransferInfo dsti = {};
+                    dsti.transfer_buffer = tb;
+                    dsti.pixels_per_row = (Uint32)fw;
+                    dsti.rows_per_layer = (Uint32)fh;
+                    SDL_DownloadFromGPUTexture(cp, &srcr, &dsti);
+                    SDL_EndGPUCopyPass(cp);
+                    SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+                    if (fence) {
+                        SDL_WaitForGPUFences(g_gpu_dev, true, &fence, 1);
+                        SDL_ReleaseGPUFence(g_gpu_dev, fence);
+                        void* map = SDL_MapGPUTransferBuffer(g_gpu_dev, tb, false);
+                        if (map) {
+                            // Contract with Go: bottom-up RGBA rows (the GL
+                            // readback order Go already flips). GPU renders
+                            // top-down, and swapchain formats are commonly
+                            // BGRA — flip rows and swizzle as needed here.
+                            SDL_GPUTextureFormat fmt = platform_gpu_target_format();
+                            int bgra = (fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM ||
+                                        fmt == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB);
+                            const unsigned char* src = (const unsigned char*)map;
+                            for (int y = 0; y < fh; y++) {
+                                const unsigned char* srow = src + (size_t)y * fw * 4;
+                                unsigned char* drow = g_cap_buf + (size_t)(fh - 1 - y) * fw * 4;
+                                if (!bgra) {
+                                    SDL_memcpy(drow, srow, (size_t)fw * 4);
+                                } else {
+                                    for (int x = 0; x < fw; x++) {
+                                        drow[x*4+0] = srow[x*4+2];
+                                        drow[x*4+1] = srow[x*4+1];
+                                        drow[x*4+2] = srow[x*4+0];
+                                        drow[x*4+3] = srow[x*4+3];
+                                    }
+                                }
+                            }
+                            SDL_UnmapGPUTransferBuffer(g_gpu_dev, tb);
+                            g_cap_w = fw; g_cap_h = fh; g_cap_ok = 1;
+                        }
+                    }
+                }
+                if (tb) SDL_ReleaseGPUTransferBuffer(g_gpu_dev, tb);
+                SDL_ReleaseGPUTexture(g_gpu_dev, cap);
+                break;
+            }
+        }
+
         ImGuiIO& gio = ImGui::GetIO();
         if (gio.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
             ImGui::UpdatePlatformWindows();
@@ -753,7 +893,14 @@ static void backend_present(int respect_damage) {
                     if (platform_window_occluded((unsigned long)vpid)) continue;
                     if (respect_damage && !window_wants_render(vpid)) continue;
                 }
+                // Themed background: suppress the GL backend's
+                // hardcoded black clear and do our own with the theme
+                // color (Platform_RenderWindow has made this window's
+                // context current). See xt_viewport_clear_color.
+                vp->Flags |= ImGuiViewportFlags_NoRendererClear;
                 if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
+                glClearColor(g_bg_r, g_bg_g, g_bg_b, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
                 if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
                 if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
                 if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(vp, nullptr);

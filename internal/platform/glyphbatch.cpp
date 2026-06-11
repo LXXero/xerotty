@@ -30,7 +30,13 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
+#include "imgui_impl_sdlgpu3.h"
+
 extern "C" int platform_use_gpu(void);
+extern "C" void* platform_gpu_device(void);
+extern "C" void* platform_gpu_premul_pipeline(void);
+extern "C" void* platform_gpu_nearest_sampler(void);
+extern "C" SDL_GPUTextureFormat platform_gpu_target_format(void);
 
 extern "C" {
 
@@ -116,12 +122,86 @@ int platform_render_quads_to_texture(
     const void* quads_ptr, int n
 ) {
     if (px_w <= 0 || px_h <= 0 || disp_w <= 0 || disp_h <= 0) return 0;
-    // SDL_GPU slice 1: the offscreen compositor is still GL-only —
-    // returning 0 falls back to direct quad stamping, which the GPU
-    // backend presents cheaply. The SDL_GPU port (explicit render
-    // pass + custom premul pipeline, both first-class in the API) is
-    // the designated slice 2.
-    if (platform_use_gpu()) return 0;
+    // SDL_GPU path: render-to-texture is a first-class concept here —
+    // an explicit render pass targeting our texture, fed the same
+    // synthetic ImDrawData the GL path uses. Buffer reuse mid-frame is
+    // safe: the backend maps all transfer buffers with cycle=true.
+    if (platform_use_gpu()) {
+        SDL_GPUDevice* dev = (SDL_GPUDevice*)platform_gpu_device();
+        if (!dev || !ImGui::GetCurrentContext()) return 0;
+
+        SDL_GPUTexture* tex = (SDL_GPUTexture*)(uintptr_t)*tex_inout;
+        if (tex && realloc_tex) {
+            SDL_ReleaseGPUTexture(dev, tex);
+            tex = nullptr;
+        }
+        if (!tex) {
+            SDL_GPUTextureCreateInfo ci = {};
+            ci.type = SDL_GPU_TEXTURETYPE_2D;
+            // Same format as the swapchain so the backend's default
+            // pipeline (keyed to that format) renders into it.
+            ci.format = platform_gpu_target_format();
+            ci.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER;
+            ci.width = (Uint32)px_w;
+            ci.height = (Uint32)px_h;
+            ci.layer_count_or_depth = 1;
+            ci.num_levels = 1;
+            tex = SDL_CreateGPUTexture(dev, &ci);
+            if (!tex) return 0;
+            *tex_inout = (unsigned long long)(uintptr_t)tex;
+        }
+
+        ImDrawList gdl(ImGui::GetDrawListSharedData());
+        gdl._ResetForNewFrame();
+        gdl.PushClipRect(ImVec2(disp_x, disp_y),
+                         ImVec2(disp_x + disp_w, disp_h + disp_y), false);
+        xt_append_quads(&gdl, (const xt_glyph_quad*)quads_ptr, n);
+        gdl.PopClipRect();
+        // Drop zero-element commands: _ResetForNewFrame seeds one
+        // carrying ImGui's MANAGED font-atlas ImTextureRef, whose
+        // GetTexID() is meaningless here — and unlike the GL backend,
+        // the sdlgpu3 render loop binds every non-callback command's
+        // texture unconditionally, so that seed cmd dereferenced a
+        // garbage SDL_GPUTexture* (SIGSEGV in SDL_BindGPUFragmentSamplers).
+        for (int ci = gdl.CmdBuffer.Size - 1; ci >= 0; ci--)
+            if (gdl.CmdBuffer[ci].ElemCount == 0 && gdl.CmdBuffer[ci].UserCallback == nullptr)
+                gdl.CmdBuffer.erase(gdl.CmdBuffer.Data + ci);
+
+        ImDrawData gdd;
+        ImDrawList* glists[1] = { &gdl };
+        gdd.Valid = true;
+        gdd.CmdLists.Data = glists;
+        gdd.CmdLists.Size = 1;
+        gdd.CmdLists.Capacity = 1;
+        gdd.CmdListsCount = 1;
+        gdd.TotalVtxCount = gdl.VtxBuffer.Size;
+        gdd.TotalIdxCount = gdl.IdxBuffer.Size;
+        gdd.DisplayPos = ImVec2(disp_x, disp_y);
+        gdd.DisplaySize = ImVec2(disp_w, disp_h);
+        gdd.FramebufferScale = ImVec2((float)px_w / disp_w, (float)px_h / disp_h);
+
+        int ok = 0;
+        SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(dev);
+        if (cmd) {
+            ImGui_ImplSDLGPU3_PrepareDrawData(&gdd, cmd);
+            SDL_GPUColorTargetInfo ct = {};
+            ct.texture = tex;
+            ct.load_op = SDL_GPU_LOADOP_CLEAR;
+            ct.store_op = SDL_GPU_STOREOP_STORE;
+            ct.clear_color = { 0, 0, 0, 0 };
+            SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+            if (pass) {
+                ImGui_ImplSDLGPU3_RenderDrawData(&gdd, cmd, pass);
+                SDL_EndGPURenderPass(pass);
+                ok = 1;
+            }
+            SDL_SubmitGPUCommandBuffer(cmd);
+        }
+        gdd.CmdLists.Data = nullptr;
+        gdd.CmdLists.Size = 0;
+        gdd.CmdLists.Capacity = 0;
+        return ok;
+    }
     if (xt_load_fbo_procs() != 1) return 0;
     if (!ImGui::GetCurrentContext()) return 0;
 
@@ -217,9 +297,33 @@ static void xt_premul_blend_cb(const ImDrawList*, const ImDrawCmd*) {
                             GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 }
 
+// GPU flavor: bind the premultiplied-blend clone of the backend's
+// pipeline (and a NEAREST sampler — the blit is 1:1) through the
+// xerotty-patched RenderState, which exposes the live render pass.
+// ImDrawCallback_ResetRenderState afterwards re-runs the backend's
+// SetupRenderState, restoring its pipeline and sampler.
+static void xt_premul_blend_cb_gpu(const ImDrawList*, const ImDrawCmd*) {
+    ImGui_ImplSDLGPU3_RenderState* rs =
+        (ImGui_ImplSDLGPU3_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
+    if (!rs || !rs->RenderPass) return;
+    SDL_GPUGraphicsPipeline* p = (SDL_GPUGraphicsPipeline*)platform_gpu_premul_pipeline();
+    if (p) SDL_BindGPUGraphicsPipeline(rs->RenderPass, p);
+    if (SDL_GPUSampler* ns = (SDL_GPUSampler*)platform_gpu_nearest_sampler())
+        rs->SamplerCurrent = ns;
+}
+
 void platform_drawlist_blit_premul(void* dl_ptr, unsigned long long tex,
                                    float x0, float y0, float x1, float y1) {
     ImDrawList* dl = (ImDrawList*)dl_ptr;
+    if (platform_use_gpu()) {
+        // GPU renders the offscreen pass top-down — no V flip.
+        dl->AddCallback(xt_premul_blend_cb_gpu, nullptr);
+        dl->AddImage(ImTextureRef((ImTextureID)tex),
+                     ImVec2(x0, y0), ImVec2(x1, y1),
+                     ImVec2(0, 0), ImVec2(1, 1), 0xFFFFFFFF);
+        dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        return;
+    }
     dl->AddCallback(xt_premul_blend_cb, nullptr);
     // GL renders the FBO bottom-up relative to screen coords: the
     // visual top of the content sits at v=1. Flip V at the blit.

@@ -60,6 +60,17 @@ struct ImGui_ImplSDLGPU3_RenderState
     SDL_GPUDevice*      Device;
     SDL_GPUSampler*     SamplerDefault;     // Default sampler (bilinear filtering)
     SDL_GPUSampler*     SamplerCurrent;     // Current sampler (may be changed by callback)
+    // XEROTTY PATCH: expose the live encoder handles so draw
+    // callbacks can bind a custom pipeline (premultiplied-alpha blit
+    // of the offscreen cell-layer texture). Upstream's struct stops
+    // at samplers.
+    SDL_GPUCommandBuffer* CommandBuffer;
+    SDL_GPURenderPass*    RenderPass;
 };
+
+// XEROTTY PATCH: build a pipeline identical to the backend's own
+// (same shaders, vertex layout, target format) but with a custom
+// blend state. Caller owns the returned pipeline.
+IMGUI_IMPL_API SDL_GPUGraphicsPipeline* ImGui_ImplSDLGPU3_CreatePipelineWithBlend(const SDL_GPUColorTargetBlendState* blend);
 
 #endif // #ifndef IMGUI_DISABLE
