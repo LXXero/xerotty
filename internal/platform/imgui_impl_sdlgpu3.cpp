@@ -777,12 +777,20 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
 
     SDL_GPUCommandBuffer* command_buffer = SDL_AcquireGPUCommandBuffer(data->InitInfo.Device);
 
+    // XEROTTY PATCH: encode BEFORE acquiring. Upstream acquired the
+    // swapchain texture first and then did the vertex/index uploads,
+    // so any nextDrawable wait (pool exhausted at a burst) also
+    // covered the whole encode. Acquiring as late as possible — the
+    // drawable is only needed by the render pass itself — shrinks
+    // the exposed window to just the final composite, which is also
+    // SDL_GPU's documented recommendation.
+    ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
+
     SDL_GPUTexture* swapchain_texture;
     SDL_AcquireGPUSwapchainTexture(command_buffer, window, &swapchain_texture, nullptr, nullptr);
 
     if (swapchain_texture != nullptr)
     {
-        ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer); // FIXME-OPT: Not optimal, may this be done earlier?
         SDL_GPUColorTargetInfo target_info = {};
         target_info.texture = swapchain_texture;
         float xr, xg, xb, xa; // XEROTTY PATCH

@@ -270,6 +270,13 @@ void platform_cocoa_cap_drawables(unsigned long window_id) {
             if ([sub.layer isKindOfClass:[CAMetalLayer class]]) { layer = sub.layer; break; }
         }
     }
-    if ([layer isKindOfClass:[CAMetalLayer class]])
-        ((CAMetalLayer*)layer).maximumDrawableCount = 2;
+    if ([layer isKindOfClass:[CAMetalLayer class]]) {
+        // Taste knob: 2 (default) trades ~24MB/window for the
+        // occasional sub-frame queue at bursts; XEROTTY_GPU_DRAWABLES=3
+        // buys zero queueing back at full MAILBOX depth.
+        int depth = 2;
+        const char* env = SDL_getenv("XEROTTY_GPU_DRAWABLES");
+        if (env && env[0] == '3') depth = 3;
+        ((CAMetalLayer*)layer).maximumDrawableCount = depth;
+    }
 }
