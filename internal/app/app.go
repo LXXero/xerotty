@@ -274,7 +274,6 @@ type tabDrag struct {
 // initialized.
 func New(cfg config.Config) *App {
 	a := &App{cfg: cfg}
-	a.ensureGlowTicker()
 	// Tab-source modes:
 	//   "" / "pty"      — in-process PTY (default)
 	//   "daemon"        — local auto-spawned daemon
@@ -1824,16 +1823,27 @@ func (a *App) startMouseMirrorWakePoller() func() {
 	go func() {
 		defer close(done)
 
+		// Adaptive cadence: 30ms only briefly after a button edge
+		// (when a second edge could plausibly follow); 150ms when the
+		// button state has been stable. A permanent 30ms ticker kept
+		// Go's timer machinery hot forever for a poller whose entire
+		// job is catching the RARE click SDL drops — the mirror's own
+		// defer window is ~15 frames, so 150ms detection latency for
+		// the first edge changes nothing user-visible.
 		prev := sdlhack.LeftButtonPhysicalDown()
-		ticker := time.NewTicker(30 * time.Millisecond)
-		defer ticker.Stop()
-
+		fast := 0
 		for {
+			d := 150 * time.Millisecond
+			if fast > 0 {
+				d = 30 * time.Millisecond
+				fast--
+			}
 			select {
-			case <-ticker.C:
+			case <-time.After(d):
 				down := sdlhack.LeftButtonPhysicalDown()
 				if down != prev {
 					prev = down
+					fast = 40 // ~1.2s of fast polling after an edge
 					platform.PostWake()
 				}
 			case <-stop:
@@ -2344,6 +2354,11 @@ func (a *App) Run() error {
 		// the next toggle when a focused cursor is blinking; the safety
 		// net (not an infinite block) bounds any missed wake.
 		a.idleWakeMs = idleSafetyNetMs
+		// Lava lamp pacing rides the idle timeout (see glowIdleWakeMs)
+		// instead of a dedicated Go ticker.
+		if ms := a.glowIdleWakeMs(); ms > 0 && ms < a.idleWakeMs {
+			a.idleWakeMs = ms
+		}
 		// Apply any forwarded single-instance launches before the
 		// window walk so a "new window" request renders this frame.
 		a.drainLaunchRequests()

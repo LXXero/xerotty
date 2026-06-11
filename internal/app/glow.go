@@ -200,37 +200,26 @@ func max32(a, b float32) float32 {
 	return b
 }
 
-// ensureGlowTicker starts/stops the low-fps self-wake that drives
-// the animation. The render loop is otherwise event-driven (and we
-// want to keep it that way for idle power), so an animated backdrop
-// has to bring its own heartbeat. Called at startup and whenever
-// prefs apply.
-func (a *App) ensureGlowTicker() {
-	enabled := a.cfg.Appearance.Glow.Enabled
-	if enabled && a.glowStop == nil {
-		fps := a.cfg.Appearance.Glow.FPS
-		if fps <= 0 {
-			fps = 20
-		}
-		if fps > 60 {
-			fps = 60
-		}
-		stop := make(chan struct{})
-		a.glowStop = stop
-		go func() {
-			tick := time.NewTicker(time.Second / time.Duration(fps))
-			defer tick.Stop()
-			for {
-				select {
-				case <-stop:
-					return
-				case <-tick.C:
-					platform.PostWake()
-				}
-			}
-		}()
-	} else if !enabled && a.glowStop != nil {
-		close(a.glowStop)
-		a.glowStop = nil
+// glowIdleWakeMs returns the glow animation interval in ms, or 0
+// when the lamp is off. The animation is paced by the render loop's
+// EXISTING idle timeout instead of a dedicated Go ticker: a
+// permanent time.Ticker kept the Go runtime's timer machinery
+// (sysmon, timer-owning Ms) cycling on short deadlines forever, and
+// every tick paid a cross-thread relay (Go timer -> M wakeup ->
+// PostWake -> SDL event -> main thread). Folding the deadline into
+// the C-side wait the main thread already parks in makes each tick
+// ONE timer arm in ONE thread — powermetrics-visible difference on
+// macOS.
+func (a *App) glowIdleWakeMs() int {
+	if !a.cfg.Appearance.Glow.Enabled {
+		return 0
 	}
+	fps := a.cfg.Appearance.Glow.FPS
+	if fps <= 0 {
+		fps = 20
+	}
+	if fps > 60 {
+		fps = 60
+	}
+	return 1000 / fps
 }

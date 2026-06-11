@@ -718,7 +718,6 @@ func (a *Window) applyPreferences() {
 	prevPad := a.app.cfg.Appearance.Padding
 
 	a.prefDialog.applyTo(&a.app.cfg)
-	a.app.ensureGlowTicker()
 
 	// Tab source mode flip. Only honor pty → daemon switches that
 	// previously had no hub (auto-spawn the daemon now). Going
