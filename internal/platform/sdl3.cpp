@@ -345,8 +345,43 @@ extern "C" void platform_mark_viewport_dirty(unsigned long window_id) {
     if (g_dirty_n < 256) g_dirty_ids[g_dirty_n++] = id;
 }
 
+// Newborn warm-up: macOS DROPS presents for a window that isn't
+// fully ordered-in yet. Pre-damage-tracking, every window rendered
+// every frame so the dropped early presents were invisibly retried;
+// with damage tracking the creation-event dirt washed out before the
+// window became presentable and it sat BLANK until a click marked it
+// focus-dirty (mac GL regression). Render every frame until the OS
+// confirms visibility (EXPOSED / FOCUS_GAINED) AND a settle period
+// passes — then damage tracking takes over. Steady-state cost: one
+// timestamp compare.
+#define XT_WARMUP_MS 2000
+static Uint32 g_warm_ids[64];
+static Uint64 g_warm_until[64];
+static int    g_warm_n = 0;
+
+static void warmup_note(Uint32 id) {
+    if (id == 0) return;
+    Uint64 until = SDL_GetTicks() + XT_WARMUP_MS;
+    for (int i = 0; i < g_warm_n; i++)
+        if (g_warm_ids[i] == id) { return; } // already warming
+    if (g_warm_n < 64) { g_warm_ids[g_warm_n] = id; g_warm_until[g_warm_n] = until; g_warm_n++; }
+}
+
+static int warmup_active(Uint32 id) {
+    Uint64 now = SDL_GetTicks();
+    for (int i = 0; i < g_warm_n; i++) {
+        if (g_warm_ids[i] != id) continue;
+        if (now < g_warm_until[i]) return 1;
+        g_warm_ids[i] = g_warm_ids[--g_warm_n];
+        g_warm_until[i] = g_warm_until[g_warm_n];
+        return 0;
+    }
+    return 0;
+}
+
 static int window_wants_render(Uint32 id) {
     if (!g_damage_enabled) return 1;
+    if (warmup_active(id)) return 1;
     for (int i = 0; i < g_evented_n; i++) if (g_evented_ids[i] == id) return 1;
     for (int i = 0; i < g_dirty_n; i++) if (g_dirty_ids[i] == id) return 1;
     return 0;
@@ -396,8 +431,13 @@ static int drain_events() {
             case SDL_EVENT_WINDOW_OCCLUDED:
                 occluded_set(e.window.windowID, 1);
                 break;
-            case SDL_EVENT_WINDOW_EXPOSED:
             case SDL_EVENT_WINDOW_SHOWN:
+                // Fresh window: keep rendering through Cocoa's
+                // order-in latency (see warmup_note).
+                warmup_note(e.window.windowID);
+                occluded_set(e.window.windowID, 0);
+                break;
+            case SDL_EVENT_WINDOW_EXPOSED:
             case SDL_EVENT_WINDOW_RESTORED:
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 occluded_set(e.window.windowID, 0);
