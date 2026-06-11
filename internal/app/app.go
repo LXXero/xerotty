@@ -2230,6 +2230,15 @@ func (a *App) Run() error {
 	// backend.CreateBackend + sdlbackend.NewSDLBackend + CreateWindow
 	// chain — single call, no hidden carrier window (the OS window IS
 	// the main window).
+	// renderer="gpu" from config opts into the SDL_GPU backend for
+	// launches that can't carry env vars (Finder / app menus). Env
+	// always wins so a terminal A/B can override the config.
+	if os.Getenv("XEROTTY_GPU") == "" {
+		switch strings.ToLower(a.cfg.Renderer) {
+		case "gpu", "sdlgpu", "sdl_gpu":
+			os.Setenv("XEROTTY_GPU", "1")
+		}
+	}
 	if err := platform.Init("xerotty", w.width, w.height); err != nil {
 		return fmt.Errorf("platform.Init: %w", err)
 	}

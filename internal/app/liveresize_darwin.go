@@ -27,13 +27,17 @@ package app
 
 extern void ImGui_ImplSDL3_NewFrame(void);
 extern bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event);
-extern void ImGui_ImplOpenGL3_NewFrame(void);
-extern void ImGui_ImplOpenGL3_RenderDrawData(void* draw_data);
 extern void igNewFrame(void);
 extern void igRender(void);
-extern void* igGetDrawData(void);
-extern void igUpdatePlatformWindows(void);
-extern void igRenderPlatformWindowsDefault(void* platform_render_arg, void* renderer_render_arg);
+
+// Backend-agnostic frame plumbing exported by sdl3.cpp: the watch
+// must not hardcode a renderer — under the SDL_GPU backend there is
+// NO GL context, which silently disabled the old GL-only watch and
+// made live resize stretch the last frame until mouse release.
+extern int platform_use_gpu(void);
+extern SDL_Window* platform_main_window(void);
+extern void platform_backend_new_frame(void);
+extern void platform_backend_present_all(void);
 
 // //export'd from Go below.
 extern void xerottyLiveResizeFrame(void);
@@ -53,7 +57,8 @@ static bool xerottyLiveResizeEvent(const SDL_Event* event) {
 
 static bool xerottySizeChangedWatch(void* ud, SDL_Event* event) {
   (void)ud;
-  if (gWatchWindow == NULL || gWatchContext == NULL) return false;
+  if (gWatchWindow == NULL) return false;
+  if (!platform_use_gpu() && gWatchContext == NULL) return false;
   if (!xerottyLiveResizeEvent(event)) return false;
   if (event->window.windowID == 0) return false;
   if (!platform_cocoa_window_in_live_resize((unsigned long)event->window.windowID)) return false;
@@ -62,37 +67,31 @@ static bool xerottySizeChangedWatch(void* ud, SDL_Event* event) {
 
   gWatchInRender = 1;
 
-  SDL_Window *backup_window = SDL_GL_GetCurrentWindow();
-  SDL_GLContext backup_context = SDL_GL_GetCurrentContext();
-  SDL_GL_MakeCurrent(gWatchWindow, gWatchContext);
+  SDL_Window *backup_window = NULL;
+  SDL_GLContext backup_context = NULL;
+  if (!platform_use_gpu()) {
+    backup_window = SDL_GL_GetCurrentWindow();
+    backup_context = SDL_GL_GetCurrentContext();
+    SDL_GL_MakeCurrent(gWatchWindow, gWatchContext);
+  }
 
   xerottyLiveResizeBeforeRender();
 
-  ImGui_ImplOpenGL3_NewFrame();
+  platform_backend_new_frame();
   if (event->type == SDL_EVENT_WINDOW_RESIZED) {
     ImGui_ImplSDL3_ProcessEvent(event);
   }
   ImGui_ImplSDL3_NewFrame();
   igNewFrame();
 
-  int w = 0, h = 0;
-  SDL_GetWindowSizeInPixels(gWatchWindow, &w, &h);
-  glViewport(0, 0, w, h);
-  glClearColor(gWatchBg[0], gWatchBg[1], gWatchBg[2], gWatchBg[3]);
-  glClear(GL_COLOR_BUFFER_BIT);
-
   xerottyLiveResizeFrame();
 
   igRender();
-  ImGui_ImplOpenGL3_RenderDrawData(igGetDrawData());
+  // Render + present every visible window through whichever backend
+  // is live (damage tracking bypassed: a resize IS a visual change).
+  platform_backend_present_all();
 
-  igUpdatePlatformWindows();
-  igRenderPlatformWindowsDefault(NULL, NULL);
-
-  SDL_GL_MakeCurrent(gWatchWindow, gWatchContext);
-  SDL_GL_SwapWindow(gWatchWindow);
-
-  if (backup_window != NULL && backup_context != NULL) {
+  if (!platform_use_gpu() && backup_window != NULL && backup_context != NULL) {
     SDL_GL_MakeCurrent(backup_window, backup_context);
   }
   gWatchInRender = 0;
@@ -100,7 +99,10 @@ static bool xerottySizeChangedWatch(void* ud, SDL_Event* event) {
 }
 
 static void xerottyInstallLiveResizeWatch(float r, float g, float b) {
-  gWatchWindow = SDL_GL_GetCurrentWindow();
+  // platform_main_window, NOT SDL_GL_GetCurrentWindow: under the GPU
+  // backend there is no current GL window and the watch never
+  // installed at all (the live-resize stretch bug).
+  gWatchWindow = platform_main_window();
   gWatchContext = SDL_GL_GetCurrentContext();
   gWatchBg[0] = r; gWatchBg[1] = g; gWatchBg[2] = b; gWatchBg[3] = 1.0f;
   if (!gWatchInstalled) {

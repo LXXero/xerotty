@@ -148,7 +148,13 @@ extern "C" int platform_init(const char* title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    if (SDL_getenv("XEROTTY_GPU")) g_use_gpu = 1;
+    // Value-aware: XEROTTY_GPU=0/false/off disables. (The first cut
+    // tested PRESENCE, so =0 silently ENABLED the GPU backend — the
+    // user's A/B was GPU vs GPU and nobody could tell what was what.)
+    if (const char* gp = SDL_getenv("XEROTTY_GPU")) {
+        g_use_gpu = !(gp[0] == '\0' || gp[0] == '0' ||
+                      SDL_strcasecmp(gp, "false") == 0 || SDL_strcasecmp(gp, "off") == 0);
+    }
     SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE
                           | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     if (!g_use_gpu) flags |= SDL_WINDOW_OPENGL;
@@ -241,6 +247,9 @@ extern "C" int platform_init(const char* title, int width, int height) {
             return 0;
         }
     }
+
+    fprintf(stderr, "xerotty: render backend: %s\n",
+            g_use_gpu ? "sdl_gpu (metal/vulkan)" : "opengl");
 
     // On Wayland: bind our own wl_seat off the SDL-owned wl_display so
     // we can issue xdg_popup.grab() ourselves later. SDL3's
@@ -538,7 +547,18 @@ static void platform_do_capture_locked(void) {
 }
 
 
+// backend_present renders + presents everything for the current
+// frame: main window (when visible) and all secondary viewports.
+// respect_damage=0 forces every visible viewport to render — the
+// macOS live-resize watch uses that (a resize IS a visual change,
+// and the damage/evented sets belong to the normal frame loop).
+static void backend_present(int respect_damage);
+
 extern "C" void platform_end_frame(void) {
+    backend_present(1);
+}
+
+static void backend_present(int respect_damage) {
     // Caller (Go) has already called ImGui::Render via cimgui-go.
     //
     // The main scaffolding window is HIDDEN once multi-viewport takes
@@ -590,7 +610,7 @@ extern "C" void platform_end_frame(void) {
                 if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
                 Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
                 if (platform_window_occluded((unsigned long)vpid)) continue;
-                if (!window_wants_render(vpid)) continue;
+                if (respect_damage && !window_wants_render(vpid)) continue;
                 if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
                 if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
                 if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
@@ -634,7 +654,7 @@ extern "C" void platform_end_frame(void) {
                 if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
                 Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
                 if (platform_window_occluded((unsigned long)vpid)) continue;
-                if (!window_wants_render(vpid)) continue;
+                if (respect_damage && !window_wants_render(vpid)) continue;
                 if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
                 if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
                 if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
@@ -902,6 +922,20 @@ extern "C" void platform_delete_texture(unsigned long long tex_id) {
     GLuint id = (GLuint)tex_id;
     glBindTexture(GL_TEXTURE_2D, 0);
     glDeleteTextures(1, &id);
+}
+
+// --- macOS live-resize support (called from liveresize_darwin.go's
+// event watch, which must drive frames while AppKit's tracking loop
+// starves the normal pump) ---
+extern "C" SDL_Window* platform_main_window(void) { return g_window; }
+
+extern "C" void platform_backend_new_frame(void) {
+    if (g_use_gpu) ImGui_ImplSDLGPU3_NewFrame();
+    else           ImGui_ImplOpenGL3_NewFrame();
+}
+
+extern "C" void platform_backend_present_all(void) {
+    backend_present(0);
 }
 
 extern "C" void platform_post_wake(void) {

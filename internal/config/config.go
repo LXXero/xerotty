@@ -11,7 +11,13 @@ import (
 
 // Config is the top-level configuration struct parsed from config.toml.
 type Config struct {
-	Shell      string            `toml:"shell"`
+	Shell string `toml:"shell"`
+	// Renderer selects the GPU backend: "" / "gl" = OpenGL (default),
+	// "gpu" = SDL_GPU (Metal on macOS, Vulkan on Linux). The
+	// XEROTTY_GPU env var overrides when set — but env doesn't reach
+	// Finder/app-menu launches, which is exactly what this option is
+	// for.
+	Renderer   string            `toml:"renderer"`
 	Term       string            `toml:"term"`
 	Appearance Appearance        `toml:"appearance"`
 	Font       FontConfig        `toml:"font"`
