@@ -541,10 +541,33 @@ static int drain_events() {
     return n;
 }
 
+// XEROTTY_DEBUG_LOOP=1: once per second, print loop-health counters
+// — frames rendered, wait calls (split by sub-2ms timer deadlines),
+// events drained, smallest idle timeout used. For diagnosing wakeup
+// storms reported by powermetrics.
+static Uint64 g_dbg_last_ns = 0;
+static int g_dbg_frames = 0, g_dbg_waits = 0, g_dbg_waits_sub2 = 0,
+           g_dbg_events = 0, g_dbg_idle_waits = 0, g_dbg_min_idle_ms = 1 << 30;
+
+static void dbg_loop_tick(void) {
+    if (!SDL_getenv("XEROTTY_DEBUG_LOOP")) return;
+    Uint64 now = SDL_GetTicksNS();
+    if (g_dbg_last_ns == 0) g_dbg_last_ns = now;
+    if (now - g_dbg_last_ns >= 1000000000ull) {
+        fprintf(stderr, "[loop] frames=%d waits=%d (sub2ms=%d) idle_waits=%d min_idle_ms=%d events=%d\n",
+                g_dbg_frames, g_dbg_waits, g_dbg_waits_sub2, g_dbg_idle_waits,
+                g_dbg_min_idle_ms == (1 << 30) ? -1 : g_dbg_min_idle_ms, g_dbg_events);
+        g_dbg_frames = g_dbg_waits = g_dbg_waits_sub2 = g_dbg_events = g_dbg_idle_waits = 0;
+        g_dbg_min_idle_ms = 1 << 30;
+        g_dbg_last_ns = now;
+    }
+}
+
 extern "C" int platform_begin_frame(void) {
     // New frame: previous frame's damage/evented sets expire.
     g_evented_n = 0;
     g_dirty_n = 0;
+    dbg_loop_tick();
 
     // Render-on-demand with a frame cap.
     //
@@ -570,9 +593,12 @@ extern "C" int platform_begin_frame(void) {
         // exactly one frame to toggle the cursor.
         for (;;) {
             int to = g_idle_timeout_ms;
+            g_dbg_idle_waits++;
+            if (to < g_dbg_min_idle_ms) g_dbg_min_idle_ms = to;
             if (to > 0) SDL_WaitEventTimeout(nullptr, to);
             else        SDL_WaitEvent(nullptr);
             int got = drain_events();
+            g_dbg_events += got;
             if (g_quit) return 0;
             if (got > 0) { g_render_credits = RENDER_SETTLE; break; }
             if (to > 0)  { g_render_credits = 1; break; } // blink/safety tick
@@ -587,8 +613,12 @@ extern "C" int platform_begin_frame(void) {
             // Round up so we don't busy-spin on sub-ms residuals.
             Sint32 ms_left = (Sint32)((next_render_ns - now + 999999ull) / 1000000ull);
             if (ms_left <= 0) break;
+            g_dbg_waits++;
+            if (ms_left <= 2) g_dbg_waits_sub2++;
             SDL_WaitEventTimeout(nullptr, ms_left);
-            if (drain_events() > 0) g_render_credits = RENDER_SETTLE;
+            int got2 = drain_events();
+            g_dbg_events += got2;
+            if (got2 > 0) g_render_credits = RENDER_SETTLE;
         }
         if (g_quit) return 0;
     }
