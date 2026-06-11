@@ -30,6 +30,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
+extern "C" int platform_use_metal(void);
+
 extern "C" {
 
 // Mirrors platform.GlyphQuad — keep field order/size in sync.
@@ -114,6 +116,10 @@ int platform_render_quads_to_texture(
     const void* quads_ptr, int n
 ) {
     if (px_w <= 0 || px_h <= 0 || disp_w <= 0 || disp_h <= 0) return 0;
+    // Metal slice 1: no offscreen compositor yet — returning 0 makes
+    // the renderer fall back to direct quad stamping, which Metal
+    // presents cheaply (async, no per-swap copy) anyway.
+    if (platform_use_metal()) return 0;
     if (xt_load_fbo_procs() != 1) return 0;
     if (!ImGui::GetCurrentContext()) return 0;
 
