@@ -261,6 +261,8 @@ type App struct {
 type tabDrag struct {
 	Term               terminal.Source
 	Label              string  // for floating-preview rendering
+	Title              string  // OSC title carried across the drag (AdoptTab starts empty)
+	Host               string  // remote-host badge, ditto
 	From               *Window // window the tab originated in; used to reject stale source focus
 	LastFocus          uintptr // SDL_WindowID last seen under the cursor during the drag
 	WaylandStarted     bool
@@ -1862,8 +1864,19 @@ func (a *App) startMouseMirrorWakePoller() func() {
 // its first tab adopts the given already-running Terminal instead
 // of starting a fresh shell. Used by cross-Window tab drag when the
 // user drops the floating tab outside any existing Window.
-func (a *App) spawnWindowAdopting(term terminal.Source) {
-	a.spawnWindowImpl(term)
+func (a *App) spawnWindowAdopting(d *tabDrag) {
+	a.spawnWindowImpl(d.Term)
+	// The freshly spawned window's adopted tab is the active one.
+	// Same identity transfer as adoptDraggedTab (see there for why).
+	if len(a.windows) > 0 {
+		w := a.windows[len(a.windows)-1]
+		if tab := w.tabs.Active(); tab != nil && tab.Terminal == d.Term {
+			tab.Host = d.Host
+			if d.Title != "" {
+				tab.SetTitle(d.Title)
+			}
+		}
+	}
 }
 
 // spawnWindow adds a new Window to this App in the same process. The
@@ -2939,7 +2952,7 @@ func (a *App) updateTabDragDrop() {
 		return
 	}
 
-	a.spawnWindowAdopting(d.Term)
+	a.spawnWindowAdopting(d)
 	a.dragTab = nil
 }
 
@@ -3014,7 +3027,17 @@ func (w *Window) adoptDraggedTab(d *tabDrag) {
 	if cols > 1 && rows > 1 {
 		d.Term.Resize(cols, rows)
 	}
-	w.tabs.AdoptTab(d.Term)
+	tab := w.tabs.AdoptTab(d.Term)
+	// Carry identity across the drag: AdoptTab starts with an empty
+	// title, and the fallback (foreground process name) can be
+	// nonsense — Claude Code's binary is literally a file named
+	// after its version, so dropped titles showed "2.1.172". Daemon
+	// tabs would self-heal on the next TabState tick; PTY tabs never
+	// would.
+	tab.Host = d.Host
+	if d.Title != "" {
+		tab.SetTitle(d.Title)
+	}
 	w.persistDaemonTabMove(d.Term)
 }
 
@@ -5122,6 +5145,8 @@ func (w *Window) renderTabBar() {
 				drag := &tabDrag{
 					Term:      t.Terminal,
 					Label:     t.DisplayTitle(),
+					Title:     t.Title(),
+					Host:      t.Host,
 					From:      w,
 					LastFocus: w.sdlWindowHandle(),
 				}
