@@ -27,7 +27,12 @@ package platform
 // the OpenGL framework, and the wayland/X11 libs are absent (replaced by
 // the _darwin.c stub TUs); Cocoa is already linked by cellsnap_darwin.go.
 #cgo linux  LDFLAGS: -lGL -lstdc++ -lm -lwayland-client -lX11
-#cgo darwin LDFLAGS: -lstdc++ -lm -framework OpenGL -framework Metal -framework MetalKit -framework QuartzCore
+// libxtmetal.a carries the ObjC++ Metal backend (xt_metal_darwin.mm
+// + vendored imgui_impl_metal): Go's build system ignores .mm files,
+// so the Makefile pre-compiles them on darwin (make build/app).
+// Plain `go build` on a mac without running make first will fail to
+// link — build via ./build.sh or make, per CLAUDE.md.
+#cgo darwin LDFLAGS: ${SRCDIR}/libxtmetal.a -lstdc++ -lm -framework OpenGL -framework Metal -framework MetalKit -framework QuartzCore
 
 #include <stdlib.h>
 #include <SDL3/SDL.h>

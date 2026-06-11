@@ -14,3 +14,5 @@ imgui.ini
 icon/xerotty.iconset/
 icon/xerotty-*.png
 !icon/xerotty-256.png
+internal/platform/libxtmetal.a
+internal/platform/*.o
