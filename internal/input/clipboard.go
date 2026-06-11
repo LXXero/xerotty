@@ -113,6 +113,15 @@ func isWayland() bool {
 }
 
 func primaryReadUnix() (string, error) {
+	// Native first: SDL3 speaks the PRIMARY selection directly
+	// (zwp_primary_selection on Wayland, XA_PRIMARY on X11) — no
+	// subprocess. The tool chain below survives only as a fallback
+	// for SDL failure; the old order forked wl-paste/xclip on every
+	// middle-click.
+	if p := C.SDL_GetPrimarySelectionText(); p != nil {
+		defer C.SDL_free(unsafe.Pointer(p))
+		return C.GoString(p), nil
+	}
 	if isWayland() {
 		out, err := exec.Command("wl-paste", "--no-newline", "--primary").Output()
 		if err == nil {
@@ -131,6 +140,16 @@ func primaryReadUnix() (string, error) {
 }
 
 func primaryWriteUnix(text string) error {
+	// Native first (see primaryReadUnix). The old path forked
+	// wl-copy on EVERY selection release — and wl-copy daemonizes to
+	// serve the selection, so each drag-select left a lingering
+	// process behind.
+	cs := C.CString(text)
+	ok := bool(C.SDL_SetPrimarySelectionText(cs))
+	C.free(unsafe.Pointer(cs))
+	if ok {
+		return nil
+	}
 	if isWayland() {
 		cmd := exec.Command("wl-copy", "--primary")
 		cmd.Stdin = strings.NewReader(text)
