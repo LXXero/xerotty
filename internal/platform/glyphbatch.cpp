@@ -198,6 +198,16 @@ int platform_render_quads_to_texture(
     glBindTexture(GL_TEXTURE_2D, (GLuint)prev_tex);
     glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2], prev_viewport[3]);
     if (prev_scissor) glEnable(GL_SCISSOR_TEST);
+    // Cross-context visibility: this texture is rendered with the
+    // MAIN context current but sampled by each viewport window's own
+    // share-group context. Apple's GL requires an explicit flush in
+    // the producing context before other contexts observe the
+    // texture's new contents — without it, mac windows drew their
+    // cursor (a plain ImGui rect) but NO text (the cell-layer blit
+    // sampled stale/empty memory) until a raise/redraw cycle flushed
+    // incidentally. Mesa is lenient; once per content change is
+    // negligible either way.
+    glFlush();
     return 1;
 }
 
