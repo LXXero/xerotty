@@ -35,7 +35,6 @@
 
 #ifdef __APPLE__
 #include "cocoa_focus.h"
-#include "xt_metal.h"
 #endif
 
 // Globals visible to popup_imgui.cpp — kept at file scope (no anonymous
@@ -53,11 +52,6 @@ Uint32        g_wake_event_type = 0;
 // of a hidden window blocks in Cocoa's GL sync — 51% of the main
 // thread on a mac sample).
 static int    g_main_hidden = 0;
-// Render backend selector: 0 = OpenGL (default everywhere), 1 =
-// Metal (darwin, opt-in via XEROTTY_METAL=1 — see xt_metal.h).
-static int    g_use_metal = 0;
-
-extern "C" int platform_use_metal(void) { return g_use_metal; }
 
 namespace {
 
@@ -142,12 +136,9 @@ extern "C" int platform_init(const char* title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-#ifdef __APPLE__
-    if (SDL_getenv("XEROTTY_METAL")) g_use_metal = 1;
-#endif
-    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE
+    SDL_WindowFlags flags = SDL_WINDOW_OPENGL
+                          | SDL_WINDOW_RESIZABLE
                           | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (!g_use_metal) flags |= SDL_WINDOW_OPENGL;
     g_window = SDL_CreateWindow(title, width, height, flags);
     if (!g_window) {
         set_err("SDL_CreateWindow");
@@ -162,26 +153,21 @@ extern "C" int platform_init(const char* title, int width, int height) {
     // and after window creation but before any events get pumped.
     SDL_StartTextInput(g_window);
 
-    if (!g_use_metal) {
-        g_gl_ctx = SDL_GL_CreateContext(g_window);
-        if (!g_gl_ctx) {
-            set_err("SDL_GL_CreateContext");
-            SDL_DestroyWindow(g_window);
-            g_window = nullptr;
-            SDL_Quit();
-            return 0;
-        }
-        SDL_GL_MakeCurrent(g_window, g_gl_ctx);
+    g_gl_ctx = SDL_GL_CreateContext(g_window);
+    if (!g_gl_ctx) {
+        set_err("SDL_GL_CreateContext");
+        SDL_DestroyWindow(g_window);
+        g_window = nullptr;
+        SDL_Quit();
+        return 0;
     }
+    SDL_GL_MakeCurrent(g_window, g_gl_ctx);
 
     // Enable vsync. Try adaptive (-1) first, fall back to standard (1).
     // Driver-side enforcement is best-effort: on AMD/Mesa we observed
     // SwapInterval accepted but silently no-op'd; the manual frame
     // cap in begin_frame covers that case.
-    if (g_use_metal) {
-        // Metal present is async by nature; vsync handling lives in
-        // the CAMetalLayer. Nothing to set here.
-    } else if (SDL_getenv("XEROTTY_NO_VSYNC")) {
+    if (SDL_getenv("XEROTTY_NO_VSYNC")) {
         // Experiment knob: macOS routes GL presents through the
         // Metal shim + a synchronous SkyLight commit; vsync stacks a
         // blocking wait per swap ON TOP of that, serialized across
@@ -199,27 +185,13 @@ extern "C" int platform_init(const char* title, int width, int height) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
 
-#ifdef __APPLE__
-    if (g_use_metal) {
-        if (!ImGui_ImplSDL3_InitForMetal(g_window)) {
-            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForMetal failed");
-            return 0;
-        }
-        if (!xt_metal_init(g_window)) {
-            std::snprintf(g_err, sizeof(g_err), "Metal init failed (no device?)");
-            return 0;
-        }
-    } else
-#endif
-    {
-        if (!ImGui_ImplSDL3_InitForOpenGL(g_window, g_gl_ctx)) {
-            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForOpenGL failed");
-            return 0;
-        }
-        if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
-            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplOpenGL3_Init failed");
-            return 0;
-        }
+    if (!ImGui_ImplSDL3_InitForOpenGL(g_window, g_gl_ctx)) {
+        std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForOpenGL failed");
+        return 0;
+    }
+    if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+        std::snprintf(g_err, sizeof(g_err), "ImGui_ImplOpenGL3_Init failed");
+        return 0;
     }
 
     // On Wayland: bind our own wl_seat off the SDL-owned wl_display so
@@ -443,9 +415,6 @@ extern "C" int platform_begin_frame(void) {
     if (next_render_ns < now) next_render_ns = now + g_target_frame_ns;
 
     if (g_render_credits > 0) g_render_credits--;
-#ifdef __APPLE__
-    if (g_use_metal) xt_metal_new_frame(); else
-#endif
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     // Caller (Go) calls ImGui::NewFrame via cimgui-go next.
@@ -534,38 +503,6 @@ extern "C" void platform_end_frame(void) {
     // hidden (its draw data is empty anyway); a capture targeting
     // window id 0 still takes the full path below.
     int main_visible = !g_main_hidden || (g_cap_pending && g_cap_window_id == 0);
-
-#ifdef __APPLE__
-    if (g_use_metal) {
-        // Metal path: per-viewport rendering goes through
-        // imgui_impl_metal's Renderer_RenderWindow hook (which also
-        // skips occluded windows natively); presents are async, no
-        // SkyLight round-trip, no hidden-window swap pathology.
-        // Cocoa autoreleased objects (drawables, encoders) need a
-        // pool — the cgo thread has none ambient.
-        void* pool = xt_metal_pool_push();
-        if (main_visible)
-            xt_metal_render_main(g_window, g_bg_r, g_bg_g, g_bg_b, g_bg_a);
-        ImGuiIO& mio = ImGui::GetIO();
-        if (mio.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            ImGui::UpdatePlatformWindows();
-            ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
-            for (int i = 1; i < pio.Viewports.Size; i++) {
-                ImGuiViewport* vp = pio.Viewports[i];
-                if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
-                Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
-                if (platform_window_occluded((unsigned long)vpid)) continue;
-                if (!window_wants_render(vpid)) continue;
-                if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
-                if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
-                if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
-                if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(vp, nullptr);
-            }
-        }
-        xt_metal_pool_pop(pool);
-        return;
-    }
-#endif
     if (main_visible) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(g_window, &w, &h);
@@ -783,9 +720,6 @@ extern "C" unsigned long platform_mouse_focus_window_id(void) {
 // our vendored ImGui), which is what ImGui's draw list expects.
 extern "C" unsigned long long platform_create_texture(const unsigned char* pixels,
                                                        int width, int height) {
-#ifdef __APPLE__
-    if (g_use_metal) return xt_metal_create_texture(pixels, width, height);
-#endif
     GLint last_texture;
     GLuint tex_id;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
@@ -802,9 +736,6 @@ extern "C" unsigned long long platform_create_texture(const unsigned char* pixel
 extern "C" void platform_update_texture(unsigned long long tex_id, int x, int y,
                                         int width, int height,
                                         const unsigned char* pixels) {
-#ifdef __APPLE__
-    if (g_use_metal) { xt_metal_update_texture(tex_id, x, y, width, height, pixels); return; }
-#endif
     GLint last_texture;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
     glBindTexture(GL_TEXTURE_2D, (GLuint)tex_id);
@@ -814,9 +745,6 @@ extern "C" void platform_update_texture(unsigned long long tex_id, int x, int y,
 }
 
 extern "C" void platform_delete_texture(unsigned long long tex_id) {
-#ifdef __APPLE__
-    if (g_use_metal) { xt_metal_delete_texture(tex_id); return; }
-#endif
     GLuint id = (GLuint)tex_id;
     glBindTexture(GL_TEXTURE_2D, 0);
     glDeleteTextures(1, &id);
@@ -834,9 +762,6 @@ extern "C" void platform_shutdown(void) {
     wlgrab_shutdown();
 
     if (ImGui::GetCurrentContext()) {
-#ifdef __APPLE__
-        if (g_use_metal) xt_metal_shutdown(); else
-#endif
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
