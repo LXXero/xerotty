@@ -41,28 +41,7 @@ generate:
 	}
 	$(GO) generate ./...
 
-# Go's build system compiles .m (ObjC) but silently IGNORES .mm
-# (ObjC++) — and imgui's Metal backend is inherently ObjC++. On
-# darwin the two .mm TUs are pre-compiled here into a static lib
-# that the platform package's cgo LDFLAGS link in. Flags mirror the
-# package's CXXFLAGS; MRC (no -fobjc-arc) to match the vendored
-# imgui_impl_metal copy.
-XTMETAL_DIR  := internal/platform
-XTMETAL_A    := $(XTMETAL_DIR)/libxtmetal.a
-XTMETAL_SRCS := $(XTMETAL_DIR)/xt_metal_darwin.mm $(XTMETAL_DIR)/imgui_impl_metal_darwin.mm
-XTMETAL_OBJS := $(XTMETAL_SRCS:.mm=.o)
-
-%.o: %.mm
-	clang++ -c -x objective-c++ -std=c++17 -fno-exceptions -fno-rtti -O2 	  -I$(XTMETAL_DIR)/imgui -I$(XTMETAL_DIR)/imgui_backends -I$(XTMETAL_DIR) 	  $$(pkg-config --cflags sdl3) $< -o $@
-
-$(XTMETAL_A): $(XTMETAL_OBJS)
-	ar rcs $@ $^
-
-ifeq ($(UNAME_S),Darwin)
-build: generate $(XTMETAL_A)
-else
 build: generate
-endif
 	$(GO) build -o $(BINARY) ./cmd/xerotty
 	@echo "built: $(CURDIR)/$(BINARY)"
 
