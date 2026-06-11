@@ -75,6 +75,11 @@ int platform_cocoa_event_on_chrome(void);
 // our windows, but [NSApp isActive] flips to NO on deactivation.
 int platform_cocoa_app_is_active(void);
 
+// See cocoa_focus_darwin.m — kills AppKit's implicit window
+// animations, which leak permanently-blocked NSAnimation threads on
+// macOS 26 with Metal-layer windows.
+void platform_cocoa_disable_window_animations(unsigned long window_id);
+
 // platform_cocoa_pressed_mouse_buttons returns AppKit's global
 // pressedMouseButtons bitmask. Unlike SDL mouse events, this can be
 // polled while the cursor is outside xerotty.

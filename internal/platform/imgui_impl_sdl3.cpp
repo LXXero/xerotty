@@ -522,6 +522,9 @@ static void ImGui_ImplSDL3_SetupPlatformHandles(ImGuiViewport* viewport, SDL_Win
     viewport->PlatformHandleRaw = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
 #elif defined(__APPLE__)
     viewport->PlatformHandleRaw = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
+    // XEROTTY PATCH: see platform_cocoa_disable_window_animations.
+    extern void platform_cocoa_disable_window_animations(unsigned long window_id);
+    platform_cocoa_disable_window_animations((unsigned long)SDL_GetWindowID(window));
 #endif
 }
 

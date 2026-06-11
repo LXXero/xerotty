@@ -245,6 +245,9 @@ extern "C" int platform_init(const char* title, int width, int height) {
         return 0;
     }
 
+#ifdef __APPLE__
+    platform_cocoa_disable_window_animations((unsigned long)SDL_GetWindowID(g_window));
+#endif
     // SDL3 turns text input OFF by default (SDL2 had it on). Without
     // this, SDL_EVENT_TEXT_INPUT never fires → impl_sdl3 never calls
     // io.AddInputCharactersUTF8 → io.InputQueueCharacters is always

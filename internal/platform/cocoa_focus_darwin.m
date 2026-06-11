@@ -225,3 +225,22 @@ unsigned int platform_cocoa_modifier_flags(void) {
     if (raw & NSEventModifierFlagCommand) out |= 0x08; // SDL_KMOD_GUI
     return out;
 }
+
+// platform_cocoa_disable_window_animations: opt the window out of
+// AppKit's implicit window animations (appear-zoom, frame changes).
+// Under the SDL_GPU/Metal path on macOS 26, those animations run as
+// BLOCKING NSAnimations on dispatch worker threads and never
+// complete for CAMetalLayer-backed windows — a `sample` showed one
+// permanently parked -[NSAnimation _runBlocking] thread PER WINDOW,
+// each sipping sub-millisecond run-loop timers forever (the
+// powermetrics "1800 hair-trigger wakeups/sec" storm). The GL-era
+// sample had zero such threads. Terminals don't need window
+// theatrics; kill them at creation.
+void platform_cocoa_disable_window_animations(unsigned long window_id) {
+    SDL_Window* win = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!win) return;
+    NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+        SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!nswin) return;
+    nswin.animationBehavior = NSWindowAnimationBehaviorNone;
+}
