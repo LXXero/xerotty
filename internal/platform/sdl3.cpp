@@ -330,6 +330,9 @@ extern "C" int platform_init(const char* title, int width, int height) {
         // Main (hidden) window's swapchain follows the same mode.
         SDL_SetGPUSwapchainParameters(g_gpu_dev, g_window,
             SDL_GPU_SWAPCHAINCOMPOSITION_SDR, gi.PresentMode);
+#ifdef __APPLE__
+        platform_cocoa_cap_drawables((unsigned long)SDL_GetWindowID(g_window));
+#endif
         if (!ImGui_ImplSDLGPU3_Init(&gi)) {
             std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDLGPU3_Init failed");
             return 0;

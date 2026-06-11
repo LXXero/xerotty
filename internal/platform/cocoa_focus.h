@@ -80,6 +80,11 @@ int platform_cocoa_app_is_active(void);
 // macOS 26 with Metal-layer windows.
 void platform_cocoa_disable_window_animations(unsigned long window_id);
 
+// See cocoa_focus_darwin.m — caps the CAMetalLayer drawable pool at
+// 2 (from MAILBOX's 3); each drawable is a full Retina window
+// surface, so this is ~24MB per window.
+void platform_cocoa_cap_drawables(unsigned long window_id);
+
 // platform_cocoa_pressed_mouse_buttons returns AppKit's global
 // pressedMouseButtons bitmask. Unlike SDL mouse events, this can be
 // polled while the cursor is outside xerotty.

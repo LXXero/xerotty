@@ -3,6 +3,7 @@
 #include "cocoa_focus.h"
 
 #include <SDL3/SDL.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <Cocoa/Cocoa.h>
 #import <objc/runtime.h>
 #include <stdlib.h>
@@ -243,4 +244,32 @@ void platform_cocoa_disable_window_animations(unsigned long window_id) {
         SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
     if (!nswin) return;
     nswin.animationBehavior = NSWindowAnimationBehaviorNone;
+}
+
+// platform_cocoa_cap_drawables: shrink the window's CAMetalLayer
+// drawable pool from 3 (MAILBOX default) to 2. Each drawable is a
+// full window surface — ~24MB at Retina — so a 15-window fleet was
+// carrying ~1GB of swapchain pools (the GPU build's resident-memory
+// delta vs GL, which double-buffered). At xerotty's self-paced
+// frame rates with non-blocking presents, drawables recycle in
+// milliseconds; a pool of 2 doesn't reintroduce the nextDrawable
+// queue. Must run AFTER SDL_ClaimWindowForGPUDevice attaches the
+// metal layer.
+void platform_cocoa_cap_drawables(unsigned long window_id) {
+    SDL_Window* win = SDL_GetWindowFromID((SDL_WindowID)window_id);
+    if (!win) return;
+    NSWindow* nswin = (__bridge NSWindow*)SDL_GetPointerProperty(
+        SDL_GetWindowProperties(win), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+    if (!nswin) return;
+    // SDL parents its metal view under the content view; find the
+    // CAMetalLayer wherever it hangs.
+    NSView* content = nswin.contentView;
+    CALayer* layer = content.layer;
+    if (![layer isKindOfClass:[CAMetalLayer class]]) {
+        for (NSView* sub in content.subviews) {
+            if ([sub.layer isKindOfClass:[CAMetalLayer class]]) { layer = sub.layer; break; }
+        }
+    }
+    if ([layer isKindOfClass:[CAMetalLayer class]])
+        ((CAMetalLayer*)layer).maximumDrawableCount = 2;
 }

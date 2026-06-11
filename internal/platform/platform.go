@@ -27,7 +27,7 @@ package platform
 // the OpenGL framework, and the wayland/X11 libs are absent (replaced by
 // the _darwin.c stub TUs); Cocoa is already linked by cellsnap_darwin.go.
 #cgo linux  LDFLAGS: -lGL -lstdc++ -lm -lwayland-client -lX11
-#cgo darwin LDFLAGS: -lstdc++ -lm -framework OpenGL
+#cgo darwin LDFLAGS: -lstdc++ -lm -framework OpenGL -framework QuartzCore
 
 #include <stdlib.h>
 #include <SDL3/SDL.h>
