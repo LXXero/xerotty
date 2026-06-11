@@ -47,6 +47,11 @@ SDL_Window*   g_window = nullptr;
 SDL_GLContext g_gl_ctx = nullptr;
 bool          g_quit   = false;
 Uint32        g_wake_event_type = 0;
+// Set once HideMainWindow runs: the main scaffolding window is
+// invisible, so platform_end_frame skips its render + swap (a swap
+// of a hidden window blocks in Cocoa's GL sync — 51% of the main
+// thread on a mac sample).
+static int    g_main_hidden = 0;
 
 namespace {
 
@@ -162,7 +167,15 @@ extern "C" int platform_init(const char* title, int width, int height) {
     // Driver-side enforcement is best-effort: on AMD/Mesa we observed
     // SwapInterval accepted but silently no-op'd; the manual frame
     // cap in begin_frame covers that case.
-    if (!SDL_GL_SetSwapInterval(-1)) {
+    if (SDL_getenv("XEROTTY_NO_VSYNC")) {
+        // Experiment knob: macOS routes GL presents through the
+        // Metal shim + a synchronous SkyLight commit; vsync stacks a
+        // blocking wait per swap ON TOP of that, serialized across
+        // every window on the main thread. Our loop already paces
+        // frames (frame cap + render credits), so tearing isn't a
+        // practical risk for terminal content.
+        SDL_GL_SetSwapInterval(0);
+    } else if (!SDL_GL_SetSwapInterval(-1)) {
         SDL_GL_SetSwapInterval(1);
     }
 
@@ -478,12 +491,26 @@ static void platform_do_capture_locked(void) {
 
 extern "C" void platform_end_frame(void) {
     // Caller (Go) has already called ImGui::Render via cimgui-go.
-    int w = 0, h = 0;
-    SDL_GetWindowSizeInPixels(g_window, &w, &h);
-    glViewport(0, 0, w, h);
-    glClearColor(g_bg_r, g_bg_g, g_bg_b, g_bg_a);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    //
+    // The main scaffolding window is HIDDEN once multi-viewport takes
+    // over (every user-visible window is a secondary viewport), yet
+    // this function used to clear + render + SwapWindow it EVERY
+    // frame. On macOS that swap was catastrophic: Cocoa can't present
+    // an invisible window, so SDL's GL swap parked in a condition-
+    // variable timeout — a mac `sample` showed it as 51% of the main
+    // thread's wallclock, serializing ahead of every real window's
+    // present. Skip the main window's render + swap entirely while
+    // hidden (its draw data is empty anyway); a capture targeting
+    // window id 0 still takes the full path below.
+    int main_visible = !g_main_hidden || (g_cap_pending && g_cap_window_id == 0);
+    if (main_visible) {
+        int w = 0, h = 0;
+        SDL_GetWindowSizeInPixels(g_window, &w, &h);
+        glViewport(0, 0, w, h);
+        glClearColor(g_bg_r, g_bg_g, g_bg_b, g_bg_a);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
 
     // Multi-viewport pass — required when io.ConfigFlags has
     // ViewportsEnable set (the existing app turns it on for the prefs
@@ -527,7 +554,7 @@ extern "C" void platform_end_frame(void) {
         SDL_GL_MakeCurrent(g_window, g_gl_ctx);
         platform_do_capture_locked();
     }
-    SDL_GL_SwapWindow(g_window);
+    if (main_visible) SDL_GL_SwapWindow(g_window);
 
     // (Frame cap is enforced in platform_begin_frame via
     // SDL_WaitEventTimeout — that way input events wake the loop
@@ -560,6 +587,7 @@ extern "C" void platform_set_fullscreen(unsigned long window_id, int enable) {
 
 extern "C" void platform_hide_main_window(void) {
     if (g_window) SDL_HideWindow(g_window);
+    g_main_hidden = 1;
 }
 
 extern "C" void platform_raise_window(unsigned long window_id) {
