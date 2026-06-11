@@ -148,6 +148,17 @@ extern "C" int platform_init(const char* title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
+#ifdef __APPLE__
+    // SDL_GPU (Metal underneath) is the DEFAULT on macOS — the GL
+    // path there is Apple's deprecated GL-on-Metal emulation: every
+    // swap pays a framebuffer copy + a synchronous WindowServer
+    // commit, plus the share-group/occlusion pathologies we kept
+    // patching. User-validated on real hardware. renderer="gl" or
+    // XEROTTY_GPU=0 falls back. Linux keeps GL as default until the
+    // GPU backend ports the offscreen cell compositor (slice 2) —
+    // flipping earlier would LOSE the compositor's perf win there.
+    g_use_gpu = 1;
+#endif
     // Value-aware: XEROTTY_GPU=0/false/off disables. (The first cut
     // tested PRESENCE, so =0 silently ENABLED the GPU backend — the
     // user's A/B was GPU vs GPU and nobody could tell what was what.)

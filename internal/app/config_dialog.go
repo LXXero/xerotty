@@ -46,6 +46,7 @@ var (
 	prefDelModes       = []string{"vt_sequence", "ascii_del"}
 	prefShiftEnters    = []string{"newline", "escape_sequence"}
 	prefHomeEnds       = []string{"ss3", "auto", "csi", "vt"}
+	prefRenderers      = []string{"auto", "gpu", "gl"}
 
 	// Standard terminal font sizes. TTF/OTF fonts scale to any size, but
 	// readable terminal sizes cluster in this range — exposing arbitrary
@@ -212,6 +213,7 @@ type configDialog struct {
 	glowScale          float32
 	glowBlobs          int32
 	bgFPS              int32
+	rendererIdx        int32
 	padding            int32
 	cursorIdx          int32
 	cursorBlink        bool
@@ -453,6 +455,14 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 		d.glowBlobs = 5
 	}
 	d.bgFPS = int32(cfg.Appearance.Glow.BackgroundFPS)
+	switch strings.ToLower(cfg.Renderer) {
+	case "gpu", "sdlgpu", "sdl_gpu":
+		d.rendererIdx = 1
+	case "gl", "opengl":
+		d.rendererIdx = 2
+	default:
+		d.rendererIdx = 0
+	}
 	d.padding = int32(cfg.Appearance.Padding)
 	d.cursorIdx = prefIndexOf(prefCursorStyles, cfg.Appearance.CursorStyle)
 	d.cursorBlink = cfg.Appearance.CursorBlink
@@ -571,6 +581,14 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.Glow.Scale = float64(d.glowScale)
 	cfg.Appearance.Glow.Blobs = int(d.glowBlobs)
 	cfg.Appearance.Glow.BackgroundFPS = int(d.bgFPS)
+	switch d.rendererIdx {
+	case 1:
+		cfg.Renderer = "gpu"
+	case 2:
+		cfg.Renderer = "gl"
+	default:
+		cfg.Renderer = ""
+	}
 	cfg.Appearance.Padding = int(d.padding)
 	if int(d.cursorIdx) < len(prefCursorStyles) {
 		cfg.Appearance.CursorStyle = prefCursorStyles[d.cursorIdx]
@@ -1365,6 +1383,17 @@ func (a *Window) renderPrefShellTabs() {
 	})
 
 	imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
+
+	imgui.Text("Renderer (takes effect on restart)")
+	a.prefCombo("renderer", &d.rendererIdx, prefRenderers, w)
+	switch d.rendererIdx {
+	case 0:
+		imgui.TextDisabled("auto: GPU (Metal) on macOS, OpenGL on Linux")
+	case 1:
+		imgui.TextDisabled("gpu: SDL_GPU — Metal on macOS, Vulkan on Linux")
+	default:
+		imgui.TextDisabled("gl: OpenGL (deprecated emulation on macOS)")
+	}
 
 	imgui.Separator()
 
