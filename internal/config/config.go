@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -425,6 +426,65 @@ func (c *Config) DetectShell() string {
 	return "/bin/sh"
 }
 
+// ShortcutForAction derives a menu item's displayed shortcut from
+// the LIVE keybinds map instead of a hand-maintained parallel
+// string. The old default menus hardcoded their own Shortcut labels,
+// which drifted from the actual bindings (the darwin rename entry
+// showed "Cmd+Shift+R" long after the binding became Cmd+R). Derived
+// labels are always true — including for user-rebound actions. An
+// explicit MenuItem.Shortcut in a user config still overrides.
+//
+// When several chords map to one action, the fewest-modifier (then
+// shortest, then lexical) chord wins — "Ctrl+Plus" over
+// "Ctrl+Shift+Plus" for font_size_up.
+func ShortcutForAction(keybinds map[string]string, action string) string {
+	best := ""
+	for chord, act := range keybinds {
+		if act != action {
+			continue
+		}
+		if best == "" || chordLess(chord, best) {
+			best = chord
+		}
+	}
+	return prettifyChord(best, runtime.GOOS)
+}
+
+func chordLess(a, b string) bool {
+	am, bm := strings.Count(a, "+"), strings.Count(b, "+")
+	if am != bm {
+		return am < bm
+	}
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
+// prettifyChord formats a keybind chord for menu display: macOS
+// shows "Cmd" for the Ctrl token (ImGui's ConfigMacOSXBehaviors maps
+// the physical Cmd key onto ModCtrl, so "Ctrl+R" in the keybinds map
+// IS Cmd+R on a mac), and named punctuation keys render as glyphs.
+func prettifyChord(chord, goos string) string {
+	if chord == "" {
+		return ""
+	}
+	parts := strings.Split(chord, "+")
+	for i, p := range parts {
+		switch p {
+		case "Ctrl":
+			if goos == "darwin" {
+				parts[i] = "Cmd"
+			}
+		case "Comma":
+			parts[i] = ","
+		case "Period":
+			parts[i] = "."
+		}
+	}
+	return strings.Join(parts, "+")
+}
+
 func defaultKeybinds() map[string]string {
 	if runtime.GOOS == "darwin" {
 		return defaultKeybindsDarwin()
@@ -526,8 +586,8 @@ func defaultMenu() MenuConfig {
 func defaultMenuLinux() MenuConfig {
 	return MenuConfig{
 		Items: []MenuItem{
-			{Label: "New Tab", Action: "new_tab", Shortcut: "Ctrl+Shift+T"},
-			{Label: "New Window", Action: "new_window", Shortcut: "Ctrl+Shift+N"},
+			{Label: "New Tab", Action: "new_tab"},
+			{Label: "New Window", Action: "new_window"},
 			// "_remote_hosts" is a placeholder action expanded at
 			// render time into a "Remote" submenu with per-host
 			// new-tab / reattach items, one pair per [[hosts]]
@@ -535,19 +595,19 @@ func defaultMenuLinux() MenuConfig {
 			// configured.
 			{Action: "_remote_hosts"},
 			{Action: "separator"},
-			{Label: "Copy", Action: "copy", Shortcut: "Ctrl+Shift+C", Enabled: "has_selection"},
-			{Label: "Paste", Action: "paste", Shortcut: "Ctrl+Shift+V"},
+			{Label: "Copy", Action: "copy", Enabled: "has_selection"},
+			{Label: "Paste", Action: "paste"},
 			{Action: "separator"},
 			{Label: "Open Link", Action: "open_link", Enabled: "has_link"},
 			{Label: "Copy Link", Action: "copy_link", Enabled: "has_link"},
 			{Action: "separator"},
-			{Label: "Search...", Action: "search", Shortcut: "Ctrl+Shift+F"},
-			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
-			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Ctrl+Shift+O", Checked: "force_opaque"},
+			{Label: "Search...", Action: "search"},
+			{Label: "Fullscreen", Action: "fullscreen"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Checked: "force_opaque"},
 			{Action: "separator"},
-			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Ctrl+Shift+R"},
-			{Label: "Preferences", Action: "preferences", Shortcut: "Ctrl+,"},
-			{Label: "Close Tab", Action: "close_tab", Shortcut: "Ctrl+Shift+W"},
+			{Label: "Rename Tab", Action: "rename_tab"},
+			{Label: "Preferences", Action: "preferences"},
+			{Label: "Close Tab", Action: "close_tab"},
 		},
 	}
 }
@@ -555,26 +615,26 @@ func defaultMenuLinux() MenuConfig {
 func defaultMenuDarwin() MenuConfig {
 	return MenuConfig{
 		Items: []MenuItem{
-			{Label: "New Tab", Action: "new_tab", Shortcut: "Cmd+T"},
-			{Label: "New Window", Action: "new_window", Shortcut: "Cmd+N"},
+			{Label: "New Tab", Action: "new_tab"},
+			{Label: "New Window", Action: "new_window"},
 			// _remote_hosts expands to per-host new/reattach
 			// entries at render time (see app.expandMenu).
 			// Collapses when cfg.Hosts is empty.
 			{Action: "_remote_hosts"},
 			{Action: "separator"},
-			{Label: "Copy", Action: "copy", Shortcut: "Cmd+C", Enabled: "has_selection"},
-			{Label: "Paste", Action: "paste", Shortcut: "Cmd+V"},
+			{Label: "Copy", Action: "copy", Enabled: "has_selection"},
+			{Label: "Paste", Action: "paste"},
 			{Action: "separator"},
 			{Label: "Open Link", Action: "open_link", Enabled: "has_link"},
 			{Label: "Copy Link", Action: "copy_link", Enabled: "has_link"},
 			{Action: "separator"},
-			{Label: "Search...", Action: "search", Shortcut: "Cmd+F"},
-			{Label: "Fullscreen", Action: "fullscreen", Shortcut: "F11"},
-			{Label: "Toggle Opacity", Action: "toggle_opacity", Shortcut: "Cmd+O", Checked: "force_opaque"},
+			{Label: "Search...", Action: "search"},
+			{Label: "Fullscreen", Action: "fullscreen"},
+			{Label: "Toggle Opacity", Action: "toggle_opacity", Checked: "force_opaque"},
 			{Action: "separator"},
-			{Label: "Rename Tab", Action: "rename_tab", Shortcut: "Cmd+R"},
-			{Label: "Preferences", Action: "preferences", Shortcut: "Cmd+,"},
-			{Label: "Close Tab", Action: "close_tab", Shortcut: "Cmd+W"},
+			{Label: "Rename Tab", Action: "rename_tab"},
+			{Label: "Preferences", Action: "preferences"},
+			{Label: "Close Tab", Action: "close_tab"},
 		},
 	}
 }

@@ -475,6 +475,13 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 			out = append(out, cp)
 			continue
 		}
+		// Shortcut labels derive from the live keybinds so they can
+		// never drift from the actual bindings (see
+		// config.ShortcutForAction). An explicit Shortcut in a user
+		// config wins.
+		if item.Shortcut == "" && item.Action != "" {
+			item.Shortcut = config.ShortcutForAction(a.cfg.Keybinds, item.Action)
+		}
 		out = append(out, item)
 	}
 	return out
