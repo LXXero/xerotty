@@ -481,11 +481,17 @@ extern "C" int platform_window_occluded(unsigned long window_id) {
 // Drain all currently queued SDL events into ImGui + our quit flag.
 // Doesn't block. Returns the number of events processed so the caller
 // can decide whether anything happened that warrants a render.
+// Set by drain_events: whether the batch contained any REAL event
+// (input, window system) as opposed to only our own PostWake pings.
+static int g_drain_saw_input = 0;
+
 static int drain_events() {
     SDL_Event e;
     int n = 0;
+    g_drain_saw_input = 0;
     while (SDL_PollEvent(&e)) {
         n++;
+        if (e.type != g_wake_event_type) g_drain_saw_input = 1;
         ImGui_ImplSDL3_ProcessEvent(&e);
         // Damage: remember which windows events addressed this frame.
         // The windowID field lives at the same struct offset for the
@@ -583,7 +589,9 @@ extern "C" int platform_begin_frame(void) {
     static Uint64 next_render_ns = 0;
     if (next_render_ns == 0) next_render_ns = SDL_GetTicksNS();
 
-    if (drain_events() > 0) g_render_credits = RENDER_SETTLE;
+    if (drain_events() > 0)
+        g_render_credits = g_drain_saw_input ? RENDER_SETTLE
+                         : (g_render_credits < 1 ? 1 : g_render_credits);
     if (g_quit) return 0;
 
     if (g_render_credits <= 0) {
@@ -600,7 +608,18 @@ extern "C" int platform_begin_frame(void) {
             int got = drain_events();
             g_dbg_events += got;
             if (g_quit) return 0;
-            if (got > 0) { g_render_credits = RENDER_SETTLE; break; }
+            if (got > 0) {
+                // PostWake pings (glow tick, PTY data) need exactly ONE
+                // frame — the settle credits exist for ImGui hover/
+                // active animations after real input. Granting settle
+                // to every wake made each 20fps glow tick render 3
+                // frames paced at the 4x-refresh cap: on a 120Hz
+                // ProMotion mac that's a sub-2ms timer-arm storm
+                // (powermetrics: ~2000 wakeups/sec where ~200 are
+                // justified).
+                g_render_credits = g_drain_saw_input ? RENDER_SETTLE : 1;
+                break;
+            }
             if (to > 0)  { g_render_credits = 1; break; } // blink/safety tick
         }
         // Reset pacing so the first post-idle frame isn't throttled.
@@ -618,7 +637,7 @@ extern "C" int platform_begin_frame(void) {
             SDL_WaitEventTimeout(nullptr, ms_left);
             int got2 = drain_events();
             g_dbg_events += got2;
-            if (got2 > 0) g_render_credits = RENDER_SETTLE;
+            if (got2 > 0 && g_drain_saw_input) g_render_credits = RENDER_SETTLE;
         }
         if (g_quit) return 0;
     }
@@ -631,6 +650,7 @@ extern "C" int platform_begin_frame(void) {
     if (next_render_ns < now) next_render_ns = now + g_target_frame_ns;
 
     if (g_render_credits > 0) g_render_credits--;
+    g_dbg_frames++;
     if (g_use_gpu) ImGui_ImplSDLGPU3_NewFrame();
     else           ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
