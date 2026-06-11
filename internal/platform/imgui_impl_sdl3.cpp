@@ -71,6 +71,10 @@
 //  2023-02-07: Forked "imgui_impl_sdl2" into "imgui_impl_sdl3". Removed version checks for old feature. Refer to imgui_impl_sdl2.cpp for older changelog.
 
 #include "imgui.h"
+#ifdef __APPLE__
+// XEROTTY PATCH: defined in cocoa_focus_darwin.m (C linkage).
+extern "C" void platform_cocoa_disable_window_animations(unsigned long window_id);
+#endif
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_sdl3.h"
 
@@ -523,7 +527,6 @@ static void ImGui_ImplSDL3_SetupPlatformHandles(ImGuiViewport* viewport, SDL_Win
 #elif defined(__APPLE__)
     viewport->PlatformHandleRaw = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, nullptr);
     // XEROTTY PATCH: see platform_cocoa_disable_window_animations.
-    extern void platform_cocoa_disable_window_animations(unsigned long window_id);
     platform_cocoa_disable_window_animations((unsigned long)SDL_GetWindowID(window));
 #endif
 }
