@@ -4,6 +4,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 
 	"github.com/BurntSushi/toml"
@@ -381,8 +382,23 @@ func Save(cfg Config) error {
 	}
 	defer f.Close()
 
+	// Don't bake unmodified defaults into the file. Save used to
+	// marshal the whole config, freezing that day's menu/keybind
+	// defaults forever — when a later release fixed the darwin
+	// rename shortcut (Cmd+Shift+R -> Cmd+R, 85483a6), saved configs
+	// kept showing the stale label because the baked menu shadowed
+	// the corrected default. Sections that exactly match the
+	// platform defaults are elided; Load() starts from Default(), so
+	// absent sections keep tracking default evolution.
+	out := cfg
+	if reflect.DeepEqual(out.Menu, defaultMenu()) {
+		out.Menu = MenuConfig{}
+	}
+	if reflect.DeepEqual(out.Keybinds, defaultKeybinds()) {
+		out.Keybinds = nil
+	}
 	encoder := toml.NewEncoder(f)
-	return encoder.Encode(cfg)
+	return encoder.Encode(out)
 }
 
 // DefaultOpener returns the platform's URL-opener command: macOS
