@@ -23,7 +23,22 @@ UNAME_S := $(shell uname -s)
 GOBIN := $(shell $(GO) env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build headless generate app install clean
+.PHONY: all build headless generate app install clean check-loop check-render check-mac-power
+
+# Wakeup/power regression checks — see the script headers for the
+# bug archaeology each one pins. check-loop needs a display; run it
+# on a dev box after touching the render loop, pacing, damage
+# tracking, or backends. check-mac-power needs a mac (the Air over
+# ssh works: ssh xair 'zsh -lc "cd ~/git/xerotty && make check-mac-power"').
+check-loop: build
+	./tools/loop-health-check.sh gl
+	./tools/loop-health-check.sh gpu
+
+check-render: build
+	./tools/render-ab-check.sh
+
+check-mac-power: build
+	./tools/mac-power-check.sh
 
 all: build
 
