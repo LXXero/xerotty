@@ -1,25 +1,29 @@
 package terminal
 
+/*
+#include <libproc.h>
+*/
+import "C"
 import (
-	"os/exec"
-	"strconv"
 	"strings"
+	"unsafe"
 )
 
-// processName returns the executable name (argv[0] without path) for
-// pid. macOS implementation uses `ps -o comm=` which prints just the
-// command name. Returns "" if pid is gone or ps fails.
+// processName returns the executable name for pid via libproc's
+// proc_name — one syscall. The previous implementation forked
+// `ps -o comm=` per call; the daemon's 750ms per-tab state tick and
+// the GUI's title polling both land here, so subprocesses are off
+// the table (same storm as the lsof cwd lookup, see cwd_darwin.go).
 func processName(pid int) string {
 	if pid <= 0 {
 		return ""
 	}
-	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
+	buf := make([]byte, 256)
+	n := C.proc_name(C.int(pid), unsafe.Pointer(&buf[0]), C.uint32_t(len(buf)))
+	if n <= 0 {
 		return ""
 	}
-	name := strings.TrimSpace(string(out))
-	// ps -o comm= can return the full path on macOS (e.g. /usr/bin/vim).
-	// Strip to basename.
+	name := string(buf[:n])
 	if i := strings.LastIndexByte(name, '/'); i >= 0 {
 		name = name[i+1:]
 	}
