@@ -30,6 +30,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
 
+extern "C" int platform_use_gpu(void);
+
 extern "C" {
 
 // Mirrors platform.GlyphQuad — keep field order/size in sync.
@@ -114,6 +116,12 @@ int platform_render_quads_to_texture(
     const void* quads_ptr, int n
 ) {
     if (px_w <= 0 || px_h <= 0 || disp_w <= 0 || disp_h <= 0) return 0;
+    // SDL_GPU slice 1: the offscreen compositor is still GL-only —
+    // returning 0 falls back to direct quad stamping, which the GPU
+    // backend presents cheaply. The SDL_GPU port (explicit render
+    // pass + custom premul pipeline, both first-class in the API) is
+    // the designated slice 2.
+    if (platform_use_gpu()) return 0;
     if (xt_load_fbo_procs() != 1) return 0;
     if (!ImGui::GetCurrentContext()) return 0;
 

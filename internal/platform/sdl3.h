@@ -117,6 +117,7 @@ int platform_get_window_usable_bounds(unsigned long window_id,
 void platform_set_window_opacity(unsigned long window_id, float opacity);
 int platform_window_input_focus(unsigned long window_id);
 int platform_window_occluded(unsigned long window_id);
+int platform_use_gpu(void);
 void platform_mark_viewport_dirty(unsigned long window_id);
 void platform_set_damage_enabled(int on);
 int platform_any_window_input_focus(void);

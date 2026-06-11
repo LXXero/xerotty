@@ -26,6 +26,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_impl_sdlgpu3.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -52,6 +53,17 @@ Uint32        g_wake_event_type = 0;
 // of a hidden window blocks in Cocoa's GL sync — 51% of the main
 // thread on a mac sample).
 static int    g_main_hidden = 0;
+// Render backend selector: 0 = OpenGL (default), 1 = SDL_GPU
+// (XEROTTY_GPU=1 — Metal on macOS, Vulkan on Linux). SDL_GPU is the
+// migration path off macOS's deprecated GL-on-Metal emulation, whose
+// every swap pays a framebuffer copy plus a synchronous WindowServer
+// commit (profiled as the dominant main-thread cost on real
+// sessions). One backend, all platforms, pure C — and testable on
+// Linux via Vulkan before the mac ever sees it.
+static int            g_use_gpu = 0;
+static SDL_GPUDevice* g_gpu_dev = nullptr;
+
+extern "C" int platform_use_gpu(void) { return g_use_gpu; }
 
 namespace {
 
@@ -136,9 +148,10 @@ extern "C" int platform_init(const char* title, int width, int height) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
-    SDL_WindowFlags flags = SDL_WINDOW_OPENGL
-                          | SDL_WINDOW_RESIZABLE
+    if (SDL_getenv("XEROTTY_GPU")) g_use_gpu = 1;
+    SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE
                           | SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    if (!g_use_gpu) flags |= SDL_WINDOW_OPENGL;
     g_window = SDL_CreateWindow(title, width, height, flags);
     if (!g_window) {
         set_err("SDL_CreateWindow");
@@ -153,21 +166,26 @@ extern "C" int platform_init(const char* title, int width, int height) {
     // and after window creation but before any events get pumped.
     SDL_StartTextInput(g_window);
 
-    g_gl_ctx = SDL_GL_CreateContext(g_window);
-    if (!g_gl_ctx) {
-        set_err("SDL_GL_CreateContext");
-        SDL_DestroyWindow(g_window);
-        g_window = nullptr;
-        SDL_Quit();
-        return 0;
+    if (!g_use_gpu) {
+        g_gl_ctx = SDL_GL_CreateContext(g_window);
+        if (!g_gl_ctx) {
+            set_err("SDL_GL_CreateContext");
+            SDL_DestroyWindow(g_window);
+            g_window = nullptr;
+            SDL_Quit();
+            return 0;
+        }
+        SDL_GL_MakeCurrent(g_window, g_gl_ctx);
     }
-    SDL_GL_MakeCurrent(g_window, g_gl_ctx);
 
     // Enable vsync. Try adaptive (-1) first, fall back to standard (1).
     // Driver-side enforcement is best-effort: on AMD/Mesa we observed
     // SwapInterval accepted but silently no-op'd; the manual frame
     // cap in begin_frame covers that case.
-    if (SDL_getenv("XEROTTY_NO_VSYNC")) {
+    if (g_use_gpu) {
+        // SDL_GPU swapchains carry their own present mode (set at
+        // backend init below); GL swap-interval doesn't apply.
+    } else if (SDL_getenv("XEROTTY_NO_VSYNC")) {
         // Experiment knob: macOS routes GL presents through the
         // Metal shim + a synchronous SkyLight commit; vsync stacks a
         // blocking wait per swap ON TOP of that, serialized across
@@ -185,13 +203,43 @@ extern "C" int platform_init(const char* title, int width, int height) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
 
-    if (!ImGui_ImplSDL3_InitForOpenGL(g_window, g_gl_ctx)) {
-        std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForOpenGL failed");
-        return 0;
-    }
-    if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
-        std::snprintf(g_err, sizeof(g_err), "ImGui_ImplOpenGL3_Init failed");
-        return 0;
+    if (g_use_gpu) {
+        g_gpu_dev = SDL_CreateGPUDevice(
+            SDL_GPU_SHADERFORMAT_SPIRV | SDL_GPU_SHADERFORMAT_DXIL |
+            SDL_GPU_SHADERFORMAT_MSL | SDL_GPU_SHADERFORMAT_METALLIB,
+            false, nullptr);
+        if (!g_gpu_dev) {
+            set_err("SDL_CreateGPUDevice");
+            return 0;
+        }
+        if (!SDL_ClaimWindowForGPUDevice(g_gpu_dev, g_window)) {
+            set_err("SDL_ClaimWindowForGPUDevice");
+            return 0;
+        }
+        if (!ImGui_ImplSDL3_InitForSDLGPU(g_window)) {
+            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForSDLGPU failed");
+            return 0;
+        }
+        ImGui_ImplSDLGPU3_InitInfo gi;
+        gi.Device = g_gpu_dev;
+        gi.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(g_gpu_dev, g_window);
+        gi.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+        gi.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+        gi.PresentMode = SDL_getenv("XEROTTY_NO_VSYNC")
+            ? SDL_GPU_PRESENTMODE_IMMEDIATE : SDL_GPU_PRESENTMODE_VSYNC;
+        if (!ImGui_ImplSDLGPU3_Init(&gi)) {
+            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDLGPU3_Init failed");
+            return 0;
+        }
+    } else {
+        if (!ImGui_ImplSDL3_InitForOpenGL(g_window, g_gl_ctx)) {
+            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplSDL3_InitForOpenGL failed");
+            return 0;
+        }
+        if (!ImGui_ImplOpenGL3_Init(glsl_version)) {
+            std::snprintf(g_err, sizeof(g_err), "ImGui_ImplOpenGL3_Init failed");
+            return 0;
+        }
     }
 
     // On Wayland: bind our own wl_seat off the SDL-owned wl_display so
@@ -415,7 +463,8 @@ extern "C" int platform_begin_frame(void) {
     if (next_render_ns < now) next_render_ns = now + g_target_frame_ns;
 
     if (g_render_credits > 0) g_render_credits--;
-    ImGui_ImplOpenGL3_NewFrame();
+    if (g_use_gpu) ImGui_ImplSDLGPU3_NewFrame();
+    else           ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     // Caller (Go) calls ImGui::NewFrame via cimgui-go next.
     return 1;
@@ -503,6 +552,54 @@ extern "C" void platform_end_frame(void) {
     // hidden (its draw data is empty anyway); a capture targeting
     // window id 0 still takes the full path below.
     int main_visible = !g_main_hidden || (g_cap_pending && g_cap_window_id == 0);
+
+    if (g_use_gpu) {
+        // SDL_GPU path: explicit command buffer + render pass for the
+        // main window (only while visible — it hides once viewports
+        // take over); secondary viewports render through
+        // imgui_impl_sdlgpu3's Renderer hooks, which acquire their
+        // own swapchains and submit per window. Presents are
+        // swapchain operations (Metal/Vulkan underneath) — none of
+        // the GL-on-Metal copy + synchronous WindowServer commit.
+        if (main_visible) {
+            SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu_dev);
+            if (cmd) {
+                SDL_GPUTexture* swtex = nullptr;
+                SDL_WaitAndAcquireGPUSwapchainTexture(cmd, g_window, &swtex, nullptr, nullptr);
+                if (swtex) {
+                    ImDrawData* dd = ImGui::GetDrawData();
+                    ImGui_ImplSDLGPU3_PrepareDrawData(dd, cmd);
+                    SDL_GPUColorTargetInfo ct = {};
+                    ct.texture = swtex;
+                    ct.load_op = SDL_GPU_LOADOP_CLEAR;
+                    ct.store_op = SDL_GPU_STOREOP_STORE;
+                    ct.clear_color = { g_bg_r, g_bg_g, g_bg_b, g_bg_a };
+                    SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+                    ImGui_ImplSDLGPU3_RenderDrawData(dd, cmd, pass);
+                    SDL_EndGPURenderPass(pass);
+                }
+                SDL_SubmitGPUCommandBuffer(cmd);
+            }
+        }
+        ImGuiIO& gio = ImGui::GetIO();
+        if (gio.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+            ImGui::UpdatePlatformWindows();
+            ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+            for (int i = 1; i < pio.Viewports.Size; i++) {
+                ImGuiViewport* vp = pio.Viewports[i];
+                if (vp->Flags & ImGuiViewportFlags_IsMinimized) continue;
+                Uint32 vpid = (Uint32)(intptr_t)vp->PlatformHandle;
+                if (platform_window_occluded((unsigned long)vpid)) continue;
+                if (!window_wants_render(vpid)) continue;
+                if (pio.Platform_RenderWindow) pio.Platform_RenderWindow(vp, nullptr);
+                if (pio.Renderer_RenderWindow) pio.Renderer_RenderWindow(vp, nullptr);
+                if (pio.Platform_SwapBuffers) pio.Platform_SwapBuffers(vp, nullptr);
+                if (pio.Renderer_SwapBuffers) pio.Renderer_SwapBuffers(vp, nullptr);
+            }
+        }
+        return;
+    }
+
     if (main_visible) {
         int w = 0, h = 0;
         SDL_GetWindowSizeInPixels(g_window, &w, &h);
@@ -718,8 +815,57 @@ extern "C" unsigned long platform_mouse_focus_window_id(void) {
 // equivalents (sdl_backend.cpp:274-294). RGBA8, linear filter, no mip.
 // Returns the GL texture id reinterpret-cast to ImTextureID (ImU64 in
 // our vendored ImGui), which is what ImGui's draw list expects.
+// SDL_GPU texture upload: staging transfer buffer -> copy pass.
+// Returns false on any failure.
+static bool xt_gpu_upload(SDL_GPUTexture* tex, int x, int y, int w, int h,
+                          const unsigned char* pixels) {
+    if (!pixels || w <= 0 || h <= 0) return true; // nothing to do
+    SDL_GPUTransferBufferCreateInfo tci = {};
+    tci.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    tci.size = (Uint32)(w * h * 4);
+    SDL_GPUTransferBuffer* tb = SDL_CreateGPUTransferBuffer(g_gpu_dev, &tci);
+    if (!tb) return false;
+    void* map = SDL_MapGPUTransferBuffer(g_gpu_dev, tb, false);
+    if (!map) { SDL_ReleaseGPUTransferBuffer(g_gpu_dev, tb); return false; }
+    SDL_memcpy(map, pixels, (size_t)w * h * 4);
+    SDL_UnmapGPUTransferBuffer(g_gpu_dev, tb);
+    SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(g_gpu_dev);
+    if (!cmd) { SDL_ReleaseGPUTransferBuffer(g_gpu_dev, tb); return false; }
+    SDL_GPUCopyPass* cp = SDL_BeginGPUCopyPass(cmd);
+    SDL_GPUTextureTransferInfo src = {};
+    src.transfer_buffer = tb;
+    src.pixels_per_row = (Uint32)w;
+    src.rows_per_layer = (Uint32)h;
+    SDL_GPUTextureRegion dst = {};
+    dst.texture = tex;
+    dst.x = (Uint32)x; dst.y = (Uint32)y;
+    dst.w = (Uint32)w; dst.h = (Uint32)h; dst.d = 1;
+    SDL_UploadToGPUTexture(cp, &src, &dst, false);
+    SDL_EndGPUCopyPass(cp);
+    SDL_SubmitGPUCommandBuffer(cmd);
+    SDL_ReleaseGPUTransferBuffer(g_gpu_dev, tb);
+    return true;
+}
+
 extern "C" unsigned long long platform_create_texture(const unsigned char* pixels,
                                                        int width, int height) {
+    if (g_use_gpu) {
+        SDL_GPUTextureCreateInfo ci = {};
+        ci.type = SDL_GPU_TEXTURETYPE_2D;
+        ci.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        ci.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        ci.width = (Uint32)width;
+        ci.height = (Uint32)height;
+        ci.layer_count_or_depth = 1;
+        ci.num_levels = 1;
+        SDL_GPUTexture* t = SDL_CreateGPUTexture(g_gpu_dev, &ci);
+        if (!t) return 0;
+        if (!xt_gpu_upload(t, 0, 0, width, height, pixels)) {
+            SDL_ReleaseGPUTexture(g_gpu_dev, t);
+            return 0;
+        }
+        return (unsigned long long)(uintptr_t)t;
+    }
     GLint last_texture;
     GLuint tex_id;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
@@ -736,6 +882,10 @@ extern "C" unsigned long long platform_create_texture(const unsigned char* pixel
 extern "C" void platform_update_texture(unsigned long long tex_id, int x, int y,
                                         int width, int height,
                                         const unsigned char* pixels) {
+    if (g_use_gpu) {
+        xt_gpu_upload((SDL_GPUTexture*)(uintptr_t)tex_id, x, y, width, height, pixels);
+        return;
+    }
     GLint last_texture;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &last_texture);
     glBindTexture(GL_TEXTURE_2D, (GLuint)tex_id);
@@ -745,6 +895,10 @@ extern "C" void platform_update_texture(unsigned long long tex_id, int x, int y,
 }
 
 extern "C" void platform_delete_texture(unsigned long long tex_id) {
+    if (g_use_gpu) {
+        SDL_ReleaseGPUTexture(g_gpu_dev, (SDL_GPUTexture*)(uintptr_t)tex_id);
+        return;
+    }
     GLuint id = (GLuint)tex_id;
     glBindTexture(GL_TEXTURE_2D, 0);
     glDeleteTextures(1, &id);
@@ -762,7 +916,8 @@ extern "C" void platform_shutdown(void) {
     wlgrab_shutdown();
 
     if (ImGui::GetCurrentContext()) {
-        ImGui_ImplOpenGL3_Shutdown();
+        if (g_use_gpu) ImGui_ImplSDLGPU3_Shutdown();
+        else           ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
     }
