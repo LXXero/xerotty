@@ -36,6 +36,30 @@ type State struct {
 	UseRegex      bool
 	WholeWord     bool
 	WrapAround    bool
+
+	// Async search machinery. The naive design re-scanned the ENTIRE
+	// scrollback every frame on the render thread to keep match
+	// coordinates fresh against streaming output — unusable on large
+	// (especially disk-backed) histories. EnsureSearch re-scans only
+	// when the query/options/content actually change, and the scan
+	// runs on a goroutine with cancellation so typing in the search
+	// box never blocks a frame.
+	SearchPending bool          // a scan is in flight (UI can show progress)
+	OnAsyncDone   func()        // called from the worker when results land (wake the render loop)
+	searchID      uint64        // identifies the latest scan; stale results are dropped
+	searchCancel  chan struct{} // closed to abort the in-flight scan
+	searchRes     chan asyncResult
+	lastQuery     string
+	lastCase      bool
+	lastRegex     bool
+	lastWord      bool
+	lastGen       uint64
+	haveFP        bool
+}
+
+type asyncResult struct {
+	id      uint64
+	matches []Match
 }
 
 // Match represents a search match in the terminal/scrollback.
@@ -102,68 +126,17 @@ func (s *State) CloseSearch() {
 	s.MatchIdx = 0
 }
 
-// Search runs an incremental search across visible screen + scrollback.
-// visibleRows is used to pick the starting match near the viewport bottom.
+// Search runs a synchronous search across visible screen +
+// scrollback. Kept for tests and direct callers; the GUI frame path
+// uses EnsureSearch (async + change-gated).
 func (s *State) Search(emu Grid, visibleRows int) {
 	s.Matches = nil
 	s.MatchIdx = 0
-
 	if s.Query == "" {
 		return
 	}
-
-	cols := emu.Width()
-
-	if s.UseRegex {
-		pattern := s.Query
-		if !s.CaseSensitive {
-			pattern = "(?i)" + pattern
-		}
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return // invalid regex — leave matches empty
-		}
-		sbLen := emu.ScrollbackLen()
-		for row := 0; row < sbLen; row++ {
-			line := extractScrollbackLine(emu, row, cols)
-			findMatchesRegex(&s.Matches, line, re, -(sbLen - row), s.WholeWord)
-		}
-		rows := emu.Height()
-		for row := 0; row < rows; row++ {
-			line := extractScreenLine(emu, row, cols)
-			findMatchesRegex(&s.Matches, line, re, row, s.WholeWord)
-		}
-	} else {
-		query := s.Query
-		if !s.CaseSensitive {
-			query = strings.ToLower(query)
-		}
-		sbLen := emu.ScrollbackLen()
-		for row := 0; row < sbLen; row++ {
-			line := extractScrollbackLine(emu, row, cols)
-			findMatchesPlain(&s.Matches, line, query, -(sbLen - row), s.CaseSensitive, s.WholeWord)
-		}
-		rows := emu.Height()
-		for row := 0; row < rows; row++ {
-			line := extractScreenLine(emu, row, cols)
-			findMatchesPlain(&s.Matches, line, query, row, s.CaseSensitive, s.WholeWord)
-		}
-	}
-
-	// Start at the match nearest the viewport bottom so navigation begins
-	// close to where the user is reading.
-	if len(s.Matches) > 0 {
-		viewBottom := -s.Offset + visibleRows - 1
-		best := 0
-		bestDist := abs(s.Matches[0].Line - viewBottom)
-		for i, m := range s.Matches {
-			if d := abs(m.Line - viewBottom); d < bestDist {
-				best = i
-				bestDist = d
-			}
-		}
-		s.MatchIdx = best
-	}
+	s.Matches, _ = scanGrid(emu, s.Query, s.CaseSensitive, s.UseRegex, s.WholeWord, nil)
+	s.selectNearest(visibleRows)
 }
 
 func abs(x int) int {
@@ -171,6 +144,183 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// EnsureSearch keeps s.Matches in sync with the query, options, and
+// terminal content, re-scanning only when one of them changed
+// (contentGen is the Source's RenderGeneration). The scan runs on a
+// background goroutine; results are adopted here on a later frame.
+// Coordinate freshness is the same as the old scan-every-frame
+// design — content changes bump contentGen, which triggers a
+// re-scan — without the O(scrollback) per-frame cost.
+func (s *State) EnsureSearch(emu Grid, visibleRows int, contentGen uint64) {
+	if !s.Searching || s.Query == "" {
+		s.cancelSearch()
+		return
+	}
+
+	queryChanged := !s.haveFP || s.Query != s.lastQuery ||
+		s.CaseSensitive != s.lastCase || s.UseRegex != s.lastRegex ||
+		s.WholeWord != s.lastWord
+	if queryChanged || contentGen != s.lastGen {
+		s.kickSearch(emu, queryChanged)
+		s.lastQuery, s.lastCase, s.lastRegex, s.lastWord = s.Query, s.CaseSensitive, s.UseRegex, s.WholeWord
+		s.lastGen = contentGen
+		s.haveFP = true
+	}
+
+	// Adopt a finished scan, if any.
+	if s.searchRes != nil {
+		select {
+		case res := <-s.searchRes:
+			if res.id != s.searchID {
+				return // stale scan, a newer one is in flight
+			}
+			s.SearchPending = false
+			prevIdx := s.MatchIdx
+			hadMatches := len(s.Matches) > 0
+			s.Matches = res.matches
+			if hadMatches && prevIdx < len(s.Matches) {
+				// Content refresh: keep the user's navigation position.
+				s.MatchIdx = prevIdx
+			} else {
+				s.selectNearest(visibleRows)
+			}
+		default:
+		}
+	}
+}
+
+// kickSearch aborts any in-flight scan and starts a new one over a
+// snapshot of the query/options. The Grid implementations are
+// internally locked (SafeEmulator / disk mutex), so reading from a
+// goroutine is safe; rows appended mid-scan are picked up by the
+// next contentGen-triggered scan.
+func (s *State) kickSearch(emu Grid, queryChanged bool) {
+	s.cancelInFlight()
+	if queryChanged {
+		// New query: stale matches would highlight the wrong thing.
+		s.Matches = nil
+		s.MatchIdx = 0
+	}
+	s.searchID++
+	s.SearchPending = true
+	if s.searchRes == nil {
+		s.searchRes = make(chan asyncResult, 1)
+	}
+	cancel := make(chan struct{})
+	s.searchCancel = cancel
+	id := s.searchID
+	query, caseSens, useRegex, wholeWord := s.Query, s.CaseSensitive, s.UseRegex, s.WholeWord
+	res := s.searchRes
+	done := s.OnAsyncDone
+	go func() {
+		matches, ok := scanGrid(emu, query, caseSens, useRegex, wholeWord, cancel)
+		if !ok {
+			return // cancelled — a newer scan owns the channel now
+		}
+		select {
+		case res <- asyncResult{id: id, matches: matches}:
+		case <-cancel:
+			return
+		}
+		if done != nil {
+			done()
+		}
+	}()
+}
+
+func (s *State) cancelInFlight() {
+	if s.searchCancel != nil {
+		close(s.searchCancel)
+		s.searchCancel = nil
+	}
+	// Drain a result that landed after the last adopt — it belongs
+	// to a superseded scan.
+	if s.searchRes != nil {
+		select {
+		case <-s.searchRes:
+		default:
+		}
+	}
+	s.SearchPending = false
+}
+
+// cancelSearch tears down async state when search closes or empties.
+func (s *State) cancelSearch() {
+	s.cancelInFlight()
+	s.haveFP = false
+}
+
+// selectNearest picks the match closest to the viewport bottom —
+// same heuristic the synchronous Search uses.
+func (s *State) selectNearest(visibleRows int) {
+	if len(s.Matches) == 0 {
+		s.MatchIdx = 0
+		return
+	}
+	viewBottom := -s.Offset + visibleRows - 1
+	best := 0
+	bestDist := abs(s.Matches[0].Line - viewBottom)
+	for i, m := range s.Matches {
+		if d := abs(m.Line - viewBottom); d < bestDist {
+			best = i
+			bestDist = d
+		}
+	}
+	s.MatchIdx = best
+}
+
+// scanGrid is the search core shared by the synchronous Search and
+// the async path. Returns ok=false if cancelled. checkEvery rows it
+// polls the cancel channel — cheap enough to keep keystroke
+// cancellation snappy on million-line histories.
+func scanGrid(emu Grid, query string, caseSens, useRegex, wholeWord bool, cancel <-chan struct{}) ([]Match, bool) {
+	const checkEvery = 2048
+	var matches []Match
+	cols := emu.Width()
+
+	var re *regexp.Regexp
+	if useRegex {
+		pattern := query
+		if !caseSens {
+			pattern = "(?i)" + pattern
+		}
+		var err error
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return nil, true // invalid regex — empty result set
+		}
+	} else if !caseSens {
+		query = strings.ToLower(query)
+	}
+
+	sbLen := emu.ScrollbackLen()
+	for row := 0; row < sbLen; row++ {
+		if cancel != nil && row%checkEvery == 0 {
+			select {
+			case <-cancel:
+				return nil, false
+			default:
+			}
+		}
+		line := extractScrollbackLine(emu, row, cols)
+		if useRegex {
+			findMatchesRegex(&matches, line, re, -(sbLen - row), wholeWord)
+		} else {
+			findMatchesPlain(&matches, line, query, -(sbLen - row), caseSens, wholeWord)
+		}
+	}
+	rows := emu.Height()
+	for row := 0; row < rows; row++ {
+		line := extractScreenLine(emu, row, cols)
+		if useRegex {
+			findMatchesRegex(&matches, line, re, row, wholeWord)
+		} else {
+			findMatchesPlain(&matches, line, query, row, caseSens, wholeWord)
+		}
+	}
+	return matches, true
 }
 
 // NextMatch advances to the next match, wrapping if WrapAround is set.
@@ -310,7 +460,19 @@ func extractScreenLine(emu Grid, row, cols int) string {
 	return b.String()
 }
 
+// scrollbackLineTexter is an optional fast path: disk-backed
+// scrollback decodes a WHOLE line per ScrollbackCellAt call, so the
+// per-cell loop below re-read and re-decoded each line once per
+// COLUMN (200x waste, two pread syscalls each). Implementations
+// return the row's text in one read.
+type scrollbackLineTexter interface {
+	ScrollbackLineText(row, cols int) string
+}
+
 func extractScrollbackLine(emu Grid, row, cols int) string {
+	if lt, ok := emu.(scrollbackLineTexter); ok {
+		return lt.ScrollbackLineText(row, cols)
+	}
 	var b strings.Builder
 	for col := 0; col < cols; col++ {
 		cell := emu.ScrollbackCellAt(col, row)

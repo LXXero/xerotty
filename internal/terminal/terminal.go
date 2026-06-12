@@ -408,6 +408,46 @@ func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
 	return t.Emu.ScrollbackCellAt(col, row-diskLen)
 }
 
+// ScrollbackLineText returns row's text in ONE disk read — the
+// search fast path (scrollback.scrollbackLineTexter). Going through
+// ScrollbackCellAt per column re-read and re-decoded the whole line
+// once per CELL in disk mode: a 200-column search row cost 400
+// pread syscalls + 200 decodes instead of 2 + 1.
+func (t *Terminal) ScrollbackLineText(row, cols int) string {
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+
+	var line []uv.Cell
+	if disk != nil {
+		diskLen := disk.Len()
+		if row < diskLen {
+			line = disk.LineAt(row)
+		} else {
+			row -= diskLen
+		}
+	}
+
+	var b strings.Builder
+	b.Grow(cols)
+	for col := 0; col < cols; col++ {
+		var content string
+		if line != nil {
+			if col < len(line) {
+				content = line[col].Content
+			}
+		} else if cell := t.Emu.ScrollbackCellAt(col, row); cell != nil {
+			content = cell.Content
+		}
+		if content != "" {
+			b.WriteString(content)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
 // Width / Height / CellAt / CursorPosition pass through to the
 // emulator. Defined here so callers can use *terminal.Terminal as
 // the renderer.EmulatorView interface without changing every site

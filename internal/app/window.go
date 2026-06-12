@@ -144,6 +144,10 @@ type Window struct {
 	connectError       string // last connect failure, shown in the dialog
 	sbDragging         bool
 	searchFocusInput   bool
+	// searchJumpOnResult: scroll to the nearest match when the
+	// in-flight async scan lands (set on query/option edits — the
+	// results don't exist yet on the edit frame).
+	searchJumpOnResult bool
 	searchInputFocused bool
 	searchOverlayW     float32
 	lastDblClickTime   float64

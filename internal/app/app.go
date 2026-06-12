@@ -4064,15 +4064,22 @@ func (a *Window) frame() {
 				}
 			}
 
-			// Search highlights — refresh matches each frame so PTY output
-			// doesn't cause stale coordinates. Preserve MatchIdx so
-			// navigation (< >) isn't clobbered by the per-frame re-search.
+			// Search highlights. EnsureSearch re-scans only when the
+			// query/options/content changed (RenderGeneration), on a
+			// background goroutine — the old design re-scanned the
+			// ENTIRE scrollback synchronously EVERY FRAME, which on
+			// large disk-backed histories froze the UI outright.
+			// MatchIdx preservation across content refreshes lives in
+			// EnsureSearch.
 			if s, ok := a.scroll[tab.ID]; ok && s.Searching && s.Query != "" {
 				_, visRows := a.gridSize()
-				savedIdx := s.MatchIdx
-				s.Search(tab.Terminal, visRows)
-				if savedIdx < len(s.Matches) {
-					s.MatchIdx = savedIdx
+				if s.OnAsyncDone == nil {
+					s.OnAsyncDone = platform.PostWake
+				}
+				s.EnsureSearch(tab.Terminal, visRows, tab.Terminal.RenderGeneration())
+				if a.searchJumpOnResult && !s.SearchPending {
+					a.searchJumpOnResult = false
+					s.ScrollToCurrentMatch(visRows)
 				}
 				if len(s.Matches) > 0 {
 					a.drawSearchHighlights(s, drawList)
@@ -5440,8 +5447,11 @@ func (w *Window) renderSearchOverlay() {
 		changed := imgui.InputTextWithHint("##searchinput", "Search...", &s.Query, 0, nil)
 		w.searchInputFocused = imgui.IsItemFocused()
 		if changed && s.Query != prevQuery {
-			s.Search(tab.Terminal, rows)
-			s.ScrollToCurrentMatch(rows)
+			// The frame pass's EnsureSearch sees the new query and
+			// kicks an async scan; jump to the nearest match when it
+			// lands (results adopt on a later frame, so scrolling here
+			// would use stale coordinates).
+			w.searchJumpOnResult = true
 		}
 		// Counter: render into a fixed-width Dummy slot via drawList
 		// so the window's auto-resize doesn't care about the digit
@@ -5504,8 +5514,7 @@ func (w *Window) renderSearchOverlay() {
 		imgui.SameLineV(0, 8)
 		optChanged = imgui.Checkbox("WRAP", &s.WrapAround) || optChanged
 		if optChanged && s.Query != "" {
-			s.Search(tab.Terminal, rows)
-			s.ScrollToCurrentMatch(rows)
+			w.searchJumpOnResult = true
 		}
 	}
 	imgui.End()
