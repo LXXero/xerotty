@@ -50,7 +50,16 @@ package protocol
 //       daemon would silently ignore Name and stack duplicate tabs on
 //       every "reuse" call — degradation the handshake gate should
 //       reject loudly instead.
-const ProtocolVersion uint16 = 8
+//   9 — Sliding-window scrollback: ScrollbackAppend.Total (daemon's
+//       true scrollback depth), MsgScrollbackRequest/Range (fetch an
+//       arbitrary absolute row range so the client mirrors only a
+//       bounded window instead of the whole — possibly unbounded —
+//       history), and MsgSearchRequest/Results (daemon-side search of
+//       its full disk-backed scrollback, returning match coordinates).
+//       A v8 daemon ignores the requests, so the client would show
+//       blank cold history and search only its window — the handshake
+//       gate forces a clean version error instead.
+const ProtocolVersion uint16 = 9
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -106,6 +115,11 @@ const (
 
 	MsgPing              MsgType = 43 // either direction: liveness probe (heartbeat)
 	MsgPong              MsgType = 44 // either direction: reply echoing Ping.Nonce
+
+	MsgScrollbackRequest MsgType = 45 // client → server: fetch absolute scrollback row range
+	MsgScrollbackRange   MsgType = 46 // server → client: rows for a ScrollbackRequest
+	MsgSearchRequest     MsgType = 47 // client → server: search the tab's full scrollback
+	MsgSearchResults     MsgType = 48 // server → client: match coordinates for a SearchRequest
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -574,6 +588,67 @@ type ScrollbackAppend struct {
 	ID      uint32   `msg:"id"`
 	BaseIdx uint32   `msg:"base_idx"`
 	Rows    [][]Cell `msg:"rows"`
+	// Total is the daemon's full scrollback depth at send time (disk
+	// + in-memory). The client uses it to size the scrollbar and know
+	// how far back cold history extends even though it only mirrors a
+	// bounded window. Monotonic in unlimited mode (rows never
+	// discard). Zero from a pre-v9 daemon.
+	Total uint32 `msg:"total,omitempty"`
+}
+
+// ScrollbackRequest asks the daemon for a contiguous range of
+// scrollback rows by ABSOLUTE index (0 = oldest). The client uses it
+// to fill its sliding window when the user scrolls (or jumps to a
+// search match) outside the rows it currently mirrors. From is the
+// absolute index of the first row wanted; Count is how many.
+type ScrollbackRequest struct {
+	ID    uint32 `msg:"id"`
+	From  uint32 `msg:"from"`
+	Count uint32 `msg:"count"`
+}
+
+// ScrollbackRange answers a ScrollbackRequest with the rows that
+// exist in [From, From+len(Rows)). May be shorter than requested if
+// the range runs past the live end. Rows are oldest-first; From is
+// the absolute index of Rows[0].
+type ScrollbackRange struct {
+	ID   uint32   `msg:"id"`
+	From uint32   `msg:"from"`
+	Rows [][]Cell `msg:"rows"`
+}
+
+// SearchRequest asks the daemon to search the tab's ENTIRE scrollback
+// (disk + in-memory) server-side and return match coordinates. The
+// client mirrors only a window, so it can't search deep history
+// locally — the daemon, which owns the full history, does it. ReqID
+// correlates the async Results; a stale reply (older ReqID) is
+// dropped so a fast retype doesn't show results for the old query.
+type SearchRequest struct {
+	ID            uint32 `msg:"id"`
+	ReqID         uint64 `msg:"req_id"`
+	Query         string `msg:"query"`
+	CaseSensitive bool   `msg:"case,omitempty"`
+	Regex         bool   `msg:"regex,omitempty"`
+	WholeWord     bool   `msg:"word,omitempty"`
+}
+
+// SearchMatch is one hit: Line is the ABSOLUTE scrollback row index
+// (0 = oldest), Col the starting column, Len the match length in
+// columns.
+type SearchMatch struct {
+	Line uint32 `msg:"line"`
+	Col  uint32 `msg:"col"`
+	Len  uint32 `msg:"len"`
+}
+
+// SearchResults answers a SearchRequest. Matches are ordered oldest
+// → newest. Truncated is set when the daemon hit its match cap and
+// stopped early (the client surfaces "showing first N").
+type SearchResults struct {
+	ID        uint32        `msg:"id"`
+	ReqID     uint64        `msg:"req_id"`
+	Matches   []SearchMatch `msg:"matches"`
+	Truncated bool          `msg:"truncated,omitempty"`
 }
 
 // TopologyChanged is broadcast server→client to EVERY client attached

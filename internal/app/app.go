@@ -325,15 +325,33 @@ func (a *App) initRemoteDefaultSource(name string) error {
 	// the aggregated MCP must list its tabs once (as "<host>:"),
 	// not also as "local:".
 	a.setDaemonHub(entry.hub, name)
-	// Scrollback cap mirrors local-daemon path.
-	cap := a.cfg.Scrollback.Lines
-	if a.cfg.Scrollback.Mode == "unlimited" {
-		cap = 1_000_000
-	}
-	if cap > 0 {
-		entry.hub.SetScrollbackCap(cap)
-	}
+	a.configureHubScrollback(entry.hub)
 	return nil
+}
+
+// scrollbackWindower is implemented by daemon Sources running in
+// sliding-window mode. The frame loop calls EnsureScrollbackWindow so
+// the cached window tracks the viewport; in-process terminals (full
+// local scrollback) don't implement it.
+type scrollbackWindower interface {
+	EnsureScrollbackWindow(from, to int)
+}
+
+// configureHubScrollback sets a daemon hub's client-side scrollback
+// strategy from the user's config. "unlimited" mode uses a sliding
+// WINDOW — the GUI mirrors only a bounded window and fetches other
+// ranges from the daemon on demand — because a full in-memory mirror
+// of unlimited history is gigabytes per tab (the 124 GB-OOM bug). A
+// fixed line count uses a plain full mirror capped at that count
+// (bounded and small).
+func (a *App) configureHubScrollback(hub *daemonsource.Hub) {
+	if a.cfg.Scrollback.Mode == "unlimited" {
+		hub.SetScrollbackWindowed()
+		return
+	}
+	if n := a.cfg.Scrollback.Lines; n > 0 {
+		hub.SetScrollbackCap(n)
+	}
 }
 
 // remoteHubEntry pairs a per-host Hub with any windows+tabs the
@@ -1067,18 +1085,7 @@ func (a *App) initDaemonSource() error {
 	// Seed the daemon identity so the first reconnect can distinguish a
 	// same-daemon resync from a restarted-daemon one (tombstone scoping).
 	hub.SeedInstance(attached.InstanceID)
-	// Mirror the GUI's scrollback config so daemon-backed tabs
-	// have the same history depth as in-process ones. "unlimited"
-	// mode → use a large fixed cap (the client still bounds memory
-	// — daemon-side has the disk-backed real unlimited; client
-	// just keeps the recent tail).
-	cap := a.cfg.Scrollback.Lines
-	if a.cfg.Scrollback.Mode == "unlimited" {
-		cap = 1_000_000
-	}
-	if cap > 0 {
-		hub.SetScrollbackCap(cap)
-	}
+	a.configureHubScrollback(hub)
 	a.wireHubCallbacks("local", hub)
 	a.setDaemonHub(hub, "local")
 	// NOTE: tabSourceFactory is set per-Window by
@@ -3992,6 +3999,16 @@ func (a *Window) frame() {
 			scrollOff := 0
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
+			}
+			// Sliding-window scrollback (daemon tabs in unlimited
+			// mode): make sure the cached window covers the scrollback
+			// rows about to render; fetch from the daemon otherwise.
+			// No-op for in-process tabs and non-windowed Sources.
+			if win, ok := tab.Terminal.(scrollbackWindower); ok && scrollOff > 0 {
+				_, visRows := a.gridSize()
+				sbLen := tab.Terminal.ScrollbackLen()
+				from := sbLen - scrollOff
+				win.EnsureScrollbackWindow(from, from+visRows)
 			}
 			// Feed the selection into the renderer so selected cells
 			// draw with SelectionFg/SelectionBg inline (text stays

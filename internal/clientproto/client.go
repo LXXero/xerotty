@@ -189,6 +189,7 @@ type Client struct {
 	attached      chan *protocol.Attached
 	tabState      chan *protocol.TabState
 	scrollback    chan *protocol.ScrollbackAppend
+	scrollbackRng chan *protocol.ScrollbackRange
 	sbCleared     chan *protocol.ScrollbackCleared
 	clipboardSet  chan *protocol.ClipboardSet
 	proposals     chan *protocol.ProposalsChanged
@@ -239,6 +240,7 @@ func wrap(conn net.Conn) *Client {
 		attached:          make(chan *protocol.Attached, 1),
 		tabState:          make(chan *protocol.TabState, 32),
 		scrollback:        make(chan *protocol.ScrollbackAppend, 32),
+		scrollbackRng:     make(chan *protocol.ScrollbackRange, 8),
 		sbCleared:         make(chan *protocol.ScrollbackCleared, 8),
 		clipboardSet:      make(chan *protocol.ClipboardSet, 8),
 		proposals:         make(chan *protocol.ProposalsChanged, 8),
@@ -637,6 +639,10 @@ func (c *Client) Attached() <-chan *protocol.Attached { return c.attached }
 // attach + on change + on a slow tick.
 func (c *Client) TabState() <-chan *protocol.TabState { return c.tabState }
 
+// ScrollbackRange returns the channel of on-demand scrollback-range
+// replies (answers to SendScrollbackRequest).
+func (c *Client) ScrollbackRange() <-chan *protocol.ScrollbackRange { return c.scrollbackRng }
+
 // ScrollbackAppend returns the channel of scrollback-row pushes.
 // Daemon emits a batch each time the visible viewport rolls up
 // (new output pushes lines off the top).
@@ -673,6 +679,16 @@ func (c *Client) SendProposalResolve(index uint32, approve bool) error {
 // SendClearScrollback asks the daemon to drop a tab's scrollback.
 func (c *Client) SendClearScrollback(id uint32) error {
 	return c.send(protocol.MsgClearScrollback, &protocol.ClearScrollback{ID: id})
+}
+
+// SendScrollbackRequest asks the daemon for the absolute scrollback
+// row range [from, from+count). The reply arrives on ScrollbackRange.
+func (c *Client) SendScrollbackRequest(id uint32, from, count int) error {
+	return c.send(protocol.MsgScrollbackRequest, &protocol.ScrollbackRequest{
+		ID:    id,
+		From:  uint32(from),
+		Count: uint32(count),
+	})
 }
 
 // Errors returns the channel of server-side protocol errors.
@@ -809,6 +825,14 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		// one creates a permanent gap in the user's history. Better
 		// to back-pressure the daemon's send loop than to lose data.
 		c.scrollback <- msg
+	case protocol.MsgScrollbackRange:
+		msg := &protocol.ScrollbackRange{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		// Block (don't drop): a dropped range leaves a permanent hole
+		// in the window the client just scrolled to. Buffered + rare.
+		c.scrollbackRng <- msg
 	case protocol.MsgScrollbackCleared:
 		msg := &protocol.ScrollbackCleared{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

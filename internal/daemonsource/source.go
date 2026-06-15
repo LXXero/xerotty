@@ -62,6 +62,24 @@ type Source struct {
 	// the recent tail. Older rows are dropped on overflow (FIFO).
 	scrollback    [][]uv.Cell
 	scrollbackCap int
+
+	// Sliding-window mode (set for "unlimited" scrollback, where a
+	// full mirror would be gigabytes — at 112 bytes/cell × ~200 cols
+	// a million rows is ~22 GB, the 124 GB-OOM bug). When windowed,
+	// `scrollback` holds only a contiguous window [winStart,
+	// winStart+len) of the daemon's history; ScrollbackLen reports the
+	// daemon's TRUE total (scrollbackTotal) so scroll math + the
+	// scrollbar span the whole history, and rows outside the window
+	// read as nil until EnsureScrollbackWindow fetches them. Non-
+	// windowed (memory mode) keeps the simple full mirror.
+	windowed        bool
+	winStart        int // absolute index of scrollback[0] (windowed)
+	scrollbackTotal int // daemon's full scrollback depth (windowed)
+	// reqFrom/reqTo bound the range the window already covers OR has an
+	// in-flight request for — debounces fetches so scrolling doesn't
+	// spam the daemon. [0,0) means "nothing requested".
+	reqFrom int
+	reqTo   int
 	// scrollbackLen mirrors len(scrollback) atomically. The renderer
 	// historically asked ScrollbackLen once PER CELL (via cellAt) —
 	// even now that it's hoisted to once per frame, lock-free reads
@@ -129,6 +147,7 @@ func newSource(h *Hub, tabID uint32, cols, rows int) *Source {
 		rows:          rows,
 		dataCh:        make(chan struct{}, 1),
 		scrollbackCap: h.scrollbackCap,
+		windowed:      h.windowed,
 	}
 	if s.scrollbackCap == 0 {
 		s.scrollbackCap = 10000
@@ -243,10 +262,18 @@ func (s *Source) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 func (s *Source) ScrollbackCellAt(col, row int) *uv.Cell {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if row < 0 || row >= len(s.scrollback) {
+	// `row` is an absolute scrollback index (0 = oldest). In windowed
+	// mode the mirror is offset by winStart; outside the window the
+	// cell isn't loaded yet (EnsureScrollbackWindow fetches it) and we
+	// return nil — the renderer draws an empty cell until it arrives.
+	idx := row
+	if s.windowed {
+		idx = row - s.winStart
+	}
+	if idx < 0 || idx >= len(s.scrollback) {
 		return nil
 	}
-	rowSlice := s.scrollback[row]
+	rowSlice := s.scrollback[idx]
 	if col < 0 || col >= len(rowSlice) {
 		return nil
 	}
@@ -612,40 +639,200 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.mu.Lock()
 	s.scrollback = nil
+	s.winStart = 0
+	s.scrollbackTotal = 0
+	s.reqFrom, s.reqTo = 0, 0
 	s.scrollbackLen.Store(0)
 	s.renderGen.Add(1)
 	s.mu.Unlock()
 	s.signalDirty()
 }
 
-// applyScrollbackAppend appends new rows to the client-side
-// scrollback ring. Drops oldest rows when the ring would overflow
-// scrollbackCap so total memory stays bounded — daemon may have a
-// disk-backed unlimited buffer, but the client only mirrors the
-// recent tail.
-func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
-	s.mu.Lock()
-	for _, row := range f.Rows {
+// scrollbackWindowCap bounds the rows held in memory in windowed mode
+// (~8000 × ~200 cols × 112 B ≈ 180 MB worst case, typically far less).
+// scrollbackWindowMargin is fetched on each side of the visible range
+// so small scrolls don't trigger a round-trip every line. Vars, not
+// consts, only so tests can shrink them to exercise the fetch path
+// without generating thousands of rows — never mutated in production.
+var (
+	scrollbackWindowCap    = 8000
+	scrollbackWindowMargin = 2000
+)
+
+// uvRowsFromProto converts wire rows to cell rows.
+func uvRowsFromProto(in [][]protocol.Cell) [][]uv.Cell {
+	out := make([][]uv.Cell, len(in))
+	for r, row := range in {
 		uvRow := make([]uv.Cell, len(row))
 		for i, c := range row {
 			uvRow[i] = uvCellFromProto(c)
 		}
-		s.scrollback = append(s.scrollback, uvRow)
+		out[r] = uvRow
 	}
-	if over := len(s.scrollback) - s.scrollbackCap; over > 0 {
-		s.scrollback = s.scrollback[over:]
+	return out
+}
+
+// applyScrollbackAppend incorporates rows that rolled off the live
+// screen. Non-windowed: append to the full mirror, FIFO-drop past the
+// cap. Windowed: track the daemon's true total and extend the cached
+// window ONLY when it's anchored at the live end (otherwise the window
+// is parked in cold history the user scrolled to — leave it, just
+// update the total so the scrollbar still grows).
+func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
+	s.mu.Lock()
+	rows := uvRowsFromProto(f.Rows)
+
+	if !s.windowed {
+		s.scrollback = append(s.scrollback, rows...)
+		if over := len(s.scrollback) - s.scrollbackCap; over > 0 {
+			n := copy(s.scrollback, s.scrollback[over:])
+			for i := n; i < len(s.scrollback); i++ {
+				s.scrollback[i] = nil
+			}
+			s.scrollback = s.scrollback[:n]
+		}
+		s.scrollbackLen.Store(int64(len(s.scrollback)))
+		s.renderGen.Add(1)
+		s.mu.Unlock()
+		s.signalDirty()
+		return
 	}
-	s.scrollbackLen.Store(int64(len(s.scrollback)))
-	// Gen bump BEFORE unlock: a reader that observes the new
-	// generation must be guaranteed to see the completed mutation
-	// (bump-after-unlock left a window where a frame could cache new
-	// content under the old generation — self-healing, but it
-	// violated the equal-gen ⇒ identical-content invariant).
+
+	// Windowed: update the authoritative total.
+	total := int(f.Total)
+	if end := int(f.BaseIdx) + len(rows); end > total {
+		total = end
+	}
+	if total > s.scrollbackTotal {
+		s.scrollbackTotal = total
+	}
+	// Extend the window only if these rows continue it at the high end
+	// (fresh window, or contiguous live-tail growth). A parked cold
+	// window gets disjoint live appends — ignore the rows there.
+	if len(s.scrollback) == 0 {
+		s.winStart = int(f.BaseIdx)
+		s.scrollback = rows
+	} else if int(f.BaseIdx) == s.winStart+len(s.scrollback) {
+		s.scrollback = append(s.scrollback, rows...)
+	}
+	s.evictWindowFrontLocked()
+	s.scrollbackLen.Store(int64(s.scrollbackTotal))
 	s.renderGen.Add(1)
 	s.mu.Unlock()
-	// A scrolled-back view renders from this ring — wake the GUI so
-	// the change paints without waiting for an unrelated event.
 	s.signalDirty()
+}
+
+// applyScrollbackRange installs the rows the daemon returned for a
+// ScrollbackRequest, replacing the cached window. Replace (not merge)
+// keeps the window contiguous; the request margin avoids thrash.
+func (s *Source) applyScrollbackRange(f *protocol.ScrollbackRange) {
+	s.mu.Lock()
+	if !s.windowed {
+		s.mu.Unlock()
+		return
+	}
+	s.winStart = int(f.From)
+	s.scrollback = uvRowsFromProto(f.Rows)
+	s.evictWindowFrontLocked()
+	// The window now covers what we asked for — clear the in-flight
+	// marker so EnsureScrollbackWindow re-evaluates against real cover.
+	s.reqFrom, s.reqTo = 0, 0
+	if end := s.winStart + len(s.scrollback); end > s.scrollbackTotal {
+		s.scrollbackTotal = end
+		s.scrollbackLen.Store(int64(end))
+	}
+	s.renderGen.Add(1)
+	s.mu.Unlock()
+	s.signalDirty()
+}
+
+// evictWindowFrontLocked trims the window to scrollbackWindowCap by
+// dropping oldest rows, compacting in place so the dropped rows are
+// freed promptly (a bare reslice would retain the backing array's
+// front via the interior pointer). Caller holds s.mu.
+func (s *Source) evictWindowFrontLocked() {
+	over := len(s.scrollback) - scrollbackWindowCap
+	if over <= 0 {
+		return
+	}
+	n := copy(s.scrollback, s.scrollback[over:])
+	for i := n; i < len(s.scrollback); i++ {
+		s.scrollback[i] = nil
+	}
+	s.scrollback = s.scrollback[:n]
+	s.winStart += over
+}
+
+// EnsureScrollbackWindow makes sure the cached window covers the
+// absolute scrollback range [from, to) the viewport is about to
+// render, fetching from the daemon when it doesn't. Called once per
+// frame from the GUI with the currently-visible scrollback span. A
+// no-op when not windowed or when the range is already cached or
+// already requested.
+func (s *Source) EnsureScrollbackWindow(from, to int) {
+	if !s.windowed || to <= from {
+		return
+	}
+	s.mu.Lock()
+	total := s.scrollbackTotal
+	if from < 0 {
+		from = 0
+	}
+	if to > total {
+		to = total
+	}
+	if to <= from {
+		s.mu.Unlock()
+		return
+	}
+	winLo, winHi := s.winStart, s.winStart+len(s.scrollback)
+	if from >= winLo && to <= winHi {
+		// Fully cached — nothing pending.
+		s.reqFrom, s.reqTo = 0, 0
+		s.mu.Unlock()
+		return
+	}
+	if s.reqTo > s.reqFrom && from >= s.reqFrom && to <= s.reqTo {
+		// An in-flight request already covers this range.
+		s.mu.Unlock()
+		return
+	}
+	// Desired window: visible range + margin, clamped to the history
+	// and to scrollbackWindowCap.
+	lo := from - scrollbackWindowMargin
+	hi := to + scrollbackWindowMargin
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > total {
+		hi = total
+	}
+	if hi-lo > scrollbackWindowCap {
+		// Center the cap on the visible range.
+		mid := (from + to) / 2
+		lo = mid - scrollbackWindowCap/2
+		if lo < 0 {
+			lo = 0
+		}
+		hi = lo + scrollbackWindowCap
+		if hi > total {
+			hi = total
+			lo = hi - scrollbackWindowCap
+			if lo < 0 {
+				lo = 0
+			}
+		}
+	}
+	s.reqFrom, s.reqTo = lo, hi
+	tabID := s.tabID
+	s.mu.Unlock()
+	var cli *clientproto.Client
+	if s.hub != nil {
+		cli = s.hub.client()
+	}
+	if cli != nil {
+		cli.SendScrollbackRequest(tabID, lo, hi-lo)
+	}
 }
 
 // Wake, if set, is called whenever a Source's visible state changes

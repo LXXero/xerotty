@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	uv "github.com/charmbracelet/ultraviolet"
+
 	"github.com/LXXero/xerotty/internal/protocol"
 )
 
@@ -660,6 +662,21 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 			}
 		}
 		return nil
+	case protocol.MsgScrollbackRequest:
+		// Sliding-window fetch: the client mirrors only a bounded
+		// window of scrollback and asks for absolute row ranges as it
+		// scrolls (or jumps to a search match) outside it. We own the
+		// full (disk-backed) history, so we serve any range.
+		var msg protocol.ScrollbackRequest
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			if t := c.session.Tab(msg.ID); t != nil {
+				c.sendScrollbackRange(t, int(msg.From), int(msg.Count))
+			}
+		}
+		return nil
 	case protocol.MsgPing:
 		// A live peer probing us — echo it back out-of-band.
 		var msg protocol.Ping
@@ -1289,6 +1306,12 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 // at 80-col grids.
 const scrollbackBatchMax = 256
 
+// scrollbackRangeMax caps a single on-demand ScrollbackRange reply.
+// The client requests at most a window's worth, but clamp defensively
+// so a bogus or huge Count can't make the daemon snapshot gigabytes
+// into one frame.
+const scrollbackRangeMax = 4096
+
 
 // sendNewScrollback ships rows that rolled off the top of the
 // viewport since the last publish. Reads through
@@ -1305,6 +1328,45 @@ const scrollbackBatchMax = 256
 // subscribe() seeded sub.lastScrollbackLen with the snapshot at
 // attach time, so this naturally streams only post-attach growth.
 // Pre-attach back-fill is a separate (future) request/response.
+// protoRowsFromUV converts a snapshot of scrollback rows to the wire
+// cell format. Shared by the append-publish loop and the on-demand
+// range fetch.
+func protoRowsFromUV(uvRows [][]uv.Cell) [][]protocol.Cell {
+	rows := make([][]protocol.Cell, 0, len(uvRows))
+	for _, uvRow := range uvRows {
+		row := make([]protocol.Cell, len(uvRow))
+		for col := range uvRow {
+			cell := uvRow[col]
+			row[col] = cellFromUV(&cell)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// sendScrollbackRange answers a client's ScrollbackRequest with the
+// rows in [from, from+count). Clamps to the tab's actual scrollback
+// extent; SnapshotScrollbackRange handles the disk/memory split. The
+// reply always carries From so the client can place the rows even if
+// the range was clamped or came back short.
+func (c *clientConn) sendScrollbackRange(t *Tab, from, count int) {
+	if count <= 0 {
+		return
+	}
+	if from < 0 {
+		from = 0
+	}
+	if count > scrollbackRangeMax {
+		count = scrollbackRangeMax
+	}
+	uvRows := t.Term.SnapshotScrollbackRange(from, from+count)
+	c.send(protocol.MsgScrollbackRange, &protocol.ScrollbackRange{
+		ID:   t.ID,
+		From: uint32(from),
+		Rows: protoRowsFromUV(uvRows),
+	})
+}
+
 func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	// Flush a pending scrollback-clear first, on this (publish)
 	// goroutine, so the reset + MsgScrollbackCleared are ordered
@@ -1331,19 +1393,11 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	// the disk evict-from-memory step happens under publishMu, so
 	// here we get a coherent view.)
 	uvRows := t.Term.SnapshotScrollbackRange(last, end)
-	rows := make([][]protocol.Cell, 0, len(uvRows))
-	for _, uvRow := range uvRows {
-		row := make([]protocol.Cell, len(uvRow))
-		for col := range uvRow {
-			cell := uvRow[col]
-			row[col] = cellFromUV(&cell)
-		}
-		rows = append(rows, row)
-	}
 	c.send(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
 		ID:      t.ID,
 		BaseIdx: uint32(last),
-		Rows:    rows,
+		Rows:    protoRowsFromUV(uvRows),
+		Total:   uint32(cur),
 	})
 	sub.lastScrollbackLen.Store(int64(end))
 	// More to ship? Nudge THIS sub's own wake so the next iteration of

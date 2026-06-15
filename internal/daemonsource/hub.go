@@ -60,6 +60,11 @@ type Hub struct {
 	// only affect future Source instances.
 	scrollbackCap int
 
+	// windowed selects sliding-window scrollback for new Sources (set
+	// for "unlimited" mode, where a full mirror would be gigabytes).
+	// See Source.windowed.
+	windowed bool
+
 	mu      sync.RWMutex
 	sources map[uint32]*Source
 
@@ -249,6 +254,18 @@ func (h *Hub) Sources() []*Source {
 func (h *Hub) SetScrollbackCap(rows int) {
 	h.mu.Lock()
 	h.scrollbackCap = rows
+	h.windowed = false
+	h.mu.Unlock()
+}
+
+// SetScrollbackWindowed switches new Sources to sliding-window
+// scrollback: they mirror only a bounded window and fetch other
+// ranges from the daemon on demand. Used for "unlimited" scrollback
+// where a full in-memory mirror would be gigabytes per tab. Sources
+// created before this call keep their existing mode.
+func (h *Hub) SetScrollbackWindowed() {
+	h.mu.Lock()
+	h.windowed = true
 	h.mu.Unlock()
 }
 
@@ -777,6 +794,13 @@ func (h *Hub) route(cli *clientproto.Client) {
 				s.applyScrollbackAppend(f)
 			} else {
 				h.stash(f.ID, pendingScrollbackAppend, f)
+			}
+		case f := <-cli.ScrollbackRange():
+			// On-demand window fetch reply. If the tab's gone, just
+			// drop it — the request is re-issued on the next frame
+			// that needs the range (no stash needed; not a delta).
+			if s := h.lookup(f.ID); s != nil {
+				s.applyScrollbackRange(f)
 			}
 		case f := <-cli.ScrollbackCleared():
 			if s := h.lookup(f.ID); s != nil {
