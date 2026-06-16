@@ -337,6 +337,66 @@ type scrollbackWindower interface {
 	EnsureScrollbackWindow(from, to int)
 }
 
+// scrollbackSearcher is implemented by daemon Sources: the deep
+// history they don't mirror is searched on the daemon. The reply
+// carries ABSOLUTE scrollback line indices (see runScrollbackSearch).
+type scrollbackSearcher interface {
+	RequestScrollbackSearch(query string, caseSensitive, regex, wholeWord bool) uint64
+	TakeSearchResults() (reqID uint64, matches []protocol.SearchMatch, truncated, ok bool)
+}
+
+// daemonSearchState tracks one tab's in-flight daemon search so the
+// frame loop re-requests only when inputs change, and re-homes match
+// coordinates as the scrollback total grows (without re-querying).
+type daemonSearchState struct {
+	query     string
+	caseSens  bool
+	regex     bool
+	word      bool
+	reqID     uint64
+	absMatch  []protocol.SearchMatch // raw daemon results (absolute lines)
+	haveRes   bool
+	lastTotal int // scrollback total at last coordinate conversion
+}
+
+// ensureDaemonSearch drives server-side search for a windowed daemon
+// tab: (re)issue the query when inputs change, adopt replies, and
+// convert ABSOLUTE daemon line indices into the renderer's
+// screen-relative match space (Line<0 scrollback, >=0 screen) — using
+// the CURRENT total so matches stay correct as history grows, with no
+// extra round-trips.
+func (a *Window) ensureDaemonSearch(tabID int, s *scrollback.State, term terminal.Source, searcher scrollbackSearcher, visRows int) {
+	ds := a.daemonSearch[tabID]
+	if ds == nil || ds.query != s.Query || ds.caseSens != s.CaseSensitive ||
+		ds.regex != s.UseRegex || ds.word != s.WholeWord {
+		if ds == nil {
+			ds = &daemonSearchState{}
+			a.daemonSearch[tabID] = ds
+		}
+		ds.query, ds.caseSens, ds.regex, ds.word = s.Query, s.CaseSensitive, s.UseRegex, s.WholeWord
+		ds.reqID = searcher.RequestScrollbackSearch(s.Query, s.CaseSensitive, s.UseRegex, s.WholeWord)
+		ds.absMatch, ds.haveRes = nil, false
+		s.SetMatches(nil, visRows) // clear stale highlights immediately
+		s.SearchPending = true
+		s.Truncated = false
+	}
+	if reqID, matches, truncated, ok := searcher.TakeSearchResults(); ok && reqID == ds.reqID {
+		ds.absMatch, ds.haveRes, ds.lastTotal = matches, true, -1
+		s.SearchPending = false
+		s.Truncated = truncated
+	}
+	if ds.haveRes {
+		if total := term.ScrollbackLen(); total != ds.lastTotal {
+			ds.lastTotal = total
+			conv := make([]scrollback.Match, len(ds.absMatch))
+			for i, m := range ds.absMatch {
+				conv[i] = scrollback.Match{Line: int(m.Line) - total, Col: int(m.Col), Len: int(m.Len)}
+			}
+			s.SetMatches(conv, visRows)
+		}
+	}
+}
+
 // configureHubScrollback sets a daemon hub's client-side scrollback
 // strategy from the user's config. "unlimited" mode uses a sliding
 // WINDOW — the GUI mirrors only a bounded window and fetches other
@@ -4093,7 +4153,14 @@ func (a *Window) frame() {
 				if s.OnAsyncDone == nil {
 					s.OnAsyncDone = platform.PostWake
 				}
-				s.EnsureSearch(tab.Terminal, visRows, tab.Terminal.RenderGeneration())
+				// Windowed daemon tabs can't scan deep history locally
+				// (they only mirror a window) — search runs on the
+				// daemon. In-process and non-windowed tabs scan locally.
+				if searcher, ok := tab.Terminal.(scrollbackSearcher); ok {
+					a.ensureDaemonSearch(tab.ID, s, tab.Terminal, searcher, visRows)
+				} else {
+					s.EnsureSearch(tab.Terminal, visRows, tab.Terminal.RenderGeneration())
+				}
 				if a.searchJumpOnResult && !s.SearchPending {
 					a.searchJumpOnResult = false
 					s.ScrollToCurrentMatch(visRows)
@@ -4101,6 +4168,10 @@ func (a *Window) frame() {
 				if len(s.Matches) > 0 {
 					a.drawSearchHighlights(s, drawList)
 				}
+			} else if a.daemonSearch != nil {
+				// Search overlay closed for this tab — drop its daemon
+				// search state so reopening with the same query re-runs.
+				delete(a.daemonSearch, tab.ID)
 			}
 
 			// Scrollbar

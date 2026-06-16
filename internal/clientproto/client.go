@@ -190,6 +190,7 @@ type Client struct {
 	tabState      chan *protocol.TabState
 	scrollback    chan *protocol.ScrollbackAppend
 	scrollbackRng chan *protocol.ScrollbackRange
+	searchResults chan *protocol.SearchResults
 	sbCleared     chan *protocol.ScrollbackCleared
 	clipboardSet  chan *protocol.ClipboardSet
 	proposals     chan *protocol.ProposalsChanged
@@ -241,6 +242,7 @@ func wrap(conn net.Conn) *Client {
 		tabState:          make(chan *protocol.TabState, 32),
 		scrollback:        make(chan *protocol.ScrollbackAppend, 32),
 		scrollbackRng:     make(chan *protocol.ScrollbackRange, 8),
+		searchResults:     make(chan *protocol.SearchResults, 4),
 		sbCleared:         make(chan *protocol.ScrollbackCleared, 8),
 		clipboardSet:      make(chan *protocol.ClipboardSet, 8),
 		proposals:         make(chan *protocol.ProposalsChanged, 8),
@@ -643,6 +645,10 @@ func (c *Client) TabState() <-chan *protocol.TabState { return c.tabState }
 // replies (answers to SendScrollbackRequest).
 func (c *Client) ScrollbackRange() <-chan *protocol.ScrollbackRange { return c.scrollbackRng }
 
+// SearchResults returns the channel of daemon-side search replies
+// (answers to SendSearchRequest).
+func (c *Client) SearchResults() <-chan *protocol.SearchResults { return c.searchResults }
+
 // ScrollbackAppend returns the channel of scrollback-row pushes.
 // Daemon emits a batch each time the visible viewport rolls up
 // (new output pushes lines off the top).
@@ -688,6 +694,16 @@ func (c *Client) SendScrollbackRequest(id uint32, from, count int) error {
 		ID:    id,
 		From:  uint32(from),
 		Count: uint32(count),
+	})
+}
+
+// SendSearchRequest asks the daemon to search a tab's full scrollback.
+// reqID correlates the async reply on SearchResults; a stale reply is
+// dropped by the caller.
+func (c *Client) SendSearchRequest(id uint32, reqID uint64, query string, caseSensitive, regex, wholeWord bool) error {
+	return c.send(protocol.MsgSearchRequest, &protocol.SearchRequest{
+		ID: id, ReqID: reqID, Query: query,
+		CaseSensitive: caseSensitive, Regex: regex, WholeWord: wholeWord,
 	})
 }
 
@@ -833,6 +849,12 @@ func (c *Client) handle(t protocol.MsgType, body []byte) error {
 		// Block (don't drop): a dropped range leaves a permanent hole
 		// in the window the client just scrolled to. Buffered + rare.
 		c.scrollbackRng <- msg
+	case protocol.MsgSearchResults:
+		msg := &protocol.SearchResults{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		c.searchResults <- msg
 	case protocol.MsgScrollbackCleared:
 		msg := &protocol.ScrollbackCleared{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/scrollback"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // writeProgressWindow is the idle-progress write timeout (Phase 10
@@ -361,7 +364,7 @@ type clientConn struct {
 	// (the client seeds its revision gate from Attached). Set by the
 	// writeLoop when the Attached frame is actually written.
 	attachedSent atomic.Bool
-	pingNonce         atomic.Uint64
+	pingNonce    atomic.Uint64
 
 	clientID string    // from Hello
 	joined   time.Time // when this conn was accepted
@@ -674,6 +677,22 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		if c.session != nil {
 			if t := c.session.Tab(msg.ID); t != nil {
 				c.sendScrollbackRange(t, int(msg.From), int(msg.Count))
+			}
+		}
+		return nil
+	case protocol.MsgSearchRequest:
+		// Daemon-side search: the windowed client can't search the
+		// deep history it doesn't mirror, so we scan our full
+		// scrollback (disk + memory) + the live screen and return
+		// match coordinates. Runs on a goroutine — a big disk history
+		// can take a moment and must not stall the read loop.
+		var msg protocol.SearchRequest
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session != nil {
+			if t := c.session.Tab(msg.ID); t != nil {
+				go c.runScrollbackSearch(t, &msg)
 			}
 		}
 		return nil
@@ -1075,6 +1094,7 @@ func sanitizeFilename(s string) string {
 //     output.
 //   - Too high: the initial dump pegs the wire for a few seconds
 //     on large sessions.
+//
 // 5000 rows ≈ ~200 viewport-fulls of 25-line screens; covers most
 // "what was I just looking at?" cases without flooding.
 const initialBackfillRows = 5000
@@ -1312,7 +1332,6 @@ const scrollbackBatchMax = 256
 // into one frame.
 const scrollbackRangeMax = 4096
 
-
 // sendNewScrollback ships rows that rolled off the top of the
 // viewport since the last publish. Reads through
 // t.Term.ScrollbackLen / ScrollbackCellAt which transparently
@@ -1365,6 +1384,80 @@ func (c *clientConn) sendScrollbackRange(t *Tab, from, count int) {
 		From: uint32(from),
 		Rows: protoRowsFromUV(uvRows),
 	})
+}
+
+// maxSearchMatches caps a daemon-side search reply. Matches are 12
+// bytes each on the wire, so 50k ≈ 600 KB — a generous ceiling that
+// still bounds a pathological query (e.g. "e" over a million lines).
+// Truncated tells the client it's a partial set.
+const maxSearchMatches = 50_000
+
+// runScrollbackSearch scans the tab's full scrollback (disk +
+// in-memory) then the live screen for the requested query, emitting
+// absolute line coordinates: scrollback row R as line R, screen row r
+// as line scrollbackLen+r — exactly the coordinate space the client's
+// renderer/scroll math uses (it subtracts the total to get the
+// screen-relative line). Shares scrollback.LineSearcher with the GUI
+// so server-side hits land identically to local ones.
+func (c *clientConn) runScrollbackSearch(t *Tab, msg *protocol.SearchRequest) {
+	ls, err := scrollback.NewLineSearcher(msg.Query, msg.CaseSensitive, msg.Regex, msg.WholeWord)
+	if err != nil || msg.Query == "" {
+		// Invalid regex / empty query → empty result set.
+		c.send(protocol.MsgSearchResults, &protocol.SearchResults{ID: t.ID, ReqID: msg.ReqID})
+		return
+	}
+	cols := t.Term.Width()
+	sbLen := t.Term.ScrollbackLen()
+	var matches []protocol.SearchMatch
+	truncated := false
+
+	emitLine := func(absLine int, line string) bool {
+		ls.Find(line, func(col, length int) {
+			if truncated {
+				return
+			}
+			matches = append(matches, protocol.SearchMatch{
+				Line: uint32(absLine), Col: uint32(col), Len: uint32(length),
+			})
+			if len(matches) >= maxSearchMatches {
+				truncated = true
+			}
+		})
+		return !truncated
+	}
+
+	for row := 0; row < sbLen && !truncated; row++ {
+		if !emitLine(row, t.Term.ScrollbackLineText(row, cols)) {
+			break
+		}
+	}
+	if !truncated {
+		rows := t.Term.Height()
+		for row := 0; row < rows && !truncated; row++ {
+			if !emitLine(sbLen+row, screenLineText(t.Term, row, cols)) {
+				break
+			}
+		}
+	}
+	c.send(protocol.MsgSearchResults, &protocol.SearchResults{
+		ID: t.ID, ReqID: msg.ReqID, Matches: matches, Truncated: truncated,
+	})
+}
+
+// screenLineText builds the text of one live-screen row the same way
+// the scrollback line text is built (one cell content per column,
+// space for empties) so search columns align.
+func screenLineText(term *terminal.Terminal, row, cols int) string {
+	var b strings.Builder
+	b.Grow(cols)
+	for col := 0; col < cols; col++ {
+		if c := term.CellAt(col, row); c != nil && c.Content != "" {
+			b.WriteString(c.Content)
+		} else {
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
 }
 
 func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {

@@ -80,6 +80,18 @@ type Source struct {
 	// spam the daemon. [0,0) means "nothing requested".
 	reqFrom int
 	reqTo   int
+
+	// Daemon-side search state (windowed mode): the client can't
+	// search history it doesn't mirror, so RequestScrollbackSearch
+	// ships the query to the daemon and applySearchResults stashes the
+	// reply for the GUI to consume via TakeSearchResults. searchReqID
+	// correlates them — a late reply for a superseded query is
+	// dropped.
+	searchReqID    uint64
+	searchResults  []protocol.SearchMatch
+	searchTrunc    bool
+	searchHave     bool
+	searchHaveReq  uint64
 	// scrollbackLen mirrors len(scrollback) atomically. The renderer
 	// historically asked ScrollbackLen once PER CELL (via cellAt) —
 	// even now that it's hoisted to once per frame, lock-free reads
@@ -744,6 +756,57 @@ func (s *Source) applyScrollbackRange(f *protocol.ScrollbackRange) {
 	s.renderGen.Add(1)
 	s.mu.Unlock()
 	s.signalDirty()
+}
+
+// RequestScrollbackSearch ships a search of the tab's FULL scrollback
+// to the daemon (which owns the history this windowed client doesn't
+// mirror) and returns the request id to correlate the async reply.
+// Returns 0 if there's no live connection.
+func (s *Source) RequestScrollbackSearch(query string, caseSensitive, regex, wholeWord bool) uint64 {
+	s.mu.Lock()
+	s.searchReqID++
+	id := s.searchReqID
+	tabID := s.tabID
+	s.mu.Unlock()
+	var cli *clientproto.Client
+	if s.hub != nil {
+		cli = s.hub.client()
+	}
+	if cli == nil {
+		return 0
+	}
+	cli.SendSearchRequest(tabID, id, query, caseSensitive, regex, wholeWord)
+	return id
+}
+
+// applySearchResults stashes a daemon search reply if it answers the
+// latest request (a stale reply for a superseded query is ignored).
+func (s *Source) applySearchResults(f *protocol.SearchResults) {
+	s.mu.Lock()
+	if f.ReqID != s.searchReqID {
+		s.mu.Unlock()
+		return
+	}
+	s.searchResults = f.Matches
+	s.searchTrunc = f.Truncated
+	s.searchHave = true
+	s.searchHaveReq = f.ReqID
+	s.mu.Unlock()
+	s.signalDirty() // wake the GUI to consume the results
+}
+
+// TakeSearchResults returns the latest unconsumed daemon search reply
+// once. ok is false when nothing new has arrived since the last take.
+// Matches carry ABSOLUTE scrollback line indices (see the daemon's
+// runScrollbackSearch); the caller converts to its display space.
+func (s *Source) TakeSearchResults() (reqID uint64, matches []protocol.SearchMatch, truncated, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.searchHave {
+		return 0, nil, false, false
+	}
+	s.searchHave = false
+	return s.searchHaveReq, s.searchResults, s.searchTrunc, true
 }
 
 // evictWindowFrontLocked trims the window to scrollbackWindowCap by

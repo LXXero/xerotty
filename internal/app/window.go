@@ -96,7 +96,11 @@ type Window struct {
 	// Terminal grid content for this Window.
 	tabs     *tabs.Manager
 	scroll   map[int]*scrollback.State // per-tab scrollback offset
-	renderer *renderer.Renderer
+	// daemonSearch tracks the in-flight daemon-side search per tab
+	// (windowed daemon tabs only) so the frame loop re-requests only
+	// when the query/options change. Cleared when the overlay closes.
+	daemonSearch map[int]*daemonSearchState
+	renderer     *renderer.Renderer
 
 	// Per-Window UI state. Each Window tracks its own selection,
 	// hovered link, search overlay, prefs dialog, etc. — moving any
@@ -340,6 +344,7 @@ func newWindow(app *App) *Window {
 	return &Window{
 		app:            app,
 		scroll:         make(map[int]*scrollback.State),
+		daemonSearch:   make(map[int]*daemonSearchState),
 		tabBarH:        0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq:   -1,
 		tabDragIdx:     -1,

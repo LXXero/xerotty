@@ -802,6 +802,12 @@ func (h *Hub) route(cli *clientproto.Client) {
 			if s := h.lookup(f.ID); s != nil {
 				s.applyScrollbackRange(f)
 			}
+		case f := <-cli.SearchResults():
+			// Daemon search reply. Drop if the tab's gone; the GUI
+			// re-issues on the next search interaction.
+			if s := h.lookup(f.ID); s != nil {
+				s.applySearchResults(f)
+			}
 		case f := <-cli.ScrollbackCleared():
 			if s := h.lookup(f.ID); s != nil {
 				s.applyScrollbackCleared(f)

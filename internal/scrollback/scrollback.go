@@ -45,6 +45,7 @@ type State struct {
 	// runs on a goroutine with cancellation so typing in the search
 	// box never blocks a frame.
 	SearchPending bool          // a scan is in flight (UI can show progress)
+	Truncated     bool          // results hit the searcher's cap (daemon side)
 	OnAsyncDone   func()        // called from the worker when results land (wake the render loop)
 	searchID      uint64        // identifies the latest scan; stale results are dropped
 	searchCancel  chan struct{} // closed to abort the in-flight scan
@@ -144,6 +145,23 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// SetMatches replaces the match set from an EXTERNAL searcher (the
+// daemon, for windowed tabs whose deep history the client can't scan
+// locally) and re-homes MatchIdx near the viewport. Matches must be
+// in the same coordinate space as local search (Line<0 scrollback,
+// >=0 screen). Preserves the navigation position when the set is a
+// refresh of the same size region.
+func (s *State) SetMatches(matches []Match, visibleRows int) {
+	prevIdx := s.MatchIdx
+	had := len(s.Matches) > 0
+	s.Matches = matches
+	if had && prevIdx < len(s.Matches) {
+		s.MatchIdx = prevIdx
+	} else {
+		s.selectNearest(visibleRows)
+	}
 }
 
 // EnsureSearch keeps s.Matches in sync with the query, options, and
@@ -280,19 +298,9 @@ func scanGrid(emu Grid, query string, caseSens, useRegex, wholeWord bool, cancel
 	var matches []Match
 	cols := emu.Width()
 
-	var re *regexp.Regexp
-	if useRegex {
-		pattern := query
-		if !caseSens {
-			pattern = "(?i)" + pattern
-		}
-		var err error
-		re, err = regexp.Compile(pattern)
-		if err != nil {
-			return nil, true // invalid regex — empty result set
-		}
-	} else if !caseSens {
-		query = strings.ToLower(query)
+	ls, err := NewLineSearcher(query, caseSens, useRegex, wholeWord)
+	if err != nil {
+		return nil, true // invalid regex — empty result set
 	}
 
 	sbLen := emu.ScrollbackLen()
@@ -305,20 +313,17 @@ func scanGrid(emu Grid, query string, caseSens, useRegex, wholeWord bool, cancel
 			}
 		}
 		line := extractScrollbackLine(emu, row, cols)
-		if useRegex {
-			findMatchesRegex(&matches, line, re, -(sbLen - row), wholeWord)
-		} else {
-			findMatchesPlain(&matches, line, query, -(sbLen - row), caseSens, wholeWord)
-		}
+		lineIdx := -(sbLen - row)
+		ls.Find(line, func(col, length int) {
+			matches = append(matches, Match{Line: lineIdx, Col: col, Len: length})
+		})
 	}
 	rows := emu.Height()
 	for row := 0; row < rows; row++ {
 		line := extractScreenLine(emu, row, cols)
-		if useRegex {
-			findMatchesRegex(&matches, line, re, row, wholeWord)
-		} else {
-			findMatchesPlain(&matches, line, query, row, caseSens, wholeWord)
-		}
+		ls.Find(line, func(col, length int) {
+			matches = append(matches, Match{Line: row, Col: col, Len: length})
+		})
 	}
 	return matches, true
 }
@@ -414,35 +419,74 @@ func decodeFirstRune(s string) (rune, int) {
 	return r, len(string(r))
 }
 
-func findMatchesPlain(matches *[]Match, line, query string, lineIdx int, caseSensitive, wholeWord bool) {
-	searchLine := line
+// LineSearcher matches a compiled query against individual lines,
+// emitting (column, length) byte offsets per hit. It's the single
+// source of truth for xerotty's plain / regex / whole-word search
+// semantics — used by the GUI's local scan (scanGrid) AND by the
+// daemon's server-side scrollback search, so deep-history results
+// land on exactly the same coordinates as local ones.
+type LineSearcher struct {
+	re            *regexp.Regexp // non-nil in regex mode
+	query         string         // case-folded if !caseSensitive (plain mode)
+	caseSensitive bool
+	wholeWord     bool
+}
+
+// NewLineSearcher compiles query once. Returns an error only for an
+// invalid regex pattern.
+func NewLineSearcher(query string, caseSensitive, regex, wholeWord bool) (*LineSearcher, error) {
+	s := &LineSearcher{caseSensitive: caseSensitive, wholeWord: wholeWord}
+	if regex {
+		pattern := query
+		if !caseSensitive {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+		s.re = re
+		return s, nil
+	}
+	s.query = query
 	if !caseSensitive {
+		s.query = strings.ToLower(query)
+	}
+	return s, nil
+}
+
+// Find calls emit(col, length) for every match in line, with col and
+// length as byte offsets into line.
+func (s *LineSearcher) Find(line string, emit func(col, length int)) {
+	if s.re != nil {
+		for _, loc := range s.re.FindAllStringIndex(line, -1) {
+			col, length := loc[0], loc[1]-loc[0]
+			if !s.wholeWord || atWordBoundary(line, col, length) {
+				emit(col, length)
+			}
+		}
+		return
+	}
+	if s.query == "" {
+		return
+	}
+	searchLine := line
+	if !s.caseSensitive {
 		searchLine = strings.ToLower(line)
 	}
 	offset := 0
 	for {
-		idx := strings.Index(searchLine[offset:], query)
+		idx := strings.Index(searchLine[offset:], s.query)
 		if idx < 0 {
 			break
 		}
 		col := offset + idx
-		if !wholeWord || atWordBoundary(line, col, len(query)) {
-			*matches = append(*matches, Match{Line: lineIdx, Col: col, Len: len(query)})
+		if !s.wholeWord || atWordBoundary(line, col, len(s.query)) {
+			emit(col, len(s.query))
 		}
 		offset = col + 1
 		if offset >= len(searchLine) {
 			break
-		}
-	}
-}
-
-func findMatchesRegex(matches *[]Match, line string, re *regexp.Regexp, lineIdx int, wholeWord bool) {
-	locs := re.FindAllStringIndex(line, -1)
-	for _, loc := range locs {
-		col, end := loc[0], loc[1]
-		length := end - col
-		if !wholeWord || atWordBoundary(line, col, length) {
-			*matches = append(*matches, Match{Line: lineIdx, Col: col, Len: length})
 		}
 	}
 }
