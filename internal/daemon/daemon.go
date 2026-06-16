@@ -363,6 +363,66 @@ func (d *Daemon) sessionClients(sess *Session) []*clientConn {
 	return out
 }
 
+// reconcileTabSize sizes the tab's shared PTY to the SMALLEST grid any
+// attached client wants, so multiple differently-sized GUIs share one
+// PTY without a resize war. Each client's frame loop continuously
+// demands the grid match its OWN window (app.resizeReq); obeying the
+// last requester unconditionally made two clients ping-pong the grid
+// between their sizes ~2Hz — the flashing. Reconciling to the min lets
+// every viewer see the whole grid (the larger ones letterbox, like
+// tmux), and we only Resize + wake when the reconciled size actually
+// CHANGES, so the larger client's futile re-requests become no-ops
+// instead of fuel. Called on every client resize request and on
+// detach (when a small client leaves, the min can grow back).
+//
+// Clients that haven't expressed a size yet (desired == 0) don't
+// constrain; if NONE has, the PTY is left as-is.
+func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
+	if sess == nil {
+		return
+	}
+	t := sess.Tab(tabID)
+	if t == nil {
+		return
+	}
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+
+	minCols, minRows := 0, 0
+	for _, c := range conns {
+		c.subsMu.Lock()
+		sub, ok := c.subs[tabID]
+		var dc, dr uint16
+		if ok {
+			dc, dr = sub.desiredCols, sub.desiredRows
+		}
+		c.subsMu.Unlock()
+		if !ok || dc == 0 || dr == 0 {
+			continue
+		}
+		if minCols == 0 || int(dc) < minCols {
+			minCols = int(dc)
+		}
+		if minRows == 0 || int(dr) < minRows {
+			minRows = int(dr)
+		}
+	}
+	if minCols == 0 || minRows == 0 {
+		return // no attached client has expressed a size yet
+	}
+	minCols = ClampTabDim(minCols)
+	minRows = ClampTabDim(minRows)
+	if t.Term.Width() == minCols && t.Term.Height() == minRows {
+		return // already at the reconciled size — no thrash, no broadcast
+	}
+	t.Term.Resize(minCols, minRows)
+	d.WakeTabSubscribers(tabID)
+}
+
 // WakeTabSubscribers nudges every client's publishLoop subscribed to
 // tabID to re-publish immediately. Used after a resize: it changes
 // the grid dimensions but emits no PTY output, so without an explicit

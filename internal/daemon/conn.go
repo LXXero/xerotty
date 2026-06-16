@@ -419,6 +419,16 @@ type imageAssembly struct {
 type tabSub struct {
 	cancel chan struct{}
 
+	// desiredCols/desiredRows are THIS client's requested grid for the
+	// tab. The daemon reconciles all attached clients to the SMALLEST
+	// (see Daemon.reconcileTabSize) so two differently-sized GUIs share
+	// one PTY without a resize war — each client's frame loop demands
+	// its own window size, and obeying the last requester ping-ponged
+	// the grid ~2Hz (visible flashing). 0 = no request yet (doesn't
+	// constrain). Guarded by the owning clientConn.subsMu.
+	desiredCols uint16
+	desiredRows uint16
+
 	// wake nudges this subscription's publishLoop to re-publish now,
 	// independent of the shared Terminal.DataCh. DataCh is a single
 	// cap-1 channel every client's publishLoop competes for, so a
@@ -859,11 +869,18 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 	if t == nil {
 		return nil
 	}
-	t.Term.Resize(ClampTabDim(int(msg.Cols)), ClampTabDim(int(msg.Rows)))
-	// Fan out to EVERY subscriber so all attached clients re-paint at
-	// the new dimensions now (a resize emits no PTY output, and the
-	// shared DataCh would wake only one of them).
-	c.daemon.WakeTabSubscribers(t.ID)
+	// Record THIS client's desired grid, then reconcile across all
+	// attached clients (smallest wins) rather than resizing the shared
+	// PTY to whoever asked last — two differently-sized GUIs otherwise
+	// fight over it forever (~2Hz flashing). reconcileTabSize fans out
+	// the repaint wake only when the reconciled size actually changes.
+	c.subsMu.Lock()
+	if sub, ok := c.subs[msg.ID]; ok {
+		sub.desiredCols = msg.Cols
+		sub.desiredRows = msg.Rows
+	}
+	c.subsMu.Unlock()
+	c.daemon.reconcileTabSize(c.session, t.ID)
 	return nil
 }
 
@@ -1145,24 +1162,43 @@ func (c *clientConn) subscribe(sess *Session, t *Tab) {
 
 func (c *clientConn) unsubscribe(id uint32) {
 	c.subsMu.Lock()
-	defer c.subsMu.Unlock()
+	sess := c.subSession
+	_, removed := c.subs[id]
 	if sub, ok := c.subs[id]; ok {
 		close(sub.cancel)
 		delete(c.subs, id)
+	}
+	c.subsMu.Unlock()
+	// This client no longer constrains the tab's size — the remaining
+	// clients' minimum may now be larger, so grow the PTY back if so.
+	// Done after releasing subsMu (reconcileTabSize takes other clients'
+	// subsMu, including this one's, so it can't be held here).
+	if removed && sess != nil {
+		c.daemon.reconcileTabSize(sess, id)
 	}
 }
 
 func (c *clientConn) stopAllSubs() {
 	c.subsMu.Lock()
-	defer c.subsMu.Unlock()
 	// Clear subSession under the lock so any subscribe racing this
 	// teardown (from another connection's create fan-out) sees we're
 	// no longer attached and skips, rather than adding a sub whose
 	// cancel we've already closed.
+	sess := c.subSession
 	c.subSession = nil
+	ids := make([]uint32, 0, len(c.subs))
 	for id, sub := range c.subs {
 		close(sub.cancel)
 		delete(c.subs, id)
+		ids = append(ids, id)
+	}
+	c.subsMu.Unlock()
+	// This client is detaching entirely; recompute each tab's size so
+	// the remaining viewers' minimum (now larger) takes effect.
+	if sess != nil {
+		for _, id := range ids {
+			c.daemon.reconcileTabSize(sess, id)
+		}
 	}
 }
 
