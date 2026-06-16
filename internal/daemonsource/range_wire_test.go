@@ -18,8 +18,8 @@ import (
 // disk-backed scrollback, and the rows must become readable.
 func TestScrollbackRangeWire(t *testing.T) {
 	// Shrink the window so ~120 rows of history can't all be cached.
-	defer func(c, m int) { scrollbackWindowCap, scrollbackWindowMargin = c, m }(scrollbackWindowCap, scrollbackWindowMargin)
-	scrollbackWindowCap, scrollbackWindowMargin = 20, 5
+	defer func(c, p, f int) { scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = c, p, f }(scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan)
+	scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = 20, 5, 30
 
 	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
 	cfg := config.Default()

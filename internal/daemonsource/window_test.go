@@ -125,3 +125,46 @@ func TestWindowedFetchOnScroll(t *testing.T) {
 		t.Fatalf("ScrollbackLen = %d, want %d after fetch", got, total)
 	}
 }
+
+// Prefetch must fire BEFORE the viewport leaves the cached window, and
+// the fetched chunk must MERGE (extend) the window rather than replace
+// it — so scrolling across the old edge stays continuous (no blank) —
+// while the window is still trimmed back to the cap (no growth/leak).
+func TestWindowedPrefetchMergesBounded(t *testing.T) {
+	defer func(c, p, f int) { scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = c, p, f }(scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan)
+	scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = 100, 20, 50
+
+	s := newWindowedSource()
+	streamAppends(s, 500) // live-anchored window = last 100 rows: [400,500)
+
+	if s.ScrollbackCellAt(0, 405) == nil {
+		t.Fatal("expected last 100 rows cached after streaming")
+	}
+	// Viewport sits near the OLD (bottom) edge of the window — within
+	// the prefetch margin — but still fully cached.
+	s.EnsureScrollbackWindow(405, 415)
+	if !(s.reqFrom == 350 && s.reqTo == 400) {
+		t.Fatalf("prefetch should request the adjacent [350,400); got [%d,%d)", s.reqFrom, s.reqTo)
+	}
+
+	// Daemon answers the prefetch; rows must merge in.
+	from, n := s.reqFrom, s.reqTo-s.reqFrom
+	rows := make([][]protocol.Cell, n)
+	for i := range rows {
+		rows[i] = wRow(from + i)
+	}
+	s.applyScrollbackRange(&protocol.ScrollbackRange{From: uint32(from), Rows: rows})
+
+	// Continuity: the row that was on screen is STILL readable...
+	if s.ScrollbackCellAt(0, 405) == nil {
+		t.Fatal("previously-visible row blanked after a prefetch merge")
+	}
+	// ...AND newly-fetched older rows are now available (runway).
+	if s.ScrollbackCellAt(0, 365) == nil {
+		t.Fatal("prefetched older row not available after merge")
+	}
+	// Hard cap holds — merge did not grow memory.
+	if rows := len(s.scrollback); rows > scrollbackWindowCap {
+		t.Fatalf("window grew to %d rows after merge, cap is %d", rows, scrollbackWindowCap)
+	}
+}

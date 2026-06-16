@@ -15,8 +15,8 @@ import (
 // scrollback, and match coordinates come back — including matches in
 // history the client never mirrored.
 func TestSearchWire(t *testing.T) {
-	defer func(c, m int) { scrollbackWindowCap, scrollbackWindowMargin = c, m }(scrollbackWindowCap, scrollbackWindowMargin)
-	scrollbackWindowCap, scrollbackWindowMargin = 20, 5 // history exceeds the window
+	defer func(c, p, f int) { scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = c, p, f }(scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan)
+	scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = 20, 5, 30 // history exceeds the window
 
 	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
 	cfg := config.Default()

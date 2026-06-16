@@ -75,11 +75,15 @@ type Source struct {
 	windowed        bool
 	winStart        int // absolute index of scrollback[0] (windowed)
 	scrollbackTotal int // daemon's full scrollback depth (windowed)
-	// reqFrom/reqTo bound the range the window already covers OR has an
-	// in-flight request for — debounces fetches so scrolling doesn't
-	// spam the daemon. [0,0) means "nothing requested".
+	// reqFrom/reqTo bound the in-flight fetch request — debounces so a
+	// fast scroll doesn't spam the daemon. [0,0) means none in flight.
 	reqFrom int
 	reqTo   int
+	// anchor is the absolute index of the viewport center, updated each
+	// frame. The window is always trimmed to scrollbackWindowCap rows
+	// CENTERED on it, so merges never grow memory past the cap and the
+	// rows nearest what you're looking at are the ones kept.
+	anchor int
 
 	// Daemon-side search state (windowed mode): the client can't
 	// search history it doesn't mirror, so RequestScrollbackSearch
@@ -660,15 +664,20 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.signalDirty()
 }
 
-// scrollbackWindowCap bounds the rows held in memory in windowed mode
-// (~8000 × ~200 cols × 112 B ≈ 180 MB worst case, typically far less).
-// scrollbackWindowMargin is fetched on each side of the visible range
-// so small scrolls don't trigger a round-trip every line. Vars, not
-// consts, only so tests can shrink them to exercise the fetch path
-// without generating thousands of rows — never mutated in production.
+// Windowed-scrollback tunables. Vars, not consts, only so tests can
+// shrink them to exercise the fetch path without thousands of rows —
+// never mutated in production.
+//   - Cap bounds the rows held in memory (~8000 × ~200 cols × 112 B ≈
+//     180 MB worst case, typically far less).
+//   - Prefetch: when the viewport comes this close to an uncached
+//     edge, fetch the adjacent chunk PROACTIVELY (while the current
+//     rows stay on screen) so crossing the edge doesn't flash blank.
+//   - FetchSpan: rows pulled per request — large, so one fetch gives
+//     plenty of runway for a continued fast scroll before the next.
 var (
-	scrollbackWindowCap    = 8000
-	scrollbackWindowMargin = 2000
+	scrollbackWindowCap = 8000
+	scrollbackPrefetch  = 1500
+	scrollbackFetchSpan = 6000
 )
 
 // uvRowsFromProto converts wire rows to cell rows.
@@ -735,20 +744,38 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 }
 
 // applyScrollbackRange installs the rows the daemon returned for a
-// ScrollbackRequest, replacing the cached window. Replace (not merge)
-// keeps the window contiguous; the request margin avoids thrash.
+// ScrollbackRequest. If they're adjacent to (or overlap) the cached
+// window it MERGES them so prefetched chunks extend what's on screen
+// — no blank flash — then trims back to the cap centered on the
+// viewport, so the window never actually grows past scrollbackWindowCap.
+// A disjoint range (a big jump) replaces the window.
 func (s *Source) applyScrollbackRange(f *protocol.ScrollbackRange) {
 	s.mu.Lock()
 	if !s.windowed {
 		s.mu.Unlock()
 		return
 	}
-	s.winStart = int(f.From)
-	s.scrollback = uvRowsFromProto(f.Rows)
-	s.evictWindowFrontLocked()
-	// The window now covers what we asked for — clear the in-flight
-	// marker so EnsureScrollbackWindow re-evaluates against real cover.
-	s.reqFrom, s.reqTo = 0, 0
+	newFrom := int(f.From)
+	newRows := uvRowsFromProto(f.Rows)
+	newTo := newFrom + len(newRows)
+	wLo, wHi := s.winStart, s.winStart+len(s.scrollback)
+
+	if len(s.scrollback) == 0 || newTo < wLo || newFrom > wHi {
+		// Disjoint — replace.
+		s.winStart = newFrom
+		s.scrollback = newRows
+	} else {
+		// Adjacent/overlapping — merge into the contiguous union, the
+		// fetched rows authoritative over any overlap.
+		unionLo, unionHi := min2(wLo, newFrom), max2(wHi, newTo)
+		merged := make([][]uv.Cell, unionHi-unionLo)
+		copy(merged[wLo-unionLo:], s.scrollback)
+		copy(merged[newFrom-unionLo:], newRows)
+		s.winStart = unionLo
+		s.scrollback = merged
+	}
+	s.reqFrom, s.reqTo = 0, 0 // request satisfied; re-evaluate next frame
+	s.trimWindowLocked(s.anchor)
 	if end := s.winStart + len(s.scrollback); end > s.scrollbackTotal {
 		s.scrollbackTotal = end
 		s.scrollbackLen.Store(int64(end))
@@ -756,6 +783,19 @@ func (s *Source) applyScrollbackRange(f *protocol.ScrollbackRange) {
 	s.renderGen.Add(1)
 	s.mu.Unlock()
 	s.signalDirty()
+}
+
+func min2(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max2(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // RequestScrollbackSearch ships a search of the tab's FULL scrollback
@@ -810,9 +850,9 @@ func (s *Source) TakeSearchResults() (reqID uint64, matches []protocol.SearchMat
 }
 
 // evictWindowFrontLocked trims the window to scrollbackWindowCap by
-// dropping oldest rows, compacting in place so the dropped rows are
-// freed promptly (a bare reslice would retain the backing array's
-// front via the interior pointer). Caller holds s.mu.
+// dropping oldest rows (the live-anchored append path, where the
+// newest rows are the ones to keep). Compacts in place so dropped
+// rows free promptly. Caller holds s.mu.
 func (s *Source) evictWindowFrontLocked() {
 	over := len(s.scrollback) - scrollbackWindowCap
 	if over <= 0 {
@@ -826,12 +866,54 @@ func (s *Source) evictWindowFrontLocked() {
 	s.winStart += over
 }
 
-// EnsureScrollbackWindow makes sure the cached window covers the
-// absolute scrollback range [from, to) the viewport is about to
-// render, fetching from the daemon when it doesn't. Called once per
-// frame from the GUI with the currently-visible scrollback span. A
-// no-op when not windowed or when the range is already cached or
-// already requested.
+// trimWindowLocked enforces the cap by keeping the scrollbackWindowCap
+// rows CENTERED on anchorCenter — i.e. the rows nearest what the user
+// is looking at — and dropping the rest from whichever end(s) are
+// farther away. This is what keeps "merge" from being a leak: however
+// many rows a fetch splices in, the window is immediately bounded back
+// to the cap. Compacts in place so dropped rows free promptly. Caller
+// holds s.mu.
+func (s *Source) trimWindowLocked(anchorCenter int) {
+	if len(s.scrollback) <= scrollbackWindowCap {
+		return
+	}
+	wLo := s.winStart
+	wHi := s.winStart + len(s.scrollback)
+	keepLo := anchorCenter - scrollbackWindowCap/2
+	if keepLo < wLo {
+		keepLo = wLo
+	}
+	keepHi := keepLo + scrollbackWindowCap
+	if keepHi > wHi {
+		keepHi = wHi
+		keepLo = keepHi - scrollbackWindowCap
+		if keepLo < wLo {
+			keepLo = wLo
+		}
+	}
+	if dropBack := wHi - keepHi; dropBack > 0 {
+		end := len(s.scrollback) - dropBack
+		for i := end; i < len(s.scrollback); i++ {
+			s.scrollback[i] = nil
+		}
+		s.scrollback = s.scrollback[:end]
+	}
+	if dropFront := keepLo - wLo; dropFront > 0 {
+		n := copy(s.scrollback, s.scrollback[dropFront:])
+		for i := n; i < len(s.scrollback); i++ {
+			s.scrollback[i] = nil
+		}
+		s.scrollback = s.scrollback[:n]
+		s.winStart += dropFront
+	}
+}
+
+// EnsureScrollbackWindow keeps the cached window covering the visible
+// absolute range [from, to), and — the smoothness fix — PREFETCHES the
+// adjacent chunk when the viewport comes within scrollbackPrefetch of
+// an uncached edge, so a fast scroll crosses the edge into already-
+// loaded rows instead of flashing blank. Called once per frame with
+// the visible scrollback span. No-op when not windowed.
 func (s *Source) EnsureScrollbackWindow(from, to int) {
 	if !s.windowed || to <= from {
 		return
@@ -848,43 +930,52 @@ func (s *Source) EnsureScrollbackWindow(from, to int) {
 		s.mu.Unlock()
 		return
 	}
-	winLo, winHi := s.winStart, s.winStart+len(s.scrollback)
-	if from >= winLo && to <= winHi {
-		// Fully cached — nothing pending.
-		s.reqFrom, s.reqTo = 0, 0
+	s.anchor = (from + to) / 2
+	wLo, wHi := s.winStart, s.winStart+len(s.scrollback)
+
+	cached := from >= wLo && to <= wHi
+	moreBelow := wLo > 0           // older history exists below the window
+	moreAbove := wHi < total       // newer history exists above the window
+	nearLow := from < wLo+scrollbackPrefetch
+	nearHigh := to > wHi-scrollbackPrefetch
+	bigJump := len(s.scrollback) == 0 || to <= wLo || from >= wHi
+
+	if cached && !(moreBelow && nearLow) && !(moreAbove && nearHigh) {
+		// Comfortably inside the window, not near an uncached edge.
 		s.mu.Unlock()
 		return
 	}
-	if s.reqTo > s.reqFrom && from >= s.reqFrom && to <= s.reqTo {
-		// An in-flight request already covers this range.
-		s.mu.Unlock()
-		return
+
+	// Pick the range to fetch: a big jump centers a span on the target;
+	// otherwise extend the window in the direction we're approaching so
+	// the fetched chunk is adjacent and merges.
+	var lo, hi int
+	switch {
+	case bigJump:
+		mid := (from + to) / 2
+		lo = mid - scrollbackFetchSpan/2
+		hi = lo + scrollbackFetchSpan
+	case moreBelow && nearLow:
+		hi = wLo
+		lo = wLo - scrollbackFetchSpan
+	default: // moreAbove && nearHigh
+		lo = wHi
+		hi = wHi + scrollbackFetchSpan
 	}
-	// Desired window: visible range + margin, clamped to the history
-	// and to scrollbackWindowCap.
-	lo := from - scrollbackWindowMargin
-	hi := to + scrollbackWindowMargin
 	if lo < 0 {
 		lo = 0
 	}
 	if hi > total {
 		hi = total
 	}
-	if hi-lo > scrollbackWindowCap {
-		// Center the cap on the visible range.
-		mid := (from + to) / 2
-		lo = mid - scrollbackWindowCap/2
-		if lo < 0 {
-			lo = 0
-		}
-		hi = lo + scrollbackWindowCap
-		if hi > total {
-			hi = total
-			lo = hi - scrollbackWindowCap
-			if lo < 0 {
-				lo = 0
-			}
-		}
+	if hi <= lo {
+		s.mu.Unlock()
+		return
+	}
+	if s.reqTo > s.reqFrom && lo >= s.reqFrom && hi <= s.reqTo {
+		// An in-flight request already covers this fetch — don't dup.
+		s.mu.Unlock()
+		return
 	}
 	s.reqFrom, s.reqTo = lo, hi
 	tabID := s.tabID
