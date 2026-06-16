@@ -670,7 +670,15 @@ func fitColorGlyphToCell(x, y, cellW, cellH, glyphW, glyphH, scale float32) (flo
 	const colorGlyphScale = 1.16
 	targetH := cellH * colorGlyphScale
 	targetW := targetH * glyphW / glyphH
-	if cellW > cellH && targetW > cellW {
+	// Never let the glyph spill past its own cell box (cellW already
+	// spans the glyph's full width — 1 cell for a normal emoji, 2 for a
+	// wide one). Sizing off 1.16*cellH alone makes a square emoji wider
+	// than its box whenever the cell is taller than ~half its width
+	// (i.e. almost every monospace font, aspect ~1:2), so adjacent
+	// emoji overlapped. Clamp to cellW and rescale height to keep
+	// aspect. The old `cellW > cellH` precondition never held for
+	// normal cells, so the clamp never fired.
+	if targetW > cellW {
 		targetW = cellW
 		targetH = targetW * glyphH / glyphW
 	}
