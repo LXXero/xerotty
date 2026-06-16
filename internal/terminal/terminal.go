@@ -560,13 +560,32 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 		return nil
 	}
 	cols := t.Emu.Width()
+	t.mu.Lock()
+	disk := t.disk
+	t.mu.Unlock()
+	diskLen := 0
+	if disk != nil {
+		diskLen = disk.Len()
+	}
 	out := make([][]uv.Cell, 0, to-from)
 	for r := from; r < to; r++ {
 		row := make([]uv.Cell, cols)
-		for col := 0; col < cols; col++ {
-			c := t.ScrollbackCellAt(col, r)
-			if c != nil {
-				row[col] = *c
+		if disk != nil && r < diskLen {
+			// ONE disk read+decode for the whole line. The per-cell
+			// path (ScrollbackCellAt per column) re-read and re-decoded
+			// the entire line once PER COLUMN — an 80× disk amplifier
+			// that, under the on-demand range fetch, thrashed the
+			// daemon into hanging.
+			line := disk.LineAt(r)
+			for col := 0; col < cols && col < len(line); col++ {
+				row[col] = line[col]
+			}
+		} else {
+			mr := r - diskLen
+			for col := 0; col < cols; col++ {
+				if c := t.Emu.ScrollbackCellAt(col, mr); c != nil {
+					row[col] = *c
+				}
 			}
 		}
 		out = append(out, row)

@@ -676,7 +676,11 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		}
 		if c.session != nil {
 			if t := c.session.Tab(msg.ID); t != nil {
-				c.sendScrollbackRange(t, int(msg.From), int(msg.Count))
+				// Off the read loop: a range snapshot touches disk, and
+				// a slow one must not stall input/heartbeat handling for
+				// this client. Replies carry From, so the client tolerates
+				// any ordering.
+				go c.sendScrollbackRange(t, int(msg.From), int(msg.Count))
 			}
 		}
 		return nil

@@ -36,6 +36,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/charmbracelet/x/ansi"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -50,7 +51,13 @@ type DiskScrollback struct {
 	offsets []int64 // offsets[i] is the byte offset of line i in f
 	size    int64   // current file size (next append position)
 	closed  bool
+	reads   atomic.Int64 // LineAt count — read budget guard (see ReadCount)
 }
+
+// ReadCount returns how many line reads (disk decodes) have happened.
+// Used by tests to guard against per-cell read amplification in bulk
+// snapshots — the bug that hung the daemon under the on-demand fetch.
+func (d *DiskScrollback) ReadCount() int64 { return d.reads.Load() }
 
 // NewDiskScrollback creates an empty disk-backed scrollback store
 // in a temp file that's unlinked immediately, so the file's inode
@@ -100,6 +107,7 @@ func (d *DiskScrollback) LineAt(idx int) uv.Line {
 	if idx < 0 || idx >= len(d.offsets) || d.closed {
 		return nil
 	}
+	d.reads.Add(1)
 
 	off := d.offsets[idx]
 	// Length is varint at the start of the record. Read up to 10

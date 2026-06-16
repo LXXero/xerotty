@@ -672,12 +672,16 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 //   - Prefetch: when the viewport comes this close to an uncached
 //     edge, fetch the adjacent chunk PROACTIVELY (while the current
 //     rows stay on screen) so crossing the edge doesn't flash blank.
-//   - FetchSpan: rows pulled per request — large, so one fetch gives
-//     plenty of runway for a continued fast scroll before the next.
+//   - FetchSpan: rows pulled per request — large for runway, but kept
+//     at/under the daemon's per-reply cap (scrollbackRangeMax=4096) so
+//     a request is served in ONE contiguous reply. A span larger than
+//     that came back clamped and DISJOINT from the window, which made
+//     the merge fall back to replace and the viewport fall off the
+//     window → a re-request storm that hung the daemon.
 var (
 	scrollbackWindowCap = 8000
 	scrollbackPrefetch  = 1500
-	scrollbackFetchSpan = 6000
+	scrollbackFetchSpan = 4000
 )
 
 // uvRowsFromProto converts wire rows to cell rows.
