@@ -158,6 +158,16 @@ type Source interface {
 	// consistent copy. Indices are absolute (0 = oldest).
 	SnapshotScrollbackRange(from, to int) [][]uv.Cell
 
+	// SnapshotWindow returns a consistent rows×cols copy of the
+	// visible window at scrollOffset, resolving scrollback + grid in
+	// ONE critical section so the grid↔scrollback boundary can't tear
+	// when a write rotates the scrollback ring mid-frame. base is the
+	// content-row of viewport row 0; gen is the render generation
+	// observed under the lock. This is the consistent-read path the
+	// GUI renderer walks (replacing the live CellAt/ScrollbackCellAt
+	// reads that tore during heavy output).
+	SnapshotWindow(scrollOffset, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
+
 	// SetScrollbackFromConfig re-applies scrollback settings (mode,
 	// line limit) without restarting the source. Called from the
 	// prefs-apply path so live tabs pick up new settings. Daemon-

@@ -272,6 +272,55 @@ func (s *Source) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 	return out
 }
 
+// SnapshotWindow implements renderer.EmulatorView: it returns a
+// consistent rows×cols copy of the visible window at scrollOffset,
+// resolving scrollback + grid in ONE s.mu critical section so a
+// concurrent applyScrollbackAppend (which appends rows AND drops the
+// oldest when over cap — a ring rotation that shifts every index)
+// can't tear the grid↔scrollback boundary under the renderer's walk.
+// base is the content-row of viewport row 0; gen is the render
+// generation observed under the lock. Mirrors terminal.Terminal's
+// method.
+//
+// Indices are ABSOLUTE (0 = oldest), matching ScrollbackLen /
+// ScrollbackCellAt: sbLen is the daemon's true depth, and in windowed
+// mode the local mirror is offset by winStart, so an absolute index
+// outside [winStart, winStart+len) isn't fetched yet and reads as an
+// empty cell (EnsureScrollbackWindow pulls it; a later frame fills
+// it). s.scrollback / s.emu are read directly (not via the locking
+// accessors) to avoid re-entering s.mu.
+func (s *Source) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sbLen := int(s.scrollbackLen.Load())
+	base := sbLen - scrollOffset
+	out := make([][]uv.Cell, rows)
+	for row := 0; row < rows; row++ {
+		line := make([]uv.Cell, cols)
+		contentIdx := base + row
+		for col := 0; col < cols; col++ {
+			if contentIdx >= 0 && contentIdx < sbLen {
+				idx := contentIdx
+				if s.windowed {
+					idx -= s.winStart
+				}
+				if idx >= 0 && idx < len(s.scrollback) {
+					rowSlice := s.scrollback[idx]
+					if col >= 0 && col < len(rowSlice) {
+						line[col] = rowSlice[col]
+					}
+				}
+			} else if contentIdx >= sbLen {
+				if c := s.emu.CellAt(col, contentIdx-sbLen); c != nil {
+					line[col] = *c
+				}
+			}
+		}
+		out[row] = line
+	}
+	return out, base, s.renderGen.Load()
+}
+
 // ScrollbackCellAt reads a cell from the client-side scrollback
 // mirror at logical row (0 = oldest) and column. Returns nil for
 // out-of-range coords; renderer treats nil as empty.

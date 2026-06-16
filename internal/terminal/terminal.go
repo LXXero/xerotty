@@ -593,6 +593,44 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 	return out
 }
 
+// SnapshotWindow implements renderer.EmulatorView: it returns a
+// consistent rows×cols copy of the visible window at scrollOffset,
+// resolving each viewport row from scrollback or the live grid in ONE
+// publishMu critical section. The renderer walks this copy instead of
+// reading cells live — otherwise a readPTY write that scrolls a line
+// from the grid into scrollback (rotating the ring, shifting absolute
+// indices) mid-frame would tear the grid↔scrollback boundary into
+// duplicated / half-drawn rows. base is the content-row index of
+// viewport row 0; gen is the render generation observed under the
+// lock so the cell-layer cache key matches the snapshot content.
+//
+// ScrollbackLen / ScrollbackCellAt / CellAt take t.mu or the
+// emulator's own lock, never publishMu, so there's no re-entrancy.
+func (t *Terminal) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	sbLen := t.ScrollbackLen()
+	base := sbLen - scrollOffset
+	out := make([][]uv.Cell, rows)
+	for row := 0; row < rows; row++ {
+		line := make([]uv.Cell, cols)
+		contentIdx := base + row
+		for col := 0; col < cols; col++ {
+			var c *uv.Cell
+			if contentIdx >= 0 && contentIdx < sbLen {
+				c = t.ScrollbackCellAt(col, contentIdx)
+			} else if contentIdx >= sbLen {
+				c = t.CellAt(col, contentIdx-sbLen)
+			}
+			if c != nil {
+				line[col] = *c
+			}
+		}
+		out[row] = line
+	}
+	return out, base, t.renderGen.Load()
+}
+
 // Source interface shims. These exist so *Terminal satisfies
 // terminal.Source without renaming the exported Emu / ExitCode /
 // DataCh fields (which a lot of internal code reads directly).

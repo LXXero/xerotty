@@ -184,22 +184,37 @@ type EmulatorView interface {
 	// frames, resize, scrollback churn). Equal generations promise
 	// identical cell content — the cell-layer cache keys on it.
 	RenderGeneration() uint64
+	// SnapshotWindow returns a consistent copy of the rows×cols
+	// visible window at scrollOffset, resolving each viewport row from
+	// scrollback or the live grid in ONE critical section of the
+	// source's content lock. The renderer walks this copy instead of
+	// reading cells live: a concurrent write that scrolls a line from
+	// the grid into scrollback (a ring rotation) mid-frame would
+	// otherwise shift indices under the walk and tear the
+	// grid↔scrollback boundary into duplicated / half-drawn rows.
+	// cells is row-major and always rows×cols (out-of-range positions
+	// are empty cells). base is the content-row index of viewport row
+	// 0 (selection maps against it). gen is the render generation
+	// observed under the lock, so the cell-layer cache key matches the
+	// snapshot content exactly.
+	SnapshotWindow(scrollOffset, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
 }
 
-// cellAt returns the cell at viewport position (col, row) accounting for scroll offset.
-// When scrollOffset > 0, top rows come from the scrollback buffer.
-// cellAt resolves a viewport cell through scrollback. sbLen is
-// HOISTED to once-per-Draw: this function runs per cell per pass
-// (~25k times/frame on a large grid), and ScrollbackLen takes a
-// mutex — re-asking per cell was ~30% of total CPU under the lava
-// animation (perf-verified). The value can't change mid-Draw anyway:
-// publishMu/frame ordering means the grid is stable while we walk it.
-func cellAt(emu EmulatorView, col, row, sbLen, scrollOffset int) *uv.Cell {
-	contentIdx := sbLen - scrollOffset + row
-	if contentIdx < sbLen {
-		return emu.ScrollbackCellAt(col, contentIdx)
+// cellAt returns the cell at viewport position (col, row) within a
+// pre-resolved window snapshot, or nil if out of range. The snapshot
+// is taken atomically by EmulatorView.SnapshotWindow (one critical
+// section in the source), so — unlike the old per-cell live reads —
+// the grid↔scrollback boundary can't shift under the walk when a
+// concurrent write rotates the scrollback ring mid-frame.
+func cellAt(snap [][]uv.Cell, col, row int) *uv.Cell {
+	if row < 0 || row >= len(snap) {
+		return nil
 	}
-	return emu.CellAt(col, contentIdx-sbLen)
+	line := snap[row]
+	if col < 0 || col >= len(line) {
+		return nil
+	}
+	return &line[col]
 }
 
 // resolveCellColors resolves the fg/bg colors for a cell,
@@ -250,8 +265,9 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	// the whole grid walk. Animation-only frames (lava) hit this
 	// every time content is idle. Legacy no-glyphcache builds skip
 	// caching (their text goes through ImGui's own font path).
+	var key drawCacheKey
 	if r.Glyphs != nil {
-		key := drawCacheKey{
+		key = drawCacheKey{
 			emu: emu, gen: emu.RenderGeneration(), cfgGen: r.cfgGen,
 			scrollOff: scrollOffset, cols: cols, rows: rows,
 			offX: r.OffsetX, offY: r.OffsetY,
@@ -268,14 +284,21 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			platform.DrawListAddQuads(drawList, r.cacheQuads)
 			return
 		}
+	}
+
+	// Atomic window snapshot: one critical section in the source so a
+	// concurrent write can't scroll the grid↔scrollback boundary out
+	// from under the per-cell walk. base is the content row of the
+	// first visible viewport row — cellSelected translates against it
+	// (selection rows are content-space).
+	snap, base, gen := emu.SnapshotWindow(scrollOffset, rows, cols)
+	r.selRowBase = base
+	if r.Glyphs != nil {
+		// Re-key with the generation observed under the snapshot lock so
+		// the cache entry can't pin content under a stale generation.
+		key.gen = gen
 		r.cacheKey = key
 	}
-	// Content row of the first visible viewport row — cellSelected
-	// translates against this (selection rows are content-space).
-	// sbLen is also threaded into every cellAt call below (hoisted —
-	// see cellAt).
-	sbLen := emu.ScrollbackLen()
-	r.selRowBase = sbLen - scrollOffset
 	cellW := r.Metrics.Width
 	cellH := r.Metrics.Height
 
@@ -284,7 +307,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 		y := r.OffsetY + float32(row)*cellH
 		col := 0
 		for col < cols {
-			cell := cellAt(emu, col, row, sbLen, scrollOffset)
+			cell := cellAt(snap, col, row)
 			if cell == nil {
 				col++
 				continue
@@ -299,7 +322,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			// RLE: count consecutive cells with same bg
 			runLen := 1
 			for col+runLen < cols {
-				next := cellAt(emu, col+runLen, row, sbLen, scrollOffset)
+				next := cellAt(snap, col+runLen, row)
 				if next == nil {
 					break
 				}
@@ -320,7 +343,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	for row := 0; row < rows; row++ {
 		y := r.OffsetY + float32(row)*cellH
 		for col := 0; col < cols; col++ {
-			cell := cellAt(emu, col, row, sbLen, scrollOffset)
+			cell := cellAt(snap, col, row)
 			if cell == nil {
 				continue
 			}

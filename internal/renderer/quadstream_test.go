@@ -96,6 +96,29 @@ func (g *quadGrid) ScrollbackCellAt(col, row int) *uv.Cell {
 	return g.cell(g.sb[row], col, row, true)
 }
 
+func (g *quadGrid) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+	sbLen := len(g.sb)
+	base := sbLen - scrollOffset
+	out := make([][]uv.Cell, rows)
+	for row := 0; row < rows; row++ {
+		line := make([]uv.Cell, cols)
+		contentIdx := base + row
+		for col := 0; col < cols; col++ {
+			var c *uv.Cell
+			if contentIdx >= 0 && contentIdx < sbLen {
+				c = g.ScrollbackCellAt(col, contentIdx)
+			} else if contentIdx >= sbLen {
+				c = g.CellAt(col, contentIdx-sbLen)
+			}
+			if c != nil {
+				line[col] = *c
+			}
+		}
+		out[row] = line
+	}
+	return out, base, g.gen
+}
+
 // write simulates output: top screen line rotates into scrollback.
 func (g *quadGrid) write(newLine string) {
 	g.sb = append(g.sb, g.screen[0])
