@@ -84,7 +84,7 @@ func TestStuckClientDoesNotBlockOthers(t *testing.T) {
 
 	// A mutates (create tab → broadcastTopology fans out to A AND the
 	// stuck B) and must get its ack + topology promptly.
-	if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+	if err := a.SendTabCreate(0, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("A create: %v", err)
 	}
 	select {
@@ -99,7 +99,7 @@ func TestStuckClientDoesNotBlockOthers(t *testing.T) {
 	}
 
 	// And A keeps getting served: a second mutation also completes fast.
-	if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+	if err := a.SendTabCreate(0, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("A create 2: %v", err)
 	}
 	select {

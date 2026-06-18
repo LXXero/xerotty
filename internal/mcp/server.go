@@ -284,7 +284,7 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 	// name makes this idempotent: a second call with the same name
 	// returns the existing tab (reused=true) instead of stacking a
 	// duplicate.
-	t, _, created, err := c.srv.d.CreateNamedTab(sess, p.Name, p.WindowID, p.Cols, p.Rows, p.Cwd)
+	t, _, created, err := c.srv.d.CreateNamedTab(sess, p.Name, p.WindowID, p.Cols, p.Rows, p.Cwd, nil)
 	if err != nil {
 		return rpcErr(req.ID, -32000, "new tab: "+err.Error(), nil)
 	}

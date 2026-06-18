@@ -70,7 +70,7 @@ func TestNewTabInDropsLateAck(t *testing.T) {
 	h.createTimeout = 200 * time.Millisecond
 
 	// Create #1: the fake daemon never replies → NewTabIn times out.
-	if _, err := h.NewTabIn(0, 80, 24, ""); err == nil {
+	if _, err := h.NewTabIn(0, 80, 24, "", nil); err == nil {
 		t.Fatal("expected timeout error when no ack arrives")
 	}
 	c1 := <-fake.creates // the create #1 request (its ReqID)
@@ -83,7 +83,7 @@ func TestNewTabInDropsLateAck(t *testing.T) {
 		c2 := <-fake.creates
 		fake.sendTabCreated(c2.ReqID, 42)
 	}()
-	src, err := h.NewTabIn(0, 80, 24, "")
+	src, err := h.NewTabIn(0, 80, 24, "", nil)
 	if err != nil {
 		t.Fatalf("create #2 unexpectedly failed: %v", err)
 	}
@@ -127,10 +127,10 @@ func TestNewTabInConcurrentCreates(t *testing.T) {
 		err error
 	}
 	results := make(chan res, 2)
-	go func() { s, e := h.NewTabIn(0, 80, 24, ""); results <- res{s, e} }()
+	go func() { s, e := h.NewTabIn(0, 80, 24, "", nil); results <- res{s, e} }()
 	// Tiny stagger so the two creates have a defined arrival order.
 	time.Sleep(20 * time.Millisecond)
-	go func() { s, e := h.NewTabIn(0, 80, 24, ""); results <- res{s, e} }()
+	go func() { s, e := h.NewTabIn(0, 80, 24, "", nil); results <- res{s, e} }()
 
 	got := map[uint32]bool{}
 	for i := 0; i < 2; i++ {

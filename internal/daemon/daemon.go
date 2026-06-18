@@ -12,6 +12,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // Daemon is the headless terminal session host. One Daemon owns
@@ -250,7 +251,7 @@ func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 // title / state / scrollback to all of them. Without this, other
 // clients adopt the tab from the broadcast but see it blank.
 func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, error) {
-	t, w, _, err := d.CreateNamedTab(sess, "", windowID, cols, rows, cwd)
+	t, w, _, err := d.CreateNamedTab(sess, "", windowID, cols, rows, cwd, nil)
 	return t, w, err
 }
 
@@ -261,8 +262,8 @@ func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd s
 // existing one needs neither, since every client is already
 // subscribed and the topology hasn't changed. name == "" is the
 // plain always-spawn path.
-func (d *Daemon) CreateNamedTab(sess *Session, name string, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, bool, error) {
-	t, w, created, err := sess.FindOrCreateTab(name, windowID, cols, rows, cwd)
+func (d *Daemon) CreateNamedTab(sess *Session, name string, windowID uint32, cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Tab, *Window, bool, error) {
+	t, w, created, err := sess.FindOrCreateTab(name, windowID, cols, rows, cwd, launch)
 	if err != nil {
 		return nil, nil, false, err
 	}

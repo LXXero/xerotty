@@ -37,6 +37,13 @@ USAGE
                              GUI's focused window.
   xerotty --separate         Skip the running-GUI check and force a
                              brand-new GUI process.
+  xerotty -e CMD [ARGS...]   Open a new window running CMD directly
+                             instead of the shell (like xterm -e).
+                             Consumes the rest of the arguments.
+  xerotty -x "CMD STRING"    Open a new window running the command
+                             string via $SHELL -c (like xterm -x), so
+                             pipes/&&/globs work. When CMD exits, the
+                             tab follows your on_child_exit setting.
   xerotty serve [flags]      Run the headless daemon. Owns PTYs,
                              serves the wire protocol on a unix
                              socket, exposes the MCP agent socket
@@ -107,6 +114,12 @@ func main() {
 	// code runs (and before config load — a running GUI already has
 	// its own config). serve/connect dispatch above is unaffected.
 	newTab, separate := false, false
+	// -e/-x program override (the xterm-style launch feature). launchArgv
+	// non-empty means "run this in the new window's first tab instead of
+	// the shell"; launchShell picks `$SHELL -c` (`-x`) over direct exec
+	// (`-e`).
+	var launchArgv []string
+	var launchShell bool
 	args := os.Args[1:]
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -132,6 +145,27 @@ func main() {
 			}
 			i++
 			os.Setenv("XEROTTY_SCREENSHOT_FRAMES", args[i])
+		case "-e", "--exec":
+			// Everything AFTER -e is the program + args, exec'd directly
+			// (like `xterm -e`). Must be the last flag — it consumes the
+			// rest of argv.
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "xerotty: -e needs a command")
+				os.Exit(2)
+			}
+			launchArgv = append([]string(nil), args[i+1:]...)
+			launchShell = false
+			i = len(args) // consume the remaining args
+		case "-x", "--exec-shell":
+			// The next single arg is a command STRING run via `$SHELL -c`
+			// (like `xterm -x` / `sh -c`), so pipes/&&/globs work.
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "xerotty: -x needs a command string")
+				os.Exit(2)
+			}
+			i++
+			launchArgv = []string{args[i]}
+			launchShell = true
 		default:
 			fmt.Fprintf(os.Stderr, "xerotty: unknown argument %q (see xerotty --help)\n", args[i])
 			os.Exit(2)
@@ -146,11 +180,15 @@ func main() {
 	// session exactly as before.
 	if !separate {
 		action := "window"
-		if newTab {
+		// --tab only applies without a command; an `-e`/`-x` launch
+		// always opens a fresh window (the tab forward path doesn't
+		// carry the command).
+		if newTab && len(launchArgv) == 0 {
 			action = "tab"
 		}
 		cwd, _ := os.Getwd()
-		if err := launchipc.Forward(launchipc.Request{Action: action, CWD: cwd}); err == nil {
+		req := launchipc.Request{Action: action, CWD: cwd, Argv: launchArgv, Shell: launchShell}
+		if err := launchipc.Forward(req); err == nil {
 			os.Exit(0)
 		}
 	}
@@ -164,5 +202,5 @@ func main() {
 	// launchGUI is defined in gui.go (full build) or
 	// gui_headless.go (-tags headless). The headless variant has
 	// no internal/app import, so SDL never links.
-	os.Exit(launchGUI(cfg))
+	os.Exit(launchGUI(cfg, launchArgv, launchShell))
 }

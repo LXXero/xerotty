@@ -372,7 +372,7 @@ func (s *Session) CloseWindow(id uint32) {
 // tabsByName so a later FindOrCreateTab can return this same tab.
 //
 // Returns the new tab and the window it joined.
-func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string) (*Tab, *Window, error) {
+func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, launch *terminal.LaunchCmd) (*Tab, *Window, error) {
 	// Daemon-hosted variant forces unlimited+disk scrollback mode
 	// on the server side regardless of cfg.Scrollback.Mode. Why:
 	// memory mode's bounded ring rotates without notification, so
@@ -384,7 +384,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string) (*Ta
 	// hoards; client decides how much to mirror.
 	cols = ClampTabDim(cols)
 	rows = ClampTabDim(rows)
-	term, err := terminal.NewDaemonHosted(s.cfg, cols, rows, cwd)
+	term, err := terminal.NewDaemonHostedCmd(s.cfg, cols, rows, cwd, launch)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -493,7 +493,7 @@ func (s *Session) EnsureInitialTab(cols, rows int, cwd string) (bool, error) {
 	if already {
 		return false, nil
 	}
-	if _, _, err := s.NewTab(0, cols, rows, cwd, ""); err != nil {
+	if _, _, err := s.NewTab(0, cols, rows, cwd, "", nil); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -509,9 +509,9 @@ func (s *Session) EnsureInitialTab(cols, rows int, cwd string) (bool, error) {
 // around the check-and-spawn (exactly as EnsureInitialTab does) so
 // two agents racing on the same label don't both spawn; the loser
 // finds the winner's tab in tabsByName.
-func (s *Session) FindOrCreateTab(name string, windowID uint32, cols, rows int, cwd string) (*Tab, *Window, bool, error) {
+func (s *Session) FindOrCreateTab(name string, windowID uint32, cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Tab, *Window, bool, error) {
 	if name == "" {
-		t, w, err := s.NewTab(windowID, cols, rows, cwd, "")
+		t, w, err := s.NewTab(windowID, cols, rows, cwd, "", launch)
 		return t, w, true, err
 	}
 	s.initMu.Lock()
@@ -543,7 +543,7 @@ func (s *Session) FindOrCreateTab(name string, windowID uint32, cols, rows int, 
 		delete(s.tabsByName, name)
 	}
 	s.mu.Unlock()
-	t, w, err := s.NewTab(windowID, cols, rows, cwd, name)
+	t, w, err := s.NewTab(windowID, cols, rows, cwd, name, launch)
 	return t, w, true, err
 }
 

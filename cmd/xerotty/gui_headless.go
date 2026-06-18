@@ -14,7 +14,7 @@ import (
 // binary with zero SDL3/GL/ImGui linkage. The server install
 // still has full `xerotty serve` + `xerotty connect`; only the
 // no-arg GUI default is unavailable.
-func launchGUI(_ config.Config) int {
+func launchGUI(_ config.Config, _ []string, _ bool) int {
 	fmt.Fprintln(os.Stderr, "xerotty: this is a headless build (no GUI). Use `xerotty serve` or `xerotty connect`.")
 	return 1
 }

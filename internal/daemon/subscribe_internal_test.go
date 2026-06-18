@@ -23,7 +23,7 @@ func TestSubscribeRespectsAttachState(t *testing.T) {
 	cfg := config.Default()
 	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock")) // not Run; we drive subscribe directly
 	sess := d.session("default")
-	tab, _, err := sess.NewTab(0, 80, 24, "", "")
+	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
 		t.Fatalf("NewTab: %v", err)
 	}

@@ -459,23 +459,25 @@ func (c *Client) Detach() error {
 // default window". Uncorrelated (ReqID 0) — for fire-and-forget
 // callers that don't need to match the MsgTabCreated reply. Callers
 // that adopt the resulting tab should use SendTabCreateReq.
-func (c *Client) SendTabCreate(windowID uint32, cols, rows uint16, cwd, command string) error {
-	return c.SendTabCreateReq(windowID, cols, rows, cwd, command, 0)
+func (c *Client) SendTabCreate(windowID uint32, cols, rows uint16, cwd string, command []string, shell bool) error {
+	return c.SendTabCreateReq(windowID, cols, rows, cwd, command, shell, 0)
 }
 
 // SendTabCreateReq is SendTabCreate with a request ID the daemon
 // echoes in MsgTabCreated, so the caller can correlate the reply to
 // this specific request (see protocol.TabCreate.ReqID).
-func (c *Client) SendTabCreateReq(windowID uint32, cols, rows uint16, cwd, command string, reqID uint64) error {
-	return c.SendNamedTabCreateReq(windowID, cols, rows, cwd, command, "", reqID)
+func (c *Client) SendTabCreateReq(windowID uint32, cols, rows uint16, cwd string, command []string, shell bool, reqID uint64) error {
+	return c.SendNamedTabCreateReq(windowID, cols, rows, cwd, command, shell, "", reqID)
 }
 
 // SendNamedTabCreateReq is SendTabCreateReq with an idempotency
 // label: a non-empty name reuses the session's live tab under that
 // label instead of creating (TabCreated.Reused reports which).
-func (c *Client) SendNamedTabCreateReq(windowID uint32, cols, rows uint16, cwd, command, name string, reqID uint64) error {
+// command/shell carry the optional `-e`/`-x` program override (empty
+// command = default shell).
+func (c *Client) SendNamedTabCreateReq(windowID uint32, cols, rows uint16, cwd string, command []string, shell bool, name string, reqID uint64) error {
 	return c.send(protocol.MsgTabCreate, &protocol.TabCreate{
-		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command, Name: name, ReqID: reqID,
+		WindowID: windowID, Cols: cols, Rows: rows, Cwd: cwd, Command: command, CommandShell: shell, Name: name, ReqID: reqID,
 	})
 }
 

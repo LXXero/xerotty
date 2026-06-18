@@ -6223,9 +6223,28 @@ func (z *TabCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 				return
 			}
 		case "command":
-			z.Command, err = dc.ReadString()
+			var zb0002 uint32
+			zb0002, err = dc.ReadArrayHeader()
 			if err != nil {
 				err = msgp.WrapError(err, "Command")
+				return
+			}
+			if cap(z.Command) >= int(zb0002) {
+				z.Command = (z.Command)[:zb0002]
+			} else {
+				z.Command = make([]string, zb0002)
+			}
+			for za0001 := range z.Command {
+				z.Command[za0001], err = dc.ReadString()
+				if err != nil {
+					err = msgp.WrapError(err, "Command", za0001)
+					return
+				}
+			}
+		case "command_shell":
+			z.CommandShell, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "CommandShell")
 				return
 			}
 		case "req_id":
@@ -6254,8 +6273,8 @@ func (z *TabCreate) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(7)
-	var zb0001Mask uint8 /* 7 bits */
+	zb0001Len := uint32(8)
+	var zb0001Mask uint8 /* 8 bits */
 	_ = zb0001Mask
 	if z.WindowID == 0 {
 		zb0001Len--
@@ -6265,17 +6284,21 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 		zb0001Len--
 		zb0001Mask |= 0x8
 	}
-	if z.Command == "" {
+	if z.Command == nil {
 		zb0001Len--
 		zb0001Mask |= 0x10
 	}
-	if z.ReqID == 0 {
+	if z.CommandShell == false {
 		zb0001Len--
 		zb0001Mask |= 0x20
 	}
-	if z.Name == "" {
+	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x40
+	}
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x80
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -6335,13 +6358,32 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 			if err != nil {
 				return
 			}
-			err = en.WriteString(z.Command)
+			err = en.WriteArrayHeader(uint32(len(z.Command)))
 			if err != nil {
 				err = msgp.WrapError(err, "Command")
 				return
 			}
+			for za0001 := range z.Command {
+				err = en.WriteString(z.Command[za0001])
+				if err != nil {
+					err = msgp.WrapError(err, "Command", za0001)
+					return
+				}
+			}
 		}
 		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// write "command_shell"
+			err = en.Append(0xad, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x5f, 0x73, 0x68, 0x65, 0x6c, 0x6c)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.CommandShell)
+			if err != nil {
+				err = msgp.WrapError(err, "CommandShell")
+				return
+			}
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
 			// write "req_id"
 			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
 			if err != nil {
@@ -6353,7 +6395,7 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
-		if (zb0001Mask & 0x40) == 0 { // if not omitted
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
 			// write "name"
 			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
 			if err != nil {
@@ -6373,8 +6415,8 @@ func (z *TabCreate) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(7)
-	var zb0001Mask uint8 /* 7 bits */
+	zb0001Len := uint32(8)
+	var zb0001Mask uint8 /* 8 bits */
 	_ = zb0001Mask
 	if z.WindowID == 0 {
 		zb0001Len--
@@ -6384,17 +6426,21 @@ func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 		zb0001Len--
 		zb0001Mask |= 0x8
 	}
-	if z.Command == "" {
+	if z.Command == nil {
 		zb0001Len--
 		zb0001Mask |= 0x10
 	}
-	if z.ReqID == 0 {
+	if z.CommandShell == false {
 		zb0001Len--
 		zb0001Mask |= 0x20
 	}
-	if z.Name == "" {
+	if z.ReqID == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x40
+	}
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x80
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -6420,14 +6466,22 @@ func (z *TabCreate) MarshalMsg(b []byte) (o []byte, err error) {
 		if (zb0001Mask & 0x10) == 0 { // if not omitted
 			// string "command"
 			o = append(o, 0xa7, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64)
-			o = msgp.AppendString(o, z.Command)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.Command)))
+			for za0001 := range z.Command {
+				o = msgp.AppendString(o, z.Command[za0001])
+			}
 		}
 		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// string "command_shell"
+			o = append(o, 0xad, 0x63, 0x6f, 0x6d, 0x6d, 0x61, 0x6e, 0x64, 0x5f, 0x73, 0x68, 0x65, 0x6c, 0x6c)
+			o = msgp.AppendBool(o, z.CommandShell)
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
 			// string "req_id"
 			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
 			o = msgp.AppendUint64(o, z.ReqID)
 		}
-		if (zb0001Mask & 0x40) == 0 { // if not omitted
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
 			// string "name"
 			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
 			o = msgp.AppendString(o, z.Name)
@@ -6479,9 +6533,28 @@ func (z *TabCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				return
 			}
 		case "command":
-			z.Command, bts, err = msgp.ReadStringBytes(bts)
+			var zb0002 uint32
+			zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)
 			if err != nil {
 				err = msgp.WrapError(err, "Command")
+				return
+			}
+			if cap(z.Command) >= int(zb0002) {
+				z.Command = (z.Command)[:zb0002]
+			} else {
+				z.Command = make([]string, zb0002)
+			}
+			for za0001 := range z.Command {
+				z.Command[za0001], bts, err = msgp.ReadStringBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Command", za0001)
+					return
+				}
+			}
+		case "command_shell":
+			z.CommandShell, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "CommandShell")
 				return
 			}
 		case "req_id":
@@ -6510,7 +6583,11 @@ func (z *TabCreate) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabCreate) Msgsize() (s int) {
-	s = 1 + 10 + msgp.Uint32Size + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size + 4 + msgp.StringPrefixSize + len(z.Cwd) + 8 + msgp.StringPrefixSize + len(z.Command) + 7 + msgp.Uint64Size + 5 + msgp.StringPrefixSize + len(z.Name)
+	s = 1 + 10 + msgp.Uint32Size + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size + 4 + msgp.StringPrefixSize + len(z.Cwd) + 8 + msgp.ArrayHeaderSize
+	for za0001 := range z.Command {
+		s += msgp.StringPrefixSize + len(z.Command[za0001])
+	}
+	s += 14 + msgp.BoolSize + 7 + msgp.Uint64Size + 5 + msgp.StringPrefixSize + len(z.Name)
 	return
 }
 

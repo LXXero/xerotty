@@ -19,7 +19,7 @@ func TestFindOrCreateTabReuse(t *testing.T) {
 	sess := d.session("default")
 
 	// First call spawns and tags the tab.
-	t1, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "")
+	t1, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "", nil)
 	if err != nil {
 		t.Fatalf("first FindOrCreateTab: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestFindOrCreateTabReuse(t *testing.T) {
 
 	// Second call with the same name reuses the SAME tab without
 	// spawning.
-	t2, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "")
+	t2, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "", nil)
 	if err != nil {
 		t.Fatalf("second FindOrCreateTab: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestFindOrCreateTabReuse(t *testing.T) {
 
 	// Third call must NOT hand back the corpse — it drops the stale
 	// label and spawns a fresh tab under the same name.
-	t3, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "")
+	t3, _, created, err := sess.FindOrCreateTab("build", 0, 80, 24, "", nil)
 	if err != nil {
 		t.Fatalf("third FindOrCreateTab: %v", err)
 	}

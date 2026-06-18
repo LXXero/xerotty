@@ -221,7 +221,12 @@ type TabCreate struct {
 	Cols     uint16 `msg:"cols"`
 	Rows     uint16 `msg:"rows"`
 	Cwd      string `msg:"cwd,omitempty"`
-	Command  string `msg:"command,omitempty"`
+	// Command is an optional program override (the `-e`/`-x` launch
+	// feature): argv to run instead of the shell. Empty = default shell.
+	// CommandShell runs the joined Command through `$SHELL -c` (`-x`)
+	// rather than exec'ing argv directly (`-e`).
+	Command      []string `msg:"command,omitempty"`
+	CommandShell bool     `msg:"command_shell,omitempty"`
 	// ReqID correlates this request with its MsgTabCreated reply. The
 	// daemon echoes it verbatim. The client matches on it so a LATE
 	// ack (after a prior create timed out) can't be mistaken for the

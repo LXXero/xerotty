@@ -144,13 +144,26 @@ type Terminal struct {
 // Disk usage lives under /tmp via internal/terminal.DiskScrollback
 // and is cleaned up on Terminal.Close.
 func NewDaemonHosted(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
+	return NewDaemonHostedCmd(cfg, cols, rows, cwd, nil)
+}
+
+// NewDaemonHostedCmd is NewDaemonHosted with an optional command
+// override (the `-e`/`-x` launch feature). nil launch = default shell.
+func NewDaemonHostedCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd) (*Terminal, error) {
 	override := *cfg
 	override.Scrollback.Mode = "unlimited"
-	return New(&override, cols, rows, cwd)
+	return NewWithCmd(&override, cols, rows, cwd, launch)
 }
 
 func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
-	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd)
+	return NewWithCmd(cfg, cols, rows, cwd, nil)
+}
+
+// NewWithCmd is New with an optional command override (the `-e`/`-x`
+// launch feature): when launch is non-nil the tab runs that program
+// instead of the shell. nil launch preserves the normal shell tab.
+func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd) (*Terminal, error) {
+	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd, launch)
 	if err != nil {
 		return nil, err
 	}

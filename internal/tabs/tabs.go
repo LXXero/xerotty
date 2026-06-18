@@ -137,7 +137,7 @@ type Manager struct {
 	// The GUI sets this to a daemon-backed factory when the user
 	// configured tab_source = "daemon" so all new tabs go through
 	// the daemon connection instead.
-	SourceFactory func(cols, rows int, cwd string) (terminal.Source, error)
+	SourceFactory func(cols, rows int, cwd string, launch *terminal.LaunchCmd) (terminal.Source, error)
 
 	// ClipboardSetFn / ClipboardGetFn inject OS-clipboard access
 	// into each new/adopted tab's source for OSC 52. The tabs
@@ -258,12 +258,19 @@ func (m *Manager) MoveTab(from, to int) {
 // If m.SourceFactory is set (daemon-backed mode) the new tab's
 // source comes from there instead of an in-process PTY.
 func (m *Manager) NewTab(cols, rows int, cwd string) (*Tab, error) {
+	return m.NewTabCmd(cols, rows, cwd, nil)
+}
+
+// NewTabCmd is NewTab with an optional command override (the `-e`/`-x`
+// launch feature): the new tab runs that program instead of the shell.
+// nil launch is the normal shell tab.
+func (m *Manager) NewTabCmd(cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Tab, error) {
 	var term terminal.Source
 	var err error
 	if m.SourceFactory != nil {
-		term, err = m.SourceFactory(cols, rows, cwd)
+		term, err = m.SourceFactory(cols, rows, cwd, launch)
 	} else {
-		term, err = terminal.New(m.cfg, cols, rows, cwd)
+		term, err = terminal.NewWithCmd(m.cfg, cols, rows, cwd, launch)
 	}
 	if err != nil {
 		return nil, err

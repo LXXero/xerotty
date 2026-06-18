@@ -148,6 +148,13 @@ type App struct {
 	// the GUI's. Reset to "" right after, like suppressInitialTab.
 	spawnCWD string
 
+	// spawnCmd, when non-nil, makes the NEXT window's (or the initial
+	// window's) first tab run that command instead of the shell — the
+	// `-e`/`-x` launch feature, carried in over launchipc or set before
+	// the cold-start window. One-shot: consumed and cleared by the
+	// first tab spawn so later tabs/windows get normal shells.
+	spawnCmd *terminal.LaunchCmd
+
 	// launchQueue holds forwarded single-instance launch requests
 	// queued by the launch-socket accept goroutine and drained on the
 	// main thread once per frame (drainLaunchRequests) — window/tab
@@ -716,7 +723,7 @@ func (w *Window) openRemoteTab(hostName string) error {
 	// tabs piled into the same remote window, so reorder/focus
 	// later targeted the wrong window.
 	winID := w.windowIDForHub(entry.hub)
-	src, err := entry.hub.NewTabIn(winID, cols, rows, "")
+	src, err := entry.hub.NewTabIn(winID, cols, rows, "", nil)
 	if err != nil {
 		return fmt.Errorf("hub.NewTabIn on %s: %w", hostName, err)
 	}
@@ -1675,7 +1682,7 @@ func (a *App) installSourceFactory(w *Window) {
 		w.tabs.SourceFactory = nil // tabs.NewTab uses terminal.New
 		return
 	}
-	w.tabs.SourceFactory = func(cols, rows int, cwd string) (terminal.Source, error) {
+	w.tabs.SourceFactory = func(cols, rows int, cwd string, launch *terminal.LaunchCmd) (terminal.Source, error) {
 		hub := a.activeDaemonHub()
 		if hub == nil {
 			return nil, fmt.Errorf("daemon hub unavailable")
@@ -1683,7 +1690,7 @@ func (a *App) installSourceFactory(w *Window) {
 		// Snapshot the WindowID at call time, not closure-create
 		// time, so re-installs after daemonWindowID changes pick
 		// up the new value. 0 → daemon's default window.
-		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd)
+		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd, launch)
 	}
 }
 
@@ -1963,6 +1970,19 @@ func (a *App) spawnWindow() {
 	a.spawnWindowImpl(nil)
 }
 
+// SetPendingLaunch makes the initial window's first tab run the given
+// command instead of the shell — the cold-start side of the `-e`/`-x`
+// feature, used when no already-running instance was available to
+// forward to. Empty argv is a no-op (normal shell). shell runs argv
+// joined via `$SHELL -c` (`-x`); otherwise argv is exec'd directly
+// (`-e`). Call before Run.
+func (a *App) SetPendingLaunch(argv []string, shell bool) {
+	if len(argv) == 0 {
+		return
+	}
+	a.spawnCmd = &terminal.LaunchCmd{Argv: argv, Shell: shell}
+}
+
 // spawnEmptyWindow creates a new GUI window with NO starting tab.
 // Used by remote reattach which adopts tabs into the window itself
 // — the normal spawn path would create a local/default PTY tab
@@ -2204,7 +2224,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 				cwd = parentTab.Terminal.GetCWD()
 			}
 		}
-		if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
+		if _, err := w.tabs.NewTabCmd(cols, rows, cwd, a.spawnCmd); err != nil {
 			return
 		}
 	} else {
@@ -2217,7 +2237,7 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 				cwd = parentTab.Terminal.GetCWD()
 			}
 		}
-		if _, err := w.tabs.NewTab(cols, rows, cwd); err != nil {
+		if _, err := w.tabs.NewTabCmd(cols, rows, cwd, a.spawnCmd); err != nil {
 			return
 		}
 	}
@@ -3561,15 +3581,20 @@ func (a *Window) frame() {
 				a.daemonWindowID = id
 				a.app.daemonHub.SetDefaultWindowID(a.daemonWindowID)
 			}
-			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+			// spawnCmd (set before Run by a cold-start `-e`/`-x`) makes
+			// this initial tab run the command; one-shot, cleared so
+			// later tabs/windows get normal shells.
+			if _, err := a.tabs.NewTabCmd(cfgCols, cfgRows, "", a.app.spawnCmd); err != nil {
 				platform.Quit()
 				return
 			}
+			a.app.spawnCmd = nil
 		} else {
-			if _, err := a.tabs.NewTab(cfgCols, cfgRows, ""); err != nil {
+			if _, err := a.tabs.NewTabCmd(cfgCols, cfgRows, "", a.app.spawnCmd); err != nil {
 				platform.Quit()
 				return
 			}
+			a.app.spawnCmd = nil
 		}
 		// More daemon windows in the queue → spawn extra GUI
 		// windows for them. spawnWindow uses spawnWindowImpl which

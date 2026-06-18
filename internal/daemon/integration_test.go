@@ -168,14 +168,14 @@ func TestDaemonWindowLayout(t *testing.T) {
 	w2ID := created.Info.ID
 
 	// Add a tab in each window.
-	if err := c1.SendTabCreate(w1ID, 80, 24, "", ""); err != nil {
+	if err := c1.SendTabCreate(w1ID, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("tabcreate w1: %v", err)
 	}
 	tc1 := <-c1.TabCreated()
 	if tc1.WindowID != w1ID {
 		t.Errorf("tab landed in window %d, want %d", tc1.WindowID, w1ID)
 	}
-	if err := c1.SendTabCreate(w2ID, 80, 24, "", ""); err != nil {
+	if err := c1.SendTabCreate(w2ID, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("tabcreate w2: %v", err)
 	}
 	tc2 := <-c1.TabCreated()

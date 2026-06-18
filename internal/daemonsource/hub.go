@@ -25,6 +25,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // tabCreateTimeout bounds how long NewTabIn waits for the daemon to
@@ -488,7 +489,7 @@ func (h *Hub) NewTab(cols, rows int, cwd string) (*Source, error) {
 	h.mu.RLock()
 	winID := h.defaultWindowID
 	h.mu.RUnlock()
-	return h.NewTabIn(winID, cols, rows, cwd)
+	return h.NewTabIn(winID, cols, rows, cwd, nil)
 }
 
 // NewNamedTab is NewTab with the wire's idempotency label: a
@@ -500,7 +501,7 @@ func (h *Hub) NewNamedTab(name string, cols, rows int, cwd string) (src *Source,
 	h.mu.RLock()
 	winID := h.defaultWindowID
 	h.mu.RUnlock()
-	return h.newTabIn(winID, cols, rows, cwd, name)
+	return h.newTabIn(winID, cols, rows, cwd, name, nil)
 }
 
 // NewTabIn requests a fresh tab on the named daemon window. Each
@@ -511,12 +512,12 @@ func (h *Hub) NewNamedTab(name string, cols, rows int, cwd string) (src *Source,
 //
 // windowID = 0 means "daemon's default window" (typically the
 // first window the daemon created).
-func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string) (*Source, error) {
-	src, _, err := h.newTabIn(windowID, cols, rows, cwd, "")
+func (h *Hub) NewTabIn(windowID uint32, cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Source, error) {
+	src, _, err := h.newTabIn(windowID, cols, rows, cwd, "", launch)
 	return src, err
 }
 
-func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string) (*Source, bool, error) {
+func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string, launch *terminal.LaunchCmd) (*Source, bool, error) {
 	// Mint a request ID and register a waiter channel BEFORE sending,
 	// so the router can never deliver our ack before we're listening.
 	reqID := h.nextReqID.Add(1)
@@ -530,8 +531,13 @@ func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string) (*Sour
 		h.createMu.Unlock()
 	}()
 
+	var argv []string
+	var shell bool
+	if launch != nil {
+		argv, shell = launch.Argv, launch.Shell
+	}
 	cli := h.client()
-	if err := cli.SendNamedTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, "", name, reqID); err != nil {
+	if err := cli.SendNamedTabCreateReq(windowID, uint16(cols), uint16(rows), cwd, argv, shell, name, reqID); err != nil {
 		return nil, false, fmt.Errorf("daemonsource: SendTabCreate: %w", err)
 	}
 	// Wait for OUR ack (matched by ReqID in the router). Bail if the

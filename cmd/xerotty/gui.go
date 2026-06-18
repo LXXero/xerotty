@@ -17,7 +17,7 @@ import (
 // if any compiled-in file imports internal/app unconditionally,
 // the headless build silently re-fattens. build.sh asserts
 // against that with an ldd check.
-func launchGUI(cfg config.Config) int {
+func launchGUI(cfg config.Config, launchArgv []string, launchShell bool) int {
 	// GUI launchers (Finder/launchd on macOS, some Linux menus) start
 	// us with CWD "/". New tabs inherit the process CWD, so without
 	// this every shell would open in / — start them in $HOME instead,
@@ -29,6 +29,9 @@ func launchGUI(cfg config.Config) int {
 		}
 	}
 	a := app.New(cfg)
+	// Cold-start `-e`/`-x` (no running instance to forward to): the
+	// initial window's first tab runs the command instead of the shell.
+	a.SetPendingLaunch(launchArgv, launchShell)
 	if err := a.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "xerotty: %v\n", err)
 		return 1

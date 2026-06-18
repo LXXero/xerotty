@@ -806,7 +806,12 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	// idempotency the daemon MCP server's create_tab offers) so wire
 	// clients — the GUI's aggregating MCP among them — can say "the
 	// tab labeled build" without stacking duplicates.
-	t, w, created, err := c.daemon.CreateNamedTab(c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd)
+	// Optional `-e`/`-x` program override; nil = default shell.
+	var launch *terminal.LaunchCmd
+	if len(msg.Command) > 0 {
+		launch = &terminal.LaunchCmd{Argv: msg.Command, Shell: msg.CommandShell}
+	}
+	t, w, created, err := c.daemon.CreateNamedTab(c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd, launch)
 	if err != nil {
 		c.send(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
 		return nil

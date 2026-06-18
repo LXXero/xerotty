@@ -27,6 +27,12 @@ import (
 type Request struct {
 	Action string `json:"action"`
 	CWD    string `json:"cwd,omitempty"`
+	// Argv/Shell carry the optional `-e`/`-x` program override: the new
+	// window's first tab runs this instead of the shell. Empty Argv =
+	// normal shell. Shell runs the joined Argv via `$SHELL -c` (`-x`)
+	// rather than exec'ing argv directly (`-e`).
+	Argv  []string `json:"argv,omitempty"`
+	Shell bool     `json:"shell,omitempty"`
 }
 
 type response struct {

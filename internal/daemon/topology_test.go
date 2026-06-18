@@ -117,7 +117,7 @@ func TestTopologyBroadcastCreateCloseMove(t *testing.T) {
 	origTab := attB.Tabs[0].ID
 
 	// 1. A creates a tab → B sees 2 tabs.
-	if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+	if err := a.SendTabCreate(0, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("A SendTabCreate: %v", err)
 	}
 	topo := waitTopology(t, b, rev, 3*time.Second)
@@ -346,7 +346,7 @@ func TestSecondClientSeesCreatedTabContent(t *testing.T) {
 	}
 
 	// A creates a new tab.
-	if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+	if err := a.SendTabCreate(0, 80, 24, "", nil, false); err != nil {
 		t.Fatalf("A SendTabCreate: %v", err)
 	}
 	newTab := newestOtherTab(t, sess, origTab, 3*time.Second)
@@ -393,7 +393,7 @@ func TestCloseTabUnsubscribesAllClients(t *testing.T) {
 
 	const cycles = 15
 	for i := 0; i < cycles; i++ {
-		if err := a.SendTabCreate(0, 80, 24, "", ""); err != nil {
+		if err := a.SendTabCreate(0, 80, 24, "", nil, false); err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
 		id := newestOtherTab(t, sess, origTab, 3*time.Second)

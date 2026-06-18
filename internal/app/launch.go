@@ -3,6 +3,7 @@ package app
 import (
 	"github.com/LXXero/xerotty/internal/launchipc"
 	"github.com/LXXero/xerotty/internal/platform"
+	"github.com/LXXero/xerotty/internal/terminal"
 )
 
 // This file is the GUI side of single-instance launching: a later
@@ -53,8 +54,12 @@ func (a *App) drainLaunchRequests() {
 			w.openTabWithCWD(req.CWD)
 		default: // "window" (Listen already filtered unknown actions)
 			a.spawnCWD = req.CWD
+			if len(req.Argv) > 0 {
+				a.spawnCmd = &terminal.LaunchCmd{Argv: req.Argv, Shell: req.Shell}
+			}
 			a.spawnWindow()
 			a.spawnCWD = ""
+			a.spawnCmd = nil
 		}
 	}
 }
