@@ -28,7 +28,11 @@ func screenContains(t *Terminal, needle string) bool {
 
 func waitFor(t *testing.T, term *Terminal, needle string) {
 	t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
+	// Generous safety deadline: the loop returns the instant the needle
+	// shows, so this only bites a genuine hang. 8s was too tight when
+	// the whole shell-spawning test suite runs in parallel and starves
+	// these real /bin/sh round-trips of CPU (flaky "never appeared").
+	deadline := time.Now().Add(45 * time.Second)
 	for time.Now().Before(deadline) {
 		if screenContains(term, needle) {
 			return
@@ -168,12 +172,22 @@ func TestAdoptDiskScrollbackFromFD(t *testing.T) {
 	if adopted.Len() != store.Len() {
 		t.Fatalf("len: %d want %d", adopted.Len(), store.Len())
 	}
-	line := adopted.LineAt(0)
-	var sb strings.Builder
-	for _, c := range line {
-		sb.WriteString(c.Content)
+	// A DISK_* line must be readable back from the adopted store. Don't
+	// assume a specific index: scrollback line 0 is the wrapped
+	// shell-prompt + command echo (`sh-5.3$ i=0; while ...`), NOT
+	// DISK_0, and exactly how much scrolled off depends on prompt
+	// timing — keying on line 0 made this test flaky.
+	found := false
+	for row := 0; row < adopted.Len() && !found; row++ {
+		var sb strings.Builder
+		for _, c := range adopted.LineAt(row) {
+			sb.WriteString(c.Content)
+		}
+		if strings.Contains(sb.String(), "DISK_") {
+			found = true
+		}
 	}
-	if !strings.Contains(sb.String(), "DISK_") {
-		t.Fatalf("adopted store line 0 unreadable: %q", sb.String())
+	if !found {
+		t.Fatal("no DISK_* line readable from the adopted store")
 	}
 }
