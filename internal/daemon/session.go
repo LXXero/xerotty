@@ -444,6 +444,13 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 	// and CLIs in daemon mode never hear the bell. Routed through
 	// the Daemon back-ref since clients live there, not on Session.
 	if s.daemon != nil {
+		// Fan PTY output out to EVERY attached client's publishLoop.
+		// The shared cap-1 DataCh only wakes whichever loop wins its
+		// token, so with 2+ clients the losers fell back to a 500ms
+		// poll — both ends laggy. Per-sub wake reaches all of them.
+		term.SetOnData(func() {
+			s.daemon.WakeTabSubscribers(t.ID)
+		})
 		term.SetOnBell(func() {
 			s.daemon.broadcastBell(t.ID)
 		})

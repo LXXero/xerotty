@@ -1243,13 +1243,14 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 		select {
 		case <-sub.cancel:
 			return
-		case <-t.Term.DataCh:
-			c.sendCellsAndCursor(t, sub)
 		case <-sub.wake:
-			// Per-sub nudge (resize repaint, scrollback clear). Unlike
-			// DataCh this reaches THIS subscriber specifically, so
-			// every attached client reacts, not just whichever one
-			// happened to win the shared channel.
+			// Per-sub nudge: PTY output (fanned out from Terminal.OnData
+			// via WakeTabSubscribers), resize repaint, and scrollback
+			// clear all land here. This reaches THIS subscriber
+			// specifically, so EVERY attached client reacts — unlike the
+			// old shared cap-1 DataCh, whose single token went to only
+			// whichever loop won the race, leaving the rest to poll on
+			// the 500ms fallback (both-clients-laggy bug).
 			c.sendCellsAndCursor(t, sub)
 		case <-stateTick.C:
 			c.sendTabState(t, sub)

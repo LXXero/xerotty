@@ -46,6 +46,15 @@ type Terminal struct {
 	// received. Daemon ships MsgBell on this. Set via SetOnBell.
 	OnBell func()
 
+	// OnData fires after each PTY output batch is ingested. The daemon
+	// uses it to wake EVERY attached client's publishLoop (per-sub
+	// wake), instead of relying on the shared cap-1 DataCh — which only
+	// hands its single token to whichever client's loop wins the race,
+	// leaving the others to poll on a 500ms fallback (the "both clients
+	// laggy with 2 attached" bug). Set via SetOnData. Fires on the
+	// readPTY goroutine, same as the DataCh signal.
+	OnData func()
+
 	// OnClipboardSet fires when a PTY app issues OSC 52 set
 	// (writes the clipboard). Arg is the decoded text. PTY mode
 	// writes it to the local OS clipboard; daemon mode ships
@@ -808,6 +817,15 @@ func (t *Terminal) SetOnBell(fn func()) {
 	t.mu.Unlock()
 }
 
+// SetOnData registers a callback fired after each PTY output batch.
+// The daemon uses it to fan a repaint nudge out to every attached
+// client (see Terminal.OnData).
+func (t *Terminal) SetOnData(fn func()) {
+	t.mu.Lock()
+	t.OnData = fn
+	t.mu.Unlock()
+}
+
 // SetOnClipboardSet registers a callback fired when a PTY app
 // writes the clipboard via OSC 52. Arg is the decoded text.
 func (t *Terminal) SetOnClipboardSet(fn func(string)) {
@@ -937,6 +955,12 @@ func (t *Terminal) readPTY() {
 			}
 			if Wake != nil {
 				Wake()
+			}
+			t.mu.Lock()
+			onData := t.OnData
+			t.mu.Unlock()
+			if onData != nil {
+				onData()
 			}
 		}
 		if err != nil {
