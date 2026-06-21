@@ -57,6 +57,13 @@ type Daemon struct {
 	// so clients can tell a reconnect-to-same-daemon (same ID) from a
 	// reconnect-after-restart (new ID) and scope close-tombstones to it.
 	instanceID string
+
+	// resizeSeq is a monotonic counter stamped on every GENUINE client
+	// resize (a size that actually changed for that client, not the
+	// 0.5s re-request of the same size). reconcileTabSize sizes a
+	// shared tab to the attached client with the HIGHEST stamp — i.e.
+	// most-recently-resized wins. See reconcileTabSize.
+	resizeSeq atomic.Uint64
 }
 
 // SetHeartbeat overrides the heartbeat ping interval and the liveness
@@ -393,34 +400,48 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	}
 	d.clientsMu.Unlock()
 
-	minCols, minRows := 0, 0
+	// Most-recently-resized wins: among all attached clients that have
+	// expressed a size, pick the one whose last GENUINE resize has the
+	// highest resizeSeq stamp, and size the shared PTY to it.
+	//
+	// Why a stamp and not just "whoever asked last": each GUI's frame
+	// loop re-requests its OWN size every 0.5s while the grid doesn't
+	// match it (app.resizeReq). Under naive last-request-wins two
+	// differently-sized clients ping-pong the grid ~2Hz (visible
+	// flashing). handleResize only bumps the stamp on a size that
+	// actually CHANGED for that client — a real user resize, an edge —
+	// so the periodic same-size re-requests (levels) never move the
+	// winner. Result: the grid sits at whoever resized last and stays
+	// put; the other client's futile re-requests are no-ops. On detach
+	// the detached client drops out of the running, so the
+	// next-most-recently-resized client takes over.
+	bestCols, bestRows := 0, 0
+	var bestSeq uint64
 	for _, c := range conns {
 		c.subsMu.Lock()
 		sub, ok := c.subs[tabID]
 		var dc, dr uint16
+		var seq uint64
 		if ok {
-			dc, dr = sub.desiredCols, sub.desiredRows
+			dc, dr, seq = sub.desiredCols, sub.desiredRows, sub.resizeSeq
 		}
 		c.subsMu.Unlock()
 		if !ok || dc == 0 || dr == 0 {
-			continue
+			continue // never resized → doesn't constrain
 		}
-		if minCols == 0 || int(dc) < minCols {
-			minCols = int(dc)
-		}
-		if minRows == 0 || int(dr) < minRows {
-			minRows = int(dr)
+		if bestCols == 0 || seq > bestSeq {
+			bestCols, bestRows, bestSeq = int(dc), int(dr), seq
 		}
 	}
-	if minCols == 0 || minRows == 0 {
+	if bestCols == 0 || bestRows == 0 {
 		return // no attached client has expressed a size yet
 	}
-	minCols = ClampTabDim(minCols)
-	minRows = ClampTabDim(minRows)
-	if t.Term.Width() == minCols && t.Term.Height() == minRows {
-		return // already at the reconciled size — no thrash, no broadcast
+	bestCols = ClampTabDim(bestCols)
+	bestRows = ClampTabDim(bestRows)
+	if t.Term.Width() == bestCols && t.Term.Height() == bestRows {
+		return // already at the winning size — no thrash, no broadcast
 	}
-	t.Term.Resize(minCols, minRows)
+	t.Term.Resize(bestCols, bestRows)
 	d.WakeTabSubscribers(tabID)
 }
 

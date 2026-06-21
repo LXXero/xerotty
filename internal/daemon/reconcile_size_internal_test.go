@@ -10,15 +10,15 @@ import (
 )
 
 // TestReconcileTabSizeSmallestWins guards the multi-client resize war:
-// two differently-sized GUIs attached to one daemon tab must settle on
-// the SMALLEST grid (so both can display it), and the larger client's
-// repeated re-requests must NOT thrash the shared PTY. When the small
-// client detaches, the size grows back to the remaining client.
+// the shared grid follows whichever attached client resized MOST
+// RECENTLY (a genuine resize, not the 0.5s same-size re-request that
+// would otherwise ping-pong two clients). On detach the grid hands
+// off to the next-most-recently-resized client.
 //
 // White-box so it can drive handleResize / unsubscribe directly,
 // avoiding the timing-dependent networking a real two-client stress
 // test would need.
-func TestReconcileTabSizeSmallestWins(t *testing.T) {
+func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 	cfg := config.Default()
 	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
 	sess := d.session("default")
@@ -48,8 +48,8 @@ func TestReconcileTabSizeSmallestWins(t *testing.T) {
 		return c
 	}
 
-	cBig := mkClient()
-	cSmall := mkClient()
+	cA := mkClient()
+	cB := mkClient()
 
 	resize := func(c *clientConn, cols, rows uint16) {
 		if err := c.handleResize(&protocol.Resize{ID: tab.ID, Cols: cols, Rows: rows}); err != nil {
@@ -63,21 +63,36 @@ func TestReconcileTabSizeSmallestWins(t *testing.T) {
 		}
 	}
 
-	// Big client asks for 120x40 — it's the only sizer, so it wins.
-	resize(cBig, 120, 40)
+	// A resizes to 120x40 — only sizer, it wins.
+	resize(cA, 120, 40)
 	wantSize(120, 40)
 
-	// Small client asks for 80x24 — smallest now wins so both fit.
-	resize(cSmall, 80, 24)
+	// B resizes to 80x24 — more RECENT resize wins, grid follows B
+	// (NOT min-wins: B is smaller here, but the point is recency).
+	resize(cB, 80, 24)
 	wantSize(80, 24)
 
-	// Big client re-demands 120x40 every frame (app.resizeReq). The min
-	// is still 80x24, so this must be a no-op — no thrash back to 120.
-	resize(cBig, 120, 40)
+	// A re-demands its SAME 120x40 every frame (app.resizeReq while
+	// mismatched). That's a level, not an edge — it must be a no-op so
+	// the two don't ping-pong (the resize-war flashing). Grid stays B's.
+	resize(cA, 120, 40)
+	wantSize(80, 24)
+	resize(cA, 120, 40)
 	wantSize(80, 24)
 
-	// Small client detaches: its constraint lifts, grid grows back to
-	// the big client's request.
-	cSmall.unsubscribe(tab.ID)
-	wantSize(120, 40)
+	// A GENUINELY resizes — to something BIGGER than B. Most-recent
+	// wins, so the grid follows A even though it's larger (this is the
+	// case that distinguishes recency from smallest-wins). B's window
+	// just letterboxes; the user is driving A right now.
+	resize(cA, 150, 50)
+	wantSize(150, 50)
+
+	// B's periodic re-request of its old 80x24 is a level → no-op.
+	resize(cB, 80, 24)
+	wantSize(150, 50)
+
+	// A detaches: the running winner drops out, so the grid hands off
+	// to the next-most-recently-resized attached client (B).
+	cA.unsubscribe(tab.ID)
+	wantSize(80, 24)
 }

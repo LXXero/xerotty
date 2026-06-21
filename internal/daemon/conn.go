@@ -419,15 +419,18 @@ type imageAssembly struct {
 type tabSub struct {
 	cancel chan struct{}
 
-	// desiredCols/desiredRows are THIS client's requested grid for the
-	// tab. The daemon reconciles all attached clients to the SMALLEST
-	// (see Daemon.reconcileTabSize) so two differently-sized GUIs share
-	// one PTY without a resize war — each client's frame loop demands
-	// its own window size, and obeying the last requester ping-ponged
-	// the grid ~2Hz (visible flashing). 0 = no request yet (doesn't
-	// constrain). Guarded by the owning clientConn.subsMu.
+	// desiredCols/desiredRows are THIS client's last-requested grid for
+	// the tab. The daemon sizes a shared tab to the client whose last
+	// GENUINE resize is most recent (Daemon.reconcileTabSize, ordered
+	// by resizeSeq). 0 = never resized (doesn't constrain). Guarded by
+	// the owning clientConn.subsMu.
 	desiredCols uint16
 	desiredRows uint16
+	// resizeSeq is the daemon's resizeSeq stamp at this client's last
+	// genuine resize (a size that DIFFERED from its previous request —
+	// an edge, not the 0.5s same-size re-request). Highest stamp among
+	// attached clients wins the shared grid. Guarded by subsMu.
+	resizeSeq uint64
 
 	// wake nudges this subscription's publishLoop to re-publish now,
 	// independent of the shared Terminal.DataCh. DataCh is a single
@@ -874,18 +877,29 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 	if t == nil {
 		return nil
 	}
-	// Record THIS client's desired grid, then reconcile across all
-	// attached clients (smallest wins) rather than resizing the shared
-	// PTY to whoever asked last — two differently-sized GUIs otherwise
-	// fight over it forever (~2Hz flashing). reconcileTabSize fans out
-	// the repaint wake only when the reconciled size actually changes.
+	// Record THIS client's desired grid, then reconcile. The grid sizes
+	// to whichever attached client resized most recently (reconcile
+	// orders by resizeSeq), so a second viewer doesn't shrink yours.
+	//
+	// Only stamp a NEW resizeSeq when the size actually CHANGED for
+	// this client — a genuine user resize, an edge. Each GUI's frame
+	// loop re-requests its own size every 0.5s while mismatched
+	// (app.resizeReq); treating those level re-requests as edges would
+	// let two differently-sized clients ping-pong the grid ~2Hz (the
+	// flashing). A level re-request is a no-op: no new stamp, no
+	// reconcile, so the current winner stands.
 	c.subsMu.Lock()
-	if sub, ok := c.subs[msg.ID]; ok {
+	sub, ok := c.subs[msg.ID]
+	changed := ok && (sub.desiredCols != msg.Cols || sub.desiredRows != msg.Rows)
+	if changed {
 		sub.desiredCols = msg.Cols
 		sub.desiredRows = msg.Rows
+		sub.resizeSeq = c.daemon.resizeSeq.Add(1)
 	}
 	c.subsMu.Unlock()
-	c.daemon.reconcileTabSize(c.session, t.ID)
+	if changed {
+		c.daemon.reconcileTabSize(c.session, t.ID)
+	}
 	return nil
 }
 
