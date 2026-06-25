@@ -596,7 +596,27 @@ static void dbg_loop_tick(void) {
     }
 }
 
+// Per-frame autorelease pool (macOS). The SDL main loop has no
+// implicit pool, so every autoreleased object minted during a frame —
+// SDL/Cocoa event pumping, the per-frame cocoa_focus helpers
+// (any_window_moved, event_on_chrome), ImGui's macOS backend — would
+// otherwise pile up in the never-draining outermost pool (~2GB/day).
+// Push one at the loop boundary and pop it at the end of the frame, so
+// the whole frame's garbage drains every iteration. Plain-C++ TU, so
+// use the libobjc runtime entry points rather than @autoreleasepool.
+#ifdef __APPLE__
+extern "C" void *objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void *);
+static void *g_frame_pool = nullptr;
+#define PLATFORM_FRAME_POOL_PUSH() do { g_frame_pool = objc_autoreleasePoolPush(); } while (0)
+#define PLATFORM_FRAME_POOL_POP()  do { if (g_frame_pool) { objc_autoreleasePoolPop(g_frame_pool); g_frame_pool = nullptr; } } while (0)
+#else
+#define PLATFORM_FRAME_POOL_PUSH() do {} while (0)
+#define PLATFORM_FRAME_POOL_POP()  do {} while (0)
+#endif
+
 extern "C" int platform_begin_frame(void) {
+    PLATFORM_FRAME_POOL_PUSH();
     // New frame: previous frame's damage/evented sets expire.
     g_evented_n = 0;
     g_dirty_n = 0;
@@ -619,7 +639,7 @@ extern "C" int platform_begin_frame(void) {
     if (drain_events() > 0)
         g_render_credits = g_drain_saw_input ? RENDER_SETTLE
                          : (g_render_credits < 1 ? 1 : g_render_credits);
-    if (g_quit) return 0;
+    if (g_quit) { PLATFORM_FRAME_POOL_POP(); return 0; }
 
     if (g_render_credits <= 0) {
         // Idle: park until something happens. Loop so a wake that
@@ -634,7 +654,7 @@ extern "C" int platform_begin_frame(void) {
             else        SDL_WaitEvent(nullptr);
             int got = drain_events();
             g_dbg_events += got;
-            if (g_quit) return 0;
+            if (g_quit) { PLATFORM_FRAME_POOL_POP(); return 0; }
             if (got > 0) {
                 // PostWake pings (glow tick, PTY data) need exactly ONE
                 // frame — the settle credits exist for ImGui hover/
@@ -666,7 +686,7 @@ extern "C" int platform_begin_frame(void) {
             g_dbg_events += got2;
             if (got2 > 0 && g_drain_saw_input) g_render_credits = RENDER_SETTLE;
         }
-        if (g_quit) return 0;
+        if (g_quit) { PLATFORM_FRAME_POOL_POP(); return 0; }
     }
 
     // Advance deadline. If a frame ran long, snap forward instead of
@@ -762,6 +782,7 @@ static void backend_present(int respect_damage);
 
 extern "C" void platform_end_frame(void) {
     backend_present(1);
+    PLATFORM_FRAME_POOL_POP();
 }
 
 static void backend_present(int respect_damage) {
