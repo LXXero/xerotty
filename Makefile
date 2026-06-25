@@ -14,6 +14,17 @@ VERSION      := 0.1.0
 BUILD_NUM    := 1
 GO           := go
 
+# Code-signing identity for `make app` (macOS). Default '-' is ad-hoc:
+# its code identity is the binary's cdhash, which changes on EVERY
+# rebuild — so macOS TCC grants (App Management, etc.) re-prompt after
+# each build / hot-upgrade. Set CODESIGN_ID to a STABLE identity so the
+# designated requirement is identity-based and the grant persists:
+#   self-signed (free): create a "Code Signing" cert once via Keychain
+#     Access → Certificate Assistant → Create a Certificate (Self-Signed
+#     Root, Code Signing), then:  make app CODESIGN_ID=xerotty-codesign
+#   distribution: a "Developer ID Application: …" identity instead.
+CODESIGN_ID  ?= -
+
 UNAME_S := $(shell uname -s)
 
 # go generate needs the msgp binary (tinylib/msgp codegen for the
@@ -75,7 +86,7 @@ else
 	# Rewrites the binary's load command to @executable_path/../
 	# Frameworks and re-signs ad-hoc (install_name_tool invalidates
 	# the linker's signature; arm64 refuses unsigned binaries).
-	@SDL_PATH=$$(otool -L $(APP_BUNDLE)/Contents/MacOS/$(BINARY) | awk '/libSDL3/{print $$1; exit}'); 	if [ -n "$$SDL_PATH" ] && [ -f "$$SDL_PATH" ]; then 		mkdir -p $(APP_BUNDLE)/Contents/Frameworks; 		cp -f "$$SDL_PATH" $(APP_BUNDLE)/Contents/Frameworks/; 		SDL_BASE=$$(basename "$$SDL_PATH"); 		install_name_tool -change "$$SDL_PATH" 			"@executable_path/../Frameworks/$$SDL_BASE" 			$(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		codesign -f -s - $(APP_BUNDLE)/Contents/Frameworks/$$SDL_BASE; 		codesign -f -s - $(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		echo "bundled $$SDL_BASE into Frameworks/"; 	else 		echo "warning: libSDL3 dylib not found via otool — bundle needs system SDL3"; 	fi
+	@SDL_PATH=$$(otool -L $(APP_BUNDLE)/Contents/MacOS/$(BINARY) | awk '/libSDL3/{print $$1; exit}'); 	if [ -n "$$SDL_PATH" ] && [ -f "$$SDL_PATH" ]; then 		mkdir -p $(APP_BUNDLE)/Contents/Frameworks; 		cp -f "$$SDL_PATH" $(APP_BUNDLE)/Contents/Frameworks/; 		SDL_BASE=$$(basename "$$SDL_PATH"); 		install_name_tool -change "$$SDL_PATH" 			"@executable_path/../Frameworks/$$SDL_BASE" 			$(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		codesign -f -s "$(CODESIGN_ID)" $(APP_BUNDLE)/Contents/Frameworks/$$SDL_BASE; 		codesign -f -s "$(CODESIGN_ID)" $(APP_BUNDLE)/Contents/MacOS/$(BINARY); 		echo "bundled $$SDL_BASE into Frameworks/"; 	else 		echo "warning: libSDL3 dylib not found via otool — bundle needs system SDL3"; 	fi
 	# App icon: pre-built .icns lives in icon/. Build it from icon/xerotty.svg
 	# with `make icns` if missing; here we just copy the result into the bundle.
 	@if [ -f icon/xerotty.icns ]; then \
@@ -105,6 +116,12 @@ else
 		'</dict>' \
 		'</plist>' \
 		> $(APP_BUNDLE)/Contents/Info.plist
+	# Seal the whole .app with CODESIGN_ID LAST — after the binary,
+	# Frameworks, icon, and plist are in place. This is the code identity
+	# macOS attributes the running process to (App Management etc.); a
+	# stable identity makes the TCC grant persist across rebuilds and
+	# hot-upgrades instead of re-prompting on each new ad-hoc cdhash.
+	codesign --force -s "$(CODESIGN_ID)" $(APP_BUNDLE)
 	@echo "bundled: $(CURDIR)/$(APP_BUNDLE)"
 endif
 
