@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
@@ -116,6 +117,13 @@ const reconnectWindow = 30 * time.Second
 // client never sees traffic it didn't send.
 const bridgeModeReplayID = "xerotty-bridge-mode-replay"
 
+// mcpReplayModeEnv carries the client's last trust mode across a bridge
+// self-upgrade exec, so the new image re-asserts it on its first dial
+// instead of demoting the agent to observe. Its presence also marks the
+// process as a re-exec'd continuation (behaves like a reconnect, not a
+// cold launch).
+const mcpReplayModeEnv = "XEROTTY_MCP_REPLAY_MODE"
+
 // sniffModeSet inspects an outbound request line for a mode change
 // (native agent/mode or the set_agent_mode tool) and returns the
 // requested mode. The daemon's trust mode is per-CONNECTION state —
@@ -166,8 +174,24 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 		close(lines)
 	}()
 
-	firstDial := true
-	lastMode := "" // last client-requested trust mode, replayed on reconnect
+	// Self-upgrade: snapshot our own xerotty binary so a reconnect can
+	// tell if it was replaced (rebuild / hot upgrade) and exec-in-place
+	// into the new one rather than staying frozen on old code (an old
+	// bridge's protocol-aware bits — mode sniff/replay — would drift if
+	// the MCP API moves). os.Executable resolves the real file behind
+	// any install symlink.
+	selfExe, _ := os.Executable()
+	var selfInfo os.FileInfo
+	if selfExe != "" {
+		selfInfo, _ = os.Stat(selfExe)
+	}
+
+	// A re-exec'd continuation inherits its trust mode via env and acts
+	// like a reconnect from its first dial (replay mode + nudge
+	// tools/list_changed), not a cold launch (which would fail-fast if
+	// the daemon is momentarily down mid-upgrade).
+	lastMode := os.Getenv(mcpReplayModeEnv)
+	firstDial := lastMode == ""
 	for {
 		var conn net.Conn
 		deadline := time.Now().Add(reconnectWindow)
@@ -263,10 +287,41 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 		}
 		_ = conn.Close()
 		<-done
+		// The daemon dropped — usually a hot upgrade. If the same
+		// xerotty file was replaced underneath us, exec-in-place into
+		// the new binary instead of re-dialing on stale code. stdin/
+		// stdout are inherited fds (not cloexec), so they survive the
+		// exec untouched; lastMode rides across via env, and the new
+		// image re-dials + replays. Any request mid-flight here would
+		// have died with the dropped connection anyway (client retry
+		// covers it), so this boundary is the safe place to swap.
+		if selfExe != "" && binaryReplaced(selfInfo, selfExe) {
+			if lastMode != "" {
+				_ = os.Setenv(mcpReplayModeEnv, lastMode)
+			}
+			fmt.Fprintf(os.Stderr, "xerotty mcp: binary changed — exec-in-place self-upgrade -> %s\n", selfExe)
+			_ = syscall.Exec(selfExe, os.Args, os.Environ())
+			// Exec only returns on failure; keep running the old image.
+			fmt.Fprintln(os.Stderr, "xerotty mcp: self-upgrade exec failed — staying on current binary")
+		}
 		// Flap guard: a connection that died young means the server
 		// is bouncing — don't tight-loop redial+replay against it.
 		if time.Since(connStart) < time.Second {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
+}
+
+// binaryReplaced reports whether exePath on disk differs (size or
+// mtime) from the `start` snapshot taken at launch — i.e. a rebuild or
+// hot upgrade swapped the file, so the bridge should exec into it.
+func binaryReplaced(start os.FileInfo, exePath string) bool {
+	if start == nil {
+		return false
+	}
+	fi, err := os.Stat(exePath)
+	if err != nil {
+		return false
+	}
+	return fi.Size() != start.Size() || !fi.ModTime().Equal(start.ModTime())
 }
