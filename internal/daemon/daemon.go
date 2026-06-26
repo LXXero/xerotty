@@ -58,11 +58,14 @@ type Daemon struct {
 	// reconnect-after-restart (new ID) and scope close-tombstones to it.
 	instanceID string
 
-	// resizeSeq is a monotonic counter stamped on every GENUINE client
-	// resize (a size that actually changed for that client, not the
-	// 0.5s re-request of the same size). reconcileTabSize sizes a
-	// shared tab to the attached client with the HIGHEST stamp — i.e.
-	// most-recently-resized wins. See reconcileTabSize.
+	// resizeSeq is a monotonic counter stamping which client most
+	// recently CLAIMED a shared tab's size — bumped on a genuine resize
+	// (a size that actually changed for that client) OR on real input
+	// (keystrokes/paste from a client that wasn't already the owner).
+	// reconcileTabSize sizes the tab to the attached client with the
+	// highest stamp, so the grid follows whichever machine you most
+	// recently resized OR typed on. See reconcileTabSize /
+	// clientConn.noteSizeActivity.
 	resizeSeq atomic.Uint64
 }
 
@@ -385,6 +388,29 @@ func (d *Daemon) sessionClients(sess *Session) []*clientConn {
 //
 // Clients that haven't expressed a size yet (desired == 0) don't
 // constrain; if NONE has, the PTY is left as-is.
+// maxTabResizeSeq returns the highest resizeSeq any attached client
+// has stamped for tabID (0 if none). noteSizeActivity uses it to tell,
+// in one scan, whether the calling client is already the size owner —
+// the common case (you keep typing on the machine you're on), which
+// then short-circuits without touching the grid.
+func (d *Daemon) maxTabResizeSeq(tabID uint32) uint64 {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	var max uint64
+	for _, c := range conns {
+		c.subsMu.Lock()
+		if sub, ok := c.subs[tabID]; ok && sub.resizeSeq > max {
+			max = sub.resizeSeq
+		}
+		c.subsMu.Unlock()
+	}
+	return max
+}
+
 func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	if sess == nil {
 		return

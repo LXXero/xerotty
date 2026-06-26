@@ -427,9 +427,11 @@ type tabSub struct {
 	desiredCols uint16
 	desiredRows uint16
 	// resizeSeq is the daemon's resizeSeq stamp at this client's last
-	// genuine resize (a size that DIFFERED from its previous request —
-	// an edge, not the 0.5s same-size re-request). Highest stamp among
-	// attached clients wins the shared grid. Guarded by subsMu.
+	// size CLAIM — a genuine resize (a size that DIFFERED from its
+	// previous request, an edge, not the 0.5s same-size re-request) OR
+	// real input from this client when it wasn't already the owner
+	// (see noteSizeActivity). Highest stamp among attached clients wins
+	// the shared grid. Guarded by subsMu.
 	resizeSeq uint64
 
 	// wake nudges this subscription's publishLoop to re-publish now,
@@ -911,8 +913,60 @@ func (c *clientConn) handleInput(id uint32, b []byte) error {
 	if t == nil {
 		return nil
 	}
+	// Typing on a machine claims the shared grid's size for it (same
+	// as resizing its window) — so switching boxes and working reflows
+	// the PTY to the one you're now on. Keystrokes only: a pure mouse
+	// report is excluded (the "keystroke + resize, not click" rule).
+	if len(b) > 0 && !looksLikeMouseInput(b) {
+		c.noteSizeActivity(id)
+	}
 	_, err := t.Term.Write(b)
 	return err
+}
+
+// looksLikeMouseInput reports whether an input frame is a mouse report
+// — CSI M (X10) or CSI < (SGR/1006). In apps with mouse reporting on,
+// mouse events arrive here as PTY bytes indistinguishable from typing;
+// excluding them keeps clicks/hover from claiming the grid size, per
+// the user's "keystroke + resize, not click" choice. Only the size
+// CLAIM is gated — the bytes are still written to the PTY regardless.
+func looksLikeMouseInput(b []byte) bool {
+	return len(b) >= 3 && b[0] == 0x1b && b[1] == '[' && (b[2] == 'M' || b[2] == '<')
+}
+
+// noteSizeActivity makes THIS client the size owner of the tab when it
+// sends real input, mirroring how a window resize claims it: the
+// shared grid follows whichever machine you most recently typed on or
+// resized. A fast no-op when this client is already the owner (you
+// keep typing where you are) — one resizeSeq comparison, no grid
+// change. Only GUI input reaches here; agent/MCP input writes to the
+// PTY through a separate path, so an agent driving a tab never steals
+// the human's grid size.
+func (c *clientConn) noteSizeActivity(tabID uint32) {
+	if c.session == nil {
+		return
+	}
+	c.subsMu.Lock()
+	sub, ok := c.subs[tabID]
+	var mySeq uint64
+	var dc, dr uint16
+	if ok {
+		mySeq, dc, dr = sub.resizeSeq, sub.desiredCols, sub.desiredRows
+	}
+	c.subsMu.Unlock()
+	// Can't own a size we haven't reported yet; and skip when we're
+	// already the most-recent owner (the hot path).
+	if !ok || dc == 0 || dr == 0 || mySeq >= c.daemon.maxTabResizeSeq(tabID) {
+		return
+	}
+	// Behind the current owner → claim: stamp a fresh max and size the
+	// shared grid to our window.
+	c.subsMu.Lock()
+	if sub, ok := c.subs[tabID]; ok {
+		sub.resizeSeq = c.daemon.resizeSeq.Add(1)
+	}
+	c.subsMu.Unlock()
+	c.daemon.reconcileTabSize(c.session, tabID)
 }
 
 // handlePaste routes the bytes through Terminal.Paste so the daemon
@@ -927,6 +981,10 @@ func (c *clientConn) handlePaste(id uint32, b []byte) error {
 	t := c.session.Tab(id)
 	if t == nil {
 		return nil
+	}
+	// Pasting into a tab is working in it — claim the grid size too.
+	if len(b) > 0 {
+		c.noteSizeActivity(id)
 	}
 	t.Term.Paste(string(b))
 	return nil

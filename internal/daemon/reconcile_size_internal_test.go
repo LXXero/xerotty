@@ -96,3 +96,82 @@ func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 	cA.unsubscribe(tab.ID)
 	wantSize(80, 24)
 }
+
+// TestSizeOwnershipFollowsInput: typing on a machine claims the shared
+// grid the same way resizing does — the "switch boxes and just work"
+// path. A mouse report must NOT claim (keystroke + resize, not click),
+// and the owner typing must be a no-op (no thrash).
+func TestSizeOwnershipFollowsInput(t *testing.T) {
+	cfg := config.Default()
+	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
+	sess := d.session("default")
+	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
+	if err != nil {
+		t.Fatalf("NewTab: %v", err)
+	}
+	defer sess.CloseTab(tab.ID)
+
+	mkClient := func() *clientConn {
+		cConn, sConn := net.Pipe()
+		t.Cleanup(func() { cConn.Close(); sConn.Close() })
+		go func() {
+			buf := make([]byte, 4096)
+			for {
+				if _, err := sConn.Read(buf); err != nil {
+					return
+				}
+			}
+		}()
+		c := &clientConn{daemon: d, conn: cConn, session: sess}
+		d.registerClient(c)
+		c.subsMu.Lock()
+		c.subSession = sess
+		c.subsMu.Unlock()
+		c.subscribe(sess, tab)
+		return c
+	}
+	wantSize := func(cols, rows int) {
+		t.Helper()
+		if w, h := tab.Term.Width(), tab.Term.Height(); w != cols || h != rows {
+			t.Fatalf("grid = %dx%d, want %dx%d", w, h, cols, rows)
+		}
+	}
+
+	cA := mkClient()
+	cB := mkClient()
+
+	// Both report their window sizes; B resized last, so B owns the grid.
+	if err := cA.handleResize(&protocol.Resize{ID: tab.ID, Cols: 200, Rows: 50}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cB.handleResize(&protocol.Resize{ID: tab.ID, Cols: 100, Rows: 30}); err != nil {
+		t.Fatal(err)
+	}
+	wantSize(100, 30)
+
+	// User switches to machine A and TYPES — A claims, grid reflows to
+	// A's window even with no resize.
+	if err := cA.handleInput(tab.ID, []byte("ls\r")); err != nil {
+		t.Fatal(err)
+	}
+	wantSize(200, 50)
+
+	// A keeps typing — already the owner, must be a no-op (no thrash).
+	if err := cA.handleInput(tab.ID, []byte("echo hi\r")); err != nil {
+		t.Fatal(err)
+	}
+	wantSize(200, 50)
+
+	// A MOUSE report from B must NOT claim (not a keystroke) — grid
+	// stays A's. SGR mouse: ESC [ < 0 ; 5 ; 5 M.
+	if err := cB.handleInput(tab.ID, []byte("\x1b[<0;5;5M")); err != nil {
+		t.Fatal(err)
+	}
+	wantSize(200, 50)
+
+	// A real keystroke on B claims it back.
+	if err := cB.handleInput(tab.ID, []byte("q")); err != nil {
+		t.Fatal(err)
+	}
+	wantSize(100, 30)
+}
