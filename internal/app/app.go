@@ -3745,15 +3745,28 @@ func (a *Window) frame() {
 				a.updateFontMetrics()
 			}
 		} else if tab := a.tabs.Active(); tab != nil {
-			s := a.getScroll(tab.ID)
 			scrollLines := a.app.cfg.Scrollback.ScrollSpeed
 			if scrollLines <= 0 {
 				scrollLines = 3
 			}
-			if wheel > 0 {
-				s.ScrollUp(scrollLines, tab.Terminal.ScrollbackLen())
+			if tab.Terminal.IsAltScreen() {
+				// Alternate-scroll: full-screen apps (mutt, less, vim)
+				// own the alt screen and have no terminal scrollback, so
+				// the wheel must drive ARROW KEYS into the app instead of
+				// our (empty) scrollback — exactly xterm's alternateScroll.
+				// Without this, scrolling in mutt did nothing. DECCKM picks
+				// the application vs normal cursor-key encoding.
+				seq := altScrollSeq(wheel > 0, tab.Terminal.AppCursorMode())
+				for i := 0; i < scrollLines; i++ {
+					_, _ = tab.Terminal.Write(seq)
+				}
 			} else {
-				s.ScrollDown(scrollLines)
+				s := a.getScroll(tab.ID)
+				if wheel > 0 {
+					s.ScrollUp(scrollLines, tab.Terminal.ScrollbackLen())
+				} else {
+					s.ScrollDown(scrollLines)
+				}
 			}
 		}
 	}
@@ -4873,6 +4886,23 @@ func (w *Window) dispatchAction(action string) {
 			ctx := w.menuContext()
 			menu.ExecAction(action, ctx)
 		}
+	}
+}
+
+// altScrollSeq returns the cursor-key escape sequence for one
+// alternate-scroll wheel step — arrow Up (up=true) or Down — encoded
+// per DECCKM: application cursor keys (ESC O A/B) when appCursor is set
+// (ncurses apps like mutt enable it via smkx), else normal (ESC [ A/B).
+func altScrollSeq(up, appCursor bool) []byte {
+	switch {
+	case up && appCursor:
+		return []byte("\x1bOA")
+	case up:
+		return []byte("\x1b[A")
+	case appCursor:
+		return []byte("\x1bOB")
+	default:
+		return []byte("\x1b[B")
 	}
 }
 

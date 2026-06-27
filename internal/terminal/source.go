@@ -75,6 +75,11 @@ type Source interface {
 	// arrow keys emit ESC O X or ESC [ X).
 	AppCursorMode() bool
 
+	// IsAltScreen reports whether the foreground app is on the
+	// alternate screen (vim/mutt/less). The GUI uses it for
+	// alternate-scroll (wheel → arrow keys instead of scrollback).
+	IsAltScreen() bool
+
 	// GetCWD returns the foreground process group's working
 	// directory, or "" if it can't be determined. Used so "New Tab"
 	// can inherit the current dir.

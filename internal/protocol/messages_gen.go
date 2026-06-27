@@ -7319,6 +7319,12 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "AppCursorMode")
 				return
 			}
+		case "alt_screen":
+			z.AltScreen, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "AltScreen")
+				return
+			}
 		case "title":
 			z.Title, err = dc.ReadString()
 			if err != nil {
@@ -7339,8 +7345,8 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(5)
-	var zb0001Mask uint8 /* 5 bits */
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -7350,9 +7356,13 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 		zb0001Len--
 		zb0001Mask |= 0x4
 	}
-	if z.Title == "" {
+	if z.AltScreen == false {
 		zb0001Len--
 		zb0001Mask |= 0x10
+	}
+	if z.Title == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -7407,6 +7417,18 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 			return
 		}
 		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// write "alt_screen"
+			err = en.Append(0xaa, 0x61, 0x6c, 0x74, 0x5f, 0x73, 0x63, 0x72, 0x65, 0x65, 0x6e)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.AltScreen)
+			if err != nil {
+				err = msgp.WrapError(err, "AltScreen")
+				return
+			}
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
 			// write "title"
 			err = en.Append(0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
 			if err != nil {
@@ -7426,8 +7448,8 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(5)
-	var zb0001Mask uint8 /* 5 bits */
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -7437,9 +7459,13 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 		zb0001Len--
 		zb0001Mask |= 0x4
 	}
-	if z.Title == "" {
+	if z.AltScreen == false {
 		zb0001Len--
 		zb0001Mask |= 0x10
+	}
+	if z.Title == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -7463,6 +7489,11 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 		o = append(o, 0xaa, 0x61, 0x70, 0x70, 0x5f, 0x63, 0x75, 0x72, 0x73, 0x6f, 0x72)
 		o = msgp.AppendBool(o, z.AppCursorMode)
 		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// string "alt_screen"
+			o = append(o, 0xaa, 0x61, 0x6c, 0x74, 0x5f, 0x73, 0x63, 0x72, 0x65, 0x65, 0x6e)
+			o = msgp.AppendBool(o, z.AltScreen)
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
 			// string "title"
 			o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
 			o = msgp.AppendString(o, z.Title)
@@ -7513,6 +7544,12 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "AppCursorMode")
 				return
 			}
+		case "alt_screen":
+			z.AltScreen, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "AltScreen")
+				return
+			}
 		case "title":
 			z.Title, bts, err = msgp.ReadStringBytes(bts)
 			if err != nil {
@@ -7533,7 +7570,7 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabState) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title)
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title)
 	return
 }
 

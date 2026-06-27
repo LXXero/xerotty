@@ -50,6 +50,7 @@ type Source struct {
 	cwd       string
 	fgName    string
 	appCursor atomic.Bool
+	altScreen atomic.Bool
 
 	// Client-side scrollback ring, fed by MsgScrollbackAppend. Each
 	// entry is one row of cells. Oldest at index 0, newest at the
@@ -477,6 +478,11 @@ func (s *Source) ChildExitCode() int { return int(s.exitCode.Load()) }
 
 func (s *Source) AppCursorMode() bool { return s.appCursor.Load() }
 
+// IsAltScreen reports the foreground app's alt-screen state, mirrored
+// from the daemon via TabState (the client's shadow emulator is fed
+// cells, not mode switches, so it can't know this on its own).
+func (s *Source) IsAltScreen() bool { return s.altScreen.Load() }
+
 func (s *Source) GetCWD() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -683,6 +689,7 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 	lastTitle := s.lastTitle
 	s.mu.Unlock()
 	s.appCursor.Store(f.AppCursorMode)
+	s.altScreen.Store(f.AltScreen)
 	// Title changes fire SetOnTitle callbacks the same way the
 	// MsgTitle path does for in-process tabs (tabs.NewTab installs
 	// a callback that updates tab.Title). Only fire on actual

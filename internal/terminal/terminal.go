@@ -537,6 +537,13 @@ func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
 }
 
+// IsAltScreen reports whether the foreground app is on the alternate
+// screen (vim/mutt/less). The GUI uses it for alternate-scroll: wheel
+// drives arrow keys instead of the scrollback when true.
+func (t *Terminal) IsAltScreen() bool {
+	return t.Emu.IsAltScreen()
+}
+
 // SnapshotViewport returns a consistent snapshot of the visible
 // grid (current cols × rows). Held under publishMu so no PTY write
 // can scroll the emulator mid-snapshot. Returned cells are values

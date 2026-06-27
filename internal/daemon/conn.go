@@ -478,6 +478,7 @@ type tabSub struct {
 	lastCWD       string
 	lastFg        string
 	lastAppCursor bool
+	lastAltScreen bool
 	lastTitle     string
 }
 
@@ -1357,13 +1358,15 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	cwd := t.Term.GetCWD()
 	fg := t.Term.ForegroundProcessName()
 	appCursor := t.Term.AppCursorMode()
+	altScreen := t.Term.IsAltScreen()
 	title := t.Title()
-	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor && title == sub.lastTitle {
+	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen && title == sub.lastTitle {
 		return
 	}
 	sub.lastCWD = cwd
 	sub.lastFg = fg
 	sub.lastAppCursor = appCursor
+	sub.lastAltScreen = altScreen
 	sub.lastTitle = title
 	sub.stateInit = true
 	c.send(protocol.MsgTabState, &protocol.TabState{
@@ -1371,6 +1374,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 		CWD:                   cwd,
 		ForegroundProcessName: fg,
 		AppCursorMode:         appCursor,
+		AltScreen:             altScreen,
 		Title:                 title,
 	})
 }

@@ -551,6 +551,11 @@ type TabState struct {
 	CWD                   string `msg:"cwd,omitempty"`
 	ForegroundProcessName string `msg:"fg_proc,omitempty"`
 	AppCursorMode         bool   `msg:"app_cursor"`
+	// AltScreen is whether the foreground app is on the alternate
+	// screen (vim, mutt, less). The GUI needs it to decide wheel
+	// behavior: on the alt screen the wheel drives arrow keys
+	// (alternate-scroll) instead of the client-side scrollback.
+	AltScreen bool `msg:"alt_screen,omitempty"`
 	// Title is the OSC 0/2 title the foreground app set. Pushed
 	// here (rather than a separate MsgTitle stream) because it
 	// already shares the "slow-changing per-tab metadata" cadence
