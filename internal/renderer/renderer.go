@@ -314,28 +314,42 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 			}
 
 			_, bg := r.resolveCellColors(cell, col, row)
+			// A wide glyph's bg must span its spacer column too. The
+			// spacer cell (Width 0) carries no style of its own (bg unset),
+			// so sampling it would end the run and leave a black gap behind
+			// the right half of a double-wide emoji in a colored/highlighted
+			// row. Advance by the cell's width and never sample spacers.
+			w := cell.Width
+			if w < 1 {
+				w = 1
+			}
 			if bg == r.Theme.Background {
-				col++
+				col += w
 				continue
 			}
 
-			// RLE: count consecutive cells with same bg
-			runLen := 1
-			for col+runLen < cols {
-				next := cellAt(snap, col+runLen, row)
+			// RLE: extend the run over consecutive cells with the same bg,
+			// counting each cell's width (so wide cells cover their spacers).
+			runCols := w
+			for col+runCols < cols {
+				next := cellAt(snap, col+runCols, row)
 				if next == nil {
 					break
 				}
-				_, nextBg := r.resolveCellColors(next, col+runLen, row)
+				_, nextBg := r.resolveCellColors(next, col+runCols, row)
 				if nextBg != bg {
 					break
 				}
-				runLen++
+				nw := next.Width
+				if nw < 1 {
+					nw = 1
+				}
+				runCols += nw
 			}
 
 			x := r.OffsetX + float32(col)*cellW
-			r.appendRect(drawList, x, y, x+float32(runLen)*cellW, y+cellH, bg)
-			col += runLen
+			r.appendRect(drawList, x, y, x+float32(runCols)*cellW, y+cellH, bg)
+			col += runCols
 		}
 	}
 
