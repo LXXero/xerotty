@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -48,7 +49,21 @@ const (
 	// is the ONLY fast detector over SSH-stdio, where write deadlines are
 	// no-ops — a dead SSH path delivers nothing, so the window trips.
 	clientLivenessWindow = 18 * time.Second
+
+	// maxDispatchBacklog caps the decoded-frame queue between the read
+	// loop and dispatchLoop. The read loop must never block (it answers
+	// daemon pings), so a stalled consumer backlogs here; at the cap the
+	// connection is killed instead — a consumer dead for thousands of
+	// frames needs the Hub's redial + resync, not more buffering.
+	maxDispatchBacklog = 16384
+	// dispatchWarnBacklog is where a single warning is logged — the
+	// consumer is stalled but recoverable; the log line is the clue.
+	dispatchWarnBacklog = 1024
 )
+
+// errDispatchOverflow is Run's exit error when the dispatch backlog
+// cap is hit (see maxDispatchBacklog).
+var errDispatchOverflow = errors.New("clientproto: dispatch backlog overflow — frame consumer stalled")
 
 // outFrame is one queued outbound frame for the writer goroutine.
 type outFrame struct {
@@ -176,6 +191,13 @@ type Client struct {
 	heartbeatInterval time.Duration
 	livenessWindow    time.Duration
 
+	// Dispatch spill queue between the read loop and dispatchLoop —
+	// decoded frames waiting for channel delivery. See Run/dispatchLoop.
+	dispMu     sync.Mutex
+	dispCond   *sync.Cond
+	dispQ      []func() error
+	dispClosed bool
+
 	// Inbound channels. Each is buffered to absorb a small burst
 	// before back-pressuring the daemon's send loop.
 	cellFull      chan *protocol.CellFull
@@ -255,6 +277,7 @@ func wrap(conn net.Conn) *Client {
 	// frame still counts as the daemon being alive. Done after c exists
 	// so the wrapper can reference c.
 	c.reader = protocol.NewFrameReader(&inboundReader{r: conn, c: c})
+	c.dispCond = sync.NewCond(&c.dispMu)
 	// Start the writer before any Send* (Hello sends, then reads the
 	// HelloAck synchronously off the reader — the writer must already be
 	// draining outCh for that send to flush). Seed both liveness clocks
@@ -736,8 +759,11 @@ func (c *Client) Run() {
 	defer func() {
 		// Stop the writer when the read loop ends (peer closed the conn,
 		// or a frame errored) so its goroutine doesn't linger writing
-		// into a dead socket.
+		// into a dead socket. Close the dispatch queue AFTER shutdown:
+		// shutdown closes outDone, which aborts any delivery the
+		// dispatcher is blocked in, so it can observe the close and exit.
 		c.shutdown()
+		c.closeDispatch()
 		c.doneMu.Lock()
 		c.done = true
 		c.doneMu.Unlock()
@@ -747,6 +773,14 @@ func (c *Client) Run() {
 	// by the time Run is invoked, so an out-of-band ping can't slip
 	// ahead of the Hello frame and break the daemon's handshake reader.
 	go c.heartbeatLoop()
+	// The dispatcher owns all channel delivery so the read loop can
+	// NEVER be blocked by a stalled consumer. Before this split, one
+	// full payload channel wedged the read loop mid-send — the daemon's
+	// next ping was never read, no pong went back, and the daemon
+	// reaped a perfectly-alive client (then the silent redial's full
+	// resync flashed the screen). Liveness now depends only on the
+	// socket being drained, which the read loop guarantees.
+	go c.dispatchLoop()
 	for {
 		t, body, err := c.reader.ReadFrame()
 		if err != nil {
@@ -757,166 +791,276 @@ func (c *Client) Run() {
 			c.doneMu.Unlock()
 			return
 		}
-		if err := c.handle(t, body); err != nil {
+		// Control frames are handled inline — they must work even when
+		// every consumer is stalled; that's their whole point.
+		switch t {
+		case protocol.MsgPing:
+			// The daemon is probing us — reply OUT-OF-BAND (priority
+			// slot, not the FIFO outCh) so our pong jumps ahead of any
+			// queued input. A pong stuck behind a big paste would delay
+			// it past the daemon's window and get us falsely reaped
+			// (finding 3).
+			msg := &protocol.Ping{}
+			if _, err := msg.UnmarshalMsg(body); err != nil {
+				c.doneMu.Lock()
+				c.exitErr = err
+				c.doneMu.Unlock()
+				return
+			}
+			c.requestPong(msg.Nonce)
+			continue
+		case protocol.MsgPong:
+			// Reply to OUR heartbeat ping — the authoritative proof the
+			// daemon's read+respond path is alive. Refreshes the pong
+			// clock; the reaper needs this OR fresh inbound to stay
+			// asleep.
+			c.lastPong.Store(time.Now().UnixNano())
+			continue
+		}
+		deliver, err := c.decode(t, body)
+		if err != nil {
 			c.doneMu.Lock()
 			c.exitErr = err
+			c.doneMu.Unlock()
+			return
+		}
+		if deliver == nil {
+			continue
+		}
+		if !c.enqueueDispatch(deliver) {
+			c.doneMu.Lock()
+			c.exitErr = errDispatchOverflow
 			c.doneMu.Unlock()
 			return
 		}
 	}
 }
 
-func (c *Client) handle(t protocol.MsgType, body []byte) error {
+// decode unmarshals one payload frame (the body is only valid until
+// the next ReadFrame, so decoding happens in the read loop) and
+// returns the delivery step for the dispatcher to run. A nil deliver
+// with nil error means the frame is consumed (dropped or unknown).
+// Ping/Pong never reach here — Run handles them inline.
+func (c *Client) decode(t protocol.MsgType, body []byte) (func() error, error) {
 	switch t {
 	case protocol.MsgCellFull:
 		msg := &protocol.CellFull{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.cellFull <- msg
+		return func() error { return deliverOr(c, c.cellFull, msg) }, nil
 	case protocol.MsgCellDiff:
 		msg := &protocol.CellDiff{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.cellDiff <- msg
+		return func() error { return deliverOr(c, c.cellDiff, msg) }, nil
 	case protocol.MsgCursor:
 		msg := &protocol.Cursor{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.cursor <- msg
+		return func() error { return deliverOr(c, c.cursor, msg) }, nil
 	case protocol.MsgTitle:
 		msg := &protocol.Title{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.title <- msg
+		return func() error { return deliverOr(c, c.title, msg) }, nil
 	case protocol.MsgBell:
 		msg := &protocol.Bell{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.bell <- msg
+		return func() error { return deliverOr(c, c.bell, msg) }, nil
 	case protocol.MsgChildExit:
 		msg := &protocol.ChildExit{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.childExit <- msg
+		return func() error { return deliverOr(c, c.childExit, msg) }, nil
 	case protocol.MsgTabCreated:
 		msg := &protocol.TabCreated{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.tabCreated <- msg
+		return func() error { return deliverOr(c, c.tabCreated, msg) }, nil
 	case protocol.MsgWindowCreated:
 		msg := &protocol.WindowCreated{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.windowCreated <- msg
+		return func() error { return deliverOr(c, c.windowCreated, msg) }, nil
 	case protocol.MsgAttached:
 		msg := &protocol.Attached{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.attached <- msg
+		return func() error { return deliverOr(c, c.attached, msg) }, nil
 	case protocol.MsgTabState:
 		msg := &protocol.TabState{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
 		// Non-blocking — if no one's draining we drop. State pushes
 		// are idempotent (always the current value, not deltas) so
 		// losing one is fine; the next one re-syncs.
-		select {
-		case c.tabState <- msg:
-		default:
-		}
+		return func() error {
+			select {
+			case c.tabState <- msg:
+			default:
+			}
+			return nil
+		}, nil
 	case protocol.MsgScrollbackAppend:
 		msg := &protocol.ScrollbackAppend{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		// Block here — scrollback rows are NOT idempotent, dropping
-		// one creates a permanent gap in the user's history. Better
-		// to back-pressure the daemon's send loop than to lose data.
-		c.scrollback <- msg
+		// Deliver in order, waiting for the consumer — scrollback rows
+		// are NOT idempotent, dropping one creates a permanent gap in
+		// the user's history. A stalled consumer backlogs the dispatch
+		// queue (bounded), not the socket.
+		return func() error { return deliverOr(c, c.scrollback, msg) }, nil
 	case protocol.MsgScrollbackRange:
 		msg := &protocol.ScrollbackRange{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		// Block (don't drop): a dropped range leaves a permanent hole
+		// Wait, don't drop: a dropped range leaves a permanent hole
 		// in the window the client just scrolled to. Buffered + rare.
-		c.scrollbackRng <- msg
+		return func() error { return deliverOr(c, c.scrollbackRng, msg) }, nil
 	case protocol.MsgSearchResults:
 		msg := &protocol.SearchResults{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.searchResults <- msg
+		return func() error { return deliverOr(c, c.searchResults, msg) }, nil
 	case protocol.MsgScrollbackCleared:
 		msg := &protocol.ScrollbackCleared{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.sbCleared <- msg
+		return func() error { return deliverOr(c, c.sbCleared, msg) }, nil
 	case protocol.MsgClipboardSet:
 		msg := &protocol.ClipboardSet{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		select {
-		case c.clipboardSet <- msg:
-		default: // drop if no consumer — clipboard sync is best-effort
-		}
+		return func() error {
+			select {
+			case c.clipboardSet <- msg:
+			default: // drop if no consumer — clipboard sync is best-effort
+			}
+			return nil
+		}, nil
 	case protocol.MsgProposalsChanged:
 		msg := &protocol.ProposalsChanged{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		select {
-		case c.proposals <- msg:
-		default:
-		}
+		return func() error {
+			select {
+			case c.proposals <- msg:
+			default:
+			}
+			return nil
+		}, nil
 	case protocol.MsgTopologyChanged:
 		msg := &protocol.TopologyChanged{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		// Block — topology snapshots are revision-gated and idempotent,
-		// but dropping one risks the client missing a structural change
-		// until the next mutation. The channel is buffered; back-pressure
-		// the daemon rather than lose a snapshot.
-		c.topology <- msg
+		// Wait for the consumer — topology snapshots are revision-gated
+		// and idempotent, but dropping one risks the client missing a
+		// structural change until the next mutation.
+		return func() error { return deliverOr(c, c.topology, msg) }, nil
 	case protocol.MsgError:
 		msg := &protocol.Error{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
+			return nil, err
 		}
-		c.errCh <- msg
-	case protocol.MsgPing:
-		// The daemon is probing us — reply OUT-OF-BAND (priority slot, not
-		// the FIFO outCh) so our pong jumps ahead of any queued input. A
-		// pong stuck behind a big paste would delay it past the daemon's
-		// window and get us falsely reaped (finding 3).
-		msg := &protocol.Ping{}
-		if _, err := msg.UnmarshalMsg(body); err != nil {
-			return err
-		}
-		c.requestPong(msg.Nonce)
-	case protocol.MsgPong:
-		// Reply to OUR heartbeat ping — the authoritative proof the
-		// daemon's read+respond path is alive. Refreshes the pong clock;
-		// the reaper needs this OR fresh inbound to stay asleep.
-		c.lastPong.Store(time.Now().UnixNano())
+		return func() error { return deliverOr(c, c.errCh, msg) }, nil
 	default:
 		// Unknown message — skip, log to stderr eventually. For
 		// Phase 0 just ignore so the connection stays alive.
+		return nil, nil
 	}
-	return nil
+}
+
+// deliverOr sends msg to ch, aborting when the connection tears down
+// so the dispatcher can't leak blocked on a consumer that stopped
+// draining (route() returns on Closed and abandons the channels).
+func deliverOr[T any](c *Client, ch chan T, msg T) error {
+	select {
+	case ch <- msg:
+		return nil
+	case <-c.outDone:
+		return net.ErrClosed
+	}
+}
+
+// dispatchLoop delivers decoded frames to the payload channels in
+// arrival order. It is the ONLY goroutine doing channel delivery, so
+// FIFO ordering across message types is preserved exactly as the old
+// in-read-loop dispatch did it — just decoupled, so a stalled consumer
+// backlogs this queue instead of wedging the socket read loop (which
+// must stay free to answer daemon pings; see Run).
+func (c *Client) dispatchLoop() {
+	for {
+		c.dispMu.Lock()
+		for len(c.dispQ) == 0 && !c.dispClosed {
+			c.dispCond.Wait()
+		}
+		if len(c.dispQ) == 0 {
+			c.dispMu.Unlock()
+			return
+		}
+		d := c.dispQ[0]
+		c.dispQ[0] = nil
+		c.dispQ = c.dispQ[1:]
+		if len(c.dispQ) == 0 {
+			c.dispQ = nil // release the drained backing array
+		}
+		c.dispMu.Unlock()
+		if err := d(); err != nil {
+			// Delivery aborts only on teardown (outDone closed) — make
+			// sure the teardown completes and stop delivering.
+			c.shutdown()
+			return
+		}
+	}
+}
+
+// enqueueDispatch queues one delivery for dispatchLoop. Returns false
+// when the backlog cap is hit — the consumer has been stalled long
+// enough that killing the connection (and letting the Hub redial with
+// a clean resync) beats unbounded buffering.
+func (c *Client) enqueueDispatch(d func() error) bool {
+	c.dispMu.Lock()
+	defer c.dispMu.Unlock()
+	if c.dispClosed {
+		return true // tearing down; frame is moot
+	}
+	if len(c.dispQ) >= maxDispatchBacklog {
+		return false
+	}
+	if len(c.dispQ) == dispatchWarnBacklog {
+		log.Printf("clientproto: dispatch backlog reached %d frames — consumer stalled?", len(c.dispQ))
+	}
+	c.dispQ = append(c.dispQ, d)
+	c.dispCond.Signal()
+	return true
+}
+
+// closeDispatch lets dispatchLoop drain what's queued and exit. Called
+// from Run's teardown after shutdown() — outDone is already closed, so
+// any delivery the dispatcher is blocked in aborts immediately.
+func (c *Client) closeDispatch() {
+	c.dispMu.Lock()
+	c.dispClosed = true
+	c.dispMu.Unlock()
+	c.dispCond.Broadcast()
 }
 
 func (c *Client) send(t protocol.MsgType, body protocol.Msg) error {
