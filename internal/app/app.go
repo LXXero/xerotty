@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,6 +170,16 @@ type App struct {
 	// router goroutines, read from the render thread).
 	proposalsMu      sync.Mutex
 	pendingProposals []guiProposal
+
+	// Clients-menu cache: last-known attached-client snapshot per hub
+	// display name ("local" + remote host names). The right-click
+	// menu builds from this synchronously and fires an async refresh
+	// on every open — a remote hub's round-trip must never block the
+	// menu, so the first open after a change may show the previous
+	// snapshot and the next open catches up.
+	clientsMenuMu   sync.Mutex
+	clientsMenuData map[string][]protocol.ClientInfo
+	clientsMenuBusy atomic.Bool
 
 	// Clipboard-push throttle: a remote PTY's OSC 52 GET is
 	// answered server-side from the session clipboard, which is
@@ -512,6 +523,70 @@ func cursorStyleName(style uint8) string {
 // Other items pass through untouched. Default menu config
 // includes the placeholder so users get host entries
 // automatically once they add [[hosts]] to their config.
+// refreshClientsMenu re-fetches each hub's attached-client list into
+// clientsMenuData off the UI thread. One fetch in flight at a time;
+// menu opens just read the cache. PostWake repaints an open menu's
+// next frame... which rebuilds from config, so in practice the NEXT
+// open shows the fresh data — fine for a diagnostic menu.
+func (a *App) refreshClientsMenu() {
+	if !a.clientsMenuBusy.CompareAndSwap(false, true) {
+		return
+	}
+	hubs := a.hubsByName()
+	go func() {
+		defer a.clientsMenuBusy.Store(false)
+		fresh := make(map[string][]protocol.ClientInfo, len(hubs))
+		for name, hub := range hubs {
+			infos, err := hub.Clients(2 * time.Second)
+			if err != nil {
+				// Old daemon / dead hub: leave the entry out rather
+				// than show stale ghosts.
+				continue
+			}
+			fresh[name] = infos
+		}
+		a.clientsMenuMu.Lock()
+		a.clientsMenuData = fresh
+		a.clientsMenuMu.Unlock()
+		platform.PostWake()
+	}()
+}
+
+// clientsSubmenu builds the Remote → Clients entries from the cached
+// snapshot: one line per attached client per hub, click = kick. The
+// requester's own GUI is labeled — kicking yourself just forces a
+// reconnect, but you should know you're doing it.
+func (a *App) clientsSubmenu() []config.MenuItem {
+	a.clientsMenuMu.Lock()
+	data := a.clientsMenuData
+	a.clientsMenuMu.Unlock()
+	names := make([]string, 0, len(data))
+	for n := range data {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var out []config.MenuItem
+	for _, name := range names {
+		for _, ci := range data[name] {
+			label := name + ": " + ci.ClientID
+			if ci.LastPongAgoSec >= 10 {
+				label += fmt.Sprintf(" (pong %ds ago)", ci.LastPongAgoSec)
+			}
+			if ci.You {
+				label += " (you)"
+			}
+			out = append(out, config.MenuItem{
+				Label:  "Disconnect " + label,
+				Action: "kick_client:" + name + ":" + ci.ClientID,
+			})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, config.MenuItem{Label: "(no clients — refreshing)"})
+	}
+	return out
+}
+
 func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 	out := make([]config.MenuItem, 0, len(items))
 	for _, item := range items {
@@ -547,6 +622,15 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 					Action: "attach_remote:" + h.Name,
 				})
 			}
+			// Attached clients across every hub, with disconnect —
+			// the "who else is on my session (and kick the dozing
+			// laptop)" view. Built from cache; refreshed async.
+			a.refreshClientsMenu()
+			submenu = append(submenu, config.MenuItem{Action: "separator"})
+			submenu = append(submenu, config.MenuItem{
+				Label:   "Clients",
+				Submenu: a.clientsSubmenu(),
+			})
 			out = append(out, config.MenuItem{
 				Label:   "Remote",
 				Submenu: submenu,
@@ -4641,6 +4725,27 @@ func (w *Window) dispatchAction(action string) {
 		w.openConnectDialog()
 		return
 	}
+	// "kick_client:<hub>:<clientID>" force-disconnects an attached
+	// client (Remote → Clients). ClientIDs may themselves contain
+	// colons ("xerotty-gui:xryzen"), so split off the hub name only.
+	if strings.HasPrefix(action, "kick_client:") {
+		rest := action[len("kick_client:"):]
+		parts := strings.SplitN(rest, ":", 2)
+		if len(parts) != 2 {
+			return
+		}
+		hub := w.app.hubsByName()[parts[0]]
+		if hub == nil {
+			fmt.Fprintf(os.Stderr, "xerotty: kick_client: no hub %q\n", parts[0])
+			return
+		}
+		if err := hub.KickClient(parts[1]); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: kick_client %s: %v\n", rest, err)
+		}
+		// Re-fetch soon so the menu reflects the kick on next open.
+		w.app.refreshClientsMenu()
+		return
+	}
 	// "remote_new_tab" / "remote_new_window" act on the host of the
 	// CURRENTLY active tab — a new tab/window on the same remote box
 	// you're looking at. No-op (with a note) when the active tab is
@@ -5390,6 +5495,27 @@ func measureMenu(items []config.MenuItem) (w, h float32) {
 	return
 }
 
+// measureCascade returns the width/height the cascade of nested
+// submenus can occupy BEYOND the given level: the widest (deepest)
+// chain of submenu widths and the tallest chain of submenu heights.
+// Zero when no item has a submenu.
+func measureCascade(items []config.MenuItem) (w, h float32) {
+	for _, item := range items {
+		if len(item.Submenu) == 0 {
+			continue
+		}
+		sw, sh := measureMenu(item.Submenu)
+		dw, dh := measureCascade(item.Submenu)
+		if sw+dw > w {
+			w = sw + dw
+		}
+		if sh+dh > h {
+			h = sh + dh
+		}
+	}
+	return
+}
+
 func (w *Window) renderContextMenu() {
 	if !w.contextMenuOpen {
 		return
@@ -5430,22 +5556,14 @@ func (w *Window) renderContextMenu() {
 	// default font + style (see popup_imgui.cpp).
 	expanded := w.app.expandMenu(w.app.cfg.Menu.Items)
 	mainW, mainH := measureMenu(expanded)
-	// Widest / tallest submenu among the top-level items.
-	var subW, subH float32
-	for _, item := range expanded {
-		if len(item.Submenu) > 0 {
-			sw, sh := measureMenu(item.Submenu)
-			if sw > subW {
-				subW = sw
-			}
-			if sh > subH {
-				subH = sh
-			}
-		}
-	}
-	// Width: main + submenu side by side. Height: a submenu can open as
-	// low as the bottom of the main menu and drop subH further, so
-	// reserve mainH+subH (transparent slack — harmless).
+	// Deepest cascade beyond the main menu (submenus can nest —
+	// Remote → Clients — and each level opens beside its parent, so
+	// the surface must fit the whole chain, not just one level).
+	subW, subH := measureCascade(expanded)
+	// Width: main + cascaded submenus side by side. Height: each
+	// level can open as low as the bottom of its parent and drop its
+	// own height further, so reserve the sum (transparent slack —
+	// harmless).
 	popupW := mainW + subW + 8
 	popupH := mainH
 	if subW > 0 {
