@@ -227,10 +227,21 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "list_clients",
-			"description": "List every wire-protocol client currently attached to the daemon. Useful for seeing who else is driving the session.",
+			"description": "List every wire-protocol client currently attached to the daemon: client id, remote address, session, join time, seconds since its last heartbeat pong (a growing number means a half-dead client, e.g. a sleeping laptop's still-open SSH), and how many tabs it watches.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
+			},
+		},
+		{
+			"name":        "disconnect_client",
+			"description": "Force-disconnect an attached client by its ClientID (from list_clients). The shared grid hands off to the remaining clients as if it dropped on its own. Use on half-dead remote clients squatting on the session. Blocked in observe mode.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"client_id": map[string]any{"type": "string"},
+				},
+				"required": []string{"client_id"},
 			},
 		},
 		{
@@ -301,6 +312,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleAgentAuthenticate(inner)
 	case "list_clients":
 		resp = c.handleAgentClients(inner)
+	case "disconnect_client":
+		resp = c.handleAgentKick(inner)
 	case "get_server_info":
 		resp = c.handleServerInfo(inner)
 	default:

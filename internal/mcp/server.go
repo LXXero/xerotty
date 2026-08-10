@@ -230,6 +230,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleAgentAuthenticate(req)
 	case "agent/clients":
 		return c.handleAgentClients(req)
+	case "agent/kick":
+		return c.handleAgentKick(req)
 	case "server/info":
 		return c.handleServerInfo(req)
 
@@ -423,6 +425,29 @@ func (c *agentConn) handleProposalsDrop(req *rpcRequest) *rpcResponse {
 func (c *agentConn) handleAgentClients(req *rpcRequest) *rpcResponse {
 	out := c.srv.d.AttachedClients()
 	return ok(req.ID, out)
+}
+
+// handleAgentKick force-disconnects an attached wire client by its
+// ClientID (from list_clients). Write-gated: kicking someone's session
+// is not an observe-mode action.
+func (c *agentConn) handleAgentKick(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	if p.ClientID == "" {
+		return invalidParams(req.ID, "client_id required")
+	}
+	n := c.srv.d.KickClient(p.ClientID)
+	if n == 0 {
+		return rpcErr(req.ID, -32004, "no attached client with that id", nil)
+	}
+	return ok(req.ID, map[string]int{"kicked": n})
 }
 
 func (c *agentConn) handleServerInfo(req *rpcRequest) *rpcResponse {

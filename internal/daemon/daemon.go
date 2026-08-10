@@ -85,28 +85,65 @@ type AttachedClient struct {
 	RemoteAddr  string
 	SessionName string
 	JoinedUnix  int64
+	// LastPongAgoSec is how many seconds ago this client last answered
+	// a heartbeat ping — the "is anyone actually home" signal. A
+	// dozing laptop that still holds its TCP session shows a growing
+	// number here while a live client stays near 0.
+	LastPongAgoSec int64
+	// SubscribedTabs is how many tabs this client is watching.
+	SubscribedTabs int
 }
 
 // AttachedClients returns a snapshot of all currently-connected
 // wire-protocol clients. Safe to call from any goroutine.
 func (d *Daemon) AttachedClients() []AttachedClient {
 	d.clientsMu.Lock()
-	defer d.clientsMu.Unlock()
-	out := make([]AttachedClient, 0, len(d.clients))
+	conns := make([]*clientConn, 0, len(d.clients))
 	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	out := make([]AttachedClient, 0, len(conns))
+	for _, c := range conns {
 		ac := AttachedClient{
-			ClientID:   c.clientID,
-			RemoteAddr: c.conn.RemoteAddr().String(),
-			JoinedUnix: c.joined.Unix(),
+			ClientID:       c.clientID,
+			RemoteAddr:     c.conn.RemoteAddr().String(),
+			JoinedUnix:     c.joined.Unix(),
+			LastPongAgoSec: int64(time.Since(time.Unix(0, c.lastPong.Load())).Seconds()),
 		}
 		// Read the session name from the atomic mirror — c.session
 		// itself is owned by the read loop and racy to touch here.
 		if v, ok := c.sessionName.Load().(string); ok {
 			ac.SessionName = v
 		}
+		c.subsMu.Lock()
+		ac.SubscribedTabs = len(c.subs)
+		c.subsMu.Unlock()
 		out = append(out, ac)
 	}
 	return out
+}
+
+// KickClient force-disconnects every attached client whose ClientID
+// matches, returning how many were kicked. The conn teardown runs the
+// normal disconnect path (stopAllSubs → size reconcile), so the shared
+// grid hands off exactly as if the client had dropped on its own. This
+// is the remedy for a half-dead remote client (a sleeping laptop's
+// still-open SSH) squatting on the session.
+func (d *Daemon) KickClient(id string) int {
+	d.clientsMu.Lock()
+	targets := make([]*clientConn, 0, 1)
+	for c := range d.clients {
+		if c.clientID == id {
+			targets = append(targets, c)
+		}
+	}
+	d.clientsMu.Unlock()
+	for _, c := range targets {
+		logf("kicking client %q by request", c.clientID)
+		c.shutdown()
+	}
+	return len(targets)
 }
 
 // broadcastProposals ships the current propose-mode queue to every
