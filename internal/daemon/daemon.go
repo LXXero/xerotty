@@ -440,6 +440,7 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	// next-most-recently-resized client takes over.
 	bestCols, bestRows := 0, 0
 	var bestSeq uint64
+	var bestID string
 	for _, c := range conns {
 		c.subsMu.Lock()
 		sub, ok := c.subs[tabID]
@@ -454,6 +455,7 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 		}
 		if bestCols == 0 || seq > bestSeq {
 			bestCols, bestRows, bestSeq = int(dc), int(dr), seq
+			bestID = c.clientID
 		}
 	}
 	if bestCols == 0 || bestRows == 0 {
@@ -464,6 +466,11 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	if t.Term.Width() == bestCols && t.Term.Height() == bestRows {
 		return // already at the winning size — no thrash, no broadcast
 	}
+	// Every grid flip is user-visible (the other clients' redraws
+	// reflow) — log who won so a size tug-of-war reads as a story,
+	// not a mystery.
+	logf("tab %d grid %dx%d -> %dx%d (owner %q)",
+		tabID, t.Term.Width(), t.Term.Height(), bestCols, bestRows, bestID)
 	t.Term.Resize(bestCols, bestRows)
 	d.WakeTabSubscribers(tabID)
 }

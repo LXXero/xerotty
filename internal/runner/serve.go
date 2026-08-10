@@ -7,6 +7,7 @@ package runner
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -60,7 +61,7 @@ func Serve(args []string) int {
 		// Pre-exec gate: prove this binary parses + version-accepts
 		// the handoff format. Exit code is the whole contract.
 		if _, err := handoff.ReadFile(validateHandoff); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty serve: %v\n", err)
+			log.Printf("xerotty serve: %v", err)
 			return 1
 		}
 		return 0
@@ -76,7 +77,7 @@ func Serve(args []string) int {
 
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty serve: config error: %v\n", err)
+		log.Printf("xerotty serve: config error: %v", err)
 		return 1
 	}
 
@@ -117,7 +118,7 @@ func Serve(args []string) int {
 	if resumeFile != "" {
 		ln, err := resumeFromFile(d, resumeFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty serve: resume: %v\n", err)
+			log.Printf("xerotty serve: resume: %v", err)
 			// Carry on as a fresh daemon: a partial resume already
 			// adopted what it could; a failed parse adopted nothing.
 		} else {
@@ -133,9 +134,9 @@ func Serve(args []string) int {
 		}
 		mcpSrv = mcp.New(d, mcpSocketPath)
 		go func() {
-			fmt.Fprintf(os.Stderr, "xerotty serve: MCP listening on %s\n", mcpSocketPath)
+			log.Printf("xerotty serve: MCP listening on %s", mcpSocketPath)
 			if err := mcpSrv.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "xerotty serve: mcp: %v\n", err)
+				log.Printf("xerotty serve: mcp: %v", err)
 			}
 		}()
 	}
@@ -153,7 +154,7 @@ func Serve(args []string) int {
 
 	upgrading := upgradeOnSignal(d, mcpSrv, socketPath, mcpSocketPath)
 
-	fmt.Fprintf(os.Stderr, "xerotty serve: listening on %s\n", socketPath)
+	log.Printf("xerotty serve: listening on %s", socketPath)
 	fmt.Println(socketPath) // stdout so auto-spawn can locate the socket
 	if inheritedLn != nil {
 		err = d.RunWithListener(inheritedLn)
@@ -171,7 +172,7 @@ func Serve(args []string) int {
 	default:
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty serve: %v\n", err)
+		log.Printf("xerotty serve: %v", err)
 		return 1
 	}
 	return 0

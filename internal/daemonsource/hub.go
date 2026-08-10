@@ -18,7 +18,9 @@
 package daemonsource
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -867,8 +869,14 @@ func (h *Hub) reconnect() bool {
 	if redial == nil {
 		return false
 	}
+	// Every redial repaints the whole grid from a fresh snapshot — a
+	// user-visible flash. Logged (with the drop's reason) because a
+	// silent reconnect cycle looks like random flashing/corruption and
+	// is undiagnosable from the outside; this was learned the hard way.
+	log.Printf("xerotty: daemon connection lost (%v) — reconnecting", h.lastExitReason())
 	h.markAllReconnecting(true)
 	backoff := reconnectMinBackoff
+	attempts := 0
 	for {
 		select {
 		case <-h.stopCh:
@@ -877,6 +885,10 @@ func (h *Hub) reconnect() bool {
 		}
 		newCli, attached, err := redial()
 		if err != nil {
+			attempts++
+			if attempts == 1 || attempts%5 == 0 {
+				log.Printf("xerotty: redial attempt %d failed: %v", attempts, err)
+			}
 			select {
 			case <-h.stopCh:
 				return false
@@ -894,8 +906,23 @@ func (h *Hub) reconnect() bool {
 		}
 		h.resyncAfterReconnect(attached)
 		h.markAllReconnecting(false)
+		log.Printf("xerotty: daemon reconnected (attempt %d) — resyncing", attempts+1)
 		return true
 	}
+}
+
+// lastExitReason reports why the previous connection's read loop ended,
+// for the reconnect log line. Best-effort: nil (clean EOF) reads as
+// "connection closed".
+func (h *Hub) lastExitReason() error {
+	cli := h.client()
+	if cli == nil {
+		return errors.New("no prior connection")
+	}
+	if err := cli.ExitErr(); err != nil {
+		return err
+	}
+	return errors.New("connection closed")
 }
 
 // markAllReconnecting flips the reconnecting flag on every registered

@@ -125,10 +125,16 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	close(hsDone)
 	hsTimer.Stop()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerottyd: handshake failed: %v\n", err)
+		logf("handshake failed: %v", err)
 		_ = conn.Close()
 		return
 	}
+	// Lifecycle bookends: a client that cycles (a dozing laptop's SSH
+	// dropping and re-dialing) shows up as connect/disconnect pairs —
+	// the pattern that explains "the grid keeps fighting me" at a
+	// glance, and invisible without these two lines.
+	logf("client %q connected", c.clientID)
+	defer logf("client %q disconnected", c.clientID)
 	// From here the writer goroutine owns all conn writes.
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
@@ -168,7 +174,7 @@ func (c *clientConn) heartbeatLoop() {
 			writeIdle := time.Since(time.Unix(0, c.lastWriteProgress.Load()))
 			pongIdle := time.Since(time.Unix(0, c.lastPong.Load()))
 			if writeIdle > window && pongIdle > window {
-				fmt.Fprintf(os.Stderr, "xerottyd: reaping unresponsive client %q (no write progress %s, no pong %s)\n",
+				logf("reaping unresponsive client %q (no write progress %s, no pong %s)",
 					c.clientID, writeIdle.Round(time.Second), pongIdle.Round(time.Second))
 				c.shutdown()
 				return
@@ -524,12 +530,12 @@ func (c *clientConn) runReadLoop() {
 		t, body, err := c.reader.ReadFrame()
 		if err != nil {
 			if err != io.EOF {
-				fmt.Fprintf(os.Stderr, "xerottyd: read error: %v\n", err)
+				logf("client %q read error: %v", c.clientID, err)
 			}
 			return
 		}
 		if err := c.dispatch(t, body); err != nil {
-			fmt.Fprintf(os.Stderr, "xerottyd: dispatch %v: %v\n", t, err)
+			logf("client %q dispatch %v: %v", c.clientID, t, err)
 			// continue — a bad command shouldn't kill the connection
 		}
 	}
