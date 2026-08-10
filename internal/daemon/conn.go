@@ -736,9 +736,56 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		// count). Refresh the pong clock.
 		c.lastPong.Store(time.Now().UnixNano())
 		return nil
+	case protocol.MsgClientsListReq:
+		var msg protocol.ClientsListReq
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		return c.handleClientsList(&msg)
+	case protocol.MsgClientKick:
+		var msg protocol.ClientKick
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		logf("client %q requested kick of %q", c.clientID, msg.ClientID)
+		c.daemon.KickClient(msg.ClientID)
+		return nil
 	default:
 		return fmt.Errorf("unknown message type %v", t)
 	}
+}
+
+// handleClientsList replies with a snapshot of every attached wire
+// client (the GUI's Clients menu). Same data as the MCP list_clients
+// tool, plus a You marker for the requesting connection so the UI
+// can flag a self-kick.
+func (c *clientConn) handleClientsList(msg *protocol.ClientsListReq) error {
+	d := c.daemon
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for cc := range d.clients {
+		conns = append(conns, cc)
+	}
+	d.clientsMu.Unlock()
+	infos := make([]protocol.ClientInfo, 0, len(conns))
+	for _, cc := range conns {
+		info := protocol.ClientInfo{
+			ClientID:       cc.clientID,
+			RemoteAddr:     cc.conn.RemoteAddr().String(),
+			JoinedUnix:     cc.joined.Unix(),
+			LastPongAgoSec: int64(time.Since(time.Unix(0, cc.lastPong.Load())).Seconds()),
+			You:            cc == c,
+		}
+		if v, ok := cc.sessionName.Load().(string); ok {
+			info.SessionName = v
+		}
+		cc.subsMu.Lock()
+		info.SubscribedTabs = int32(len(cc.subs))
+		cc.subsMu.Unlock()
+		infos = append(infos, info)
+	}
+	c.send(protocol.MsgClientsList, &protocol.ClientsList{ReqID: msg.ReqID, Clients: infos})
+	return nil
 }
 
 func (c *clientConn) handleAttach(msg *protocol.Attach) error {

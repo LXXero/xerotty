@@ -120,6 +120,14 @@ const (
 	MsgScrollbackRange   MsgType = 46 // server → client: rows for a ScrollbackRequest
 	MsgSearchRequest     MsgType = 47 // client → server: search the tab's full scrollback
 	MsgSearchResults     MsgType = 48 // server → client: match coordinates for a SearchRequest
+
+	// Additive (no version bump): an old daemon logs these as unknown
+	// and keeps the connection; the client's request just times out
+	// (empty Clients menu) — benign degradation, unlike the silent
+	// misbehaviors that motivated bumps 5-9.
+	MsgClientsListReq    MsgType = 49 // client → server: list attached wire clients
+	MsgClientsList       MsgType = 50 // server → client: reply for ClientsListReq
+	MsgClientKick        MsgType = 51 // client → server: force-disconnect a client by id
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -693,4 +701,42 @@ type Ping struct {
 // Pong replies to a Ping, echoing its Nonce.
 type Pong struct {
 	Nonce uint64 `msg:"nonce"`
+}
+
+// ClientsListReq asks the daemon for a snapshot of every attached
+// wire-protocol client (the GUI's right-click Clients menu). ReqID
+// correlates the ClientsList reply, mirroring TabCreate's pattern.
+type ClientsListReq struct {
+	ReqID uint64 `msg:"req_id"`
+}
+
+// ClientInfo is one attached client in a ClientsList reply.
+// LastPongAgoSec is the "anyone actually home" signal: a dozing
+// laptop holding its TCP session open shows a growing number while a
+// live client stays near zero.
+type ClientInfo struct {
+	ClientID       string `msg:"client_id"`
+	RemoteAddr     string `msg:"remote_addr"`
+	SessionName    string `msg:"session"`
+	JoinedUnix     int64  `msg:"joined"`
+	LastPongAgoSec int64  `msg:"pong_ago"`
+	SubscribedTabs int32  `msg:"tabs"`
+	// You marks the requesting connection's own entry, so a UI can
+	// label it and warn before a self-kick (which just forces a
+	// reconnect, but still).
+	You bool `msg:"you"`
+}
+
+// ClientsList replies to ClientsListReq.
+type ClientsList struct {
+	ReqID   uint64       `msg:"req_id"`
+	Clients []ClientInfo `msg:"clients"`
+}
+
+// ClientKick asks the daemon to force-disconnect every attached
+// client with this ClientID. Teardown runs the normal disconnect
+// path (unsubscribe + size reconcile), exactly as if the client
+// dropped on its own.
+type ClientKick struct {
+	ClientID string `msg:"client_id"`
 }

@@ -1026,6 +1026,458 @@ func BenchmarkDecodeClearScrollback(b *testing.B) {
 	}
 }
 
+func TestMarshalUnmarshalClientInfo(t *testing.T) {
+	v := ClientInfo{}
+	bts, err := v.MarshalMsg(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := v.UnmarshalMsg(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after UnmarshalMsg(): %q", len(left), left)
+	}
+
+	left, err = msgp.Skip(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after Skip(): %q", len(left), left)
+	}
+}
+
+func BenchmarkMarshalMsgClientInfo(b *testing.B) {
+	v := ClientInfo{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.MarshalMsg(nil)
+	}
+}
+
+func BenchmarkAppendMsgClientInfo(b *testing.B) {
+	v := ClientInfo{}
+	bts := make([]byte, 0, v.Msgsize())
+	bts, _ = v.MarshalMsg(bts[0:0])
+	b.SetBytes(int64(len(bts)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bts, _ = v.MarshalMsg(bts[0:0])
+	}
+}
+
+func BenchmarkUnmarshalClientInfo(b *testing.B) {
+	v := ClientInfo{}
+	bts, _ := v.MarshalMsg(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(bts)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := v.UnmarshalMsg(bts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEncodeDecodeClientInfo(t *testing.T) {
+	v := ClientInfo{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+
+	m := v.Msgsize()
+	if buf.Len() > m {
+		t.Log("WARNING: TestEncodeDecodeClientInfo Msgsize() is inaccurate")
+	}
+
+	vn := ClientInfo{}
+	err := msgp.Decode(&buf, &vn)
+	if err != nil {
+		t.Error(err)
+	}
+
+	buf.Reset()
+	msgp.Encode(&buf, &v)
+	err = msgp.NewReader(&buf).Skip()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func BenchmarkEncodeClientInfo(b *testing.B) {
+	v := ClientInfo{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	en := msgp.NewWriter(msgp.Nowhere)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.EncodeMsg(en)
+	}
+	en.Flush()
+}
+
+func BenchmarkDecodeClientInfo(b *testing.B) {
+	v := ClientInfo{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	rd := msgp.NewEndlessReader(buf.Bytes(), b)
+	dc := msgp.NewReader(rd)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := v.DecodeMsg(dc)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestMarshalUnmarshalClientKick(t *testing.T) {
+	v := ClientKick{}
+	bts, err := v.MarshalMsg(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := v.UnmarshalMsg(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after UnmarshalMsg(): %q", len(left), left)
+	}
+
+	left, err = msgp.Skip(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after Skip(): %q", len(left), left)
+	}
+}
+
+func BenchmarkMarshalMsgClientKick(b *testing.B) {
+	v := ClientKick{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.MarshalMsg(nil)
+	}
+}
+
+func BenchmarkAppendMsgClientKick(b *testing.B) {
+	v := ClientKick{}
+	bts := make([]byte, 0, v.Msgsize())
+	bts, _ = v.MarshalMsg(bts[0:0])
+	b.SetBytes(int64(len(bts)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bts, _ = v.MarshalMsg(bts[0:0])
+	}
+}
+
+func BenchmarkUnmarshalClientKick(b *testing.B) {
+	v := ClientKick{}
+	bts, _ := v.MarshalMsg(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(bts)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := v.UnmarshalMsg(bts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEncodeDecodeClientKick(t *testing.T) {
+	v := ClientKick{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+
+	m := v.Msgsize()
+	if buf.Len() > m {
+		t.Log("WARNING: TestEncodeDecodeClientKick Msgsize() is inaccurate")
+	}
+
+	vn := ClientKick{}
+	err := msgp.Decode(&buf, &vn)
+	if err != nil {
+		t.Error(err)
+	}
+
+	buf.Reset()
+	msgp.Encode(&buf, &v)
+	err = msgp.NewReader(&buf).Skip()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func BenchmarkEncodeClientKick(b *testing.B) {
+	v := ClientKick{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	en := msgp.NewWriter(msgp.Nowhere)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.EncodeMsg(en)
+	}
+	en.Flush()
+}
+
+func BenchmarkDecodeClientKick(b *testing.B) {
+	v := ClientKick{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	rd := msgp.NewEndlessReader(buf.Bytes(), b)
+	dc := msgp.NewReader(rd)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := v.DecodeMsg(dc)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestMarshalUnmarshalClientsList(t *testing.T) {
+	v := ClientsList{}
+	bts, err := v.MarshalMsg(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := v.UnmarshalMsg(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after UnmarshalMsg(): %q", len(left), left)
+	}
+
+	left, err = msgp.Skip(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after Skip(): %q", len(left), left)
+	}
+}
+
+func BenchmarkMarshalMsgClientsList(b *testing.B) {
+	v := ClientsList{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.MarshalMsg(nil)
+	}
+}
+
+func BenchmarkAppendMsgClientsList(b *testing.B) {
+	v := ClientsList{}
+	bts := make([]byte, 0, v.Msgsize())
+	bts, _ = v.MarshalMsg(bts[0:0])
+	b.SetBytes(int64(len(bts)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bts, _ = v.MarshalMsg(bts[0:0])
+	}
+}
+
+func BenchmarkUnmarshalClientsList(b *testing.B) {
+	v := ClientsList{}
+	bts, _ := v.MarshalMsg(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(bts)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := v.UnmarshalMsg(bts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEncodeDecodeClientsList(t *testing.T) {
+	v := ClientsList{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+
+	m := v.Msgsize()
+	if buf.Len() > m {
+		t.Log("WARNING: TestEncodeDecodeClientsList Msgsize() is inaccurate")
+	}
+
+	vn := ClientsList{}
+	err := msgp.Decode(&buf, &vn)
+	if err != nil {
+		t.Error(err)
+	}
+
+	buf.Reset()
+	msgp.Encode(&buf, &v)
+	err = msgp.NewReader(&buf).Skip()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func BenchmarkEncodeClientsList(b *testing.B) {
+	v := ClientsList{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	en := msgp.NewWriter(msgp.Nowhere)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.EncodeMsg(en)
+	}
+	en.Flush()
+}
+
+func BenchmarkDecodeClientsList(b *testing.B) {
+	v := ClientsList{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	rd := msgp.NewEndlessReader(buf.Bytes(), b)
+	dc := msgp.NewReader(rd)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := v.DecodeMsg(dc)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestMarshalUnmarshalClientsListReq(t *testing.T) {
+	v := ClientsListReq{}
+	bts, err := v.MarshalMsg(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left, err := v.UnmarshalMsg(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after UnmarshalMsg(): %q", len(left), left)
+	}
+
+	left, err = msgp.Skip(bts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > 0 {
+		t.Errorf("%d bytes left over after Skip(): %q", len(left), left)
+	}
+}
+
+func BenchmarkMarshalMsgClientsListReq(b *testing.B) {
+	v := ClientsListReq{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.MarshalMsg(nil)
+	}
+}
+
+func BenchmarkAppendMsgClientsListReq(b *testing.B) {
+	v := ClientsListReq{}
+	bts := make([]byte, 0, v.Msgsize())
+	bts, _ = v.MarshalMsg(bts[0:0])
+	b.SetBytes(int64(len(bts)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bts, _ = v.MarshalMsg(bts[0:0])
+	}
+}
+
+func BenchmarkUnmarshalClientsListReq(b *testing.B) {
+	v := ClientsListReq{}
+	bts, _ := v.MarshalMsg(nil)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(bts)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := v.UnmarshalMsg(bts)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestEncodeDecodeClientsListReq(t *testing.T) {
+	v := ClientsListReq{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+
+	m := v.Msgsize()
+	if buf.Len() > m {
+		t.Log("WARNING: TestEncodeDecodeClientsListReq Msgsize() is inaccurate")
+	}
+
+	vn := ClientsListReq{}
+	err := msgp.Decode(&buf, &vn)
+	if err != nil {
+		t.Error(err)
+	}
+
+	buf.Reset()
+	msgp.Encode(&buf, &v)
+	err = msgp.NewReader(&buf).Skip()
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func BenchmarkEncodeClientsListReq(b *testing.B) {
+	v := ClientsListReq{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	en := msgp.NewWriter(msgp.Nowhere)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.EncodeMsg(en)
+	}
+	en.Flush()
+}
+
+func BenchmarkDecodeClientsListReq(b *testing.B) {
+	v := ClientsListReq{}
+	var buf bytes.Buffer
+	msgp.Encode(&buf, &v)
+	b.SetBytes(int64(buf.Len()))
+	rd := msgp.NewEndlessReader(buf.Bytes(), b)
+	dc := msgp.NewReader(rd)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err := v.DecodeMsg(dc)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestMarshalUnmarshalClipboardData(t *testing.T) {
 	v := ClipboardData{}
 	bts, err := v.MarshalMsg(nil)

@@ -124,6 +124,9 @@ type Hub struct {
 	nextReqID      atomic.Uint64
 	createMu       sync.Mutex
 	pendingCreates map[uint64]chan *protocol.TabCreated
+	// pendingClientLists correlates ClientsListReq replies (the
+	// right-click Clients menu) the same way — ReqID → waiter.
+	pendingClientLists map[uint64]chan []protocol.ClientInfo
 	// pendingWindowCreates is the WindowCreate analogue — same ReqID
 	// correlation (router-demuxed) so a late WindowCreated can't be
 	// adopted as a newer create's reply, and so undrained acks can't
@@ -186,6 +189,7 @@ func NewHub(c *clientproto.Client) *Hub {
 		tombstones:     make(map[uint32]struct{}),
 		pending:        make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan *protocol.TabCreated),
+		pendingClientLists:   make(map[uint64]chan []protocol.ClientInfo),
 		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
 		createTimeout:        tabCreateTimeout,
 		stopCh:               make(chan struct{}),
@@ -603,6 +607,64 @@ func (h *Hub) deliverTabCreated(tc *protocol.TabCreated) {
 	}
 }
 
+// deliverClientsList routes a ClientsList reply to its waiter by
+// ReqID; unmatched replies (waiter timed out) are dropped.
+func (h *Hub) deliverClientsList(cl *protocol.ClientsList) {
+	h.createMu.Lock()
+	reply, ok := h.pendingClientLists[cl.ReqID]
+	if ok {
+		delete(h.pendingClientLists, cl.ReqID)
+	}
+	h.createMu.Unlock()
+	if ok {
+		select {
+		case reply <- cl.Clients:
+		default:
+		}
+	}
+}
+
+// Clients fetches the daemon's attached-client list (for the Clients
+// menu). Blocks up to timeout — call off the UI thread. An old daemon
+// that predates MsgClientsListReq never replies, so the timeout is
+// also the graceful-degradation path (empty menu, no error spam).
+func (h *Hub) Clients(timeout time.Duration) ([]protocol.ClientInfo, error) {
+	cli := h.client()
+	if cli == nil {
+		return nil, fmt.Errorf("daemonsource: no connection")
+	}
+	reqID := h.nextReqID.Add(1)
+	reply := make(chan []protocol.ClientInfo, 1)
+	h.createMu.Lock()
+	h.pendingClientLists[reqID] = reply
+	h.createMu.Unlock()
+	defer func() {
+		h.createMu.Lock()
+		delete(h.pendingClientLists, reqID)
+		h.createMu.Unlock()
+	}()
+	if err := cli.SendClientsListReq(reqID); err != nil {
+		return nil, fmt.Errorf("daemonsource: SendClientsListReq: %w", err)
+	}
+	select {
+	case infos := <-reply:
+		return infos, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("daemonsource: clients list timed out")
+	case <-cli.Closed():
+		return nil, fmt.Errorf("daemonsource: connection closed")
+	}
+}
+
+// KickClient asks the daemon to force-disconnect a client by id.
+func (h *Hub) KickClient(clientID string) error {
+	cli := h.client()
+	if cli == nil {
+		return fmt.Errorf("daemonsource: no connection")
+	}
+	return cli.SendClientKick(clientID)
+}
+
 // CreateWindow registers a new daemon-side window and returns its
 // assigned ID, correlating the reply by ReqID (so a late ack from a
 // timed-out create can't be mistaken for this one's). Mirrors NewTabIn.
@@ -816,6 +878,8 @@ func (h *Hub) route(cli *clientproto.Client) {
 			if s := h.lookup(f.ID); s != nil {
 				s.applySearchResults(f)
 			}
+		case cl := <-cli.ClientsLists():
+			h.deliverClientsList(cl)
 		case f := <-cli.ScrollbackCleared():
 			if s := h.lookup(f.ID); s != nil {
 				s.applyScrollbackCleared(f)

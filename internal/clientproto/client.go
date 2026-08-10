@@ -214,6 +214,7 @@ type Client struct {
 	scrollbackRng chan *protocol.ScrollbackRange
 	searchResults chan *protocol.SearchResults
 	sbCleared     chan *protocol.ScrollbackCleared
+	clientsList   chan *protocol.ClientsList
 	clipboardSet  chan *protocol.ClipboardSet
 	proposals     chan *protocol.ProposalsChanged
 	topology      chan *protocol.TopologyChanged
@@ -266,6 +267,7 @@ func wrap(conn net.Conn) *Client {
 		scrollbackRng:     make(chan *protocol.ScrollbackRange, 8),
 		searchResults:     make(chan *protocol.SearchResults, 4),
 		sbCleared:         make(chan *protocol.ScrollbackCleared, 8),
+		clientsList:       make(chan *protocol.ClientsList, 4),
 		clipboardSet:      make(chan *protocol.ClipboardSet, 8),
 		proposals:         make(chan *protocol.ProposalsChanged, 8),
 		topology:          make(chan *protocol.TopologyChanged, 8),
@@ -732,6 +734,23 @@ func (c *Client) SendSearchRequest(id uint32, reqID uint64, query string, caseSe
 	})
 }
 
+// ClientsLists returns the channel of attached-client snapshots
+// (answers to SendClientsListReq).
+func (c *Client) ClientsLists() <-chan *protocol.ClientsList { return c.clientsList }
+
+// SendClientsListReq asks the daemon for its attached-client list.
+// reqID correlates the async reply on ClientsLists.
+func (c *Client) SendClientsListReq(reqID uint64) error {
+	return c.send(protocol.MsgClientsListReq, &protocol.ClientsListReq{ReqID: reqID})
+}
+
+// SendClientKick asks the daemon to force-disconnect every attached
+// client whose ClientID matches. An old daemon ignores this (logged
+// as an unknown message type) — additive, not version-gated.
+func (c *Client) SendClientKick(clientID string) error {
+	return c.send(protocol.MsgClientKick, &protocol.ClientKick{ClientID: clientID})
+}
+
 // Errors returns the channel of server-side protocol errors.
 func (c *Client) Errors() <-chan *protocol.Error { return c.errCh }
 
@@ -936,6 +955,12 @@ func (c *Client) decode(t protocol.MsgType, body []byte) (func() error, error) {
 			return nil, err
 		}
 		return func() error { return deliverOr(c, c.searchResults, msg) }, nil
+	case protocol.MsgClientsList:
+		msg := &protocol.ClientsList{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return nil, err
+		}
+		return func() error { return deliverOr(c, c.clientsList, msg) }, nil
 	case protocol.MsgScrollbackCleared:
 		msg := &protocol.ScrollbackCleared{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

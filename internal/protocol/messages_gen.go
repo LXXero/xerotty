@@ -1759,6 +1759,636 @@ func (z ClearScrollback) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *ClientInfo) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "client_id":
+			z.ClientID, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "ClientID")
+				return
+			}
+		case "remote_addr":
+			z.RemoteAddr, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "RemoteAddr")
+				return
+			}
+		case "session":
+			z.SessionName, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "SessionName")
+				return
+			}
+		case "joined":
+			z.JoinedUnix, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "JoinedUnix")
+				return
+			}
+		case "pong_ago":
+			z.LastPongAgoSec, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "LastPongAgoSec")
+				return
+			}
+		case "tabs":
+			z.SubscribedTabs, err = dc.ReadInt32()
+			if err != nil {
+				err = msgp.WrapError(err, "SubscribedTabs")
+				return
+			}
+		case "you":
+			z.You, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "You")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *ClientInfo) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 7
+	// write "client_id"
+	err = en.Append(0x87, 0xa9, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteString(z.ClientID)
+	if err != nil {
+		err = msgp.WrapError(err, "ClientID")
+		return
+	}
+	// write "remote_addr"
+	err = en.Append(0xab, 0x72, 0x65, 0x6d, 0x6f, 0x74, 0x65, 0x5f, 0x61, 0x64, 0x64, 0x72)
+	if err != nil {
+		return
+	}
+	err = en.WriteString(z.RemoteAddr)
+	if err != nil {
+		err = msgp.WrapError(err, "RemoteAddr")
+		return
+	}
+	// write "session"
+	err = en.Append(0xa7, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e)
+	if err != nil {
+		return
+	}
+	err = en.WriteString(z.SessionName)
+	if err != nil {
+		err = msgp.WrapError(err, "SessionName")
+		return
+	}
+	// write "joined"
+	err = en.Append(0xa6, 0x6a, 0x6f, 0x69, 0x6e, 0x65, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteInt64(z.JoinedUnix)
+	if err != nil {
+		err = msgp.WrapError(err, "JoinedUnix")
+		return
+	}
+	// write "pong_ago"
+	err = en.Append(0xa8, 0x70, 0x6f, 0x6e, 0x67, 0x5f, 0x61, 0x67, 0x6f)
+	if err != nil {
+		return
+	}
+	err = en.WriteInt64(z.LastPongAgoSec)
+	if err != nil {
+		err = msgp.WrapError(err, "LastPongAgoSec")
+		return
+	}
+	// write "tabs"
+	err = en.Append(0xa4, 0x74, 0x61, 0x62, 0x73)
+	if err != nil {
+		return
+	}
+	err = en.WriteInt32(z.SubscribedTabs)
+	if err != nil {
+		err = msgp.WrapError(err, "SubscribedTabs")
+		return
+	}
+	// write "you"
+	err = en.Append(0xa3, 0x79, 0x6f, 0x75)
+	if err != nil {
+		return
+	}
+	err = en.WriteBool(z.You)
+	if err != nil {
+		err = msgp.WrapError(err, "You")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *ClientInfo) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 7
+	// string "client_id"
+	o = append(o, 0x87, 0xa9, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64)
+	o = msgp.AppendString(o, z.ClientID)
+	// string "remote_addr"
+	o = append(o, 0xab, 0x72, 0x65, 0x6d, 0x6f, 0x74, 0x65, 0x5f, 0x61, 0x64, 0x64, 0x72)
+	o = msgp.AppendString(o, z.RemoteAddr)
+	// string "session"
+	o = append(o, 0xa7, 0x73, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e)
+	o = msgp.AppendString(o, z.SessionName)
+	// string "joined"
+	o = append(o, 0xa6, 0x6a, 0x6f, 0x69, 0x6e, 0x65, 0x64)
+	o = msgp.AppendInt64(o, z.JoinedUnix)
+	// string "pong_ago"
+	o = append(o, 0xa8, 0x70, 0x6f, 0x6e, 0x67, 0x5f, 0x61, 0x67, 0x6f)
+	o = msgp.AppendInt64(o, z.LastPongAgoSec)
+	// string "tabs"
+	o = append(o, 0xa4, 0x74, 0x61, 0x62, 0x73)
+	o = msgp.AppendInt32(o, z.SubscribedTabs)
+	// string "you"
+	o = append(o, 0xa3, 0x79, 0x6f, 0x75)
+	o = msgp.AppendBool(o, z.You)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClientInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "client_id":
+			z.ClientID, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ClientID")
+				return
+			}
+		case "remote_addr":
+			z.RemoteAddr, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "RemoteAddr")
+				return
+			}
+		case "session":
+			z.SessionName, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "SessionName")
+				return
+			}
+		case "joined":
+			z.JoinedUnix, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "JoinedUnix")
+				return
+			}
+		case "pong_ago":
+			z.LastPongAgoSec, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "LastPongAgoSec")
+				return
+			}
+		case "tabs":
+			z.SubscribedTabs, bts, err = msgp.ReadInt32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "SubscribedTabs")
+				return
+			}
+		case "you":
+			z.You, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "You")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *ClientInfo) Msgsize() (s int) {
+	s = 1 + 10 + msgp.StringPrefixSize + len(z.ClientID) + 12 + msgp.StringPrefixSize + len(z.RemoteAddr) + 8 + msgp.StringPrefixSize + len(z.SessionName) + 7 + msgp.Int64Size + 9 + msgp.Int64Size + 5 + msgp.Int32Size + 4 + msgp.BoolSize
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *ClientKick) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "client_id":
+			z.ClientID, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "ClientID")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z ClientKick) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 1
+	// write "client_id"
+	err = en.Append(0x81, 0xa9, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteString(z.ClientID)
+	if err != nil {
+		err = msgp.WrapError(err, "ClientID")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z ClientKick) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 1
+	// string "client_id"
+	o = append(o, 0x81, 0xa9, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x5f, 0x69, 0x64)
+	o = msgp.AppendString(o, z.ClientID)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClientKick) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "client_id":
+			z.ClientID, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ClientID")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z ClientKick) Msgsize() (s int) {
+	s = 1 + 10 + msgp.StringPrefixSize + len(z.ClientID)
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *ClientsList) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "clients":
+			var zb0002 uint32
+			zb0002, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "Clients")
+				return
+			}
+			if cap(z.Clients) >= int(zb0002) {
+				z.Clients = (z.Clients)[:zb0002]
+			} else {
+				z.Clients = make([]ClientInfo, zb0002)
+			}
+			for za0001 := range z.Clients {
+				err = z.Clients[za0001].DecodeMsg(dc)
+				if err != nil {
+					err = msgp.WrapError(err, "Clients", za0001)
+					return
+				}
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *ClientsList) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 2
+	// write "req_id"
+	err = en.Append(0x82, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteUint64(z.ReqID)
+	if err != nil {
+		err = msgp.WrapError(err, "ReqID")
+		return
+	}
+	// write "clients"
+	err = en.Append(0xa7, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x73)
+	if err != nil {
+		return
+	}
+	err = en.WriteArrayHeader(uint32(len(z.Clients)))
+	if err != nil {
+		err = msgp.WrapError(err, "Clients")
+		return
+	}
+	for za0001 := range z.Clients {
+		err = z.Clients[za0001].EncodeMsg(en)
+		if err != nil {
+			err = msgp.WrapError(err, "Clients", za0001)
+			return
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *ClientsList) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 2
+	// string "req_id"
+	o = append(o, 0x82, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+	o = msgp.AppendUint64(o, z.ReqID)
+	// string "clients"
+	o = append(o, 0xa7, 0x63, 0x6c, 0x69, 0x65, 0x6e, 0x74, 0x73)
+	o = msgp.AppendArrayHeader(o, uint32(len(z.Clients)))
+	for za0001 := range z.Clients {
+		o, err = z.Clients[za0001].MarshalMsg(o)
+		if err != nil {
+			err = msgp.WrapError(err, "Clients", za0001)
+			return
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClientsList) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "clients":
+			var zb0002 uint32
+			zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Clients")
+				return
+			}
+			if cap(z.Clients) >= int(zb0002) {
+				z.Clients = (z.Clients)[:zb0002]
+			} else {
+				z.Clients = make([]ClientInfo, zb0002)
+			}
+			for za0001 := range z.Clients {
+				bts, err = z.Clients[za0001].UnmarshalMsg(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Clients", za0001)
+					return
+				}
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *ClientsList) Msgsize() (s int) {
+	s = 1 + 7 + msgp.Uint64Size + 8 + msgp.ArrayHeaderSize
+	for za0001 := range z.Clients {
+		s += z.Clients[za0001].Msgsize()
+	}
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *ClientsListReq) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z ClientsListReq) EncodeMsg(en *msgp.Writer) (err error) {
+	// map header, size 1
+	// write "req_id"
+	err = en.Append(0x81, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+	if err != nil {
+		return
+	}
+	err = en.WriteUint64(z.ReqID)
+	if err != nil {
+		err = msgp.WrapError(err, "ReqID")
+		return
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z ClientsListReq) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// map header, size 1
+	// string "req_id"
+	o = append(o, 0x81, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+	o = msgp.AppendUint64(o, z.ReqID)
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *ClientsListReq) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z ClientsListReq) Msgsize() (s int) {
+	s = 1 + 7 + msgp.Uint64Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *ClipboardData) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field
