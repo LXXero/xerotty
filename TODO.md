@@ -66,6 +66,7 @@
 ## Open
 
 ### Low priority / later
+- [ ] daemon: read-loop pong starvation, server side — mirror of the fixed client-side bug: `handleInput`'s PTY write can block (e.g. a `^S`-stopped foreground app during a huge paste), wedging the daemon's per-conn read loop so it stops answering that client's pings; the client then falsely declares the daemon dead and redials. Same cure as clientproto: decouple control frames from the blocking work.
 - [ ] image paste / Kitty graphics protocol — base64 PNG/JPEG via OSC 1337 / APC; also iTerm2 inline images
 - [ ] Tmux helpers (SPEC §6.13) — explicitly last per original plan
 - [ ] iTerm2-style "smart selection" — URL / path / IP / git-hash auto-detect on quad-click or modifier-drag
