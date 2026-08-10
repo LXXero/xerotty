@@ -64,15 +64,19 @@ func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string, launch *LaunchC
 		"TERM="+cfg.Term,
 		"COLORTERM=truecolor",
 	)
-	if runtime.GOOS == "darwin" &&
-		os.Getenv("LC_ALL") == "" && os.Getenv("LC_CTYPE") == "" && os.Getenv("LANG") == "" {
-		// launchd's environment (what Finder-launched GUIs and the
-		// daemons they auto-spawn inherit) carries NO locale vars, so
-		// the shell lands in the C locale and zsh — with MULTIBYTE
-		// off — mangles UTF-8 prompt glyphs (starship's Powerline /
-		// Nerd Font PUA chars). Terminal.app, iTerm2, and kitty all
-		// set LANG themselves for exactly this reason. Only defaulted
-		// when no locale is present; cfg.Env (below) can override.
+	if os.Getenv("LC_ALL") == "" && os.Getenv("LC_CTYPE") == "" && os.Getenv("LANG") == "" {
+		// A locale-less environment (launchd on macOS; on Linux a
+		// daemon spawned from an early-boot / display-manager context
+		// that never sourced locale.conf) lands the shell in the C
+		// locale, where zsh — with MULTIBYTE off — counts UTF-8
+		// prompt glyphs (starship's Powerline / Nerd Font PUA chars)
+		// as bytes. Every ZLE redraw then repositions the cursor too
+		// far right and repaints the buffer offset — "cd .cacd .ca"
+		// style duplication on each tab-completion. Terminal.app,
+		// iTerm2, and kitty all set LANG themselves for exactly this
+		// reason. Only defaulted when no locale is present; cfg.Env
+		// (below) can override. Was darwin-only until the identical
+		// trap bit a Linux daemon that outlived its login session.
 		cmd.Env = append(cmd.Env, "LANG=en_US.UTF-8")
 	}
 	for k, v := range cfg.Env {
