@@ -374,17 +374,14 @@ func (d *Daemon) sessionClients(sess *Session) []*clientConn {
 	return out
 }
 
-// reconcileTabSize sizes the tab's shared PTY to the SMALLEST grid any
-// attached client wants, so multiple differently-sized GUIs share one
-// PTY without a resize war. Each client's frame loop continuously
-// demands the grid match its OWN window (app.resizeReq); obeying the
-// last requester unconditionally made two clients ping-pong the grid
-// between their sizes ~2Hz — the flashing. Reconciling to the min lets
-// every viewer see the whole grid (the larger ones letterbox, like
-// tmux), and we only Resize + wake when the reconciled size actually
-// CHANGES, so the larger client's futile re-requests become no-ops
-// instead of fuel. Called on every client resize request and on
-// detach (when a small client leaves, the min can grow back).
+// reconcileTabSize sizes the tab's shared PTY to the grid of the
+// client that most recently CLAIMED it (genuine resize, typing, or
+// paste — the highest resizeSeq stamp), so multiple differently-sized
+// GUIs share one PTY without a resize war; the non-owners letterbox,
+// like tmux. We only Resize + wake when the reconciled size actually
+// changes, so a non-owner's periodic same-size re-requests are no-ops.
+// Called on every stamped resize/claim and on detach/disconnect (the
+// next-most-recent claimant takes over).
 //
 // Clients that haven't expressed a size yet (desired == 0) don't
 // constrain; if NONE has, the PTY is left as-is.

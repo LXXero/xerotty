@@ -891,13 +891,31 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 	// let two differently-sized clients ping-pong the grid ~2Hz (the
 	// flashing). A level re-request is a no-op: no new stamp, no
 	// reconcile, so the current winner stands.
+	//
+	// A subscription's FIRST size report (0×0 → W×H) is attach
+	// bookkeeping, not a user resize — it must not claim ownership
+	// when another client already holds it. Otherwise a client whose
+	// connection cycles (a sleeping laptop's SSH dropping and
+	// re-attaching) re-seeds on every round trip and steals the grid
+	// with no human at the keyboard. It still records its desired
+	// size (so it constrains fallback when the owner departs) and
+	// claims normally when NO owner exists (first/solo client).
+	//
+	// maxTabResizeSeq is read before subsMu: it iterates every
+	// client's subs under subsMu, including ours. The read is racy
+	// against concurrent claims, but a lost race just means one extra
+	// no-op reconcile.
+	owned := c.daemon.maxTabResizeSeq(t.ID) > 0
 	c.subsMu.Lock()
 	sub, ok := c.subs[msg.ID]
+	seeding := ok && sub.desiredCols == 0 && sub.desiredRows == 0
 	changed := ok && (sub.desiredCols != msg.Cols || sub.desiredRows != msg.Rows)
 	if changed {
 		sub.desiredCols = msg.Cols
 		sub.desiredRows = msg.Rows
-		sub.resizeSeq = c.daemon.resizeSeq.Add(1)
+		if !seeding || !owned {
+			sub.resizeSeq = c.daemon.resizeSeq.Add(1)
+		}
 	}
 	c.subsMu.Unlock()
 	if changed {
