@@ -106,6 +106,8 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 			AppCursor: term.AppCursorMode(),
 			Screen:    cellsToProto(screen),
 			DiskFD:    -1,
+			LastOutputAt: term.LastOutputUnixNano(),
+			LastInputAt:  term.LastInputUnixNano(),
 		}
 
 		ptmx, pid, disk, err := term.ReleaseForHandoff()
@@ -205,7 +207,9 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 		CursorRow: ts.CursorRow, CursorCol: ts.CursorCol,
 		AppCursor:   ts.AppCursor,
 		CursorStyle: ts.CursorStyle, CursorBlink: ts.CursorBlink, CursorStyleSet: ts.StyleSet,
-		Disk: disk,
+		Disk:         disk,
+		LastOutputAt: ts.LastOutputAt,
+		LastInputAt:  ts.LastInputAt,
 	})
 	if err != nil {
 		return err

@@ -43,6 +43,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/handoff"
@@ -509,18 +510,48 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 		}
 	}
 	focused := sess.FocusedTab()
+	now := time.Now()
 	for _, t := range tabs {
+		lastOut := t.Term.LastOutput()
+		lastIn := t.Term.LastInput()
+		lastAny := lastOut
+		if lastIn.After(lastAny) {
+			lastAny = lastIn
+		}
 		out = append(out, tabSummary{
-			ID:       t.ID,
-			Name:     t.Name,
-			Title:    t.Title(),
-			Cols:     uint16(t.Term.Width()),
-			Rows:     uint16(t.Term.Height()),
-			WindowID: windowOf[t.ID],
-			Focused:  t.ID == focused,
+			ID:              t.ID,
+			Name:            t.Name,
+			Title:           t.Title(),
+			Cols:            uint16(t.Term.Width()),
+			Rows:            uint16(t.Term.Height()),
+			WindowID:        windowOf[t.ID],
+			Focused:         t.ID == focused,
+			LastOutput:      rfc3339OrEmpty(lastOut),
+			LastInput:       rfc3339OrEmpty(lastIn),
+			LastOutputAgeMs: ageMs(now, lastOut),
+			LastInputAgeMs:  ageMs(now, lastIn),
+			LastActivity:    rfc3339OrEmpty(lastAny),
+			IdleMs:          ageMs(now, lastAny),
 		})
 	}
 	return ok(req.ID, out)
+}
+
+// rfc3339OrEmpty formats an activity timestamp, or "" if never set.
+func rfc3339OrEmpty(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.Format(time.RFC3339)
+}
+
+// ageMs is ms elapsed since ts (server-computed so the agent needn't
+// trust its own clock), or -1 for a never-set stamp.
+func ageMs(now, ts time.Time) int64 {
+	if ts.IsZero() {
+		return -1
+	}
+	return now.Sub(ts).Milliseconds()
 }
 
 func (c *agentConn) handleTabScreen(req *rpcRequest) *rpcResponse {

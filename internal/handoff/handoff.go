@@ -81,6 +81,13 @@ type TabState struct {
 	Exited   bool `msg:"exited,omitempty"`
 	ExitCode int  `msg:"exit_code,omitempty"`
 
+	// Activity clock (unix nanos) — carried across the upgrade so a
+	// long-idle tab keeps its real last-output/last-input age instead
+	// of resetting to "just now" after `serve --upgrade`. 0 = unknown
+	// (a pre-this-version handoff), reseeded to now on adopt.
+	LastOutputAt int64 `msg:"last_output_at,omitempty"`
+	LastInputAt  int64 `msg:"last_input_at,omitempty"`
+
 	// Emulator-visible state, replayed via SetCell (the daemonsource
 	// shadow-grid technique).
 	Screen      [][]protocol.Cell `msg:"screen"`

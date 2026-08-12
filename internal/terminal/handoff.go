@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -135,6 +136,12 @@ type AdoptSpec struct {
 	// Scrollback store, already rebuilt (same object in-process, or
 	// AdoptDiskScrollback(fd) across an exec). nil = none.
 	Disk *DiskScrollback
+
+	// Activity clock carried across the upgrade (unix nanos). 0 =
+	// unknown (pre-this-version handoff) → Adopt reseeds to now so the
+	// tab reads fresh rather than 1970.
+	LastOutputAt int64
+	LastInputAt  int64
 }
 
 // Adopt rebuilds a Terminal around an inherited PTY master + child
@@ -177,6 +184,19 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 	t.cursorVisible.Store(true)
 	t.cursorStyle.Store(packCursorStyle(spec.CursorStyle, spec.CursorBlink))
 	t.cursorStyleSet.Store(spec.CursorStyleSet)
+
+	// Restore the activity clock across the upgrade; reseed to now if
+	// the handoff didn't carry it (pre-this-version daemon).
+	now := time.Now().UnixNano()
+	lastOut, lastIn := spec.LastOutputAt, spec.LastInputAt
+	if lastOut == 0 {
+		lastOut = now
+	}
+	if lastIn == 0 {
+		lastIn = now
+	}
+	t.lastOutputAt.Store(lastOut)
+	t.lastInputAt.Store(lastIn)
 
 	t.installCallbacks()
 

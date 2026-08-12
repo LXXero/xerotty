@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 	uv "github.com/charmbracelet/ultraviolet"
@@ -109,6 +110,18 @@ type Terminal struct {
 	// frames replay the previous primitive list untouched.
 	renderGen atomic.Uint64
 
+	// lastOutputAt / lastInputAt are unix-nanos of the most recent PTY
+	// OUTPUT batch (real child output, stamped in readPTY — never
+	// cursor blink or GUI animation) and the most recent INPUT written
+	// to the child (Write). They're the activity clock: MCP surfaces
+	// their age so agents can tell a hung tab (input recent, output
+	// stale) from a live one, and a fresh tab from one abandoned weeks
+	// ago. Seeded to creation time so a never-active tab reads stale
+	// from birth, not epoch. Persisted across hot-upgrade handoff so a
+	// two-week-old tab stays two weeks old after `serve --upgrade`.
+	lastOutputAt atomic.Int64
+	lastInputAt  atomic.Int64
+
 	// appCursor tracks DECCKM (DEC private mode 1). When set, arrow keys
 	// emit `ESC O X` instead of `ESC [ X` so pagers (less, git diff via
 	// less, vim insert-mode movement) recognize them. Flipped on the PTY
@@ -190,6 +203,12 @@ func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCm
 		done:     make(chan struct{}),
 	}
 	t.applyScrollbackConfig(cfg)
+
+	// Seed the activity clock to creation time so a tab that never
+	// produces output still reads "stale since created", not epoch.
+	now := time.Now().UnixNano()
+	t.lastOutputAt.Store(now)
+	t.lastInputAt.Store(now)
 
 	// Default cursor state — visible block. vt's callbacks will
 	// update these as the emulator parses DECTCEM / DECSCUSR.
@@ -482,7 +501,29 @@ func (t *Terminal) CursorPosition() uv.Position  { return t.Emu.CursorPosition()
 
 // Write sends data to the PTY (keyboard input).
 func (t *Terminal) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		t.lastInputAt.Store(time.Now().UnixNano())
+	}
 	return t.ptmx.Write(p)
+}
+
+// LastOutput / LastInput report the wall-clock time of the most recent
+// PTY output batch and the most recent input write. Zero time only if
+// the terminal was somehow never seeded (shouldn't happen — New seeds
+// both to creation time).
+func (t *Terminal) LastOutput() time.Time { return unixNanoTime(t.lastOutputAt.Load()) }
+func (t *Terminal) LastInput() time.Time  { return unixNanoTime(t.lastInputAt.Load()) }
+
+// LastOutputUnixNano / LastInputUnixNano expose the raw stamps for the
+// hot-upgrade handoff (0 = unseeded).
+func (t *Terminal) LastOutputUnixNano() int64 { return t.lastOutputAt.Load() }
+func (t *Terminal) LastInputUnixNano() int64  { return t.lastInputAt.Load() }
+
+func unixNanoTime(n int64) time.Time {
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
 }
 
 // Resize updates the PTY and emulator dimensions.
@@ -946,6 +987,10 @@ func (t *Terminal) readPTY() {
 				// state.
 				t.publishMu.Lock()
 				t.Emu.Write(cleaned)
+				// Activity clock: real child output just landed. Stamp
+				// here (not on cursor blink / GUI animation, which never
+				// reach readPTY) so idle-age reflects genuine output.
+				t.lastOutputAt.Store(time.Now().UnixNano())
 				// Mirror new scrollback lines to disk in unlimited
 				// mode. No-op otherwise. Runs on this goroutine so
 				// the mirror always sees writes in PTY-arrival order.
