@@ -5170,6 +5170,29 @@ func (w *Window) renderProposalGate() {
 	imgui.End()
 }
 
+// humanizeAge renders an activity age compactly for the tab tooltip:
+// "just now", "42s ago", "5m ago", "3h ago", "2d ago", "1w ago".
+func humanizeAge(now, ts time.Time) string {
+	if ts.IsZero() {
+		return "unknown"
+	}
+	d := now.Sub(ts)
+	switch {
+	case d < time.Second:
+		return "just now"
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dw ago", int(d.Hours()/(24*7)))
+	}
+}
+
 func (w *Window) renderTabBar() {
 	w.tabBarHovered = false
 	if w.tabs.Count() <= 1 {
@@ -5204,6 +5227,7 @@ func (w *Window) renderTabBar() {
 	framePad := style.FramePadding()
 	clickedIdx := -1
 	closedIdx := -1
+	now := time.Now()
 
 	for i, tab := range w.tabs.Tabs {
 		x0 := originX + float32(i)*tabW
@@ -5217,6 +5241,16 @@ func (w *Window) renderTabBar() {
 		if isActive && tab.BellPending() {
 			tab.SetBellPending(false)
 		}
+
+		// Activity view-tracking: the active tab is "seen" every frame;
+		// a background tab whose last output is newer than when we last
+		// saw it has UNSEEN output → the top-edge glow lights up (no
+		// size change). Cleared the moment it becomes active again.
+		if isActive {
+			w.tabViewed[tab.ID] = now
+		}
+		lastOut := tab.Terminal.LastOutput()
+		unviewed := !isActive && !lastOut.IsZero() && lastOut.After(w.tabViewed[tab.ID])
 
 		// Whole-tab invisible button for hit detection. We use ONE
 		// button rather than two (with the close X as a second
@@ -5240,6 +5274,14 @@ func (w *Window) renderTabBar() {
 		hovered := imgui.IsItemHovered()
 		if hovered {
 			w.tabBarHovered = true
+		}
+		// Hover reveals the exact activity ages (the glow is the
+		// at-a-glance cue; this is the precise readout). Delayed +
+		// gated by BeginItemTooltip so it doesn't flash on every pass.
+		if imgui.BeginItemTooltip() {
+			imgui.Text("output " + humanizeAge(now, lastOut))
+			imgui.Text("input  " + humanizeAge(now, tab.Terminal.LastInput()))
+			imgui.EndTooltip()
 		}
 
 		// Background
@@ -5268,6 +5310,28 @@ func (w *Window) renderTabBar() {
 			tabRounding,
 			imgui.DrawFlagsRoundCornersTop,
 		)
+		// Unseen-activity glow: a soft accent line bleeding down from
+		// the tab's TOP edge (background layer, no size change) — a
+		// background tab lights up when it produces output you haven't
+		// looked at, and goes dark when you switch to it.
+		if unviewed {
+			accent := underlineCol & 0x00FFFFFF // theme accent, alpha stripped
+			// Crisp edge line (rounded top to match the tab body).
+			drawList.AddRectFilledV(
+				imgui.Vec2{X: bgX0, Y: y0},
+				imgui.Vec2{X: bgX1, Y: y0 + 2},
+				accent|0xF0000000,
+				tabRounding,
+				imgui.DrawFlagsRoundCornersTop,
+			)
+			// Downward glow bleed, fading to transparent.
+			drawList.AddRectFilledMultiColor(
+				imgui.Vec2{X: bgX0, Y: y0 + 2},
+				imgui.Vec2{X: bgX1, Y: y0 + 7},
+				accent|0xB0000000, accent|0xB0000000, // top: ~69% alpha
+				accent, accent, // bottom: transparent
+			)
+		}
 		// Active-tab underline (matches ImGui's TabBarOverline style).
 		if isActive {
 			overlineH := float32(2)

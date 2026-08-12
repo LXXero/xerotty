@@ -2,6 +2,7 @@ package app
 
 import (
 	"sync"
+	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/daemonsource"
@@ -100,6 +101,13 @@ type Window struct {
 	// (windowed daemon tabs only) so the frame loop re-requests only
 	// when the query/options change. Cleared when the overlay closes.
 	daemonSearch map[int]*daemonSearchState
+
+	// tabViewed[tabID] is when this tab was last the ACTIVE (selected)
+	// tab in this window — refreshed every frame it's active. A tab
+	// whose LastOutput() is newer than this has unseen output (drives
+	// the tab-bar unviewed glow). Per-window because "have I looked at
+	// it" is per-viewer.
+	tabViewed map[int]time.Time
 	renderer     *renderer.Renderer
 
 	// Per-Window UI state. Each Window tracks its own selection,
@@ -345,6 +353,7 @@ func newWindow(app *App) *Window {
 		app:            app,
 		scroll:         make(map[int]*scrollback.State),
 		daemonSearch:   make(map[int]*daemonSearchState),
+		tabViewed:      make(map[int]time.Time),
 		tabBarH:        0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq:   -1,
 		tabDragIdx:     -1,
