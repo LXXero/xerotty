@@ -5170,29 +5170,6 @@ func (w *Window) renderProposalGate() {
 	imgui.End()
 }
 
-// humanizeAge renders an activity age compactly for the tab tooltip:
-// "just now", "42s ago", "5m ago", "3h ago", "2d ago", "1w ago".
-func humanizeAge(now, ts time.Time) string {
-	if ts.IsZero() {
-		return "unknown"
-	}
-	d := now.Sub(ts)
-	switch {
-	case d < time.Second:
-		return "just now"
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	default:
-		return fmt.Sprintf("%dw ago", int(d.Hours()/(24*7)))
-	}
-}
-
 func (w *Window) renderTabBar() {
 	w.tabBarHovered = false
 	if w.tabs.Count() <= 1 {
@@ -5274,14 +5251,6 @@ func (w *Window) renderTabBar() {
 		hovered := imgui.IsItemHovered()
 		if hovered {
 			w.tabBarHovered = true
-		}
-		// Hover reveals the exact activity ages (the glow is the
-		// at-a-glance cue; this is the precise readout). Delayed +
-		// gated by BeginItemTooltip so it doesn't flash on every pass.
-		if imgui.BeginItemTooltip() {
-			imgui.Text("output " + humanizeAge(now, lastOut))
-			imgui.Text("input  " + humanizeAge(now, tab.Terminal.LastInput()))
-			imgui.EndTooltip()
 		}
 
 		// Background
