@@ -787,7 +787,19 @@ static void ImGui_ImplSDLGPU3_RenderWindow(ImGuiViewport* viewport, void*)
     ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
 
     SDL_GPUTexture* swapchain_texture;
-    SDL_AcquireGPUSwapchainTexture(command_buffer, window, &swapchain_texture, nullptr, nullptr);
+    // XEROTTY PATCH: blocking acquire, matching the main-window path.
+    // The non-blocking SDL_AcquireGPUSwapchainTexture skips the frame
+    // when the previous frame's fence hasn't signaled — but SDL 3.4.14
+    // shipped METAL_QueryFence with an INVERTED return (busy==true
+    // reported as signaled; upstream fix b340ddcd7, unreleased), so on
+    // macOS the skip fired exactly backwards: every window froze after
+    // its first frame the moment its fence COMPLETED, permanently.
+    // WaitAndAcquire goes through METAL_WaitForFences (correct in
+    // 3.4.14), sidesteps the broken query on affected SDLs, and is
+    // equivalent on fixed ones — the wait is a no-op once the fence
+    // has signaled. Our damage tracking already paces frames, so a
+    // blocking acquire costs nothing in the steady state.
+    SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, window, &swapchain_texture, nullptr, nullptr);
 
     if (swapchain_texture != nullptr)
     {
