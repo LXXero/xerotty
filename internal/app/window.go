@@ -2,7 +2,6 @@ package app
 
 import (
 	"sync"
-	"time"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/daemonsource"
@@ -95,20 +94,14 @@ type Window struct {
 	tabBarH float32
 
 	// Terminal grid content for this Window.
-	tabs     *tabs.Manager
-	scroll   map[int]*scrollback.State // per-tab scrollback offset
+	tabs   *tabs.Manager
+	scroll map[int]*scrollback.State // per-tab scrollback offset
 	// daemonSearch tracks the in-flight daemon-side search per tab
 	// (windowed daemon tabs only) so the frame loop re-requests only
 	// when the query/options change. Cleared when the overlay closes.
 	daemonSearch map[int]*daemonSearchState
 
-	// tabViewed[tabID] is when this tab was last the ACTIVE (selected)
-	// tab in this window — refreshed every frame it's active. A tab
-	// whose LastOutput() is newer than this has unseen output (drives
-	// the tab-bar unviewed glow). Per-window because "have I looked at
-	// it" is per-viewer.
-	tabViewed map[int]time.Time
-	renderer     *renderer.Renderer
+	renderer *renderer.Renderer
 
 	// Per-Window UI state. Each Window tracks its own selection,
 	// hovered link, search overlay, prefs dialog, etc. — moving any
@@ -139,23 +132,23 @@ type Window struct {
 	// dragScrollAccum carries fractional rows of edge auto-scroll
 	// across frames (drag-selection past the top/bottom edge is
 	// time-based: rows/sec × frame dt rarely lands on whole rows).
-	dragScrollAccum    float64
-	pendingPaste       string
-	resizeTime         float64
-	resizeOverlay      bool
-	resizeOverlayText  string
-	lastCols           int
-	lastRows           int
-	hoveredLink        *linkHit
-	renamingTab        bool
-	renameBuffer       string
-	connectingHost     bool   // "Connect to host…" dialog open
-	connectFocus       bool   // request keyboard focus into the dest field
-	connectBuffer      string // typed SSH destination (user@host / alias)
-	connectArgsBuffer  string // optional extra ssh args (e.g. "-p 2222 -i key")
-	connectError       string // last connect failure, shown in the dialog
-	sbDragging         bool
-	searchFocusInput   bool
+	dragScrollAccum   float64
+	pendingPaste      string
+	resizeTime        float64
+	resizeOverlay     bool
+	resizeOverlayText string
+	lastCols          int
+	lastRows          int
+	hoveredLink       *linkHit
+	renamingTab       bool
+	renameBuffer      string
+	connectingHost    bool   // "Connect to host…" dialog open
+	connectFocus      bool   // request keyboard focus into the dest field
+	connectBuffer     string // typed SSH destination (user@host / alias)
+	connectArgsBuffer string // optional extra ssh args (e.g. "-p 2222 -i key")
+	connectError      string // last connect failure, shown in the dialog
+	sbDragging        bool
+	searchFocusInput  bool
 	// searchJumpOnResult: scroll to the nearest match when the
 	// in-flight async scan lands (set on query/option edits — the
 	// results don't exist yet on the edit frame).
@@ -353,7 +346,6 @@ func newWindow(app *App) *Window {
 		app:            app,
 		scroll:         make(map[int]*scrollback.State),
 		daemonSearch:   make(map[int]*daemonSearchState),
-		tabViewed:      make(map[int]time.Time),
 		tabBarH:        0, // updated each frame from imgui.FrameHeight() when >1 tab
 		tabSwitchReq:   -1,
 		tabDragIdx:     -1,
