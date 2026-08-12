@@ -3,6 +3,7 @@ package daemonsource
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
 	vt "github.com/charmbracelet/x/vt"
@@ -92,11 +93,11 @@ type Source struct {
 	// reply for the GUI to consume via TakeSearchResults. searchReqID
 	// correlates them — a late reply for a superseded query is
 	// dropped.
-	searchReqID    uint64
-	searchResults  []protocol.SearchMatch
-	searchTrunc    bool
-	searchHave     bool
-	searchHaveReq  uint64
+	searchReqID   uint64
+	searchResults []protocol.SearchMatch
+	searchTrunc   bool
+	searchHave    bool
+	searchHaveReq uint64
 	// scrollbackLen mirrors len(scrollback) atomically. The renderer
 	// historically asked ScrollbackLen once PER CELL (via cellAt) —
 	// even now that it's hoisted to once per frame, lock-free reads
@@ -123,6 +124,17 @@ type Source struct {
 	// frames, scrollback churn, resize) for the renderer's
 	// cell-layer cache. See terminal.Terminal.renderGen.
 	renderGen atomic.Uint64
+
+	// lastOutputAt / lastInputAt mirror terminal.Terminal's activity
+	// clock for daemon tabs, in the CLIENT's clock (unix nanos). The
+	// daemon ships ages in TabState which applyTabState anchors to
+	// receive-time here (skew-free); output frames also bump
+	// lastOutputAt to now so a live tab reads ~0 age between the
+	// ~1/sec TabState refreshes. Drives the tab-bar staleness + unviewed
+	// glow, and feeds the GUI-aggregator MCP for remote tabs. 0 =
+	// unknown (pre-this-version daemon).
+	lastOutputAt atomic.Int64
+	lastInputAt  atomic.Int64
 
 	// Lifecycle.
 	dataCh   chan struct{}
@@ -489,6 +501,19 @@ func (s *Source) GetCWD() string {
 	return s.cwd
 }
 
+// LastOutput / LastInput report the tab's activity clock (client
+// clock), mirroring terminal.Terminal so the tab bar + GUI MCP read
+// both source kinds uniformly. Zero time = unknown (never reported).
+func (s *Source) LastOutput() time.Time { return srcNanoTime(s.lastOutputAt.Load()) }
+func (s *Source) LastInput() time.Time  { return srcNanoTime(s.lastInputAt.Load()) }
+
+func srcNanoTime(n int64) time.Time {
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
 func (s *Source) ForegroundProcessName() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -592,6 +617,12 @@ func (s *Source) applyCellDiff(f *protocol.CellDiff) {
 	}
 	s.renderGen.Add(1)
 	s.mu.Unlock()
+	// A cell diff means the tab's grid changed = genuine output; stamp
+	// now (client clock) so a live tab reads ~0 age between the ~1/sec
+	// TabState refreshes and its unviewed glow lights up instantly. NOT
+	// on CellFull — that's a baseline/resync, not new activity, so a
+	// stale tab stays stale on attach.
+	s.lastOutputAt.Store(time.Now().UnixNano())
 	s.signalDirty()
 }
 
@@ -682,6 +713,23 @@ func (s *Source) applyChildExit(f *protocol.ChildExit) {
 }
 
 func (s *Source) applyTabState(f *protocol.TabState) {
+	// Anchor the shipped activity AGES to our receive clock (skew-free
+	// across remote daemons). Don't move a stamp backward — TabState is
+	// in-order per conn, but max() is cheap insurance against a stale
+	// frame regressing a fresher output bump from a cell frame.
+	now := time.Now().UnixNano()
+	if f.LastOutputAgeMs >= 0 {
+		anchored := now - f.LastOutputAgeMs*int64(time.Millisecond)
+		if anchored > s.lastOutputAt.Load() {
+			s.lastOutputAt.Store(anchored)
+		}
+	}
+	if f.LastInputAgeMs >= 0 {
+		anchored := now - f.LastInputAgeMs*int64(time.Millisecond)
+		if anchored > s.lastInputAt.Load() {
+			s.lastInputAt.Store(anchored)
+		}
+	}
 	s.mu.Lock()
 	s.cwd = f.CWD
 	s.fgName = f.ForegroundProcessName
@@ -994,8 +1042,8 @@ func (s *Source) EnsureScrollbackWindow(from, to int) {
 	wLo, wHi := s.winStart, s.winStart+len(s.scrollback)
 
 	cached := from >= wLo && to <= wHi
-	moreBelow := wLo > 0           // older history exists below the window
-	moreAbove := wHi < total       // newer history exists above the window
+	moreBelow := wLo > 0     // older history exists below the window
+	moreAbove := wHi < total // newer history exists above the window
 	nearLow := from < wLo+scrollbackPrefetch
 	nearHigh := to > wHi-scrollbackPrefetch
 	bigJump := len(s.scrollback) == 0 || to <= wLo || from >= wHi

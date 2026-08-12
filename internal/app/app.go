@@ -1315,6 +1315,8 @@ func (a *App) ListTabs() []guimcp.TabRef {
 				Closed:     src.IsClosed(),
 				ExitCode:   src.ChildExitCode(),
 				Focused:    focused[src],
+				LastOutput: src.LastOutput(),
+				LastInput:  src.LastInput(),
 			})
 		}
 	}

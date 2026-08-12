@@ -3,6 +3,7 @@ package terminal
 import (
 	uv "github.com/charmbracelet/ultraviolet"
 	vt "github.com/charmbracelet/x/vt"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 )
@@ -121,6 +122,14 @@ type Source interface {
 	// draw-relevant content change — the renderer's cell-layer
 	// cache keys on it. See renderer.EmulatorView.
 	RenderGeneration() uint64
+
+	// LastOutput / LastInput report the tab's activity clock: the
+	// most recent real PTY output and the most recent input. For
+	// daemon tabs these are anchored to the client clock from the
+	// shipped ages. Zero time = unknown. Drives tab-bar staleness +
+	// the unviewed glow, and the GUI-aggregator MCP.
+	LastOutput() time.Time
+	LastInput() time.Time
 
 	// CursorVisible reports whether the terminal cursor should be
 	// drawn (DECTCEM). The GUI hides the cursor when this is false

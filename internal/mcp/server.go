@@ -327,8 +327,8 @@ func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {
 	}
 	var p struct {
 		TabID tabIDParam `json:"tab_id"`
-		Cols  int    `json:"cols"`
-		Rows  int    `json:"rows"`
+		Cols  int        `json:"cols"`
+		Rows  int        `json:"rows"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -651,7 +651,7 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 	}
 	var p struct {
 		TabID tabIDParam `json:"tab_id"`
-		Bytes string `json:"bytes"`
+		Bytes string     `json:"bytes"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -685,8 +685,8 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 	}
 	var p struct {
 		TabID tabIDParam `json:"tab_id"`
-		Text  string   `json:"text,omitempty"`
-		Keys  []string `json:"keys,omitempty"`
+		Text  string     `json:"text,omitempty"`
+		Keys  []string   `json:"keys,omitempty"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())
@@ -724,7 +724,7 @@ func (c *agentConn) handleTabPaste(req *rpcRequest) *rpcResponse {
 	}
 	var p struct {
 		TabID tabIDParam `json:"tab_id"`
-		Text  string `json:"text"`
+		Text  string     `json:"text"`
 	}
 	if err := json.Unmarshal(req.Params, &p); err != nil {
 		return invalidParams(req.ID, err.Error())

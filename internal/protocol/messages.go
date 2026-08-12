@@ -569,6 +569,17 @@ type TabState struct {
 	// already shares the "slow-changing per-tab metadata" cadence
 	// with cwd/fg_proc/app_cursor. Empty = no title set yet.
 	Title string `msg:"title,omitempty"`
+
+	// LastOutputAgeMs / LastInputAgeMs are the tab's activity age at
+	// SEND time — ms since the daemon last saw PTY output / input.
+	// Shipped as an AGE (not an absolute stamp) so the client anchors
+	// it to its own receive clock, sidestepping daemon↔client skew on
+	// remote connections. The client re-derives an absolute time and
+	// ticks it forward locally (staleness + the unviewed glow). -1 =
+	// unknown (a pre-this-version daemon omits these → zero → treated
+	// as unknown). Additive: no ProtocolVersion bump.
+	LastOutputAgeMs int64 `msg:"last_out_age_ms,omitempty"`
+	LastInputAgeMs  int64 `msg:"last_in_age_ms,omitempty"`
 }
 
 // ClearScrollback asks the daemon to drop the tab's scrollback ring.

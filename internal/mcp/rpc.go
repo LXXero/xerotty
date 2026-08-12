@@ -68,19 +68,19 @@ func invalidParams(id json.RawMessage, detail string) *rpcResponse {
 // and an age in ms (server-computed, so the agent needn't trust its
 // own clock) are given; the agent uses whichever fits.
 type tabSummary struct {
-	ID             uint32 `json:"id"`
-	Name           string `json:"name,omitempty"`
-	Title          string `json:"title"`
-	Cols           uint16 `json:"cols"`
-	Rows           uint16 `json:"rows"`
-	WindowID       uint32 `json:"window_id"`
-	Focused        bool   `json:"focused"`
-	LastOutput      string `json:"last_output"`         // RFC3339 of most recent PTY output
-	LastInput       string `json:"last_input"`          // RFC3339 of most recent input written
-	LastOutputAgeMs int64  `json:"last_output_age_ms"`  // ms since last output (hung: this climbs while input is recent)
-	LastInputAgeMs  int64  `json:"last_input_age_ms"`   // ms since last input
-	LastActivity    string `json:"last_activity"`       // RFC3339 of the more recent of output/input
-	IdleMs          int64  `json:"idle_ms"`             // ms since ANY activity (min of the two ages) — staleness sort
+	ID              uint32 `json:"id"`
+	Name            string `json:"name,omitempty"`
+	Title           string `json:"title"`
+	Cols            uint16 `json:"cols"`
+	Rows            uint16 `json:"rows"`
+	WindowID        uint32 `json:"window_id"`
+	Focused         bool   `json:"focused"`
+	LastOutput      string `json:"last_output"`        // RFC3339 of most recent PTY output
+	LastInput       string `json:"last_input"`         // RFC3339 of most recent input written
+	LastOutputAgeMs int64  `json:"last_output_age_ms"` // ms since last output (hung: this climbs while input is recent)
+	LastInputAgeMs  int64  `json:"last_input_age_ms"`  // ms since last input
+	LastActivity    string `json:"last_activity"`      // RFC3339 of the more recent of output/input
+	IdleMs          int64  `json:"idle_ms"`            // ms since ANY activity (min of the two ages) — staleness sort
 }
 
 // tabIDParam decodes a tab_id that agents express sloppily: a JSON

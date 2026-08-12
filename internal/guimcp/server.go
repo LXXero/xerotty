@@ -36,6 +36,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/screentext"
@@ -74,11 +75,13 @@ type TabRef struct {
 	Title      string
 	Cols       int
 	Rows       int
-	CWD        string // foreground proc's cwd ("" if unknown)
-	Foreground string // foreground process name (vim, less, ...)
-	Closed     bool   // child process exited
-	ExitCode   int    // -1 while running
-	Focused    bool   // the user's currently-focused tab in the GUI
+	CWD        string    // foreground proc's cwd ("" if unknown)
+	Foreground string    // foreground process name (vim, less, ...)
+	Closed     bool      // child process exited
+	ExitCode   int       // -1 while running
+	Focused    bool      // the user's currently-focused tab in the GUI
+	LastOutput time.Time // most recent PTY output (zero = unknown)
+	LastInput  time.Time // most recent input written (zero = unknown)
 }
 
 // Server is the GUI's aggregating MCP listener.
@@ -249,22 +252,49 @@ func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
 
 func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 	refs := s.backend.ListTabs()
+	now := time.Now()
 	out := make([]map[string]any, len(refs))
 	for i, r := range refs {
+		lastAny := r.LastOutput
+		if r.LastInput.After(lastAny) {
+			lastAny = r.LastInput
+		}
 		out[i] = map[string]any{
-			"id":         r.NSID,
-			"host":       r.Host,
-			"title":      r.Title,
-			"cols":       r.Cols,
-			"rows":       r.Rows,
-			"cwd":        r.CWD,
-			"foreground": r.Foreground,
-			"closed":     r.Closed,
-			"exit_code":  r.ExitCode,
-			"focused":    r.Focused,
+			"id":                 r.NSID,
+			"host":               r.Host,
+			"title":              r.Title,
+			"cols":               r.Cols,
+			"rows":               r.Rows,
+			"cwd":                r.CWD,
+			"foreground":         r.Foreground,
+			"closed":             r.Closed,
+			"exit_code":          r.ExitCode,
+			"focused":            r.Focused,
+			"last_output":        rfc3339OrEmpty(r.LastOutput),
+			"last_input":         rfc3339OrEmpty(r.LastInput),
+			"last_output_age_ms": ageMs(now, r.LastOutput),
+			"last_input_age_ms":  ageMs(now, r.LastInput),
+			"last_activity":      rfc3339OrEmpty(lastAny),
+			"idle_ms":            ageMs(now, lastAny),
 		}
 	}
 	return okResp(id, out)
+}
+
+// rfc3339OrEmpty / ageMs mirror the per-daemon MCP server so the
+// aggregator's activity fields read identically.
+func rfc3339OrEmpty(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.Format(time.RFC3339)
+}
+
+func ageMs(now, ts time.Time) int64 {
+	if ts.IsZero() {
+		return -1
+	}
+	return now.Sub(ts).Milliseconds()
 }
 
 func (s *Server) getScreen(id json.RawMessage, params json.RawMessage) *rpcResponse {

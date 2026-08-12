@@ -486,6 +486,16 @@ type tabSub struct {
 	lastAppCursor bool
 	lastAltScreen bool
 	lastTitle     string
+	// activitySentAt throttles TabState frames sent PURELY to refresh
+	// the activity age (output/input advanced but no metadata changed)
+	// — capped to ~1/sec so a busy tab doesn't ship a TabState per
+	// output batch. sentLastOut/sentLastIn are the stamps at the last
+	// send, so a fully idle tab (no advance) sends NOTHING and the
+	// client just ticks the age forward locally. Metadata changes
+	// still send immediately (ages ride along fresh).
+	activitySentAt time.Time
+	sentLastOut    time.Time
+	sentLastIn     time.Time
 }
 
 func (c *clientConn) handshake() error {
@@ -1431,7 +1441,16 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	appCursor := t.Term.AppCursorMode()
 	altScreen := t.Term.IsAltScreen()
 	title := t.Title()
-	if sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg && appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen && title == sub.lastTitle {
+	now := time.Now()
+	lastOut := t.Term.LastOutput()
+	lastIn := t.Term.LastInput()
+
+	metaSame := sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg &&
+		appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen && title == sub.lastTitle
+	// Refresh purely-activity changes at most ~1/sec; a truly idle tab
+	// (no advance) sends nothing — the client ticks the age locally.
+	activityAdvanced := lastOut.After(sub.sentLastOut) || lastIn.After(sub.sentLastIn)
+	if metaSame && !(activityAdvanced && now.Sub(sub.activitySentAt) >= 900*time.Millisecond) {
 		return
 	}
 	sub.lastCWD = cwd
@@ -1439,6 +1458,9 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	sub.lastAppCursor = appCursor
 	sub.lastAltScreen = altScreen
 	sub.lastTitle = title
+	sub.activitySentAt = now
+	sub.sentLastOut = lastOut
+	sub.sentLastIn = lastIn
 	sub.stateInit = true
 	c.send(protocol.MsgTabState, &protocol.TabState{
 		ID:                    t.ID,
@@ -1447,7 +1469,17 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 		AppCursorMode:         appCursor,
 		AltScreen:             altScreen,
 		Title:                 title,
+		LastOutputAgeMs:       tabAgeMs(now, lastOut),
+		LastInputAgeMs:        tabAgeMs(now, lastIn),
 	})
+}
+
+// tabAgeMs is ms since ts, or -1 for a never-set stamp.
+func tabAgeMs(now, ts time.Time) int64 {
+	if ts.IsZero() {
+		return -1
+	}
+	return now.Sub(ts).Milliseconds()
 }
 
 // sendCellsAndCursor publishes whatever changed since the last

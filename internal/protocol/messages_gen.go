@@ -7961,6 +7961,18 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Title")
 				return
 			}
+		case "last_out_age_ms":
+			z.LastOutputAgeMs, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "LastOutputAgeMs")
+				return
+			}
+		case "last_in_age_ms":
+			z.LastInputAgeMs, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "LastInputAgeMs")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -7975,8 +7987,8 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(6)
-	var zb0001Mask uint8 /* 6 bits */
+	zb0001Len := uint32(8)
+	var zb0001Mask uint8 /* 8 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -7993,6 +8005,14 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	if z.Title == "" {
 		zb0001Len--
 		zb0001Mask |= 0x20
+	}
+	if z.LastOutputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x40
+	}
+	if z.LastInputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x80
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -8070,6 +8090,30 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// write "last_out_age_ms"
+			err = en.Append(0xaf, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x6f, 0x75, 0x74, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
+			if err != nil {
+				return
+			}
+			err = en.WriteInt64(z.LastOutputAgeMs)
+			if err != nil {
+				err = msgp.WrapError(err, "LastOutputAgeMs")
+				return
+			}
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
+			// write "last_in_age_ms"
+			err = en.Append(0xae, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69, 0x6e, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
+			if err != nil {
+				return
+			}
+			err = en.WriteInt64(z.LastInputAgeMs)
+			if err != nil {
+				err = msgp.WrapError(err, "LastInputAgeMs")
+				return
+			}
+		}
 	}
 	return
 }
@@ -8078,8 +8122,8 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(6)
-	var zb0001Mask uint8 /* 6 bits */
+	zb0001Len := uint32(8)
+	var zb0001Mask uint8 /* 8 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -8096,6 +8140,14 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	if z.Title == "" {
 		zb0001Len--
 		zb0001Mask |= 0x20
+	}
+	if z.LastOutputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x40
+	}
+	if z.LastInputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x80
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -8127,6 +8179,16 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "title"
 			o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
 			o = msgp.AppendString(o, z.Title)
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// string "last_out_age_ms"
+			o = append(o, 0xaf, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x6f, 0x75, 0x74, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
+			o = msgp.AppendInt64(o, z.LastOutputAgeMs)
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
+			// string "last_in_age_ms"
+			o = append(o, 0xae, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69, 0x6e, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
+			o = msgp.AppendInt64(o, z.LastInputAgeMs)
 		}
 	}
 	return
@@ -8186,6 +8248,18 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Title")
 				return
 			}
+		case "last_out_age_ms":
+			z.LastOutputAgeMs, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "LastOutputAgeMs")
+				return
+			}
+		case "last_in_age_ms":
+			z.LastInputAgeMs, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "LastInputAgeMs")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -8200,7 +8274,7 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabState) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title)
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title) + 16 + msgp.Int64Size + 15 + msgp.Int64Size
 	return
 }
 
