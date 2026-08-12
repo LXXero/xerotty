@@ -28,6 +28,7 @@ bright_cyan    = "#34E2E2"
 bright_white   = "#EEEEEC"
 
 [theme.ui]
+tab_activity_glow = "#34E2E2"   # background-tab unseen-output glow
 tab_bar_bg = "#1F2426"
 tab_active_bg = "#2E3436"
 tab_active_fg = "#EEEEEC"

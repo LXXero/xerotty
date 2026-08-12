@@ -20,7 +20,11 @@ type Theme struct {
 	ScrollbarBg    uint32
 	ScrollbarThumb uint32
 	ScrollbarHover uint32
-	ANSI           [16]uint32
+	// TabActivityGlow is the accent for the tab bar's unseen-activity
+	// glow (a background tab that produced output you haven't looked
+	// at). Alpha is ignored — the glow renders its own gradient falloff.
+	TabActivityGlow uint32
+	ANSI            [16]uint32
 }
 
 // DefaultTheme returns the Dracula theme.
@@ -31,9 +35,10 @@ func DefaultTheme() Theme {
 		Cursor:         0xFFF2F8F8,
 		SelectionFg:    0xFFF2F8F8,
 		SelectionBg:    0xFF5A4744,
-		ScrollbarBg:    hexToABGR("#282A36"),
-		ScrollbarThumb: hexToABGR("#44475A"),
-		ScrollbarHover: hexToABGR("#6272A4"),
+		ScrollbarBg:     hexToABGR("#282A36"),
+		ScrollbarThumb:  hexToABGR("#44475A"),
+		ScrollbarHover:  hexToABGR("#6272A4"),
+		TabActivityGlow: hexToABGR("#8BE9FD"), // Dracula cyan
 		ANSI: [16]uint32{
 			hexToABGR("#21222C"), // black
 			hexToABGR("#FF5555"), // red

@@ -25,3 +25,6 @@ bright_blue    = "#66D9EF"
 bright_magenta = "#AE81FF"
 bright_cyan    = "#A1EFE4"
 bright_white   = "#F9F8F5"
+
+[theme.ui]
+tab_activity_glow = "#A1EFE4"   # background-tab unseen-output glow

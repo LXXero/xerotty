@@ -5315,7 +5315,11 @@ func (w *Window) renderTabBar() {
 		// background tab lights up when it produces output you haven't
 		// looked at, and goes dark when you switch to it.
 		if unviewed {
-			accent := underlineCol & 0x00FFFFFF // theme accent, alpha stripped
+			glowCol := w.renderer.Theme.TabActivityGlow
+			if glowCol == 0 { // theme didn't set one → fall back to the tab accent
+				glowCol = underlineCol
+			}
+			accent := glowCol & 0x00FFFFFF // color only; the gradient supplies alpha
 			// Crisp edge line (rounded top to match the tab body).
 			drawList.AddRectFilledV(
 				imgui.Vec2{X: bgX0, Y: y0},

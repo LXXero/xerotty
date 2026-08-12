@@ -43,6 +43,7 @@ type ThemeFile struct {
 			ScrollbarBg       string `toml:"scrollbar_bg"`
 			ScrollbarThumb    string `toml:"scrollbar_thumb"`
 			ScrollbarThumbHov string `toml:"scrollbar_thumb_hover"`
+			TabActivityGlow   string `toml:"tab_activity_glow"`
 		} `toml:"ui"`
 	} `toml:"theme"`
 }
@@ -152,6 +153,9 @@ func themeFromFile(tf ThemeFile) renderer.Theme {
 	}
 	if u.ScrollbarThumbHov != "" {
 		theme.ScrollbarHover = renderer.HexToABGR(u.ScrollbarThumbHov)
+	}
+	if u.TabActivityGlow != "" {
+		theme.TabActivityGlow = renderer.HexToABGR(u.TabActivityGlow)
 	}
 
 	return theme

@@ -30,3 +30,4 @@ bright_white   = "#FFFFFF"
 scrollbar_bg = "#282A36"
 scrollbar_thumb = "#44475A"
 scrollbar_thumb_hover = "#6272A4"
+tab_activity_glow = "#8BE9FD"   # background-tab unseen-output glow
