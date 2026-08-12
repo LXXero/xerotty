@@ -500,6 +500,19 @@ static int window_wants_render(Uint32 id) {
 }
 
 extern "C" int platform_window_occluded(unsigned long window_id) {
+    // A window holding OS input focus is frontmost and visible by
+    // definition — it cannot be occluded. SDL 3.4.x on macOS can send
+    // SDL_EVENT_WINDOW_OCCLUDED without ever following it with the
+    // EXPOSED / FOCUS_GAINED that occluded_set() relies on to clear the
+    // flag (observed after a menu popup opens/closes over the main
+    // window). That leaves the focused window stuck "occluded" forever:
+    // clicks still land (title/tab bar update) but the draw path skips
+    // it every frame, so the grid freezes on stale pixels. Trust the
+    // live focus flag over the cached occlusion state — the focused
+    // window always renders; background windows keep the optimization.
+    SDL_Window* w = SDL_GetWindowFromID((Uint32)window_id);
+    if (w && (SDL_GetWindowFlags(w) & SDL_WINDOW_INPUT_FOCUS))
+        return 0;
     for (int i = 0; i < g_occluded_n; i++)
         if (g_occluded_ids[i] == (Uint32)window_id) return 1;
     return 0;
