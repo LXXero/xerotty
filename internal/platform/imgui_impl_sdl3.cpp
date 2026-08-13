@@ -382,6 +382,39 @@ bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event)
             if (ImGui_ImplSDL3_GetViewportForWindowID(event->motion.windowID) == nullptr)
                 return false;
             ImVec2 mouse_pos((float)event->motion.x, (float)event->motion.y);
+#ifdef __APPLE__
+            // xerotty patch: SDL 3.4.14's macOS-26 workaround
+            // (SDL_cocoawindow.m, "incorrect motion values") recomputes
+            // EVERY window's motion coords as global − GetWindowPosition.
+            // For popup-class windows GetWindowPosition is PARENT-
+            // RELATIVE, so their motion coords arrive wrong by exactly
+            // the parent's absolute origin. Multi-viewport contexts
+            // self-correct (the += window_pos below adds the same
+            // relative offset back), but the standalone popup-menu
+            // context is single-viewport and eats the garbage — menu
+            // hover lands nowhere. Rebuild popup-local coords from the
+            // global cursor (reliable per SDL's own comments) and the
+            // popup's absolute origin via the parent chain. Version-
+            // independent: the math is equally correct on pre-26 macOS.
+            if (!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable))
+            {
+                SDL_Window* mwin = SDL_GetWindowFromID(event->motion.windowID);
+                if (mwin && (SDL_GetWindowFlags(mwin) & (SDL_WINDOW_POPUP_MENU | SDL_WINDOW_TOOLTIP)))
+                {
+                    float gx, gy;
+                    SDL_GetGlobalMouseState(&gx, &gy);
+                    int ax = 0, ay = 0;
+                    for (SDL_Window* wk = mwin; wk != nullptr; wk = SDL_GetWindowParent(wk))
+                    {
+                        int px, py;
+                        SDL_GetWindowPosition(wk, &px, &py);
+                        ax += px;
+                        ay += py;
+                    }
+                    mouse_pos = ImVec2(gx - (float)ax, gy - (float)ay);
+                }
+            }
+#endif
             if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
             {
                 int window_x, window_y;

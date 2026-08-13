@@ -5276,9 +5276,16 @@ func (w *Window) renderTabBar() {
 			w.tabBarHovered = true
 		}
 		// Hover reveals the exact activity ages (the glow is the
-		// at-a-glance cue; this is the precise readout). Delayed +
-		// gated by BeginItemTooltip so it doesn't flash on every pass.
-		if imgui.BeginItemTooltip() {
+		// at-a-glance cue; this is the precise readout). DelayNormal
+		// (0.4s) instead of BeginItemTooltip's DelayShort (0.15s) — the
+		// short delay popped tooltips on every incidental pass over the
+		// tab bar. Stationary means the clock only starts once the
+		// mouse settles; NoSharedDelay stops tab-to-tab hover from
+		// inheriting the previous tab's elapsed delay (each tab re-arms
+		// from zero instead of the tooltip chasing the cursor).
+		if imgui.IsItemHoveredV(imgui.HoveredFlagsDelayNormal|
+			imgui.HoveredFlagsStationary|imgui.HoveredFlagsNoSharedDelay) &&
+			imgui.BeginTooltip() {
 			imgui.Text("output " + humanizeAge(now, lastOut))
 			imgui.Text("input  " + humanizeAge(now, tab.Terminal.LastInput()))
 			imgui.EndTooltip()
