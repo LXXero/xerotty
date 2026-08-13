@@ -412,24 +412,6 @@ bool ImGui_ImplSDL3_ProcessEvent(const SDL_Event* event)
                         ay += py;
                     }
                     mouse_pos = ImVec2(gx - (float)ax, gy - (float)ay);
-                    // XEROTTY_MOUSE_DEBUG: raw event coords vs rebuilt
-                    // local vs the popup's logical/pixel sizes. Sweep
-                    // top→bottom of the menu: "local" should track the
-                    // cursor smoothly to winPts height. A 2x divergence
-                    // = scale bug; local going correct while hover still
-                    // dies = the bug is inside the popup's ImGui frame,
-                    // not the coords.
-                    if (SDL_getenv("XEROTTY_MOUSE_DEBUG"))
-                    {
-                        int lw = 0, lh = 0, pw = 0, ph = 0;
-                        SDL_GetWindowSize(mwin, &lw, &lh);
-                        SDL_GetWindowSizeInPixels(mwin, &pw, &ph);
-                        fprintf(stderr,
-                            "[xtty-popup] raw=%.0f,%.0f local=%.0f,%.0f global=%.0f,%.0f absOrigin=%d,%d winPts=%dx%d winPx=%dx%d\n",
-                            (float)event->motion.x, (float)event->motion.y,
-                            mouse_pos.x, mouse_pos.y, gx, gy, ax, ay, lw, lh, pw, ph);
-                        fflush(stderr);
-                    }
                 }
             }
 #endif

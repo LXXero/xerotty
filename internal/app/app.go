@@ -5668,21 +5668,6 @@ func (w *Window) renderContextMenu() {
 			var action string
 			if imgui.BeginV("##popupmenu", nil, flags) {
 				action = menu.RenderItemsOnly(expanded, ctx)
-				// XEROTTY_MOUSE_DEBUG: ImGui-side hover truth. Sweep
-				// the menu top→bottom: contentMax vs winSize shows
-				// whether items overflow the measured window (their
-				// hit areas clip); winHov flipping false while mouse
-				// is visually inside the menu marks the dead zone.
-				if os.Getenv("XEROTTY_MOUSE_DEBUG") != "" {
-					mp := imgui.MousePos()
-					cm := imgui.CursorPos()
-					ws := imgui.WindowSize()
-					fmt.Fprintf(os.Stderr,
-						"[xtty-menu] mouse=%.0f,%.0f winSize=%.0fx%.0f contentMax=%.0f,%.0f winHov=%v anyHov=%v\n",
-						mp.X, mp.Y, ws.X, ws.Y, cm.X, cm.Y,
-						imgui.IsWindowHoveredV(imgui.HoveredFlagsAllowWhenBlockedByPopup|imgui.HoveredFlagsChildWindows),
-						imgui.IsWindowHoveredV(imgui.HoveredFlagsAnyWindow))
-				}
 			}
 			imgui.End()
 			var res platform.PopupMenuDrawResult
