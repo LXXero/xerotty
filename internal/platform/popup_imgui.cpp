@@ -170,6 +170,36 @@ extern "C" int platform_run_imgui_popup(unsigned long parent_window_id,
 
                 ImGui_ImplSDLRenderer3_NewFrame();
                 ImGui_ImplSDL3_NewFrame();
+#ifdef __APPLE__
+                // The popup grabs the mouse, so SDL's enter/leave
+                // bookkeeping is irrelevant here — and on macOS 26 /
+                // SDL 3.4.14 it's actively wrong: the popup's tracking
+                // area never registers the cursor, a stale MOUSE_LEAVE
+                // stands forever, and ImGui_ImplSDL3_NewFrame queues
+                // the -FLT_MAX "mouse gone" sentinel every frame,
+                // overriding real motion coords (observed live:
+                // io.MousePos pinned at -FLT_MAX through a full menu
+                // sweep — hover dead). Queue the authoritative position
+                // AFTER the backend's NewFrame so it is the last event
+                // processed: global cursor minus the popup's absolute
+                // origin via the parent chain (GetWindowPosition is
+                // parent-relative for popups). When the cursor is
+                // genuinely outside, the coords land outside the menu
+                // rect and hover clears naturally — the sentinel is
+                // never needed for a grab surface.
+                {
+                    float gx, gy;
+                    SDL_GetGlobalMouseState(&gx, &gy);
+                    int ax = 0, ay = 0;
+                    for (SDL_Window* wk = popup; wk != nullptr; wk = SDL_GetWindowParent(wk)) {
+                        int px, py;
+                        SDL_GetWindowPosition(wk, &px, &py);
+                        ax += px;
+                        ay += py;
+                    }
+                    ImGui::GetIO().AddMousePosEvent(gx - (float)ax, gy - (float)ay);
+                }
+#endif
                 ImGui::NewFrame();
 
                 int want_w = 0, want_h = 0;
