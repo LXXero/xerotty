@@ -79,6 +79,17 @@ func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string, launch *LaunchC
 		// trap bit a Linux daemon that outlived its login session.
 		cmd.Env = append(cmd.Env, "LANG=en_US.UTF-8")
 	}
+	// Same disease, display flavor (Linux): a daemon started from a
+	// tty/SSH context has no WAYLAND_DISPLAY/DISPLAY, and it outlives
+	// (and via exec-in-place upgrades, preserves) that blindness. Its
+	// tabs then fail every "is a GUI available" probe — mutt's mailcap
+	// test picking a text browser over firefox was the live case. An
+	// interactive zsh can self-heal in zshrc, but a direct-command tab
+	// (`-e mutt`) never runs rc files, so patch it here: when the var
+	// is absent but the session's socket actually exists, point at it.
+	// Empty vars stay empty when no compositor/Xwayland is up (headless
+	// server daemon) — probes then fail correctly.
+	cmd.Env = append(cmd.Env, displayEnvDefaults()...)
 	for k, v := range cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
