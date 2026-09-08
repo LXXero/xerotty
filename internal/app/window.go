@@ -534,7 +534,31 @@ func (w *Window) windowVisuallyDirty() bool {
 	// Focused window repaints every frame: cursor blink arrives as a
 	// timer wake with NO events, and typing echo must never lag.
 	// Hovered window repaints for ImGui hover transitions.
-	if w.hasOSFocus() {
+	//
+	// Gate on the app's own active-window notion (while the app is
+	// frontmost) OR the SDL OS-focus flag. On macOS multi-viewport
+	// those diverge: ImGui (→ app.active) reports the front window
+	// focused a frame or two before SDL sets SDL_WINDOW_INPUT_FOCUS,
+	// and after a new-tab / activation SDL can leave INPUT_FOCUS stuck
+	// false on the very window that owns keyboard focus. Gating the
+	// blink repaint on hasOSFocus() alone let that stale-false freeze
+	// the front window's blinking cursor once the newborn warmup
+	// expired — it blinked for ~1-2s, then the toggle stopped reaching
+	// the screen because the window was never marked dirty.
+	//
+	// app.active is the reliable "this is the front window" signal, but
+	// it is NOT cleared when xerotty resigns active (it only tracks the
+	// last-focused window), so it must be ANDed with the app-frontmost
+	// truth — platform.AppIsFrontmost() (NSApp.isActive on macOS), which
+	// stays correct even when the per-window SDL flag is stale. Without
+	// that AND, a visible-but-backgrounded window would keep repainting
+	// (and blinking) at blink rate, burning power and blinking a cursor
+	// in an unfocused terminal. hasOSFocus() is kept as the second arm
+	// so a window that has OS focus but isn't yet app.active (spawn
+	// transition) still paints. AppIsFrontmost() is false on non-macOS,
+	// where hasOSFocus() is reliable and remains the sole gate — the
+	// app.active fallback is a macOS stale-flag workaround only.
+	if (w.app.active == w && platform.AppIsFrontmost()) || w.hasOSFocus() {
 		return true
 	}
 	if h := w.sdlWindowHandle(); h != 0 && platform.MouseFocusWindowID() == h {

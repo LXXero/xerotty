@@ -35,8 +35,25 @@ func CocoaWindowInLiveResize(windowID uintptr) bool {
 // mouse mirror keys on this so a physical click that belongs to
 // ANOTHER app (IOHID sees every click on the desktop) is never
 // injected into our ImGui context.
+//
+// NOTE: the non-darwin stub returns TRUE (the mouse mirror is
+// darwin-only, so callers there want the permissive default). For a
+// focus/repaint GATE — where a true-everywhere default would keep a
+// backgrounded window live on Linux/Windows — use AppIsFrontmost()
+// instead, whose non-darwin stub is false.
 func CocoaAppActive() bool {
 	return C.platform_cocoa_app_is_active() != 0
+}
+
+// AppIsFrontmost reports whether xerotty is the active application.
+// On darwin this is NSApp.isActive (via CocoaAppActive) — authoritative
+// even when SDL's per-window INPUT_FOCUS flag is stale, which is why the
+// blink-repaint gate relies on it rather than hasOSFocus() alone. Unlike
+// CocoaAppActive, the non-darwin stub returns false: on Linux/Windows the
+// SDL focus flag is reliable, so the app-active blink fallback must stay
+// off there (a true stub would keep a backgrounded window blinking).
+func AppIsFrontmost() bool {
+	return CocoaAppActive()
 }
 
 // CocoaEventOnChrome reports whether the most recent NSEvent

@@ -16,3 +16,8 @@ func CocoaWindowInLiveResize(_ uintptr) bool { return false }
 func CocoaEventOnChrome() bool  { return false }
 func CocoaAnyWindowMoved() bool { return false }
 func CocoaAppActive() bool      { return true }
+
+// AppIsFrontmost: false on non-darwin. The blink-repaint gate ORs this
+// with hasOSFocus(); returning false keeps the SDL focus flag (reliable
+// here) as the sole gate, so a backgrounded window doesn't keep blinking.
+func AppIsFrontmost() bool { return false }
