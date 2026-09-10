@@ -4250,7 +4250,20 @@ func (a *Window) frame() {
 					cfgBlink = tblink
 				}
 				showCursor := true
-				if cfgBlink {
+				if !a.effectivelyFocused() {
+					// Unfocused window: steady hollow outline, never a
+					// blink — the convention every major terminal uses.
+					// Before this, an unfocused window froze at whatever
+					// blink phase its last repaint caught (only the
+					// effectively-focused window repaints per frame), so
+					// half the time a background window showed NO cursor
+					// at all. A deterministic style needs no wakeups: it
+					// only has to be right whenever the window paints
+					// for any other reason, and the focus-change SDL
+					// events (FOCUS_GAINED/LOST) already trigger the
+					// repaint that swaps solid↔hollow.
+					styleStr = "hollow"
+				} else if cfgBlink {
 					rate := float64(a.app.cfg.Appearance.BlinkRate) / 1000.0
 					if rate <= 0 {
 						rate = 0.53

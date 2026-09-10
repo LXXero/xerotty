@@ -429,6 +429,21 @@ func (w *Window) hasOSFocus() bool {
 	return platform.WindowHasInputFocus(h)
 }
 
+// effectivelyFocused reports whether this Window should be treated as
+// THE front window — the one that repaints every frame and owns the
+// blinking cursor. It ORs two truths because neither is reliable
+// alone: hasOSFocus (SDL's INPUT_FOCUS flag) can stay stuck FALSE on
+// the very window that owns keyboard focus on macOS multi-viewport
+// (the frozen-blink bug), while app.active (ImGui's focus notion) is
+// never cleared when the app resigns active, so it must be ANDed with
+// the app-frontmost truth (NSApp.isActive on darwin; the stub is
+// false elsewhere, where the SDL flag is reliable and remains the
+// sole gate). Windows that are NOT effectively focused draw a steady
+// hollow cursor instead of blinking.
+func (w *Window) effectivelyFocused() bool {
+	return (w.app.active == w && platform.AppIsFrontmost()) || w.hasOSFocus()
+}
+
 // bgDrawList returns the draw list terminal cells / cursor /
 // scrollbar / link decorations render into.
 //
@@ -531,34 +546,16 @@ func (w *Window) windowVisuallyDirty() bool {
 		w.contextMenuOpen || w.resizeOverlay {
 		return true
 	}
-	// Focused window repaints every frame: cursor blink arrives as a
-	// timer wake with NO events, and typing echo must never lag.
-	// Hovered window repaints for ImGui hover transitions.
-	//
-	// Gate on the app's own active-window notion (while the app is
-	// frontmost) OR the SDL OS-focus flag. On macOS multi-viewport
-	// those diverge: ImGui (→ app.active) reports the front window
-	// focused a frame or two before SDL sets SDL_WINDOW_INPUT_FOCUS,
-	// and after a new-tab / activation SDL can leave INPUT_FOCUS stuck
-	// false on the very window that owns keyboard focus. Gating the
-	// blink repaint on hasOSFocus() alone let that stale-false freeze
-	// the front window's blinking cursor once the newborn warmup
-	// expired — it blinked for ~1-2s, then the toggle stopped reaching
-	// the screen because the window was never marked dirty.
-	//
-	// app.active is the reliable "this is the front window" signal, but
-	// it is NOT cleared when xerotty resigns active (it only tracks the
-	// last-focused window), so it must be ANDed with the app-frontmost
-	// truth — platform.AppIsFrontmost() (NSApp.isActive on macOS), which
-	// stays correct even when the per-window SDL flag is stale. Without
-	// that AND, a visible-but-backgrounded window would keep repainting
-	// (and blinking) at blink rate, burning power and blinking a cursor
-	// in an unfocused terminal. hasOSFocus() is kept as the second arm
-	// so a window that has OS focus but isn't yet app.active (spawn
-	// transition) still paints. AppIsFrontmost() is false on non-macOS,
-	// where hasOSFocus() is reliable and remains the sole gate — the
-	// app.active fallback is a macOS stale-flag workaround only.
-	if (w.app.active == w && platform.AppIsFrontmost()) || w.hasOSFocus() {
+	// The effectively-focused window repaints every frame: cursor
+	// blink arrives as a timer wake with NO events, and typing echo
+	// must never lag. Hovered window repaints for ImGui hover
+	// transitions. Why the gate is app.active-OR-SDL-flag (the macOS
+	// stale INPUT_FOCUS story, and why frontmost must be ANDed in) is
+	// documented on effectivelyFocused itself — the cursor draw path
+	// shares the same gate so exactly the window that repaints per
+	// frame is the one that blinks; every other window draws the
+	// steady hollow cursor.
+	if w.effectivelyFocused() {
 		return true
 	}
 	if h := w.sdlWindowHandle(); h != 0 && platform.MouseFocusWindowID() == h {

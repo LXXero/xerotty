@@ -549,6 +549,18 @@ func (r *Renderer) DrawCursor(pos struct{ X, Y int }, style string, drawList *im
 	y := r.OffsetY + float32(pos.Y)*cellH
 
 	switch style {
+	case "hollow":
+		// Unfocused-window cursor: stroked outline instead of a fill,
+		// the convention every major terminal uses (xterm, iTerm2,
+		// kitty) to mark "the cursor is HERE but focus is elsewhere".
+		// Inset half the stroke so the outline hugs the cell bounds
+		// without bleeding into neighbors, and leave the glyph
+		// underneath legible (a fill would paint over it).
+		drawList.AddRectV(
+			imgui.Vec2{X: x + 0.5, Y: y + 0.5},
+			imgui.Vec2{X: x + cellW - 0.5, Y: y + cellH - 0.5},
+			r.Theme.Cursor, 0, 0, 1,
+		)
 	case "underline":
 		drawList.AddRectFilled(
 			imgui.Vec2{X: x, Y: y + cellH - 2},
