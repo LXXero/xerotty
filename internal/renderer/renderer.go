@@ -99,6 +99,7 @@ type drawCacheKey struct {
 	gen                        uint64
 	cfgGen                     uint64
 	scrollOff                  int
+	asOfSbLen                  int
 	cols, rows                 int
 	offX, offY                 float32
 	cellW, cellH               float32
@@ -197,7 +198,14 @@ type EmulatorView interface {
 	// 0 (selection maps against it). gen is the render generation
 	// observed under the lock, so the cell-layer cache key matches the
 	// snapshot content exactly.
-	SnapshotWindow(scrollOffset, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
+	//
+	// asOfSbLen anchors scrollOffset to the ScrollbackLen it was
+	// computed against: growth that landed since (sources apply
+	// appends on their own goroutines, concurrent with the frame) is
+	// added to scrollOffset inside the lock so a scrolled viewport
+	// stays pinned to content rather than sliding toward the live
+	// tail. <= 0 disables compensation; scrollOffset 0 is always live.
+	SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
 }
 
 // cellAt returns the cell at viewport position (col, row) within a
@@ -255,8 +263,11 @@ func (r *Renderer) resolveCellColors(cell *uv.Cell, col, row int) (fg, bg uint32
 }
 
 // Draw renders the terminal's visible cells onto the background draw list.
-// scrollOffset is the number of lines scrolled back (0 = live view).
-func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset int) {
+// scrollOffset is the number of lines scrolled back (0 = live view);
+// asOfSbLen is the ScrollbackLen it was computed against, so the
+// snapshot can compensate for appends that landed since (see
+// EmulatorView.SnapshotWindow). Pass 0 when unknown.
+func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset, asOfSbLen int) {
 	cols := emu.Width()
 	rows := emu.Height()
 
@@ -269,7 +280,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	if r.Glyphs != nil {
 		key = drawCacheKey{
 			emu: emu, gen: emu.RenderGeneration(), cfgGen: r.cfgGen,
-			scrollOff: scrollOffset, cols: cols, rows: rows,
+			scrollOff: scrollOffset, asOfSbLen: asOfSbLen, cols: cols, rows: rows,
 			offX: r.OffsetX, offY: r.OffsetY,
 			cellW: r.Metrics.Width, cellH: r.Metrics.Height,
 			fontSize:  r.FontSize,
@@ -291,7 +302,7 @@ func (r *Renderer) Draw(emu EmulatorView, drawList *imgui.DrawList, scrollOffset
 	// from under the per-cell walk. base is the content row of the
 	// first visible viewport row — cellSelected translates against it
 	// (selection rows are content-space).
-	snap, base, gen := emu.SnapshotWindow(scrollOffset, rows, cols)
+	snap, base, gen := emu.SnapshotWindow(scrollOffset, asOfSbLen, rows, cols)
 	r.selRowBase = base
 	if r.Glyphs != nil {
 		// Re-key with the generation observed under the snapshot lock so

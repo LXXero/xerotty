@@ -4181,8 +4181,17 @@ func (a *Window) frame() {
 		drawList := a.bgDrawList()
 		if drawList != nil {
 			scrollOff := 0
+			scrollAsOf := 0
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
+				// PrevSBLen is the ScrollbackLen the scroll-anchor pass
+				// patched Offset against this frame. Passing the pair to
+				// Draw lets the snapshot compensate — under the source's
+				// own lock — for appends that land between that pass and
+				// the render (a remote daemon ships them in 256-row
+				// bursts on its own goroutine), so a scrolled viewport
+				// stays pinned instead of bumping toward the live tail.
+				scrollAsOf = s.PrevSBLen
 			}
 			// Sliding-window scrollback (daemon tabs in unlimited
 			// mode): make sure the cached window covers the scrollback
@@ -4192,6 +4201,14 @@ func (a *Window) frame() {
 				_, visRows := a.gridSize()
 				sbLen := tab.Terminal.ScrollbackLen()
 				from := sbLen - scrollOff
+				// Mirror the snapshot's anchor compensation: when
+				// appends have landed since the anchor pass, the
+				// viewport stays pinned at the absolute position
+				// (asOf - offset), so prefetch THAT range — not the
+				// drifted one a fresh sbLen would imply.
+				if scrollAsOf > 0 && sbLen > scrollAsOf {
+					from = scrollAsOf - scrollOff
+				}
 				win.EnsureScrollbackWindow(from, from+visRows)
 			}
 			// Feed the selection into the renderer so selected cells
@@ -4205,7 +4222,7 @@ func (a *Window) frame() {
 			} else {
 				a.renderer.SetSelection(false, 0, 0, 0, 0, 0)
 			}
-			a.renderer.Draw(tab.Terminal, drawList, scrollOff)
+			a.renderer.Draw(tab.Terminal, drawList, scrollOff, scrollAsOf)
 
 			// Draw link underline on hover
 			if a.hoveredLink != nil {

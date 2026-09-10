@@ -96,7 +96,7 @@ func (g *quadGrid) ScrollbackCellAt(col, row int) *uv.Cell {
 	return g.cell(g.sb[row], col, row, true)
 }
 
-func (g *quadGrid) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+func (g *quadGrid) SnapshotWindow(scrollOffset, _, rows, cols int) ([][]uv.Cell, int, uint64) {
 	sbLen := len(g.sb)
 	base := sbLen - scrollOffset
 	out := make([][]uv.Cell, rows)
@@ -137,7 +137,7 @@ func testRenderer() *Renderer {
 // draw runs Draw and returns a copy of the produced primitive
 // stream (replayed or rebuilt — cacheQuads holds it either way).
 func draw(r *Renderer, g EmulatorView, scrollOff int) []platform.GlyphQuad {
-	r.Draw(g, nil, scrollOff)
+	r.Draw(g, nil, scrollOff, 0)
 	out := make([]platform.GlyphQuad, len(r.cacheQuads))
 	copy(out, r.cacheQuads)
 	return out
@@ -303,7 +303,7 @@ func TestKeyComponents(t *testing.T) {
 			draw(r, g, 0)
 			wasOK := r.cacheOK
 			tc.mutate(r, g)
-			r.Draw(g, nil, 0)
+			r.Draw(g, nil, 0, 0)
 			if !wasOK {
 				t.Fatal("cache never primed")
 			}

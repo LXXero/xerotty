@@ -302,10 +302,25 @@ func (s *Source) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 // empty cell (EnsureScrollbackWindow pulls it; a later frame fills
 // it). s.scrollback / s.emu are read directly (not via the locking
 // accessors) to avoid re-entering s.mu.
-func (s *Source) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+func (s *Source) SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) ([][]uv.Cell, int, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sbLen := int(s.scrollbackLen.Load())
+	// Anchor drift compensation — see terminal.Source.SnapshotWindow.
+	// The hub reader applies ScrollbackAppends concurrently with the
+	// GUI frame, and a remote daemon ships them in bursts of up to 256
+	// rows; every burst landing between the frame's scroll-anchor pass
+	// and this snapshot would otherwise render the scrolled viewport
+	// that many rows closer to live — the "scrolled view keeps bumping
+	// to the bottom while output streams" bug. Resolving the growth
+	// here, under the same lock the appends take, pins the viewport to
+	// content no matter what arrived mid-frame.
+	if scrollOffset > 0 && asOfSbLen > 0 && sbLen > asOfSbLen {
+		scrollOffset += sbLen - asOfSbLen
+		if scrollOffset > sbLen {
+			scrollOffset = sbLen
+		}
+	}
 	base := sbLen - scrollOffset
 	out := make([][]uv.Cell, rows)
 	for row := 0; row < rows; row++ {

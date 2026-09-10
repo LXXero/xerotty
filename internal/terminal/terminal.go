@@ -676,10 +676,20 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 //
 // ScrollbackLen / ScrollbackCellAt / CellAt take t.mu or the
 // emulator's own lock, never publishMu, so there's no re-entrancy.
-func (t *Terminal) SnapshotWindow(scrollOffset, rows, cols int) ([][]uv.Cell, int, uint64) {
+func (t *Terminal) SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) ([][]uv.Cell, int, uint64) {
 	t.publishMu.Lock()
 	defer t.publishMu.Unlock()
 	sbLen := t.ScrollbackLen()
+	// Anchor drift compensation — see terminal.Source.SnapshotWindow.
+	// scrollOffset was computed against asOfSbLen; rows pushed to
+	// scrollback since then would otherwise shift the scrolled
+	// viewport toward the live tail by exactly the growth.
+	if scrollOffset > 0 && asOfSbLen > 0 && sbLen > asOfSbLen {
+		scrollOffset += sbLen - asOfSbLen
+		if scrollOffset > sbLen {
+			scrollOffset = sbLen
+		}
+	}
 	base := sbLen - scrollOffset
 	out := make([][]uv.Cell, rows)
 	for row := 0; row < rows; row++ {

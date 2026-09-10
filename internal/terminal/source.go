@@ -180,7 +180,17 @@ type Source interface {
 	// observed under the lock. This is the consistent-read path the
 	// GUI renderer walks (replacing the live CellAt/ScrollbackCellAt
 	// reads that tore during heavy output).
-	SnapshotWindow(scrollOffset, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
+	//
+	// asOfSbLen is the ScrollbackLen scrollOffset was computed
+	// against (the frame's scroll-anchor pass). The pair encodes an
+	// ABSOLUTE content position: if more scrollback has landed since
+	// (the source applies appends on its own goroutine — a remote
+	// daemon ships them in 256-row bursts), the implementation adds
+	// the growth to scrollOffset UNDER ITS LOCK, so a scrolled
+	// viewport stays pinned to content instead of sliding toward the
+	// live tail. asOfSbLen <= 0 disables the compensation; a
+	// scrollOffset of 0 (live view) always tracks the bottom.
+	SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) (cells [][]uv.Cell, base int, gen uint64)
 
 	// SetScrollbackFromConfig re-applies scrollback settings (mode,
 	// line limit) without restarting the source. Called from the
