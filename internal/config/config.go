@@ -535,6 +535,7 @@ func defaultKeybindsLinux() map[string]string {
 		"Shift+End":        "scroll_bottom",
 		"Ctrl+Comma":       "preferences",
 		"Ctrl+Shift+O":     "toggle_opacity",
+		"Ctrl+Shift+Q":     "quit",
 	}
 }
 

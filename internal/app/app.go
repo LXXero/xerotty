@@ -4861,6 +4861,14 @@ func (w *Window) dispatchAction(action string) {
 		// same WM_CLASS on Linux = one taskbar group. See
 		// docs/MULTI_WINDOW_REFACTOR.md for the architectural why.
 		w.app.spawnWindow()
+	case "quit":
+		// Whole-app exit, all windows. macOS gets this for free from
+		// AppKit (Cmd+Q → NSApp.terminate → SDL_EVENT_QUIT); Linux
+		// has no OS-level equivalent, so it's a bindable action
+		// (default Ctrl+Shift+Q, the konsole/xfce4-terminal
+		// convention). Same platform.Quit() path as the last-window
+		// close, so daemon tabs detach cleanly and sessions survive.
+		platform.Quit()
 	case "next_tab":
 		w.tabs.Next()
 		if t := w.tabs.Active(); t != nil {
