@@ -190,6 +190,20 @@ type Window struct {
 	tabDragStartX float32 // mouse X at the moment tabDragIdx was set
 	tabDragStartY float32 // mouse Y at the moment tabDragIdx was set
 
+	// Tooltip freshness tracking. The tab-activity tooltip must only
+	// open on a REAL, current hover: on mac multi-viewport ImGui's
+	// hover state can go stale (no mouse-leave when focus crosses OS
+	// windows), and macOS hides the pointer while typing without
+	// moving it — either way IsItemHovered kept reporting a tab
+	// hovered and the tooltip popped while the user was typing.
+	// Tooltips are gated on the mouse having moved SINCE the last
+	// keystroke (lastMouseMoveAt >= lastKeyAt) and on the OS saying
+	// the mouse is actually over this window.
+	lastMouseX      float32
+	lastMouseY      float32
+	lastMouseMoveAt float64
+	lastKeyAt       float64
+
 	contextMenuOpen        bool
 	contextMenuX           float32
 	contextMenuY           float32
@@ -543,6 +557,7 @@ func (w *Window) windowVisuallyDirty() bool {
 	if dirty || !w.ready || w.pendingResize || w.pendingRemeasure ||
 		w.renamingTab || w.connectingHost || w.prefDialog.open ||
 		w.sel.dragging || w.sel.active || w.tabDragIdx >= 0 ||
+		w.app.dragTab != nil ||
 		w.contextMenuOpen || w.resizeOverlay {
 		return true
 	}

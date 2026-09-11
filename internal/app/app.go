@@ -3162,10 +3162,8 @@ func (a *App) tabDropTarget(d *tabDrag) (*Window, bool) {
 	mp := imgui.MousePos()
 	mouseValid := validMousePos(mp)
 	if mouseValid && platform.VideoDriver() != "wayland" {
-		for i := len(a.windows) - 1; i >= 0; i-- {
-			if a.windows[i].containsMousePos(mp) {
-				return a.windows[i], false
-			}
+		if w := a.windowUnderPoint(mp); w != nil {
+			return w, false
 		}
 	}
 
@@ -3182,10 +3180,8 @@ func (a *App) tabDropTarget(d *tabDrag) (*Window, bool) {
 	}
 
 	if mouseValid {
-		for i := len(a.windows) - 1; i >= 0; i-- {
-			if a.windows[i].containsMousePos(mp) {
-				return a.windows[i], false
-			}
+		if w := a.windowUnderPoint(mp); w != nil {
+			return w, false
 		}
 	}
 
@@ -3264,6 +3260,31 @@ func (w *Window) containsMousePos(mp imgui.Vec2) bool {
 		mp.X < w.contentOriginX+float32(w.width) &&
 		mp.Y >= w.contentOriginY &&
 		mp.Y < w.contentOriginY+float32(w.height)
+}
+
+// windowUnderPoint returns the Window whose rect contains mp,
+// resolving OVERLAP by true screen stacking order where the platform
+// exposes it (CocoaWindowZRank: front = 0; -1 = unknown, and the
+// non-darwin stub always returns -1). Geometry alone picked whichever
+// window came later in creation order, so on macOS a drag dropped
+// onto two overlapping windows landed in the one UNDERNEATH the one
+// the user was aiming at. When no rank is known (Linux, or a window
+// missing from Cocoa's ordered list) the first hit in the old
+// reverse-creation scan order is kept, preserving prior behavior.
+func (a *App) windowUnderPoint(mp imgui.Vec2) *Window {
+	var best *Window
+	bestRank := -1
+	for i := len(a.windows) - 1; i >= 0; i-- {
+		w := a.windows[i]
+		if !w.containsMousePos(mp) {
+			continue
+		}
+		rank := platform.CocoaWindowZRank(w.sdlWindowHandle())
+		if best == nil || (rank >= 0 && (bestRank < 0 || rank < bestRank)) {
+			best, bestRank = w, rank
+		}
+	}
+	return best
 }
 
 // syncDaemonFocus checks if the active tab changed since last
@@ -4336,6 +4357,7 @@ func (a *Window) frame() {
 	// Tab bar — rendered AFTER terminal cells so it visually layers
 	// on top of them when they share the wrapper's drawlist.
 	a.renderTabBar()
+	a.drawTabDragGhost()
 
 	// Propose-mode approval gate (daemon mode only; no-op when
 	// the queue is empty).
@@ -4648,6 +4670,7 @@ func (w *Window) processKeys() {
 		}
 
 		if len(ev.Bytes) > 0 && tab != nil {
+			w.lastKeyAt = imgui.Time() // suppress hover tooltips while typing
 			// scroll_on_keystroke: gnome-terminal-style "any keypress
 			// snaps back to live position". When off, the user can
 			// type into the prompt (still sends to PTY) while staying
@@ -4680,6 +4703,7 @@ func (w *Window) processKeys() {
 		chars := io.InputQueueCharacters()
 		altHeld := imgui.IsKeyDown(imgui.ModAlt)
 		if chars.Size > 0 {
+			w.lastKeyAt = imgui.Time() // suppress hover tooltips while typing
 			// scroll_on_keystroke: same gate as the translated-key
 			// path above. Without checking here, plain letters /
 			// numbers (which come through InputQueueCharacters, not
@@ -5223,8 +5247,95 @@ func humanizeAge(now, ts time.Time) string {
 	}
 }
 
+// drawTabDragGhost renders the in-flight cross-window drag feedback
+// on THIS window when it is the drop target: a floating outlined
+// "tab" carrying the dragged tab's title next to the cursor, plus an
+// accent outline around the window's tab-bar strip so it's
+// unambiguous WHICH window receives the drop (the target is resolved
+// z-order-aware via windowUnderPoint — the same call the drop itself
+// uses, so the highlight can never disagree with where the tab
+// actually lands). After lift-off the dragged tab lives only in
+// app.dragTab — without this it was completely invisible until drop.
+func (w *Window) drawTabDragGhost() {
+	d := w.app.dragTab
+	if d == nil {
+		return
+	}
+	mp := imgui.MousePos()
+	if w.app.windowUnderPoint(mp) != w {
+		return
+	}
+	dl := w.bgDrawList()
+	if dl == nil {
+		return
+	}
+	accent := w.app.theme.TabActivityGlow
+	fill := (accent & 0x00FFFFFF) | 0x28000000 // ~16% alpha wash
+
+	// Target highlight: outline the tab-bar strip (or where it will
+	// appear — a single-tab window renders no bar, tabBarH==0, but
+	// adopting the drop creates one).
+	barH := w.tabBarH
+	if barH <= 0 {
+		barH = imgui.FrameHeight() + 2
+	}
+	x0, y0 := w.contentOriginX, w.contentOriginY
+	dl.AddRectFilled(
+		imgui.Vec2{X: x0, Y: y0},
+		imgui.Vec2{X: x0 + float32(w.width), Y: y0 + barH},
+		fill,
+	)
+	dl.AddRectV(
+		imgui.Vec2{X: x0 + 0.5, Y: y0 + 0.5},
+		imgui.Vec2{X: x0 + float32(w.width) - 0.5, Y: y0 + barH - 0.5},
+		accent, 0, 0, 1,
+	)
+
+	// Floating ghost tab at the cursor: outlined, translucent, with
+	// the dragged tab's title. Offset so the pointer tip stays
+	// visible; clipped so long titles don't overflow the ghost.
+	ghostW := float32(w.width) / 3
+	if ghostW > 200 {
+		ghostW = 200
+	}
+	if ghostW < 60 {
+		ghostW = 60
+	}
+	gx, gy := mp.X+10, mp.Y+10
+	dl.AddRectFilled(
+		imgui.Vec2{X: gx, Y: gy},
+		imgui.Vec2{X: gx + ghostW, Y: gy + barH},
+		fill,
+	)
+	dl.AddRectV(
+		imgui.Vec2{X: gx + 0.5, Y: gy + 0.5},
+		imgui.Vec2{X: gx + ghostW - 0.5, Y: gy + barH - 0.5},
+		accent, 0, 0, 1,
+	)
+	dl.PushClipRectV(
+		imgui.Vec2{X: gx, Y: gy},
+		imgui.Vec2{X: gx + ghostW, Y: gy + barH},
+		true,
+	)
+	textH := imgui.CalcTextSize(d.Label).Y
+	dl.AddTextVec2V(
+		imgui.Vec2{X: gx + 8, Y: gy + (barH-textH)/2},
+		w.app.theme.Foreground, d.Label,
+	)
+	dl.PopClipRect()
+}
+
 func (w *Window) renderTabBar() {
 	w.tabBarHovered = false
+	// Track real mouse motion for tooltip gating (see the lastKeyAt
+	// field comment): a position change is the only trustworthy "the
+	// user is actually mousing" signal — mac's stale hover state and
+	// its type-hides-the-pointer behavior both leave the position
+	// still.
+	if mp := imgui.MousePos(); mp.X != w.lastMouseX || mp.Y != w.lastMouseY {
+		w.lastMouseX, w.lastMouseY = mp.X, mp.Y
+		w.lastMouseMoveAt = imgui.Time()
+	}
 	if w.tabs.Count() <= 1 {
 		return // Don't show tab bar with single tab
 	}
@@ -5313,8 +5424,18 @@ func (w *Window) renderTabBar() {
 		// mouse settles; NoSharedDelay stops tab-to-tab hover from
 		// inheriting the previous tab's elapsed delay (each tab re-arms
 		// from zero instead of the tooltip chasing the cursor).
-		if imgui.IsItemHoveredV(imgui.HoveredFlagsDelayNormal|
-			imgui.HoveredFlagsStationary|imgui.HoveredFlagsNoSharedDelay) &&
+		//
+		// Two extra gates against PHANTOM hovers (mac multi-viewport):
+		// the OS must agree the mouse is over this window (ImGui's own
+		// hover goes stale — no mouse-leave when focus crosses OS
+		// windows), and the mouse must have moved since the last
+		// keystroke (typing hides the mac pointer without moving it,
+		// so a parked cursor otherwise pops tooltips mid-typing).
+		mouseHere := w.sdlWindowHandle() == 0 ||
+			platform.MouseFocusWindowID() == w.sdlWindowHandle()
+		if mouseHere && w.lastMouseMoveAt >= w.lastKeyAt &&
+			imgui.IsItemHoveredV(imgui.HoveredFlagsDelayNormal|
+				imgui.HoveredFlagsStationary|imgui.HoveredFlagsNoSharedDelay) &&
 			imgui.BeginTooltip() {
 			imgui.Text("output " + humanizeAge(now, lastOut))
 			imgui.Text("input  " + humanizeAge(now, tab.Terminal.LastInput()))
