@@ -5270,7 +5270,20 @@ func (w *Window) drawTabDragGhost() {
 		return
 	}
 	mp := imgui.MousePos()
-	if w.app.windowUnderPoint(mp) != w {
+	if d.WaylandStarted {
+		// Wayland: the compositor grabs the pointer for the whole
+		// data-device drag, so SDL's mouse position is FROZEN at the
+		// lift-off point — geometry hit-testing is blind here (the
+		// ghost/highlight never appeared at all). The drag protocol
+		// itself is the live truth instead: enter/motion events hand
+		// the source the hovered surface + surface-local coords.
+		surf := platform.WaylandDragSurface()
+		if surf == 0 || platform.WindowWLSurfacePtr(w.sdlWindowHandle()) != surf {
+			return
+		}
+		lx, ly := platform.WaylandDragPos()
+		mp = imgui.Vec2{X: w.contentOriginX + lx, Y: w.contentOriginY + ly}
+	} else if w.app.windowUnderPoint(mp) != w {
 		return
 	}
 	dl := w.bgDrawList()

@@ -63,6 +63,14 @@ int wldrag_start(void* origin_surface);
 // SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER.
 void* wldrag_target_surface(void);
 
+// wldrag_pos writes the drag hotspot's SURFACE-LOCAL coordinates in
+// the currently-hovered surface (logical units, from the data_device
+// enter/motion events). Only meaningful while wldrag_target_surface()
+// returns non-NULL; the compositor grabs the pointer for the whole
+// drag, so SDL's normal mouse position is frozen and this is the ONLY
+// live cursor position available during a Wayland drag.
+void wldrag_pos(double* x, double* y);
+
 // wldrag_drop_fired returns 1 once after the compositor delivered
 // a drop event, then resets to 0. Lets the Go side poll for "should
 // I finalize the drop now".

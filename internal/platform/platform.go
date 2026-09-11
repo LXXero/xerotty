@@ -301,6 +301,24 @@ func WaylandDragActive() bool {
 	return C.wldrag_active() != 0
 }
 
+// WaylandDragSurface returns the wl_surface the in-flight drag is
+// currently hovering (live, from data_device enter/leave), or 0.
+// Compare against WindowWLSurfacePtr to find the target Window — the
+// compositor grabs the pointer for the whole drag, so this is the
+// only live "which window is the drag over" signal on Wayland.
+func WaylandDragSurface() uintptr {
+	return uintptr(C.wldrag_target_surface())
+}
+
+// WaylandDragPos returns the drag hotspot's surface-local coordinates
+// within WaylandDragSurface (logical units). Only meaningful while
+// WaylandDragSurface() != 0.
+func WaylandDragPos() (float32, float32) {
+	var x, y C.double
+	C.wldrag_pos(&x, &y)
+	return float32(x), float32(y)
+}
+
 // WindowWLSurfacePtr returns the wl_surface for the given Window ID,
 // or 0 on non-Wayland or if the window doesn't exist.
 func WindowWLSurfacePtr(windowID uintptr) uintptr {

@@ -11,6 +11,7 @@ int  wlgrab_popup(void* xdg_popup)        { (void)xdg_popup;  return 0; }
 uint32_t wlgrab_last_serial(void)         { return 0; }
 int  wldrag_start(void* origin_surface)   { (void)origin_surface; return 0; }
 void* wldrag_target_surface(void)         { return 0; }
+void wldrag_pos(double* x, double* y)     { if (x) *x = 0; if (y) *y = 0; }
 int  wldrag_drop_fired(void)              { return 0; }
 void* wldrag_drop_target_surface(void)    { return 0; }
 int  wldrag_active(void)                  { return 0; }

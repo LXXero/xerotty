@@ -29,6 +29,14 @@ static struct wl_surface*             g_drag_origin = NULL; // source surface fo
 static struct wl_surface*             g_drag_target = NULL; // currently-hovered surface during a drag
 static struct wl_surface*             g_drop_target = NULL; // target snapshotted at drop time
 static struct wl_surface*             g_last_drag_target = NULL; // last surface entered by this drag
+static double                         g_drag_x = 0; // surface-local drag hotspot in g_drag_target
+static double                         g_drag_y = 0;
+
+// Defined in sdl3.cpp (extern "C"). Wayland drag events arrive while
+// the render loop is parked in WaitEventTimeout with the pointer
+// grabbed by the compositor — without an explicit wake the drag
+// feedback would only update at the idle safety-net rate.
+extern void platform_post_wake(void);
 static int                            g_drop_fired  = 0;
 static int                            g_drop_performed = 0;
 static int                            g_drag_active = 0;
@@ -179,10 +187,16 @@ static void dd_data_offer(void* d, struct wl_data_device* dd, struct wl_data_off
 static void dd_enter(void* d, struct wl_data_device* dd, uint32_t serial,
                      struct wl_surface* surf, wl_fixed_t x, wl_fixed_t y,
                      struct wl_data_offer* offer) {
-    (void)d; (void)dd; (void)x; (void)y;
+    (void)d; (void)dd;
     g_drag_target = surf;
     g_last_drag_target = surf;
     g_last_serial = serial;
+    g_drag_x = wl_fixed_to_double(x);
+    g_drag_y = wl_fixed_to_double(y);
+    // The compositor owns the pointer for the whole drag — SDL sees no
+    // motion events, so the render loop parks. Wake it so the Go-side
+    // drag feedback (target highlight + ghost tab) tracks the drag.
+    platform_post_wake();
     if (offer) {
         wl_data_offer_accept(offer, serial, "application/x-xerotty-tab");
         if (wl_data_offer_get_version(offer) >= 3) {
@@ -196,10 +210,14 @@ static void dd_leave(void* d, struct wl_data_device* dd) {
     (void)d; (void)dd;
     g_drag_target = NULL;
     g_current_offer = NULL;
+    platform_post_wake(); // clear the drag feedback promptly
 }
 static void dd_motion(void* d, struct wl_data_device* dd, uint32_t time,
                       wl_fixed_t x, wl_fixed_t y) {
-    (void)d; (void)dd; (void)time; (void)x; (void)y;
+    (void)d; (void)dd; (void)time;
+    g_drag_x = wl_fixed_to_double(x);
+    g_drag_y = wl_fixed_to_double(y);
+    platform_post_wake(); // one frame per motion — ghost follows the drag
 }
 static void dd_drop(void* d, struct wl_data_device* dd) {
     (void)d; (void)dd;
@@ -349,6 +367,10 @@ int wldrag_start(void* origin_surface) {
 }
 
 void* wldrag_target_surface(void) { return g_drag_target; }
+void  wldrag_pos(double* x, double* y) {
+    if (x) *x = g_drag_x;
+    if (y) *y = g_drag_y;
+}
 
 int wldrag_drop_fired(void) {
     int v = g_drop_fired;
