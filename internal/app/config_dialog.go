@@ -11,6 +11,7 @@ import (
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/fontsys"
+	"github.com/LXXero/xerotty/internal/input"
 	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/renderer"
 	"github.com/LXXero/xerotty/internal/themes"
@@ -97,6 +98,52 @@ func newMenuEditorItem(kind string) menuEditorItem {
 		it.checked = "force_opaque"
 	}
 	return it
+}
+
+// kbRow is one keybind-editor row: a chord bound to an action
+// invocation string ("copy", "goto_tab:3").
+type kbRow struct {
+	chord  string
+	action string
+}
+
+// prefKbActionSorted / prefKbActionLabels are the keybind editor's
+// action combo: EVERY registered action (arg-taking ones included —
+// the editor has an arg field the menu Add combo lacks), sorted by
+// label. Lazy for the same registry-populates-in-init reason as the
+// menu options.
+var prefKbActionSorted []menuAddOption
+var prefKbActionLabels []string
+
+func ensureKbActionOptions() {
+	if prefKbActionSorted != nil {
+		return
+	}
+	opts := make([]menuAddOption, 0, len(actionRegistry))
+	for id := range actionRegistry {
+		opts = append(opts, menuAddOption{label: menuAddLabel(id), action: id})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].label < opts[j].label })
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	prefKbActionSorted, prefKbActionLabels = opts, labels
+}
+
+// kbActionDisplay renders an invocation string for the rows list:
+// the registry label, with the arg appended for parameterized forms
+// ("Go to Tab: 3"). Unknown strings show raw — startup validation
+// already warned about them, but the row must still be visible so
+// the user can delete it.
+func kbActionDisplay(action string) string {
+	if a, arg, ok := resolveAction(action); ok {
+		if arg != "" {
+			return a.Label + ": " + arg
+		}
+		return a.Label
+	}
+	return action + " (unknown)"
 }
 
 // menuAddOption pairs a friendly display label with the action (or
@@ -232,6 +279,15 @@ type configDialog struct {
 	mcpModeIdx     int32
 	mcpAllowChange bool
 	mcpToken       string
+
+	// Keybinds editor (Keys tab). kbRows is the editable copy of
+	// cfg.Keybinds; the add row composes chord + action (+ arg when
+	// the selected action takes one).
+	kbRows         []kbRow
+	kbAddChord     string
+	kbAddActionIdx int32
+	kbAddArg       string
+	kbAddErr       string
 
 	// Clipboard
 	copyOnSel      bool
@@ -520,6 +576,13 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.dblClick = cfg.Links.DoubleClick
 	d.opener = cfg.Links.Opener
 
+	d.kbRows = d.kbRows[:0]
+	for chord, act := range cfg.Keybinds {
+		d.kbRows = append(d.kbRows, kbRow{chord: chord, action: act})
+	}
+	sort.Slice(d.kbRows, func(i, j int) bool { return d.kbRows[i].chord < d.kbRows[j].chord })
+	d.kbAddChord, d.kbAddArg, d.kbAddErr = "", "", ""
+
 	mcpMode := cfg.MCP.DefaultMode
 	if mcpMode == "" {
 		mcpMode = "observe"
@@ -640,6 +703,12 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Links.CtrlClick = d.ctrlClick
 	cfg.Links.DoubleClick = d.dblClick
 	cfg.Links.Opener = d.opener
+
+	kb := make(map[string]string, len(d.kbRows))
+	for _, r := range d.kbRows {
+		kb[r.chord] = r.action
+	}
+	cfg.Keybinds = kb
 
 	if int(d.mcpModeIdx) < len(prefMCPModes) {
 		cfg.MCP.DefaultMode = prefMCPModes[d.mcpModeIdx]
@@ -1554,6 +1623,105 @@ func (a *Window) renderPrefKeys() {
 	default:
 		imgui.TextDisabled("vt: ESC [ 1~ / ESC [ 4~")
 	}
+	imgui.Text("")
+	imgui.Text("Keybinds")
+	imgui.Separator()
+	a.renderPrefKeybinds()
+}
+
+// renderPrefKeybinds is the keybind editor: every chord -> action
+// binding as a removable row, plus an add row composing chord +
+// action (+ arg when the selected action takes one). Chords are
+// validated with input.ValidChord at add time so a typo'd modifier
+// or key name is named HERE, not shipped as a bind that never
+// fires. Adding a chord that already exists replaces its binding
+// (map semantics, made visible: the old row disappears).
+func (a *Window) renderPrefKeybinds() {
+	ensureKbActionOptions()
+	d := &a.prefDialog
+	w := float32(200)
+
+	removeIdx := -1
+	if imgui.BeginTableV("##kbrows", 3, imgui.TableFlagsSizingStretchProp, imgui.NewVec2(0, 0), 0) {
+		for i, r := range d.kbRows {
+			imgui.TableNextColumn()
+			imgui.Text(r.chord)
+			imgui.TableNextColumn()
+			imgui.Text(kbActionDisplay(r.action))
+			imgui.TableNextColumn()
+			if imgui.Button("x##kbdel" + r.chord) {
+				removeIdx = i
+			}
+		}
+		imgui.EndTable()
+	}
+	if removeIdx >= 0 {
+		d.kbRows = append(d.kbRows[:removeIdx], d.kbRows[removeIdx+1:]...)
+	}
+
+	imgui.Text("")
+	imgui.SetNextItemWidth(w * 0.8)
+	imgui.InputTextWithHint("##kbaddchord", "Ctrl+Shift+X", &d.kbAddChord, 0, nil)
+	imgui.SameLineV(0, 8)
+	a.prefCombo("kbaddaction", &d.kbAddActionIdx, prefKbActionLabels, w)
+	var sel *Action
+	if int(d.kbAddActionIdx) < len(prefKbActionSorted) {
+		sel = actionRegistry[prefKbActionSorted[d.kbAddActionIdx].action]
+	}
+	if sel != nil && sel.Arg != NoArg {
+		imgui.SameLineV(0, 8)
+		imgui.SetNextItemWidth(w * 0.6)
+		hint := sel.ArgHint
+		if hint == "" {
+			hint = "argument"
+		}
+		imgui.InputTextWithHint("##kbaddarg", hint, &d.kbAddArg, 0, nil)
+	}
+	imgui.SameLineV(0, 8)
+	if imgui.Button("Add##kbadd") {
+		d.kbAddErr = ""
+		chord := strings.TrimSpace(d.kbAddChord)
+		switch {
+		case chord == "" || !input.ValidChord(chord):
+			d.kbAddErr = "invalid chord — modifiers (Ctrl+ Shift+ Alt+ Cmd+) then a key name"
+		case sel == nil:
+			d.kbAddErr = "pick an action"
+		case sel.Arg == IntArg && !isAllDigits(strings.TrimSpace(d.kbAddArg)):
+			d.kbAddErr = "this action needs a numeric argument (" + sel.ArgHint + ")"
+		case sel.Arg == StringArg && strings.TrimSpace(d.kbAddArg) == "":
+			d.kbAddErr = "this action needs an argument (" + sel.ArgHint + ")"
+		default:
+			act := sel.ID
+			if sel.Arg != NoArg {
+				act += ":" + strings.TrimSpace(d.kbAddArg)
+			}
+			// Replace an existing binding for the same chord.
+			for i := len(d.kbRows) - 1; i >= 0; i-- {
+				if d.kbRows[i].chord == chord {
+					d.kbRows = append(d.kbRows[:i], d.kbRows[i+1:]...)
+				}
+			}
+			d.kbRows = append(d.kbRows, kbRow{chord: chord, action: act})
+			sort.Slice(d.kbRows, func(i, j int) bool { return d.kbRows[i].chord < d.kbRows[j].chord })
+			d.kbAddChord, d.kbAddArg = "", ""
+		}
+	}
+	if d.kbAddErr != "" {
+		imgui.TextDisabled(d.kbAddErr)
+	}
+}
+
+// isAllDigits: strconv.Atoi accepts signs; a goto_tab arg shouldn't.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // renderPrefMenu draws the scrollable item list. The Add controls are

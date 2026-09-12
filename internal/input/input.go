@@ -326,6 +326,31 @@ func PollKeys(keybinds map[string]string, appMode bool, opts KeyOptions) []KeyEv
 	return events
 }
 
+// ValidChord reports whether a keybind chord parses: any of the
+// modifier prefixes (Ctrl+ / Shift+ / Alt+ / Cmd+ / Super+, in any
+// order) followed by a key name this package knows. The prefs
+// keybind editor uses it to reject garbage at add time instead of
+// shipping a bind that can never fire.
+func ValidChord(bind string) bool {
+	keyPart := bind
+	for {
+		if len(keyPart) > 5 && keyPart[:5] == "Ctrl+" {
+			keyPart = keyPart[5:]
+		} else if len(keyPart) > 6 && keyPart[:6] == "Shift+" {
+			keyPart = keyPart[6:]
+		} else if len(keyPart) > 4 && keyPart[:4] == "Alt+" {
+			keyPart = keyPart[4:]
+		} else if len(keyPart) > 4 && keyPart[:4] == "Cmd+" {
+			keyPart = keyPart[4:]
+		} else if len(keyPart) > 6 && keyPart[:6] == "Super+" {
+			keyPart = keyPart[6:]
+		} else {
+			break
+		}
+	}
+	return nameToImGuiKey(keyPart) != imgui.KeyNone
+}
+
 func matchKeybind(bind string, ctrl, shift, alt, super bool) bool {
 	wantCtrl := false
 	wantShift := false
