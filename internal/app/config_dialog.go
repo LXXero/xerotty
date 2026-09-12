@@ -288,6 +288,13 @@ type configDialog struct {
 	kbAddActionIdx int32
 	kbAddArg       string
 	kbAddErr       string
+	// kbCapturing: the capture button is armed — the next key chord
+	// pressed lands in kbAddChord (Esc cancels). kbEditChord is the
+	// chord of the row being edited ("" = composing a new binding);
+	// saving removes the original row so an edited chord moves
+	// instead of duplicating.
+	kbCapturing bool
+	kbEditChord string
 
 	// Clipboard
 	copyOnSel      bool
@@ -1641,6 +1648,7 @@ func (a *Window) renderPrefKeybinds() {
 	d := &a.prefDialog
 	w := float32(200)
 
+	editIdx := -1
 	removeIdx := -1
 	if imgui.BeginTableV("##kbrows", 3, imgui.TableFlagsSizingStretchProp, imgui.NewVec2(0, 0), 0) {
 		for i, r := range d.kbRows {
@@ -1649,7 +1657,11 @@ func (a *Window) renderPrefKeybinds() {
 			imgui.TableNextColumn()
 			imgui.Text(kbActionDisplay(r.action))
 			imgui.TableNextColumn()
-			if imgui.Button("x##kbdel" + r.chord) {
+			if imgui.Button("edit##kbe" + r.chord) {
+				editIdx = i
+			}
+			imgui.SameLineV(0, 4)
+			if imgui.Button("x##kbd" + r.chord) {
 				removeIdx = i
 			}
 		}
@@ -1657,11 +1669,57 @@ func (a *Window) renderPrefKeybinds() {
 	}
 	if removeIdx >= 0 {
 		d.kbRows = append(d.kbRows[:removeIdx], d.kbRows[removeIdx+1:]...)
+		if d.kbEditChord != "" && removeIdx < len(d.kbRows)+1 {
+			// If the row under edit was removed, drop the edit state.
+			d.kbEditChord = ""
+		}
+	}
+	if editIdx >= 0 {
+		// Load the row into the composer; Save moves it.
+		r := d.kbRows[editIdx]
+		d.kbEditChord = r.chord
+		d.kbAddChord = r.chord
+		d.kbAddArg = ""
+		d.kbAddErr = ""
+		if act, arg, ok := resolveAction(r.action); ok {
+			d.kbAddArg = arg
+			for i, o := range prefKbActionSorted {
+				if o.action == act.ID {
+					d.kbAddActionIdx = int32(i)
+					break
+				}
+			}
+		}
 	}
 
 	imgui.Text("")
+	if d.kbEditChord != "" {
+		imgui.Text("Editing " + d.kbEditChord)
+	}
+
+	// Capture mode: the next chord pressed fills the field. The whole
+	// terminal key path is gated off while the prefs dialog holds
+	// focus (inputOwnedByDialog), so captured combos can't ALSO fire
+	// live keybinds. Esc cancels and is never captured itself.
+	if d.kbCapturing {
+		if imgui.IsKeyPressedBool(imgui.KeyEscape) {
+			d.kbCapturing = false
+		} else if chord, ok := input.PressedChord(); ok {
+			d.kbAddChord = chord
+			d.kbCapturing = false
+		}
+	}
+
 	imgui.SetNextItemWidth(w * 0.8)
 	imgui.InputTextWithHint("##kbaddchord", "Ctrl+Shift+X", &d.kbAddChord, 0, nil)
+	imgui.SameLineV(0, 4)
+	capLabel := "Capture##kbcap"
+	if d.kbCapturing {
+		capLabel = "press keys... (Esc cancels)##kbcap"
+	}
+	if imgui.Button(capLabel) {
+		d.kbCapturing = !d.kbCapturing
+	}
 	imgui.SameLineV(0, 8)
 	a.prefCombo("kbaddaction", &d.kbAddActionIdx, prefKbActionLabels, w)
 	var sel *Action
@@ -1678,7 +1736,11 @@ func (a *Window) renderPrefKeybinds() {
 		imgui.InputTextWithHint("##kbaddarg", hint, &d.kbAddArg, 0, nil)
 	}
 	imgui.SameLineV(0, 8)
-	if imgui.Button("Add##kbadd") {
+	saveLabel := "Add##kbadd"
+	if d.kbEditChord != "" {
+		saveLabel = "Save##kbadd"
+	}
+	if imgui.Button(saveLabel) {
 		d.kbAddErr = ""
 		chord := strings.TrimSpace(d.kbAddChord)
 		switch {
@@ -1695,15 +1757,24 @@ func (a *Window) renderPrefKeybinds() {
 			if sel.Arg != NoArg {
 				act += ":" + strings.TrimSpace(d.kbAddArg)
 			}
-			// Replace an existing binding for the same chord.
+			// Remove the edited original (chord may have changed) and
+			// any existing binding of the target chord.
 			for i := len(d.kbRows) - 1; i >= 0; i-- {
-				if d.kbRows[i].chord == chord {
+				if d.kbRows[i].chord == chord || (d.kbEditChord != "" && d.kbRows[i].chord == d.kbEditChord) {
 					d.kbRows = append(d.kbRows[:i], d.kbRows[i+1:]...)
 				}
 			}
 			d.kbRows = append(d.kbRows, kbRow{chord: chord, action: act})
 			sort.Slice(d.kbRows, func(i, j int) bool { return d.kbRows[i].chord < d.kbRows[j].chord })
-			d.kbAddChord, d.kbAddArg = "", ""
+			d.kbAddChord, d.kbAddArg, d.kbEditChord = "", "", ""
+			d.kbCapturing = false
+		}
+	}
+	if d.kbEditChord != "" {
+		imgui.SameLineV(0, 4)
+		if imgui.Button("Cancel##kbeditcancel") {
+			d.kbAddChord, d.kbAddArg, d.kbEditChord, d.kbAddErr = "", "", "", ""
+			d.kbCapturing = false
 		}
 	}
 	if d.kbAddErr != "" {

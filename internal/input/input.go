@@ -3,6 +3,7 @@ package input
 
 import (
 	"runtime"
+	"strings"
 
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/sdlhack"
@@ -397,160 +398,139 @@ func matchKeybind(bind string, ctrl, shift, alt, super bool) bool {
 	return imgui.IsKeyPressedBoolV(imKey, false)
 }
 
-func nameToImGuiKey(name string) imgui.Key {
-	switch name {
-	case "A":
-		return imgui.KeyA
-	case "B":
-		return imgui.KeyB
-	case "C":
-		return imgui.KeyC
-	case "D":
-		return imgui.KeyD
-	case "E":
-		return imgui.KeyE
-	case "F":
-		return imgui.KeyF
-	case "G":
-		return imgui.KeyG
-	case "H":
-		return imgui.KeyH
-	case "I":
-		return imgui.KeyI
-	case "J":
-		return imgui.KeyJ
-	case "K":
-		return imgui.KeyK
-	case "L":
-		return imgui.KeyL
-	case "M":
-		return imgui.KeyM
-	case "N":
-		return imgui.KeyN
-	case "O":
-		return imgui.KeyO
-	case "P":
-		return imgui.KeyP
-	case "Q":
-		return imgui.KeyQ
-	case "R":
-		return imgui.KeyR
-	case "S":
-		return imgui.KeyS
-	case "T":
-		return imgui.KeyT
-	case "U":
-		return imgui.KeyU
-	case "V":
-		return imgui.KeyV
-	case "W":
-		return imgui.KeyW
-	case "X":
-		return imgui.KeyX
-	case "Y":
-		return imgui.KeyY
-	case "Z":
-		return imgui.KeyZ
-	case "0":
-		return imgui.Key0
-	case "1":
-		return imgui.Key1
-	case "2":
-		return imgui.Key2
-	case "3":
-		return imgui.Key3
-	case "4":
-		return imgui.Key4
-	case "5":
-		return imgui.Key5
-	case "6":
-		return imgui.Key6
-	case "7":
-		return imgui.Key7
-	case "8":
-		return imgui.Key8
-	case "9":
-		return imgui.Key9
-	case "Enter":
-		return imgui.KeyEnter
-	case "Tab":
-		return imgui.KeyTab
-	case "Backspace":
-		return imgui.KeyBackspace
-	case "Escape":
-		return imgui.KeyEscape
-	case "Space":
-		return imgui.KeySpace
-	case "Delete":
-		return imgui.KeyDelete
-	case "Insert":
-		return imgui.KeyInsert
-	case "Home":
-		return imgui.KeyHome
-	case "End":
-		return imgui.KeyEnd
-	case "PageUp":
-		return imgui.KeyPageUp
-	case "PageDown":
-		return imgui.KeyPageDown
-	case "Up":
-		return imgui.KeyUpArrow
-	case "Down":
-		return imgui.KeyDownArrow
-	case "Left":
-		return imgui.KeyLeftArrow
-	case "Right":
-		return imgui.KeyRightArrow
-	case "F1":
-		return imgui.KeyF1
-	case "F2":
-		return imgui.KeyF2
-	case "F3":
-		return imgui.KeyF3
-	case "F4":
-		return imgui.KeyF4
-	case "F5":
-		return imgui.KeyF5
-	case "F6":
-		return imgui.KeyF6
-	case "F7":
-		return imgui.KeyF7
-	case "F8":
-		return imgui.KeyF8
-	case "F9":
-		return imgui.KeyF9
-	case "F10":
-		return imgui.KeyF10
-	case "F11":
-		return imgui.KeyF11
-	case "F12":
-		return imgui.KeyF12
-	case "Minus":
-		return imgui.KeyMinus
-	case "Plus":
-		return imgui.KeyEqual
-	case "Comma":
-		return imgui.KeyComma
-	case "Period":
-		return imgui.KeyPeriod
-	case "Slash":
-		return imgui.KeySlash
-	case "Semicolon":
-		return imgui.KeySemicolon
-	case "Equal":
-		return imgui.KeyEqual
-	case "Backslash":
-		return imgui.KeyBackslash
-	case "LeftBracket":
-		return imgui.KeyLeftBracket
-	case "RightBracket":
-		return imgui.KeyRightBracket
-	case "Apostrophe":
-		return imgui.KeyApostrophe
-	case "Grave":
-		return imgui.KeyGraveAccent
+// keyNameTable is the ONE canonical chord-key table, shared by both
+// directions: nameToImGuiKey (matching a configured chord) and
+// PressedChord (the keybind editor's capture-from-keystroke, which
+// needs the reverse mapping). Order matters for the reverse: when a
+// key has alias names, the FIRST entry is the canonical spelling a
+// capture emits.
+var keyNameTable = []struct {
+	Name string
+	Key  imgui.Key
+}{
+	{"A", imgui.KeyA},
+	{"B", imgui.KeyB},
+	{"C", imgui.KeyC},
+	{"D", imgui.KeyD},
+	{"E", imgui.KeyE},
+	{"F", imgui.KeyF},
+	{"G", imgui.KeyG},
+	{"H", imgui.KeyH},
+	{"I", imgui.KeyI},
+	{"J", imgui.KeyJ},
+	{"K", imgui.KeyK},
+	{"L", imgui.KeyL},
+	{"M", imgui.KeyM},
+	{"N", imgui.KeyN},
+	{"O", imgui.KeyO},
+	{"P", imgui.KeyP},
+	{"Q", imgui.KeyQ},
+	{"R", imgui.KeyR},
+	{"S", imgui.KeyS},
+	{"T", imgui.KeyT},
+	{"U", imgui.KeyU},
+	{"V", imgui.KeyV},
+	{"W", imgui.KeyW},
+	{"X", imgui.KeyX},
+	{"Y", imgui.KeyY},
+	{"Z", imgui.KeyZ},
+	{"0", imgui.Key0},
+	{"1", imgui.Key1},
+	{"2", imgui.Key2},
+	{"3", imgui.Key3},
+	{"4", imgui.Key4},
+	{"5", imgui.Key5},
+	{"6", imgui.Key6},
+	{"7", imgui.Key7},
+	{"8", imgui.Key8},
+	{"9", imgui.Key9},
+	{"Enter", imgui.KeyEnter},
+	{"Tab", imgui.KeyTab},
+	{"Backspace", imgui.KeyBackspace},
+	{"Escape", imgui.KeyEscape},
+	{"Space", imgui.KeySpace},
+	{"Delete", imgui.KeyDelete},
+	{"Insert", imgui.KeyInsert},
+	{"Home", imgui.KeyHome},
+	{"End", imgui.KeyEnd},
+	{"PageUp", imgui.KeyPageUp},
+	{"PageDown", imgui.KeyPageDown},
+	{"Up", imgui.KeyUpArrow},
+	{"Down", imgui.KeyDownArrow},
+	{"Left", imgui.KeyLeftArrow},
+	{"Right", imgui.KeyRightArrow},
+	{"F1", imgui.KeyF1},
+	{"F2", imgui.KeyF2},
+	{"F3", imgui.KeyF3},
+	{"F4", imgui.KeyF4},
+	{"F5", imgui.KeyF5},
+	{"F6", imgui.KeyF6},
+	{"F7", imgui.KeyF7},
+	{"F8", imgui.KeyF8},
+	{"F9", imgui.KeyF9},
+	{"F10", imgui.KeyF10},
+	{"F11", imgui.KeyF11},
+	{"F12", imgui.KeyF12},
+	{"Minus", imgui.KeyMinus},
+	{"Plus", imgui.KeyEqual},
+	{"Comma", imgui.KeyComma},
+	{"Period", imgui.KeyPeriod},
+	{"Slash", imgui.KeySlash},
+	{"Semicolon", imgui.KeySemicolon},
+	{"Equal", imgui.KeyEqual},
+	{"Backslash", imgui.KeyBackslash},
+	{"LeftBracket", imgui.KeyLeftBracket},
+	{"RightBracket", imgui.KeyRightBracket},
+	{"Apostrophe", imgui.KeyApostrophe},
+	{"Grave", imgui.KeyGraveAccent},
+}
+
+var keyByName = func() map[string]imgui.Key {
+	m := make(map[string]imgui.Key, len(keyNameTable))
+	for _, e := range keyNameTable {
+		if _, dup := m[e.Name]; !dup {
+			m[e.Name] = e.Key
+		}
 	}
-	return imgui.KeyNone
+	return m
+}()
+
+func nameToImGuiKey(name string) imgui.Key {
+	return keyByName[name] // zero value = KeyNone
+}
+
+// PressedChord reports the chord for a non-modifier key pressed THIS
+// frame combined with the currently-held modifiers ("Ctrl+Shift+T").
+// The keybind editor's capture mode polls it once per frame; Escape
+// is the caller's cancel key and is deliberately never captured.
+// Modifier naming mirrors what matchKeybind reads: on darwin ImGui
+// swaps physical Cmd onto ModCtrl, so captured chords come out in the
+// same "Ctrl+X"-means-Cmd space the default darwin keybinds use.
+func PressedChord() (string, bool) {
+	for _, e := range keyNameTable {
+		if e.Key == imgui.KeyEscape {
+			continue
+		}
+		if !imgui.IsKeyPressedBoolV(e.Key, false) {
+			continue
+		}
+		var b strings.Builder
+		if imgui.IsKeyDown(imgui.ModCtrl) {
+			b.WriteString("Ctrl+")
+		}
+		if imgui.IsKeyDown(imgui.ModShift) {
+			b.WriteString("Shift+")
+		}
+		if imgui.IsKeyDown(imgui.ModAlt) {
+			b.WriteString("Alt+")
+		}
+		if imgui.IsKeyDown(imgui.ModSuper) {
+			b.WriteString("Super+")
+		}
+		b.WriteString(e.Name)
+		return b.String(), true
+	}
+	return "", false
 }
 
 func arrowKey(dir byte, ctrl, shift, appMode bool) KeyEvent {
