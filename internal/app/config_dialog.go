@@ -995,6 +995,13 @@ func (a *Window) renderPreferences() {
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
+			if imgui.BeginTabItem("Agents") {
+				if imgui.BeginChildStrV("##agentsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					a.renderPrefAgents()
+				}
+				imgui.EndChild()
+				imgui.EndTabItem()
+			}
 			imgui.EndTabBar()
 		}
 
