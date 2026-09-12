@@ -78,3 +78,30 @@ func TestDefaultConfigActionsResolve(t *testing.T) {
 	}
 	walk(cfg.Menu.Items, "")
 }
+
+// TestMenuAddOptionsMirrorRegistry pins the registry-derived Add
+// combo: every NoArg action is offered (the old hand-maintained list
+// had drifted — quit and the remote actions were missing), arg-taking
+// actions are excluded (the combo has no arg field), and the menu
+// grammar tokens ride along.
+func TestMenuAddOptionsMirrorRegistry(t *testing.T) {
+	prefMenuAddSorted = nil // force rebuild in case another test ran first
+	ensureMenuAddOptions()
+	have := map[string]bool{}
+	for _, o := range prefMenuAddSorted {
+		have[o.action] = true
+	}
+	for id, a := range actionRegistry {
+		if a.Arg == NoArg && !have[id] {
+			t.Errorf("NoArg action %q missing from menu Add options", id)
+		}
+		if a.Arg != NoArg && have[id] {
+			t.Errorf("arg-taking action %q must not be in the Add combo (no arg field)", id)
+		}
+	}
+	for _, tok := range []string{"separator", "_remote_hosts", menuKindSubmenu} {
+		if !have[tok] {
+			t.Errorf("menu grammar token %q missing from Add options", tok)
+		}
+	}
+}

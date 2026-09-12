@@ -56,44 +56,13 @@ var (
 	prefFontSizes = []float32{8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72}
 )
 
-// Available actions for the menu editor. Keep alphabetical (the Add
-// combo re-sorts by friendly label at runtime, but the source list
-// stays greppable and additions have one obvious home).
-var prefMenuActions = []string{
-	// _remote_hosts is a magic action: at render time
-	// app.expandMenu replaces it with a "Remote" submenu
-	// listing per-host new/reattach items, one pair per
-	// [[hosts]] entry. Listed here so the menu editor can
-	// re-insert it after the user removes it.
-	"_remote_hosts",
-	"clear_scrollback",
-	"close_tab",
-	"connect_remote",
-	"copy",
-	"copy_link",
-	"font_size_down",
-	"font_size_reset",
-	"font_size_up",
-	"fullscreen",
-	"new_tab",
-	"new_window",
-	"next_tab",
-	"open_link",
-	"paste",
-	"paste_selection",
-	"preferences",
-	"prev_tab",
-	"rename_tab",
-	"reset_terminal",
-	"scroll_bottom",
-	"scroll_page_down",
-	"scroll_page_up",
-	"scroll_top",
-	"search",
-	"select_all",
-	"separator",
-	"toggle_opacity",
-}
+// The menu editor's Add options derive from the ACTION REGISTRY
+// (internal/app/actions.go) — the old hand-maintained action + label
+// lists drifted (quit and the remote actions never made it in). Only
+// NoArg actions are offered: an arg-taking action (goto_tab:N,
+// set_theme:name, exec:cmd) needs its arg typed, which the Add combo
+// has no field for — reference those from config.toml directly;
+// load-time validation catches typos.
 
 // menuKindSubmenu is an editor-only sentinel in the Add combo: picking
 // it makes "Add Item" / a submenu's "+" create a new EMPTY submenu
@@ -102,9 +71,16 @@ var prefMenuActions = []string{
 // isSubmenu entry.
 const menuKindSubmenu = "_submenu"
 
-// prefMenuAddOptions is the Add combo's option list: every action plus
-// the "make a submenu" sentinel. d.addActionIdx indexes into THIS slice.
-var prefMenuAddOptions = append(append([]string{}, prefMenuActions...), menuKindSubmenu)
+// prefMenuSpecialLabels covers the menu-GRAMMAR tokens offered
+// alongside registered actions. _remote_hosts is a magic action: at
+// render time app.expandMenu replaces it with a "Remote" submenu
+// listing per-host new/reattach items (listed so the editor can
+// re-insert it after the user removes it).
+var prefMenuSpecialLabels = map[string]string{
+	"_remote_hosts": "Remote (expands per host)",
+	menuKindSubmenu: "Submenu",
+	"separator":     "---",
+}
 
 // newMenuEditorItem builds the entry the Add combo's current selection
 // describes — a named empty submenu for the sentinel, otherwise an
@@ -113,7 +89,7 @@ func newMenuEditorItem(kind string) menuEditorItem {
 	if kind == menuKindSubmenu {
 		return menuEditorItem{label: "Submenu", isSubmenu: true}
 	}
-	it := menuEditorItem{label: prefMenuLabels[kind], action: kind}
+	it := menuEditorItem{label: menuAddLabel(kind), action: kind}
 	if kind == "toggle_opacity" {
 		// Bind the live force-opaque state so the row renders its
 		// checkmark — the same binding the default config entry ships
@@ -121,39 +97,6 @@ func newMenuEditorItem(kind string) menuEditorItem {
 		it.checked = "force_opaque"
 	}
 	return it
-}
-
-// Keep alphabetical by key, same as prefMenuActions.
-var prefMenuLabels = map[string]string{
-	"_remote_hosts":    "Remote (expands per host)",
-	"_submenu":         "Submenu",
-	"clear_scrollback": "Clear Scrollback",
-	"close_tab":        "Close Tab",
-	"connect_remote":   "Connect to host...",
-	"copy":             "Copy",
-	"copy_link":        "Copy Link",
-	"font_size_down":   "Font Size Down",
-	"font_size_reset":  "Font Size Reset",
-	"font_size_up":     "Font Size Up",
-	"fullscreen":       "Fullscreen",
-	"new_tab":          "New Tab",
-	"new_window":       "New Window",
-	"next_tab":         "Next Tab",
-	"open_link":        "Open Link",
-	"paste":            "Paste",
-	"paste_selection":  "Paste Selection",
-	"preferences":      "Preferences",
-	"prev_tab":         "Previous Tab",
-	"rename_tab":       "Rename Tab",
-	"reset_terminal":   "Reset Terminal",
-	"scroll_bottom":    "Scroll to Bottom",
-	"scroll_page_down": "Scroll Page Down",
-	"scroll_page_up":   "Scroll Page Up",
-	"scroll_top":       "Scroll to Top",
-	"search":           "Search...",
-	"select_all":       "Select All",
-	"separator":        "---",
-	"toggle_opacity":   "Toggle Opacity",
 }
 
 // menuAddOption pairs a friendly display label with the action (or
@@ -167,30 +110,45 @@ type menuAddOption struct {
 }
 
 func menuAddLabel(action string) string {
-	if l, ok := prefMenuLabels[action]; ok && l != "" {
+	if l, ok := prefMenuSpecialLabels[action]; ok {
 		return l
+	}
+	if a, ok := actionRegistry[action]; ok && a.Label != "" {
+		return a.Label
 	}
 	return action
 }
 
-func buildMenuAddSorted() ([]menuAddOption, []string) {
-	opts := make([]menuAddOption, 0, len(prefMenuAddOptions))
-	for _, a := range prefMenuAddOptions {
-		opts = append(opts, menuAddOption{label: menuAddLabel(a), action: a})
+// prefMenuAddSorted / prefMenuAddLabels are the Add combo's options
+// sorted by friendly label, built LAZILY on the first prefs render.
+// They cannot be eager package vars: the registry populates in
+// init() functions, which run AFTER package-var initialization — an
+// eager build would see an empty registry.
+var prefMenuAddSorted []menuAddOption
+var prefMenuAddLabels []string
+
+func ensureMenuAddOptions() {
+	if prefMenuAddSorted != nil {
+		return
+	}
+	ids := make([]string, 0, len(actionRegistry)+3)
+	ids = append(ids, "_remote_hosts", "separator", menuKindSubmenu)
+	for id, a := range actionRegistry {
+		if a.Arg == NoArg {
+			ids = append(ids, id)
+		}
+	}
+	opts := make([]menuAddOption, 0, len(ids))
+	for _, act := range ids {
+		opts = append(opts, menuAddOption{label: menuAddLabel(act), action: act})
 	}
 	sort.Slice(opts, func(i, j int) bool { return opts[i].label < opts[j].label })
 	labels := make([]string, len(opts))
 	for i, o := range opts {
 		labels[i] = o.label
 	}
-	return opts, labels
+	prefMenuAddSorted, prefMenuAddLabels = opts, labels
 }
-
-// prefMenuAddSorted / prefMenuAddLabels are the Add combo's options
-// sorted by friendly label, built once at init. Go orders package-var
-// initialization by dependency, so this safely reads prefMenuAddOptions
-// + prefMenuLabels.
-var prefMenuAddSorted, prefMenuAddLabels = buildMenuAddSorted()
 
 // configDialog holds state for the preferences window.
 type configDialog struct {
@@ -834,6 +792,7 @@ func (a *Window) applyPreferences() {
 
 // renderPreferences draws the preferences window each frame.
 func (a *Window) renderPreferences() {
+	ensureMenuAddOptions()
 	if !a.prefDialog.open {
 		return
 	}

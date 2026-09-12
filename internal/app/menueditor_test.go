@@ -43,6 +43,7 @@ func TestMenuEditorRoundTrip(t *testing.T) {
 // index must still map back to the correct action. A reorder bug here
 // would silently add the wrong menu item.
 func TestMenuAddSortedMapping(t *testing.T) {
+	ensureMenuAddOptions() // lazily built from the action registry
 	// Labels must be sorted ascending.
 	for i := 1; i < len(prefMenuAddLabels); i++ {
 		if prefMenuAddLabels[i-1] > prefMenuAddLabels[i] {
@@ -60,14 +61,20 @@ func TestMenuAddSortedMapping(t *testing.T) {
 				i, prefMenuAddLabels[i], action, menuAddLabel(action))
 		}
 	}
-	// Every original option (incl. the _submenu sentinel) is still reachable.
+	// Every option the registry implies (NoArg actions + grammar
+	// tokens, incl. the _submenu sentinel) is still reachable.
 	got := map[string]bool{}
 	for i := range prefMenuAddSorted {
 		got[menuAddSelection(int32(i))] = true
 	}
-	for _, a := range prefMenuAddOptions {
-		if !got[a] {
-			t.Fatalf("action %q dropped from the sorted Add combo", a)
+	for id, a := range actionRegistry {
+		if a.Arg == NoArg && !got[id] {
+			t.Fatalf("action %q dropped from the sorted Add combo", id)
+		}
+	}
+	for _, tok := range []string{"separator", "_remote_hosts", menuKindSubmenu} {
+		if !got[tok] {
+			t.Fatalf("grammar token %q dropped from the sorted Add combo", tok)
 		}
 	}
 	// Out-of-range never yields a wrong/garbage action.
@@ -93,6 +100,7 @@ func TestSelectedAddActionCreatesCorrectItem(t *testing.T) {
 		return -1
 	}
 
+	ensureMenuAddOptions() // lazily built from the action registry
 	d := &configDialog{}
 
 	// "Submenu" → an empty, named submenu container (no action).
