@@ -5197,11 +5197,26 @@ func (w *Window) renderProposalGate() {
 		return
 	}
 
+	// Pin to the wrapper's viewport + a fixed spot below the tab bar.
+	// Without the pin, multi-viewport's auto-pop-out detaches this
+	// banner into its own OS window that can float BEHIND the terminal
+	// or land off-screen — "something popped up and disappeared" — the
+	// same disease the search overlay's SetNextWindowViewport fixed.
+	if w.imViewport != nil {
+		imgui.SetNextWindowViewport(w.imViewport.ID())
+	}
+	imgui.SetNextWindowPosV(
+		imgui.Vec2{X: w.contentOriginX + float32(w.width)/2, Y: w.contentOriginY + w.tabBarH + 8},
+		imgui.CondAlways,
+		imgui.Vec2{X: 0.5, Y: 0},
+	)
 	imgui.SetNextWindowBgAlpha(0.92)
 	flags := imgui.WindowFlags(imgui.WindowFlagsNoCollapse |
 		imgui.WindowFlagsAlwaysAutoResize |
 		imgui.WindowFlagsNoSavedSettings |
-		imgui.WindowFlagsNoFocusOnAppearing)
+		imgui.WindowFlagsNoFocusOnAppearing |
+		imgui.WindowFlagsNoMove |
+		imgui.WindowFlagsNoDocking)
 	if !imgui.BeginV("Agent proposals"+w.imguiSuffix(), nil, flags) {
 		imgui.End()
 		return
