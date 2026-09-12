@@ -667,7 +667,14 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 	if c.modeIs("propose") {
 		// Queue silently — UI gate consumer lands later.
 		sess.QueueProposedInput(uint32(p.TabID), []byte(p.Bytes))
-		return ok(req.ID, map[string]bool{"queued": true})
+		return ok(req.ID, map[string]any{
+			"queued": true,
+			"typed":  false,
+			"note": "propose mode: input was QUEUED as a proposal, NOT typed into the tab — " +
+				"the screen will not change until a human approves it in the GUI. " +
+				"Do not re-send or try different key encodings; the keys were fine. " +
+				"If you are authorized to act directly, call set_agent_mode {\"mode\":\"auto\"} and retry.",
+		})
 	}
 	if _, err := t.Term.Write([]byte(p.Bytes)); err != nil {
 		return rpcErr(req.ID, -32000, "write: "+err.Error(), nil)
@@ -710,7 +717,14 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 	}
 	if c.modeIs("propose") {
 		sess.QueueProposedInput(uint32(p.TabID), buf)
-		return ok(req.ID, map[string]bool{"queued": true})
+		return ok(req.ID, map[string]any{
+			"queued": true,
+			"typed":  false,
+			"note": "propose mode: input was QUEUED as a proposal, NOT typed into the tab — " +
+				"the screen will not change until a human approves it in the GUI. " +
+				"Do not re-send or try different key encodings; the keys were fine. " +
+				"If you are authorized to act directly, call set_agent_mode {\"mode\":\"auto\"} and retry.",
+		})
 	}
 	if _, err := t.Term.Write(buf); err != nil {
 		return rpcErr(req.ID, -32000, "write: "+err.Error(), nil)
@@ -739,7 +753,14 @@ func (c *agentConn) handleTabPaste(req *rpcRequest) *rpcResponse {
 	}
 	if c.modeIs("propose") {
 		sess.QueueProposedPaste(uint32(p.TabID), p.Text)
-		return ok(req.ID, map[string]bool{"queued": true})
+		return ok(req.ID, map[string]any{
+			"queued": true,
+			"typed":  false,
+			"note": "propose mode: input was QUEUED as a proposal, NOT typed into the tab — " +
+				"the screen will not change until a human approves it in the GUI. " +
+				"Do not re-send or try different key encodings; the keys were fine. " +
+				"If you are authorized to act directly, call set_agent_mode {\"mode\":\"auto\"} and retry.",
+		})
 	}
 	t.Term.Paste(p.Text)
 	return ok(req.ID, map[string]bool{"ok": true})
