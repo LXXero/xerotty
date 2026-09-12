@@ -252,6 +252,30 @@ func (d *Daemon) broadcastBell(tabID uint32) {
 // and skip new growth) and ships MsgScrollbackCleared so client-side
 // mirrors drop too — both done on the publish goroutine to stay
 // ordered against in-flight appends.
+// wakeTabSubs nudges every attached client's publish loop for one
+// tab — used after a rename so the new TabState.Name reaches all
+// clients now rather than on the next state tick.
+func (d *Daemon) wakeTabSubs(tabID uint32) {
+	d.clientsMu.Lock()
+	conns := make([]*clientConn, 0, len(d.clients))
+	for c := range d.clients {
+		conns = append(conns, c)
+	}
+	d.clientsMu.Unlock()
+	for _, c := range conns {
+		c.subsMu.Lock()
+		sub, ok := c.subs[tabID]
+		c.subsMu.Unlock()
+		if !ok {
+			continue
+		}
+		select {
+		case sub.wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (d *Daemon) broadcastScrollbackCleared(tabID uint32) {
 	d.clientsMu.Lock()
 	conns := make([]*clientConn, 0, len(d.clients))

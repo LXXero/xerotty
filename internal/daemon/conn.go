@@ -448,6 +448,10 @@ type tabSub struct {
 	// signal each sub's own wake instead. cap 1 — coalescing is fine.
 	wake chan struct{}
 
+	// lastName mirrors sub.lastTitle for the assigned label — part of
+	// the TabState metaSame dedupe.
+	lastName string
+
 	// clearPending is set by broadcastScrollbackCleared (off the
 	// publish goroutine) and consumed by sendNewScrollback ON the
 	// publish goroutine. Routing the reset + MsgScrollbackCleared send
@@ -760,6 +764,21 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		logf("client %q requested kick of %q", c.clientID, msg.ClientID)
 		c.daemon.KickClient(msg.ClientID)
 		return nil
+	case protocol.MsgTabRename:
+		var msg protocol.TabRename
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		if c.session == nil {
+			return nil
+		}
+		if c.session.RenameTab(msg.ID, msg.Name) {
+			logf("tab %d renamed to %q by %q", msg.ID, msg.Name, c.clientID)
+			// Wake every subscriber's publish loop so the new name
+			// flows in the next TabState instead of the next tick.
+			c.daemon.wakeTabSubs(msg.ID)
+		}
+		return nil
 	default:
 		return fmt.Errorf("unknown message type %v", t)
 	}
@@ -894,6 +913,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	c.send(protocol.MsgTabCreated, &protocol.TabCreated{
 		Info: protocol.TabInfo{
 			ID:    t.ID,
+			Name:  t.Name(),
 			Title: t.Title(),
 			Cols:  uint16(t.Term.Width()),
 			Rows:  uint16(t.Term.Height()),
@@ -1441,12 +1461,14 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	appCursor := t.Term.AppCursorMode()
 	altScreen := t.Term.IsAltScreen()
 	title := t.Title()
+	name := t.Name()
 	now := time.Now()
 	lastOut := t.Term.LastOutput()
 	lastIn := t.Term.LastInput()
 
 	metaSame := sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg &&
-		appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen && title == sub.lastTitle
+		appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen &&
+		title == sub.lastTitle && name == sub.lastName
 	// Refresh purely-activity changes at most ~1/sec; a truly idle tab
 	// (no advance) sends nothing — the client ticks the age locally.
 	activityAdvanced := lastOut.After(sub.sentLastOut) || lastIn.After(sub.sentLastIn)
@@ -1458,6 +1480,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	sub.lastAppCursor = appCursor
 	sub.lastAltScreen = altScreen
 	sub.lastTitle = title
+	sub.lastName = name
 	sub.activitySentAt = now
 	sub.sentLastOut = lastOut
 	sub.sentLastIn = lastIn
@@ -1469,6 +1492,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 		AppCursorMode:         appCursor,
 		AltScreen:             altScreen,
 		Title:                 title,
+		Name:                  name,
 		LastOutputAgeMs:       tabAgeMs(now, lastOut),
 		LastInputAgeMs:        tabAgeMs(now, lastIn),
 	})

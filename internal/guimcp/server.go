@@ -72,6 +72,7 @@ type Backend interface {
 type TabRef struct {
 	NSID       string // "<host>:<tabid>"
 	Host       string
+	Name       string // assigned label (MCP name / rename), daemon-authoritative
 	Title      string
 	Cols       int
 	Rows       int
@@ -262,6 +263,7 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 		out[i] = map[string]any{
 			"id":                 r.NSID,
 			"host":               r.Host,
+			"name":               r.Name,
 			"title":              r.Title,
 			"cols":               r.Cols,
 			"rows":               r.Rows,

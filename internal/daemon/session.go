@@ -79,6 +79,20 @@ func (t *Tab) Title() string {
 	return t.title
 }
 
+// Name returns the tab's assigned label ("" = unnamed). Safe for
+// concurrent use with RenameTab.
+func (t *Tab) Name() string {
+	t.nameMu.RLock()
+	defer t.nameMu.RUnlock()
+	return t.name
+}
+
+func (t *Tab) setName(n string) {
+	t.nameMu.Lock()
+	t.name = n
+	t.nameMu.Unlock()
+}
+
 // SetTitle updates the tab title. Called by the OnTitle callback
 // installed in NewTab. Exposed for tests; production code uses
 // the callback.
@@ -244,13 +258,13 @@ func (s *Session) SetClipboard(text string) {
 type Tab struct {
 	ID uint32
 
-	// Name is an optional agent-chosen label, set once at creation
-	// and never mutated — that write-once-before-publish discipline
-	// (set under s.mu before the tab enters s.tabs) is what makes it
-	// safe to read without a per-field lock, unlike `title`. Empty
-	// for tabs spawned without a name. The reuse key for
-	// FindOrCreateTab.
-	Name string
+	// name is the assigned label — agent-chosen at creation (the
+	// reuse key for FindOrCreateTab) or set later by MsgTabRename.
+	// Since v10 it is MUTABLE (renames), so it gets the same lock
+	// treatment as title; the tabsByName index stays consistent
+	// under Session.mu (see RenameTab). Access via Name()/setName.
+	nameMu sync.RWMutex
+	name   string
 	// title is set from the OnTitle callback (PTY reader goroutine)
 	// and read from publishLoop (separate goroutine). Guard with
 	// titleMu — straight string field had a -race-flagged race.
@@ -392,7 +406,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	defer s.mu.Unlock()
 	t := &Tab{
 		ID:     s.nextTabID,
-		Name:   name,
+		name:   name,
 		Term:   term,
 		Exited: make(chan struct{}),
 	}
@@ -655,6 +669,7 @@ func (s *Session) TopologySnapshot() protocol.TopologyChanged {
 	for i, t := range ordered {
 		tabs[i] = protocol.TabInfo{
 			ID:    t.ID,
+			Name:  t.Name(),
 			Title: t.Title(),
 			Cols:  uint16(t.Term.Width()),
 			Rows:  uint16(t.Term.Height()),
@@ -809,8 +824,8 @@ func (s *Session) CloseTab(id uint32) {
 		return
 	}
 	delete(s.tabs, id)
-	if t.Name != "" {
-		delete(s.tabsByName, t.Name)
+	if n := t.Name(); n != "" {
+		delete(s.tabsByName, n)
 	}
 	for _, w := range s.windows {
 		for i, tid := range w.TabIDs {
@@ -840,4 +855,31 @@ func (s *Session) CloseTab(id uint32) {
 	s.revision++
 	s.mu.Unlock()
 	t.Term.Close()
+}
+
+// RenameTab sets a tab's assigned name, keeping the tabsByName reuse
+// index consistent. A name already claimed by a DIFFERENT live tab is
+// rejected (returns false) — names double as idempotency keys for
+// find-or-create, so collisions must not silently merge identities.
+// Empty name clears the label.
+func (s *Session) RenameTab(id uint32, name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tabs[id]
+	if !ok {
+		return false
+	}
+	if name != "" {
+		if other, taken := s.tabsByName[name]; taken && other != id {
+			return false
+		}
+	}
+	if old := t.Name(); old != "" {
+		delete(s.tabsByName, old)
+	}
+	t.setName(name)
+	if name != "" {
+		s.tabsByName[name] = id
+	}
+	return true
 }

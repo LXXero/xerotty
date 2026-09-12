@@ -561,6 +561,14 @@ func (c *Client) SendTabFocus(id uint32) error {
 	return c.send(protocol.MsgTabFocus, &protocol.TabFocus{ID: id})
 }
 
+// SendTabRename sets a tab's assigned name (label) daemon-side.
+// Empty name clears it. The daemon broadcasts the result to every
+// attached client via TabState, so renames sync across GUIs and
+// survive serve --upgrade.
+func (c *Client) SendTabRename(id uint32, name string) error {
+	return c.send(protocol.MsgTabRename, &protocol.TabRename{ID: id, Name: name})
+}
+
 // SendResize asks the daemon to resize a tab's grid.
 func (c *Client) SendResize(id uint32, cols, rows uint16) error {
 	return c.send(protocol.MsgResize, &protocol.Resize{

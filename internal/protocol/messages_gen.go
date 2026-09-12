@@ -7472,6 +7472,12 @@ func (z *TabCreatedInfo) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ID")
 				return
 			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		case "title":
 			z.Title, err = dc.ReadString()
 			if err != nil {
@@ -7503,46 +7509,74 @@ func (z *TabCreatedInfo) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *TabCreatedInfo) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 4
-	// write "id"
-	err = en.Append(0x84, 0xa2, 0x69, 0x64)
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint32(z.ID)
-	if err != nil {
-		err = msgp.WrapError(err, "ID")
-		return
-	}
-	// write "title"
-	err = en.Append(0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
-	if err != nil {
-		return
-	}
-	err = en.WriteString(z.Title)
-	if err != nil {
-		err = msgp.WrapError(err, "Title")
-		return
-	}
-	// write "cols"
-	err = en.Append(0xa4, 0x63, 0x6f, 0x6c, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint16(z.Cols)
-	if err != nil {
-		err = msgp.WrapError(err, "Cols")
-		return
-	}
-	// write "rows"
-	err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint16(z.Rows)
-	if err != nil {
-		err = msgp.WrapError(err, "Rows")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
+		// write "title"
+		err = en.Append(0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Title)
+		if err != nil {
+			err = msgp.WrapError(err, "Title")
+			return
+		}
+		// write "cols"
+		err = en.Append(0xa4, 0x63, 0x6f, 0x6c, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.Cols)
+		if err != nil {
+			err = msgp.WrapError(err, "Cols")
+			return
+		}
+		// write "rows"
+		err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.Rows)
+		if err != nil {
+			err = msgp.WrapError(err, "Rows")
+			return
+		}
 	}
 	return
 }
@@ -7550,19 +7584,37 @@ func (z *TabCreatedInfo) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *TabCreatedInfo) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 4
-	// string "id"
-	o = append(o, 0x84, 0xa2, 0x69, 0x64)
-	o = msgp.AppendUint32(o, z.ID)
-	// string "title"
-	o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
-	o = msgp.AppendString(o, z.Title)
-	// string "cols"
-	o = append(o, 0xa4, 0x63, 0x6f, 0x6c, 0x73)
-	o = msgp.AppendUint16(o, z.Cols)
-	// string "rows"
-	o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
-	o = msgp.AppendUint16(o, z.Rows)
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
+		}
+		// string "title"
+		o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
+		o = msgp.AppendString(o, z.Title)
+		// string "cols"
+		o = append(o, 0xa4, 0x63, 0x6f, 0x6c, 0x73)
+		o = msgp.AppendUint16(o, z.Cols)
+		// string "rows"
+		o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
+		o = msgp.AppendUint16(o, z.Rows)
+	}
 	return
 }
 
@@ -7588,6 +7640,12 @@ func (z *TabCreatedInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
 			if err != nil {
 				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
 				return
 			}
 		case "title":
@@ -7622,7 +7680,7 @@ func (z *TabCreatedInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabCreatedInfo) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
+	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.Name) + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
 	return
 }
 
@@ -7753,6 +7811,12 @@ func (z *TabInfo) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "ID")
 				return
 			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		case "title":
 			z.Title, err = dc.ReadString()
 			if err != nil {
@@ -7784,46 +7848,74 @@ func (z *TabInfo) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *TabInfo) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 4
-	// write "id"
-	err = en.Append(0x84, 0xa2, 0x69, 0x64)
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint32(z.ID)
-	if err != nil {
-		err = msgp.WrapError(err, "ID")
-		return
-	}
-	// write "title"
-	err = en.Append(0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
-	if err != nil {
-		return
-	}
-	err = en.WriteString(z.Title)
-	if err != nil {
-		err = msgp.WrapError(err, "Title")
-		return
-	}
-	// write "cols"
-	err = en.Append(0xa4, 0x63, 0x6f, 0x6c, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint16(z.Cols)
-	if err != nil {
-		err = msgp.WrapError(err, "Cols")
-		return
-	}
-	// write "rows"
-	err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint16(z.Rows)
-	if err != nil {
-		err = msgp.WrapError(err, "Rows")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
+		// write "title"
+		err = en.Append(0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Title)
+		if err != nil {
+			err = msgp.WrapError(err, "Title")
+			return
+		}
+		// write "cols"
+		err = en.Append(0xa4, 0x63, 0x6f, 0x6c, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.Cols)
+		if err != nil {
+			err = msgp.WrapError(err, "Cols")
+			return
+		}
+		// write "rows"
+		err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.Rows)
+		if err != nil {
+			err = msgp.WrapError(err, "Rows")
+			return
+		}
 	}
 	return
 }
@@ -7831,19 +7923,37 @@ func (z *TabInfo) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *TabInfo) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 4
-	// string "id"
-	o = append(o, 0x84, 0xa2, 0x69, 0x64)
-	o = msgp.AppendUint32(o, z.ID)
-	// string "title"
-	o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
-	o = msgp.AppendString(o, z.Title)
-	// string "cols"
-	o = append(o, 0xa4, 0x63, 0x6f, 0x6c, 0x73)
-	o = msgp.AppendUint16(o, z.Cols)
-	// string "rows"
-	o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
-	o = msgp.AppendUint16(o, z.Rows)
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
+		}
+		// string "title"
+		o = append(o, 0xa5, 0x74, 0x69, 0x74, 0x6c, 0x65)
+		o = msgp.AppendString(o, z.Title)
+		// string "cols"
+		o = append(o, 0xa4, 0x63, 0x6f, 0x6c, 0x73)
+		o = msgp.AppendUint16(o, z.Cols)
+		// string "rows"
+		o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
+		o = msgp.AppendUint16(o, z.Rows)
+	}
 	return
 }
 
@@ -7869,6 +7979,12 @@ func (z *TabInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
 			if err != nil {
 				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
 				return
 			}
 		case "title":
@@ -7903,7 +8019,168 @@ func (z *TabInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabInfo) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
+	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.Name) + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *TabRename) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, err = dc.ReadUint32()
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z TabRename) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z TabRename) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(2)
+	var zb0001Mask uint8 /* 2 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *TabRename) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "id":
+			z.ID, bts, err = msgp.ReadUint32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ID")
+				return
+			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z TabRename) Msgsize() (s int) {
+	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.Name)
 	return
 }
 
@@ -7961,6 +8238,12 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Title")
 				return
 			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		case "last_out_age_ms":
 			z.LastOutputAgeMs, err = dc.ReadInt64()
 			if err != nil {
@@ -7987,8 +8270,8 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(8)
-	var zb0001Mask uint8 /* 8 bits */
+	zb0001Len := uint32(9)
+	var zb0001Mask uint16 /* 9 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -8006,13 +8289,17 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 		zb0001Len--
 		zb0001Mask |= 0x20
 	}
-	if z.LastOutputAgeMs == 0 {
+	if z.Name == "" {
 		zb0001Len--
 		zb0001Mask |= 0x40
 	}
-	if z.LastInputAgeMs == 0 {
+	if z.LastOutputAgeMs == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x80
+	}
+	if z.LastInputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x100
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -8091,6 +8378,18 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 			}
 		}
 		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
 			// write "last_out_age_ms"
 			err = en.Append(0xaf, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x6f, 0x75, 0x74, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
 			if err != nil {
@@ -8102,7 +8401,7 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
-		if (zb0001Mask & 0x80) == 0 { // if not omitted
+		if (zb0001Mask & 0x100) == 0 { // if not omitted
 			// write "last_in_age_ms"
 			err = en.Append(0xae, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69, 0x6e, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
 			if err != nil {
@@ -8122,8 +8421,8 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(8)
-	var zb0001Mask uint8 /* 8 bits */
+	zb0001Len := uint32(9)
+	var zb0001Mask uint16 /* 9 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -8141,13 +8440,17 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 		zb0001Len--
 		zb0001Mask |= 0x20
 	}
-	if z.LastOutputAgeMs == 0 {
+	if z.Name == "" {
 		zb0001Len--
 		zb0001Mask |= 0x40
 	}
-	if z.LastInputAgeMs == 0 {
+	if z.LastOutputAgeMs == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x80
+	}
+	if z.LastInputAgeMs == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x100
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -8181,11 +8484,16 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 			o = msgp.AppendString(o, z.Title)
 		}
 		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
 			// string "last_out_age_ms"
 			o = append(o, 0xaf, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x6f, 0x75, 0x74, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
 			o = msgp.AppendInt64(o, z.LastOutputAgeMs)
 		}
-		if (zb0001Mask & 0x80) == 0 { // if not omitted
+		if (zb0001Mask & 0x100) == 0 { // if not omitted
 			// string "last_in_age_ms"
 			o = append(o, 0xae, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69, 0x6e, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
 			o = msgp.AppendInt64(o, z.LastInputAgeMs)
@@ -8248,6 +8556,12 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Title")
 				return
 			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
 		case "last_out_age_ms":
 			z.LastOutputAgeMs, bts, err = msgp.ReadInt64Bytes(bts)
 			if err != nil {
@@ -8274,7 +8588,7 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabState) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title) + 16 + msgp.Int64Size + 15 + msgp.Int64Size
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.StringPrefixSize + len(z.Name) + 16 + msgp.Int64Size + 15 + msgp.Int64Size
 	return
 }
 

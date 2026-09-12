@@ -1306,6 +1306,7 @@ func (a *App) ListTabs() []guimcp.TabRef {
 		for _, src := range hub.Sources() {
 			refs = append(refs, guimcp.TabRef{
 				NSID:       guimcp.MakeNSID(name, src.TabID()),
+				Name:       src.Name(),
 				Host:       name,
 				Title:      src.Title(),
 				Cols:       src.Width(),
@@ -6313,6 +6314,20 @@ func (w *Window) drawScrollbar(tab *tabs.Tab, scrollOff int, drawList *imgui.Dra
 	}
 }
 
+// commitTabRename applies a rename-dialog result. Daemon-backed tabs
+// send it over the wire (daemon-authoritative: every client syncs via
+// TabState and the label survives serve --upgrade); local pty tabs
+// set the tab's name field. Neither touches the OSC-title slot —
+// renames used to live there, where the app→shell stale-title
+// auto-clear could silently eat them.
+func commitTabRename(tab *tabs.Tab, name string) {
+	if src, ok := tab.Terminal.(*daemonsource.Source); ok {
+		src.Rename(name)
+		return
+	}
+	tab.SetName(name)
+}
+
 func (w *Window) pasteText(text string) {
 	tab := w.tabs.Active()
 	if tab == nil {
@@ -6452,14 +6467,14 @@ func (w *Window) renderRenameDialog() {
 
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.SetTitle(w.renameBuffer)
+				commitTabRename(tab, w.renameBuffer)
 			}
 			w.renamingTab = false
 		}
 
 		if imgui.Button("OK") {
 			if tab := w.tabs.Active(); tab != nil {
-				tab.SetTitle(w.renameBuffer)
+				commitTabRename(tab, w.renameBuffer)
 			}
 			w.renamingTab = false
 		}

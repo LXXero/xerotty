@@ -108,6 +108,9 @@ type Source struct {
 	// lastTitle suppresses redundant SetOnTitle callbacks when the
 	// daemon re-ships the same title on each TabState tick.
 	lastTitle string
+	// name is the assigned label mirrored from TabState.Name (daemon-
+	// authoritative; see Name/Rename).
+	name string
 
 	// onBell is the GUI's bell callback. Fires from applyBell on
 	// every MsgBell frame.
@@ -193,6 +196,30 @@ func (s *Source) Title() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastTitle
+}
+
+// Name returns the tab's assigned label (MCP name / user rename)
+// as last reported by the daemon via TabState/TabCreated — the
+// daemon-authoritative value, so every client and both MCP sockets
+// agree and renames survive serve --upgrade.
+func (s *Source) Name() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+
+// Rename asks the daemon to set this tab's assigned name. The local
+// mirror updates optimistically for instant UI feedback; the daemon's
+// TabState broadcast confirms (or, on a name collision, reverts) it
+// on the next state push.
+func (s *Source) Rename(name string) {
+	if s.closed.Load() || s.reconnecting.Load() {
+		return
+	}
+	s.mu.Lock()
+	s.name = name
+	s.mu.Unlock()
+	_ = s.hub.client().SendTabRename(s.tabID, name)
 }
 
 // TabID returns the daemon-side tab ID this Source is bound to.
@@ -748,6 +775,7 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 	s.mu.Lock()
 	s.cwd = f.CWD
 	s.fgName = f.ForegroundProcessName
+	s.name = f.Name
 	cb := s.onTitle
 	lastTitle := s.lastTitle
 	s.mu.Unlock()

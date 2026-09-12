@@ -98,7 +98,7 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 		pos := term.CursorPosition()
 		style, blink, styleSet := term.CursorStyle()
 		ts := handoff.TabState{
-			ID: t.ID, Name: t.Name, Title: t.Title(),
+			ID: t.ID, Name: t.Name(), Title: t.Title(),
 			CWD:  term.GetCWD(),
 			Cols: term.Width(), Rows: term.Height(),
 			CursorRow: pos.Y, CursorCol: pos.X,
@@ -216,7 +216,7 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 	}
 	t := &Tab{
 		ID:     ts.ID,
-		Name:   ts.Name,
+		name:   ts.Name,
 		Term:   term,
 		Exited: make(chan struct{}),
 	}

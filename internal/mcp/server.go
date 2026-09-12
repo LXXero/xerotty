@@ -296,7 +296,7 @@ func (c *agentConn) handleTabCreate(req *rpcRequest) *rpcResponse {
 		"tab_id": t.ID,
 		"cols":   t.Term.Width(),
 		"rows":   t.Term.Height(),
-		"name":   t.Name,
+		"name":   t.Name(),
 		"reused": !created,
 	})
 }
@@ -520,7 +520,7 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 		}
 		out = append(out, tabSummary{
 			ID:              t.ID,
-			Name:            t.Name,
+			Name:            t.Name(),
 			Title:           t.Title(),
 			Cols:            uint16(t.Term.Width()),
 			Rows:            uint16(t.Term.Height()),

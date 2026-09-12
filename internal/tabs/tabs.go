@@ -44,6 +44,17 @@ type Tab struct {
 	titleMu sync.RWMutex
 	title   string
 
+	// name is the user/agent-assigned label for LOCAL (pty) tabs —
+	// top display priority, and unlike the OSC title it is never
+	// auto-cleared by the app→shell stale-title logic (renames used
+	// to ride the OSC slot and vim's exit could eat them). Daemon-
+	// backed tabs do NOT use this: their assigned name lives
+	// daemon-side and is read live through the namer interface in
+	// titleBase, so all clients agree and renames survive
+	// serve --upgrade.
+	nameMu sync.RWMutex
+	name   string
+
 	// bellPending is set (off the render thread) when the tab's
 	// terminal rang the bell while not focused; the tab bar
 	// renders an urgency marker (●) and clears it on focus.
@@ -75,6 +86,36 @@ func (t *Tab) DisplayTitle() string {
 	return base
 }
 
+// Name returns the assigned label for a local tab ("" = none).
+func (t *Tab) Name() string {
+	t.nameMu.RLock()
+	defer t.nameMu.RUnlock()
+	return t.name
+}
+
+// SetName assigns a local tab's label (rename dialog). Daemon-backed
+// tabs rename via daemonsource.Source.Rename instead.
+func (t *Tab) SetName(n string) {
+	t.nameMu.Lock()
+	t.name = n
+	t.nameMu.Unlock()
+}
+
+// namer is implemented by daemon-backed sources: the assigned label
+// (MCP name / rename) mirrored from the daemon. Reading it live here
+// means renames from OTHER clients show up with no sync plumbing.
+type namer interface{ Name() string }
+
+// AssignedName resolves the tab's label: the daemon-authoritative
+// name for daemon-backed tabs, the local name for pty tabs. "" when
+// unnamed.
+func (t *Tab) AssignedName() string {
+	if n, ok := t.Terminal.(namer); ok {
+		return n.Name()
+	}
+	return t.Name()
+}
+
 // Title returns the OSC-set title (thread-safe).
 func (t *Tab) Title() string {
 	t.titleMu.RLock()
@@ -97,6 +138,11 @@ func (t *Tab) BellPending() bool { return t.bellPending.Load() }
 func (t *Tab) SetBellPending(b bool) { t.bellPending.Store(b) }
 
 func (t *Tab) titleBase() string {
+	// An assigned label beats everything — it's the one the user or
+	// an agent chose on purpose.
+	if n := t.AssignedName(); n != "" {
+		return n
+	}
 	// Refresh the foreground process (throttled) BEFORE reading the
 	// OSC title, so a stale title can be cleared first.
 	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {

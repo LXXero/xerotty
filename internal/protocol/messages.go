@@ -59,7 +59,14 @@ package protocol
 //       A v8 daemon ignores the requests, so the client would show
 //       blank cold history and search only its window — the handshake
 //       gate forces a clean version error instead.
-const ProtocolVersion uint16 = 9
+//  10 — added MsgTabRename (client → server) making tab labels
+//       daemon-authoritative: renames used to live only in GUI
+//       memory, so a serve --upgrade reattach wiped them and the
+//       daemon/GUI MCP sockets disagreed about names. TabInfo and
+//       TabState grew Name (additive), but the new client→server
+//       message errors a v9 daemon's read loop, so the handshake
+//       gate must force the version pair.
+const ProtocolVersion uint16 = 10
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-
@@ -128,6 +135,8 @@ const (
 	MsgClientsListReq    MsgType = 49 // client → server: list attached wire clients
 	MsgClientsList       MsgType = 50 // server → client: reply for ClientsListReq
 	MsgClientKick        MsgType = 51 // client → server: force-disconnect a client by id
+
+	MsgTabRename MsgType = 52 // client → server: set a tab's assigned name (label)
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -204,7 +213,10 @@ type WindowInfo struct {
 // TabInfo is a slim summary of a tab sent at attach time. Full cell
 // state comes via CellFull after the client requests it.
 type TabInfo struct {
-	ID    uint32 `msg:"id"`
+	ID uint32 `msg:"id"`
+	// Name is the tab's assigned label (MCP-created name or a user
+	// rename) — daemon-authoritative, distinct from the OSC Title.
+	Name  string `msg:"name,omitempty"`
 	Title string `msg:"title"`
 	Cols  uint16 `msg:"cols"`
 	Rows  uint16 `msg:"rows"`
@@ -260,6 +272,15 @@ type TabClose struct {
 // the focused tab over background tabs.
 type TabFocus struct {
 	ID uint32 `msg:"id"`
+}
+
+// TabRename sets a tab's assigned name (the label, not the OSC
+// title). Empty Name clears it. The daemon rejects (ignores) a
+// rename that would collide with another live tab's name — names
+// double as idempotency keys for MCP create_tab.
+type TabRename struct {
+	ID   uint32 `msg:"id"`
+	Name string `msg:"name,omitempty"`
 }
 
 // TabCreate (revised) — now optionally attaches the new tab to a
@@ -569,6 +590,11 @@ type TabState struct {
 	// already shares the "slow-changing per-tab metadata" cadence
 	// with cwd/fg_proc/app_cursor. Empty = no title set yet.
 	Title string `msg:"title,omitempty"`
+	// Name is the assigned label (MCP name / user rename), pushed on
+	// the same cadence so every client mirrors renames live and a
+	// reattach after serve --upgrade can't lose them. Empty = no
+	// assigned name (display falls back to Title / fg proc).
+	Name string `msg:"name,omitempty"`
 
 	// LastOutputAgeMs / LastInputAgeMs are the tab's activity age at
 	// SEND time — ms since the daemon last saw PTY output / input.
