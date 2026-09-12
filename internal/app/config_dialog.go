@@ -34,6 +34,7 @@ var (
 	prefCursorStyles = []string{"block", "underline", "bar"}
 	prefSBModes      = []string{"memory", "unlimited"}
 	prefSBVisible    = []string{"always", "never", "auto"}
+	prefMCPModes     = []string{"observe", "propose", "auto"}
 	prefChildExits   = []string{"close", "hold", "hold_on_error"}
 	prefCloseBtnPos  = []string{"right", "left"}
 	// prefTabSourcesBase is the always-available subset. Remote
@@ -268,6 +269,11 @@ type configDialog struct {
 	sbVisIdx   int32
 	sbWidth    int32
 	sbMinThumb int32
+
+	// Agents (MCP trust model — the local daemon's socket)
+	mcpModeIdx     int32
+	mcpAllowChange bool
+	mcpToken       string
 
 	// Clipboard
 	copyOnSel      bool
@@ -556,6 +562,14 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.dblClick = cfg.Links.DoubleClick
 	d.opener = cfg.Links.Opener
 
+	mcpMode := cfg.MCP.DefaultMode
+	if mcpMode == "" {
+		mcpMode = "observe"
+	}
+	d.mcpModeIdx = prefIndexOf(prefMCPModes, mcpMode)
+	d.mcpAllowChange = cfg.MCP.AllowModeChange
+	d.mcpToken = cfg.MCP.ApprovalToken
+
 	d.bsIdx = prefIndexOf(prefBSModes, cfg.Keys.Backspace)
 	d.delIdx = prefIndexOf(prefDelModes, cfg.Keys.Delete)
 	d.shEnIdx = prefIndexOf(prefShiftEnters, cfg.Keys.ShiftEnter)
@@ -668,6 +682,12 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Links.CtrlClick = d.ctrlClick
 	cfg.Links.DoubleClick = d.dblClick
 	cfg.Links.Opener = d.opener
+
+	if int(d.mcpModeIdx) < len(prefMCPModes) {
+		cfg.MCP.DefaultMode = prefMCPModes[d.mcpModeIdx]
+	}
+	cfg.MCP.AllowModeChange = d.mcpAllowChange
+	cfg.MCP.ApprovalToken = strings.TrimSpace(d.mcpToken)
 
 	if int(d.bsIdx) < len(prefBSModes) {
 		cfg.Keys.Backspace = prefBSModes[d.bsIdx]
@@ -1504,6 +1524,43 @@ func (a *Window) renderPrefLinks() {
 		imgui.SetNextItemWidth(w)
 		imgui.InputTextWithHint("##opener", config.DefaultOpener(), &d.opener, 0, nil)
 	}
+}
+
+// renderPrefAgents edits the MCP trust model for the LOCAL daemon's
+// agent socket (xerottyd.mcp.sock). The GUI-aggregator socket is
+// never gated (it is the user's own GUI process), and REMOTE daemons
+// read their own machine's config — these settings don't reach them.
+func (a *Window) renderPrefAgents() {
+	d := &a.prefDialog
+	w := float32(200)
+
+	imgui.Text("MCP Trust (local daemon socket)")
+	imgui.Separator()
+
+	imgui.Text("Default Mode for New Agent Connections")
+	a.prefCombo("mcpmode", &d.mcpModeIdx, prefMCPModes, w)
+	switch prefMCPModes[d.mcpModeIdx] {
+	case "observe":
+		imgui.TextDisabled("Agents can read tabs but every write is blocked.")
+	case "propose":
+		imgui.TextDisabled("Agent input is queued as proposals you approve in the GUI.")
+	case "auto":
+		imgui.TextDisabled("Agents type directly with no gating - for driven bulk sessions.")
+	}
+
+	imgui.Text("")
+	imgui.Checkbox("Connections May Change Their Own Mode", &d.mcpAllowChange)
+	imgui.TextDisabled("Off = every connection is pinned at the default mode\n(except token-authenticated ones below).")
+
+	imgui.Text("")
+	imgui.Text("Approval Token (optional)")
+	imgui.SetNextItemWidth(w * 1.5)
+	imgui.InputTextWithHint("##mcptoken", "shared secret for agent/authenticate", &d.mcpToken, 0, nil)
+	imgui.TextDisabled("A connection presenting this token gets auto mode even when\nmode changes are pinned off. Empty = token auth disabled.")
+
+	imgui.Text("")
+	imgui.Separator()
+	imgui.TextDisabled("Applies to NEW agent connections on this machine's daemon after\nits next restart or `xerotty serve --upgrade`. The GUI socket is\nnever gated; remote daemons use their own machine's config.")
 }
 
 func (a *Window) renderPrefKeys() {
