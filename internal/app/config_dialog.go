@@ -131,6 +131,64 @@ func ensureKbActionOptions() {
 	prefKbActionSorted, prefKbActionLabels = opts, labels
 }
 
+// prefMenuDlgSorted / prefMenuDlgLabels back the menu item dialog's
+// action combo: EVERY registered action (the dialog has arg + label
+// fields the old inline combo lacked, so arg-taking actions are
+// finally menu-editable) plus the menu grammar tokens. Lazy for the
+// registry-populates-in-init reason.
+var prefMenuDlgSorted []menuAddOption
+var prefMenuDlgLabels []string
+
+func ensureMenuDlgOptions() {
+	if prefMenuDlgSorted != nil {
+		return
+	}
+	ids := []string{"_remote_hosts", "separator", menuKindSubmenu}
+	for id := range actionRegistry {
+		ids = append(ids, id)
+	}
+	opts := make([]menuAddOption, 0, len(ids))
+	for _, act := range ids {
+		opts = append(opts, menuAddOption{label: menuAddLabel(act), action: act})
+	}
+	sort.Slice(opts, func(i, j int) bool { return opts[i].label < opts[j].label })
+	labels := make([]string, len(opts))
+	for i, o := range opts {
+		labels[i] = o.label
+	}
+	prefMenuDlgSorted, prefMenuDlgLabels = opts, labels
+}
+
+// menuListAt resolves a parent path (chain of submenu indices) to the
+// slice it names; menuItemAt resolves an item path to the item. Both
+// return nil on any stale index — callers treat that as "the tree
+// changed under the dialog, close it".
+func menuListAt(root *[]menuEditorItem, path []int) *[]menuEditorItem {
+	list := root
+	for _, i := range path {
+		if i < 0 || i >= len(*list) || !(*list)[i].isSubmenu {
+			return nil
+		}
+		list = &(*list)[i].submenu
+	}
+	return list
+}
+
+func menuItemAt(root *[]menuEditorItem, path []int) *menuEditorItem {
+	if len(path) == 0 {
+		return nil
+	}
+	list := menuListAt(root, path[:len(path)-1])
+	if list == nil {
+		return nil
+	}
+	i := path[len(path)-1]
+	if i < 0 || i >= len(*list) {
+		return nil
+	}
+	return &(*list)[i]
+}
+
 // kbActionDisplay renders an invocation string for the rows list:
 // the registry label, with the arg appended for parameterized forms
 // ("Go to Tab: 3"). Unknown strings show raw — startup validation
@@ -309,6 +367,23 @@ type configDialog struct {
 	kbCapturing bool
 	kbEditChord string
 	kbDlgOpen   bool
+
+	// Menu item Add/Edit dialog — the keybind dialog's mirror.
+	// muDlgEditPath addresses the item being edited in the
+	// menuItems tree (nil = adding); muDlgParentPath addresses the
+	// submenu receiving an add (nil = top level). Paths are index
+	// chains re-resolved every frame so row reorders/removals while
+	// the dialog floats can never leave it holding a dangling
+	// pointer — an unresolvable path just closes it.
+	muDlgOpen       bool
+	muDlgEditPath   []int
+	muDlgParentPath []int
+	muDlgActionIdx  int32
+	muDlgPrevAction string
+	muDlgLabel      string
+	muDlgArg        string
+	muDlgShortIdx   int32
+	muDlgErr        string
 
 	// Clipboard
 	copyOnSel      bool
@@ -1863,12 +1938,13 @@ func isAllDigits(s string) bool {
 // Wayland it floated mid-window and couldn't be clicked.
 func (a *Window) renderPrefMenu() {
 	d := &a.prefDialog
-
-	imgui.Text("Context Menu Items")
-	imgui.TextDisabled("  submenu names are editable · ^/v reorder within a level · + (submenus only) adds a child · X removes")
-	imgui.Separator()
-
-	a.renderMenuLevel(&d.menuItems, 0, "m")
+	ensureMenuDlgOptions()
+	if imgui.Button("Add Item...##muaddtop") {
+		a.openMenuItemDialog(nil, nil)
+	}
+	imgui.Text("")
+	a.renderMenuLevel(&d.menuItems, 0, "m", nil)
+	a.renderMenuItemDialog()
 }
 
 // prefCombo renders a combo-style chooser whose dropdown is a NATIVE
@@ -2085,37 +2161,12 @@ func chooserTypematchTarget(labels []string) int {
 // (Window.renderContextMenu). selectedAddAction maps d.addActionIdx (an
 // index into prefMenuAddSorted) back to the action — unchanged.
 func (a *Window) renderPrefMenuAddFooter() {
-	d := &a.prefDialog
-
 	imgui.Separator()
-	if imgui.Button("Add Item") {
-		d.menuItems = append(d.menuItems, newMenuEditorItem(d.selectedAddAction()))
-	}
-	imgui.SameLineV(0, 8)
-
-	preview := "(choose)"
-	if int(d.addActionIdx) >= 0 && int(d.addActionIdx) < len(prefMenuAddLabels) {
-		preview = prefMenuAddLabels[d.addActionIdx]
-	}
-	open := imgui.ButtonV(preview+"##addchooser", imgui.Vec2{X: 200, Y: 0})
-	// The popup loop's separate ImGui context consumes the
-	// dismiss-click DOWN, but the UP arrives in main's drain_events a
-	// few frames later and main's ButtonV interprets it as a
-	// release-while-hovered click on the trigger — reopening the
-	// popup the user just dismissed. Swallow `open` for a short
-	// window after the popup closed.
-	const addActionReopenCooldownFrames = 20
-	if open && d.addActionPopupClosedFrame > 0 &&
-		int(imgui.FrameCount())-d.addActionPopupClosedFrame < addActionReopenCooldownFrames {
-		open = false
-	}
-	// Capture the button's screen rect + the prefs viewport NOW, before
-	// RunImGuiPopup swaps the ImGui context.
-	btnMin := imgui.ItemRectMin()
-	btnMax := imgui.ItemRectMax()
-	vp := imgui.WindowViewport()
-	if open && vp != nil {
-		a.openAddActionPopup(vp, btnMin, btnMax)
+	// Both Add buttons (top of the list and here) open the same
+	// Add/Edit dialog the keybind editor uses; the old inline
+	// combo + native chooser flow is retired.
+	if imgui.Button("Add Item...##muaddbottom") {
+		a.openMenuItemDialog(nil, nil)
 	}
 }
 
@@ -2362,7 +2413,7 @@ func menuAddSelection(idx int32) string {
 // sibling widgets share state. The + button (add a child, of the kind
 // the Add combo currently selects) shows ONLY on submenu rows; an action
 // or separator can't hold children.
-func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string) {
+func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string, path []int) {
 	d := &a.prefDialog
 	list := *items
 	n := len(list)
@@ -2408,7 +2459,9 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 			// before Apply, making the keybind<->menu association
 			// visible where it was invisible before.
 			hint := item.shortcut
-			if hint == "" && item.action != "" {
+			if hint == "none" {
+				hint = ""
+			} else if hint == "" && item.action != "" {
 				hint = d.editorShortcutFor(item.action)
 			}
 			if hint != "" {
@@ -2453,6 +2506,13 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 			if imgui.ButtonV("+##add"+id, imgui.Vec2{X: 22, Y: 0}) {
 				addChildIdx = i
 			}
+		} else if item.action != "" && item.action != "separator" {
+			// Full edit via the same dialog Add uses: swap the
+			// action, relabel, change the arg or shortcut display —
+			// without remove-and-reshuffle.
+			if imgui.ButtonV("e##edit"+id, imgui.Vec2{X: 22, Y: 0}) {
+				a.openMenuItemDialog(append(append([]int{}, path...), i), nil)
+			}
 		} else {
 			imgui.Dummy(imgui.Vec2{X: 22, Y: 0})
 		}
@@ -2467,7 +2527,7 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 		// Edits inside mutate list[i].submenu in place via the pointer,
 		// independent of this level's index shifts.
 		if item.isSubmenu {
-			a.renderMenuLevel(&item.submenu, depth+1, id)
+			a.renderMenuLevel(&item.submenu, depth+1, id, append(append([]int{}, path...), i))
 		}
 	}
 
@@ -2476,13 +2536,235 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 		list[swapA], list[swapB] = list[swapB], list[swapA]
 	}
 	if addChildIdx >= 0 {
-		list[addChildIdx].submenu = append(list[addChildIdx].submenu,
-			newMenuEditorItem(d.selectedAddAction()))
+		a.openMenuItemDialog(nil, append(append([]int{}, path...), addChildIdx))
 	}
 	if removeIdx >= 0 {
 		list = append(list[:removeIdx], list[removeIdx+1:]...)
 	}
 	*items = list
+}
+
+// openMenuItemDialog arms the menu item Add/Edit dialog. editPath
+// addresses an existing item to edit (nil = add); parentPath the
+// submenu an add appends into (nil = top level).
+func (a *Window) openMenuItemDialog(editPath, parentPath []int) {
+	d := &a.prefDialog
+	ensureMenuDlgOptions()
+	d.muDlgEditPath = editPath
+	d.muDlgParentPath = parentPath
+	d.muDlgLabel, d.muDlgArg, d.muDlgErr = "", "", ""
+	d.muDlgShortIdx = 0
+	d.muDlgActionIdx = 0
+	d.muDlgPrevAction = ""
+	if editPath != nil {
+		it := menuItemAt(&d.menuItems, editPath)
+		if it == nil {
+			return
+		}
+		actID, arg := it.action, ""
+		if act, aarg, ok := resolveAction(it.action); ok {
+			actID, arg = act.ID, aarg
+		}
+		for i, o := range prefMenuDlgSorted {
+			if o.action == actID {
+				d.muDlgActionIdx = int32(i)
+				break
+			}
+		}
+		d.muDlgPrevAction = actID
+		d.muDlgLabel = it.label
+		d.muDlgArg = arg
+		// Shortcut selection restored in the render pass (options
+		// depend on the composed action string).
+		switch it.shortcut {
+		case "":
+			d.muDlgShortIdx = 0
+		case "none":
+			d.muDlgShortIdx = 1
+		default:
+			d.muDlgShortIdx = -1 // resolved against options at render
+		}
+	}
+	d.muDlgOpen = true
+}
+
+// renderMenuItemDialog is the menu-item mirror of the keybind
+// dialog: action combo (ALL actions — the arg field below makes
+// parameterized ones menu-editable at last), custom label, arg when
+// the action takes one, and a shortcut-display picker: Auto (derive
+// from live keybinds, the default), None (sentinel "none"), or one
+// specific bound chord frozen as an explicit label.
+func (a *Window) renderMenuItemDialog() {
+	d := &a.prefDialog
+	if !d.muDlgOpen {
+		return
+	}
+	if vp := imgui.WindowViewport(); vp != nil {
+		imgui.SetNextWindowViewport(vp.ID())
+		pos, size := vp.Pos(), vp.Size()
+		center := imgui.Vec2{X: pos.X + size.X/2, Y: pos.Y + size.Y/2}
+		imgui.SetNextWindowPosV(center, imgui.CondAppearing, imgui.Vec2{X: 0.5, Y: 0.5})
+	}
+	title := "Add Menu Item###mudlg"
+	if d.muDlgEditPath != nil {
+		title = "Edit Menu Item###mudlg"
+	}
+	flags := imgui.WindowFlagsAlwaysAutoResize | imgui.WindowFlagsNoCollapse |
+		imgui.WindowFlagsNoSavedSettings | imgui.WindowFlagsNoDocking
+	open := d.muDlgOpen
+	if imgui.BeginV(title+a.imguiSuffix(), &open, flags) {
+		w := float32(200)
+
+		imgui.Text("Action")
+		a.prefCombo("mudlgaction", &d.muDlgActionIdx, prefMenuDlgLabels, w)
+		var selID string
+		if int(d.muDlgActionIdx) < len(prefMenuDlgSorted) {
+			selID = prefMenuDlgSorted[d.muDlgActionIdx].action
+		}
+		sel := actionRegistry[selID] // nil for grammar tokens
+		// Track combo changes: refresh the label default when the
+		// user hasn't customized it (label follows the action until
+		// they type their own).
+		if selID != d.muDlgPrevAction {
+			if d.muDlgLabel == "" || d.muDlgLabel == menuAddLabel(d.muDlgPrevAction) {
+				d.muDlgLabel = menuAddLabel(selID)
+			}
+			if d.muDlgPrevAction != "" {
+				d.muDlgArg = ""
+			}
+			d.muDlgPrevAction = selID
+		}
+
+		isToken := selID == "separator" || selID == "_remote_hosts"
+		if !isToken {
+			imgui.Text("Label")
+			imgui.SetNextItemWidth(w * 1.4)
+			imgui.InputTextWithHint("##mudlglabel", menuAddLabel(selID), &d.muDlgLabel, 0, nil)
+		}
+		if sel != nil && sel.Arg != NoArg {
+			hint := sel.ArgHint
+			if hint == "" {
+				hint = "argument"
+			}
+			imgui.Text("Argument")
+			imgui.SetNextItemWidth(w)
+			imgui.InputTextWithHint("##mudlgarg", hint, &d.muDlgArg, 0, nil)
+		}
+
+		// Shortcut display picker — only for real actions.
+		var shortOpts []string
+		var shortVals []string
+		if sel != nil {
+			actStr := sel.ID
+			if sel.Arg != NoArg && strings.TrimSpace(d.muDlgArg) != "" {
+				actStr += ":" + strings.TrimSpace(d.muDlgArg)
+			}
+			shortOpts = []string{"Auto (from keybinds)", "None"}
+			shortVals = []string{"", "none"}
+			for _, r := range d.kbRows {
+				if r.action == actStr {
+					pretty := config.PrettifyChord(r.chord)
+					shortOpts = append(shortOpts, pretty+" (fixed)")
+					shortVals = append(shortVals, pretty)
+				}
+			}
+			// An edit restoring an explicit label that matches no
+			// current binding still shows and keeps it.
+			if d.muDlgShortIdx == -1 {
+				existing := ""
+				if it := menuItemAt(&d.menuItems, d.muDlgEditPath); it != nil {
+					existing = it.shortcut
+				}
+				d.muDlgShortIdx = 0
+				for i, v := range shortVals {
+					if v == existing {
+						d.muDlgShortIdx = int32(i)
+					}
+				}
+				if existing != "" && existing != "none" && d.muDlgShortIdx == 0 {
+					shortOpts = append(shortOpts, existing+" (custom)")
+					shortVals = append(shortVals, existing)
+					d.muDlgShortIdx = int32(len(shortVals) - 1)
+				}
+			}
+			if int(d.muDlgShortIdx) >= len(shortOpts) {
+				d.muDlgShortIdx = 0
+			}
+			imgui.Text("Shortcut Hint")
+			a.prefCombo("mudlgshort", &d.muDlgShortIdx, shortOpts, w*1.4)
+		}
+
+		imgui.Text("")
+		saveLabel := "Add"
+		if d.muDlgEditPath != nil {
+			saveLabel = "Save"
+		}
+		if imgui.Button(saveLabel + "##musave") {
+			d.muDlgErr = ""
+			label := strings.TrimSpace(d.muDlgLabel)
+			switch {
+			case selID == "":
+				d.muDlgErr = "pick an action"
+			case selID == menuKindSubmenu && d.muDlgEditPath != nil:
+				d.muDlgErr = "an action item can't become a submenu — add a new submenu instead"
+			case sel != nil && sel.Arg == IntArg && !isAllDigits(strings.TrimSpace(d.muDlgArg)):
+				d.muDlgErr = "this action needs a numeric argument (" + sel.ArgHint + ")"
+			case sel != nil && sel.Arg == StringArg && strings.TrimSpace(d.muDlgArg) == "":
+				d.muDlgErr = "this action needs an argument (" + sel.ArgHint + ")"
+			case !isToken && selID != menuKindSubmenu && label == "":
+				d.muDlgErr = "label can't be empty"
+			default:
+				var it menuEditorItem
+				switch {
+				case selID == menuKindSubmenu:
+					it = menuEditorItem{label: label, isSubmenu: true}
+				case isToken:
+					it = menuEditorItem{action: selID}
+				default:
+					act := sel.ID
+					if sel.Arg != NoArg {
+						act += ":" + strings.TrimSpace(d.muDlgArg)
+					}
+					shortcut := ""
+					if int(d.muDlgShortIdx) < len(shortVals) {
+						shortcut = shortVals[d.muDlgShortIdx]
+					}
+					it = menuEditorItem{label: label, action: act, shortcut: shortcut}
+				}
+				if d.muDlgEditPath != nil {
+					if orig := menuItemAt(&d.menuItems, d.muDlgEditPath); orig != nil {
+						// Preserve the TOML-only predicates.
+						it.enabled, it.checked = orig.enabled, orig.checked
+						it.submenu, it.isSubmenu = orig.submenu, orig.isSubmenu
+						if it.isSubmenu {
+							it.action = ""
+						}
+						*orig = it
+					}
+				} else {
+					target := menuListAt(&d.menuItems, d.muDlgParentPath)
+					if target == nil {
+						target = &d.menuItems
+					}
+					*target = append(*target, it)
+				}
+				open = false
+			}
+		}
+		imgui.SameLineV(0, 6)
+		if imgui.Button("Cancel##mucancel") {
+			open = false
+		}
+		if d.muDlgErr != "" {
+			imgui.TextDisabled(d.muDlgErr)
+		}
+	}
+	imgui.End()
+	if !open {
+		d.muDlgOpen = false
+		d.muDlgEditPath, d.muDlgParentPath = nil, nil
+		d.muDlgErr = ""
+	}
 }
 
 func (a *Window) renderPrefWindow() {

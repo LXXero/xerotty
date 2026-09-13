@@ -649,8 +649,11 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 		// Shortcut labels derive from the live keybinds so they can
 		// never drift from the actual bindings (see
 		// config.ShortcutForAction). An explicit Shortcut in a user
-		// config wins.
-		if item.Shortcut == "" && item.Action != "" {
+		// config wins; the explicit sentinel "none" suppresses the
+		// hint entirely (the prefs menu editor's None option).
+		if item.Shortcut == "none" {
+			item.Shortcut = ""
+		} else if item.Shortcut == "" && item.Action != "" {
 			item.Shortcut = config.ShortcutForAction(a.cfg.Keybinds, item.Action)
 		}
 		out = append(out, item)
