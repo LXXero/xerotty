@@ -977,32 +977,6 @@ func (a *Window) renderPreferences() {
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("General") {
-				if imgui.BeginChildStrV("##gensc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
-					imgui.Text("Font")
-					imgui.Separator()
-					a.renderPrefFont()
-					imgui.Text("")
-					imgui.Text("Shell & Tabs")
-					imgui.Separator()
-					a.renderPrefShellTabs()
-				}
-				imgui.EndChild()
-				imgui.EndTabItem()
-			}
-			if imgui.BeginTabItem("Scrolling") {
-				if imgui.BeginChildStrV("##scrollsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
-					imgui.Text("Scrollback")
-					imgui.Separator()
-					a.renderPrefScrollback()
-					imgui.Text("")
-					imgui.Text("Scrollbar")
-					imgui.Separator()
-					a.renderPrefScrollbar()
-				}
-				imgui.EndChild()
-				imgui.EndTabItem()
-			}
 			if imgui.BeginTabItem("Clipboard & Links") {
 				if imgui.BeginChildStrV("##clipsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
 					imgui.Text("Clipboard")
@@ -1016,9 +990,29 @@ func (a *Window) renderPreferences() {
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
+			if imgui.BeginTabItem("General") {
+				if imgui.BeginChildStrV("##gensc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("Font")
+					imgui.Separator()
+					a.renderPrefFont()
+					imgui.Text("")
+					imgui.Text("Shell & Tabs")
+					imgui.Separator()
+					a.renderPrefShellTabs()
+				}
+				imgui.EndChild()
+				imgui.EndTabItem()
+			}
 			if imgui.BeginTabItem("Keys") {
 				if imgui.BeginChildStrV("##keysc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
 					a.renderPrefKeys()
+				}
+				imgui.EndChild()
+				imgui.EndTabItem()
+			}
+			if imgui.BeginTabItem("MCP") {
+				if imgui.BeginChildStrV("##agentsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					a.renderPrefAgents()
 				}
 				imgui.EndChild()
 				imgui.EndTabItem()
@@ -1037,16 +1031,22 @@ func (a *Window) renderPreferences() {
 				a.renderPrefMenuAddFooter()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("Window") {
-				if imgui.BeginChildStrV("##winsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
-					a.renderPrefWindow()
+			if imgui.BeginTabItem("Scrolling") {
+				if imgui.BeginChildStrV("##scrollsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					imgui.Text("Scrollback")
+					imgui.Separator()
+					a.renderPrefScrollback()
+					imgui.Text("")
+					imgui.Text("Scrollbar")
+					imgui.Separator()
+					a.renderPrefScrollbar()
 				}
 				imgui.EndChild()
 				imgui.EndTabItem()
 			}
-			if imgui.BeginTabItem("Agents") {
-				if imgui.BeginChildStrV("##agentsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
-					a.renderPrefAgents()
+			if imgui.BeginTabItem("Window") {
+				if imgui.BeginChildStrV("##winsc", imgui.Vec2{X: 0, Y: tabH}, 0, 0) {
+					a.renderPrefWindow()
 				}
 				imgui.EndChild()
 				imgui.EndTabItem()
