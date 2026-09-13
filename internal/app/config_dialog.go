@@ -146,6 +146,19 @@ func kbActionDisplay(action string) string {
 	return action + " (unknown)"
 }
 
+// editorShortcutFor derives a menu item's shortcut hint from the
+// keybind editor's CURRENT rows (not the saved config) — the same
+// fewest-modifiers-wins rule expandMenu applies via
+// config.ShortcutForAction, but reflecting in-progress edits so the
+// Menu tab tracks the Keys tab live.
+func (d *configDialog) editorShortcutFor(action string) string {
+	kb := make(map[string]string, len(d.kbRows))
+	for _, r := range d.kbRows {
+		kb[r.chord] = r.action
+	}
+	return config.ShortcutForAction(kb, action)
+}
+
 // menuAddOption pairs a friendly display label with the action (or
 // sentinel) it adds. The Add combo shows the labels alphabetically;
 // d.addActionIdx indexes into prefMenuAddSorted, and .action maps the
@@ -1648,6 +1661,16 @@ func (a *Window) renderPrefKeybinds() {
 	ensureKbActionOptions()
 	d := &a.prefDialog
 
+	openAddDialog := func() {
+		d.kbAddChord, d.kbAddArg, d.kbAddErr, d.kbEditChord = "", "", "", ""
+		d.kbCapturing = false
+		d.kbDlgOpen = true
+	}
+	if imgui.Button("Add Keybind...##kbaddtop") {
+		openAddDialog()
+	}
+	imgui.Text("")
+
 	removeIdx := -1
 	if imgui.BeginTableV("##kbrows", 3, imgui.TableFlagsSizingStretchProp, imgui.NewVec2(0, 0), 0) {
 		for i, r := range d.kbRows {
@@ -1690,9 +1713,7 @@ func (a *Window) renderPrefKeybinds() {
 
 	imgui.Text("")
 	if imgui.Button("Add Keybind...##kbaddbtn") {
-		d.kbAddChord, d.kbAddArg, d.kbAddErr, d.kbEditChord = "", "", "", ""
-		d.kbCapturing = false
-		d.kbDlgOpen = true
+		openAddDialog()
 	}
 
 	a.renderKeybindDialog()
@@ -2380,8 +2401,18 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string)
 				label = menuAddLabel(item.action)
 			}
 			text := "  " + label
-			if item.shortcut != "" {
-				text += "  (" + item.shortcut + ")"
+			// Shortcut hint: an explicit config shortcut wins (same
+			// precedence expandMenu applies at render time); otherwise
+			// derive from the keybind editor's CURRENT rows — so a
+			// bind edited on the Keys tab updates this hint live,
+			// before Apply, making the keybind<->menu association
+			// visible where it was invisible before.
+			hint := item.shortcut
+			if hint == "" && item.action != "" {
+				hint = d.editorShortcutFor(item.action)
+			}
+			if hint != "" {
+				text += "  (" + hint + ")"
 			}
 			imgui.AlignTextToFramePadding()
 			imgui.Text(text)
