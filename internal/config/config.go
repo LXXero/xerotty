@@ -139,8 +139,12 @@ type MenuConfig struct {
 
 // MenuItem is a single context menu entry.
 type MenuItem struct {
-	Label    string `toml:"label"`
-	Action   string `toml:"action"`
+	Label  string `toml:"label"`
+	Action string `toml:"action"`
+	// Shortcut is the displayed shortcut hint. "" = derive from the
+	// live keybinds (ShortcutForAction; can never drift). "none" =
+	// show no shortcut. Anything else renders verbatim (a fixed
+	// label that does NOT follow later rebinds).
 	Shortcut string `toml:"shortcut"`
 	Enabled  string `toml:"enabled"`
 	// Checked is an optional state predicate (like Enabled). When it
@@ -448,6 +452,13 @@ func ShortcutForAction(keybinds map[string]string, action string) string {
 		}
 	}
 	return prettifyChord(best, runtime.GOOS)
+}
+
+// PrettifyChord formats a keybind chord for menu display — exported
+// for the prefs menu editor's shortcut picker, applying the same
+// formatting ShortcutForAction uses for derived labels.
+func PrettifyChord(chord string) string {
+	return prettifyChord(chord, runtime.GOOS)
 }
 
 func chordLess(a, b string) bool {

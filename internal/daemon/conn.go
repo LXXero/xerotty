@@ -1426,6 +1426,25 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			// whichever loop won the race, leaving the rest to poll on
 			// the 500ms fallback (both-clients-laggy bug).
 			c.sendCellsAndCursor(t, sub)
+			// Cheap flag check on every content publish: alt-screen /
+			// app-cursor flips (vim, less, Claude Code views) always
+			// EMIT output, so riding the same wake makes the client's
+			// mirror flip with the content instead of up to a state
+			// tick (750ms) later. The lag was user-visible: the wheel
+			// picks scrollback-vs-arrow-keys from the mirrored
+			// alt-screen flag, so a daemon tab's wheel drove arrows
+			// into the app (scrolling its UI) for up to 750ms after
+			// it left the alt screen — PTY tabs read the emulator
+			// live and never had the window. Title/name ride along
+			// for the same freshness at no extra cost; the expensive
+			// reads (cwd, foreground proc) stay on the tick, so this
+			// only pays a few atomic loads + string compares per
+			// publish unless something actually changed.
+			if t.Term.IsAltScreen() != sub.lastAltScreen ||
+				t.Term.AppCursorMode() != sub.lastAppCursor ||
+				t.Title() != sub.lastTitle || t.Name() != sub.lastName {
+				c.sendTabState(t, sub)
+			}
 		case <-stateTick.C:
 			c.sendTabState(t, sub)
 		case <-exitedCh:

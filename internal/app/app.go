@@ -313,6 +313,8 @@ func New(cfg config.Config) *App {
 	w := newWindow(a)
 	a.windows = append(a.windows, w)
 	a.active = w
+	// Name config typos now, not at press time.
+	a.validateActionRefs()
 	return a
 }
 
@@ -647,8 +649,11 @@ func (a *App) expandMenu(items []config.MenuItem) []config.MenuItem {
 		// Shortcut labels derive from the live keybinds so they can
 		// never drift from the actual bindings (see
 		// config.ShortcutForAction). An explicit Shortcut in a user
-		// config wins.
-		if item.Shortcut == "" && item.Action != "" {
+		// config wins; the explicit sentinel "none" suppresses the
+		// hint entirely (the prefs menu editor's None option).
+		if item.Shortcut == "none" {
+			item.Shortcut = ""
+		} else if item.Shortcut == "" && item.Action != "" {
 			item.Shortcut = config.ShortcutForAction(a.cfg.Keybinds, item.Action)
 		}
 		out = append(out, item)
@@ -4759,304 +4764,18 @@ func encodeRune(buf []byte, r rune) int {
 }
 
 func (w *Window) dispatchAction(action string) {
-	// Action namespace "new_tab_remote:<host>" opens a NEW tab on
-	// the named host. "attach_remote:<host>" adopts every existing
-	// remote tab into this window — for the "show me what I had
-	// open on kh" UX. Both share the per-host Hub (one SSH
-	// connection serves all tabs). Failures log + drop.
-	if strings.HasPrefix(action, "new_tab_remote:") {
-		host := action[len("new_tab_remote:"):]
-		if err := w.openRemoteTab(host); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: new_tab_remote %s: %v\n", host, err)
-		}
+	// Phase 1 of docs/ACTIONS_PLAN.md: every verb lives in the action
+	// registry (internal/app/actions.go); this is now just the lookup.
+	// Syntax is unchanged — "id" or "id:arg" — parsed once in
+	// resolveAction.
+	if a, arg, ok := resolveAction(action); ok {
+		a.Run(w, arg)
 		return
 	}
-	if strings.HasPrefix(action, "attach_remote:") {
-		host := action[len("attach_remote:"):]
-		if err := w.openRemoteReattach(host); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: attach_remote %s: %v\n", host, err)
-		}
-		return
-	}
-	if action == "connect_remote" {
-		w.openConnectDialog()
-		return
-	}
-	// "kick_client:<hub>:<clientID>" force-disconnects an attached
-	// client (Remote → Clients). ClientIDs may themselves contain
-	// colons ("xerotty-gui:xryzen"), so split off the hub name only.
-	if strings.HasPrefix(action, "kick_client:") {
-		rest := action[len("kick_client:"):]
-		parts := strings.SplitN(rest, ":", 2)
-		if len(parts) != 2 {
-			return
-		}
-		hub := w.app.hubsByName()[parts[0]]
-		if hub == nil {
-			fmt.Fprintf(os.Stderr, "xerotty: kick_client: no hub %q\n", parts[0])
-			return
-		}
-		if err := hub.KickClient(parts[1]); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: kick_client %s: %v\n", rest, err)
-		}
-		// Re-fetch soon so the menu reflects the kick on next open.
-		w.app.refreshClientsMenu()
-		return
-	}
-	// "remote_new_tab" / "remote_new_window" act on the host of the
-	// CURRENTLY active tab — a new tab/window on the same remote box
-	// you're looking at. No-op (with a note) when the active tab is
-	// local; the plain new_tab/new_window actions cover the local case.
-	if action == "remote_new_tab" || action == "remote_new_window" {
-		t := w.tabs.Active()
-		if t == nil || t.Host == "" {
-			fmt.Fprintf(os.Stderr, "xerotty: %s: active tab is not on a remote host\n", action)
-			return
-		}
-		var err error
-		if action == "remote_new_tab" {
-			err = w.openRemoteTab(t.Host)
-		} else {
-			err = w.openRemoteWindow(t.Host)
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: %s %s: %v\n", action, t.Host, err)
-		}
-		return
-	}
-	switch action {
-	case "new_tab":
-		cols, rows := w.gridSize()
-		// Inherit the currently active tab's CWD when the pref is on
-		// so "New Tab" picks up wherever the user was working. Falls
-		// through to xerotty's CWD when there's no active tab (first
-		// tab) or GetCWD returns "" (process gone, /proc lookup
-		// failed, etc.).
-		var cwd string
-		if w.app.cfg.Tabs.InheritCWD {
-			if parentTab := w.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
-				cwd = parentTab.Terminal.GetCWD()
-			}
-		}
-		if tab, err := w.tabs.NewTab(cols, rows, cwd); err == nil && tab != nil {
-			// AutoSelectNewTabs only catches new tabs once the bar has prior
-			// frame state. On the 1→2 transition (tab bar first appears) it
-			// can't, so request an explicit switch to the new tab.
-			w.tabSwitchReq = tab.ID
-		}
-	case "close_tab":
-		w.tabs.CloseActive()
-		// macOS's NSWindow performClose: default-binds to Cmd+W and
-		// fires AFTER our keybind handler, so without swallowing the
-		// "close one tab" keypress also closes the whole window. The
-		// flag is checked in the PlatformRequestClose path below. ~5
-		// frames is enough to cover the latency between the keybind
-		// firing and SDL3 surfacing the OS-level close event.
-		w.swallowOSCloseFrames = 5
-	case "new_window":
-		// Single-process multi-window: append a new Window to this
-		// App's slice. The render loop in Run() picks it up next
-		// frame and wraps it in an ImGui top-level window that
-		// multi-viewport auto-promotes to its own OS window. Same
-		// NSApplication on macOS = one Dock icon for N windows;
-		// same WM_CLASS on Linux = one taskbar group. See
-		// docs/MULTI_WINDOW_REFACTOR.md for the architectural why.
-		w.app.spawnWindow()
-	case "quit":
-		// Whole-app exit, all windows. macOS gets this for free from
-		// AppKit (Cmd+Q → NSApp.terminate → SDL_EVENT_QUIT); Linux
-		// has no OS-level equivalent, so it's a bindable action
-		// (default Ctrl+Shift+Q, the konsole/xfce4-terminal
-		// convention). Same platform.Quit() path as the last-window
-		// close, so daemon tabs detach cleanly and sessions survive.
-		platform.Quit()
-	case "next_tab":
-		w.tabs.Next()
-		if t := w.tabs.Active(); t != nil {
-			w.tabSwitchReq = t.ID
-		}
-	case "prev_tab":
-		w.tabs.Prev()
-		if t := w.tabs.Active(); t != nil {
-			w.tabSwitchReq = t.ID
-		}
-	case "copy":
-		// selectedText already applies cfg.Clipboard.TrimTrailingWhitespace
-		// per-row via extractText, so no extra trimming here.
-		text := w.selectedText()
-		if text != "" {
-			input.ClipboardWrite(text)
-			// Push the copied text to every daemon we're attached
-			// to so MCP agents reading get_clipboard see it (and
-			// future OSC 52 reads from PTY children can return
-			// it). Sending to multiple daemons is cheap and
-			// keeps the user's clipboard view consistent across
-			// local and remote sessions.
-			w.app.broadcastClipboard(text)
-		}
-	case "paste":
-		// Image-first: a screenshot copied via Cmd+Shift+4 etc.
-		// goes to the daemon as raw bytes (which writes it to a
-		// temp file the PTY child can read by path). Falls back
-		// to text paste when the clipboard has no image. Lets
-		// "paste a screenshot into Claude Code over SSH" Just
-		// Work without OSC52 / base64 brittleness.
-		if mime, data, err := input.ClipboardReadImage(); err == nil && len(data) > 0 {
-			if tab := w.tabs.Active(); tab != nil && tab.Terminal != nil {
-				if err := tab.Terminal.PasteImage(mime, "", data); err != nil {
-					fmt.Fprintf(os.Stderr, "xerotty: image paste: %v\n", err)
-				}
-				return
-			}
-		}
-		text, err := input.ClipboardRead()
-		if err == nil && text != "" {
-			w.pasteText(text)
-		}
-	case "paste_selection":
-		text, err := input.PrimaryRead()
-		if err == nil && text != "" {
-			w.pasteText(text)
-		}
-	case "fullscreen":
-		w.fullscreen = !w.fullscreen
-		// Multi-window: target THIS Window's SDL_Window, not the
-		// hidden carrier. SDL_GL_GetCurrentWindow() would silently
-		// fullscreen the invisible carrier and look like a no-op.
-		if h := w.sdlWindowHandle(); h != 0 {
-			platform.SetFullscreen(h, w.fullscreen)
-		}
-	case "scroll_page_up":
-		if tab := w.tabs.Active(); tab != nil {
-			s := w.getScroll(tab.ID)
-			_, rows := w.gridSize()
-			s.PageUp(rows, tab.Terminal.ScrollbackLen())
-		}
-	case "scroll_page_down":
-		if tab := w.tabs.Active(); tab != nil {
-			s := w.getScroll(tab.ID)
-			_, rows := w.gridSize()
-			s.PageDown(rows)
-		}
-	case "scroll_top":
-		if tab := w.tabs.Active(); tab != nil {
-			s := w.getScroll(tab.ID)
-			s.Offset = tab.Terminal.ScrollbackLen()
-		}
-	case "scroll_bottom":
-		if tab := w.tabs.Active(); tab != nil {
-			s := w.getScroll(tab.ID)
-			s.Reset()
-		}
-	case "search":
-		if tab := w.tabs.Active(); tab != nil {
-			s := w.getScroll(tab.ID)
-			s.OpenSearch()
-			w.searchFocusInput = true
-		}
-	case "toggle_opacity":
-		// Flip between the configured opacity and fully opaque. Opaque is
-		// the screenshot-safe state: a translucent window blends whatever
-		// is behind it, so a capture can leak other windows — toggle to
-		// opaque before shooting. App-level so all windows flip together;
-		// the per-Window opacity apply in Run() picks it up. PostWake
-		// forces an immediate render so the change is visible at once.
-		w.app.forceOpaque.Store(!w.app.forceOpaque.Load())
-		platform.PostWake()
-	case "font_size_up":
-		// Per-window zoom — only this Window's font size changes.
-		// Other Windows keep their own zoom level (iTerm2-style).
-		w.fontSize += 1
-		w.updateFontMetrics()
-	case "font_size_down":
-		if w.fontSize > 6 {
-			w.fontSize -= 1
-			w.updateFontMetrics()
-		}
-	case "font_size_reset":
-		// Reset to the configured default for this Window only.
-		w.fontSize = renderer.PixelSize(&w.app.cfg)
-		w.updateFontMetrics()
-	case "select_all":
-		if tab := w.tabs.Active(); tab != nil {
-			cols := tab.Terminal.Emulator().Width()
-			rows := tab.Terminal.Emulator().Height()
-			w.sel.startCol = 0
-			w.sel.startRow = 0
-			w.sel.endCol = cols - 1
-			w.sel.endRow = rows - 1
-			w.sel.active = true
-			w.sel.dragging = false
-		}
-	case "clear_scrollback":
-		if tab := w.tabs.Active(); tab != nil {
-			tab.Terminal.ClearScrollback()
-			if s, ok := w.scroll[tab.ID]; ok {
-				s.Reset()
-			}
-		}
-	case "reset_terminal":
-		if tab := w.tabs.Active(); tab != nil {
-			// Send RIS (Reset to Initial State) escape sequence
-			tab.Terminal.Write([]byte("\x1bc"))
-			tab.Terminal.ClearScrollback()
-			if s, ok := w.scroll[tab.ID]; ok {
-				s.Reset()
-			}
-			w.sel.clear()
-		}
-	case "open_link":
-		if w.hoveredLink != nil {
-			openURL(w.hoveredLink.URL, w.app.cfg.Links.Opener)
-		}
-	case "copy_link":
-		if w.hoveredLink != nil {
-			input.ClipboardWrite(w.hoveredLink.URL)
-		}
-	case "rename_tab":
-		if tab := w.tabs.Active(); tab != nil {
-			w.renameBuffer = tab.DisplayTitle()
-			w.renamingTab = true
-			imgui.OpenPopupStr("Rename Tab")
-		}
-	case "preferences":
-		w.openPreferences()
-	default:
-		// Check for parameterized actions
-		if strings.HasPrefix(action, "goto_tab:") {
-			nStr := strings.TrimPrefix(action, "goto_tab:")
-			if n, err := strconv.Atoi(nStr); err == nil {
-				w.tabs.GoTo(n)
-				if t := w.tabs.Active(); t != nil {
-					w.tabSwitchReq = t.ID
-				}
-			}
-		} else if strings.HasPrefix(action, "set_theme:") {
-			name := strings.TrimPrefix(action, "set_theme:")
-			if t, err := themes.Load(name); err == nil {
-				applyColorOverrides(&t, &w.app.cfg)
-				w.app.theme = t
-				// Theme is process-wide: every Window's renderer needs
-				// the new palette or peer Windows render against the
-				// stale one until they're individually re-themed. Same
-				// loop applyPreferences uses for the prefs-driven path.
-				for _, win := range w.app.windows {
-					if win.renderer != nil {
-						win.renderer.Theme = t
-						win.renderer.InvalidateCellCache()
-					}
-				}
-				// Update SDL background color to match new theme.
-				bgR := float32((t.Background>>0)&0xFF) / 255.0
-				bgG := float32((t.Background>>8)&0xFF) / 255.0
-				bgB := float32((t.Background>>16)&0xFF) / 255.0
-				platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
-			}
-		} else if strings.HasPrefix(action, "exec:") {
-			ctx := w.menuContext()
-			menu.ExecAction(action, ctx)
-		}
-	}
+	// Unknown / typo'd reference. validateActionRefs warns about bad
+	// config references at startup; this catches runtime-constructed
+	// strings so they fail loud instead of silently doing nothing.
+	fmt.Fprintf(os.Stderr, "xerotty: unknown action %q\n", action)
 }
 
 // altScrollSeq returns the cursor-key escape sequence for one
