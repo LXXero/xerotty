@@ -5044,7 +5044,7 @@ func (w *Window) drawTabDragGhost() {
 	dl.AddRectV(
 		imgui.Vec2{X: x0 + 0.5, Y: y0 + 0.5},
 		imgui.Vec2{X: x0 + float32(w.width) - 0.5, Y: y0 + barH - 0.5},
-		accent, 0, 0, 1,
+		accent, 0, 1, 0,
 	)
 
 	// Floating ghost tab at the cursor: outlined, translucent, with
@@ -5066,7 +5066,7 @@ func (w *Window) drawTabDragGhost() {
 	dl.AddRectV(
 		imgui.Vec2{X: gx + 0.5, Y: gy + 0.5},
 		imgui.Vec2{X: gx + ghostW - 0.5, Y: gy + barH - 0.5},
-		accent, 0, 0, 1,
+		accent, 0, 1, 0,
 	)
 	dl.PushClipRectV(
 		imgui.Vec2{X: gx, Y: gy},
@@ -5305,12 +5305,12 @@ func (w *Window) renderTabBar() {
 			}
 			pad := closeBtnW * 0.25
 			thick := float32(1.5)
-			drawList.AddLineV(
+			drawList.AddLineArgs(
 				imgui.Vec2{X: closeX0 + pad, Y: closeY0 + pad},
 				imgui.Vec2{X: closeX1 - pad, Y: closeY1 - pad},
 				xCol, thick,
 			)
-			drawList.AddLineV(
+			drawList.AddLineArgs(
 				imgui.Vec2{X: closeX1 - pad, Y: closeY0 + pad},
 				imgui.Vec2{X: closeX0 + pad, Y: closeY1 - pad},
 				xCol, thick,

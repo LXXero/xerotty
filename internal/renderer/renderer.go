@@ -559,7 +559,7 @@ func (r *Renderer) DrawCursor(pos struct{ X, Y int }, style string, drawList *im
 		drawList.AddRectV(
 			imgui.Vec2{X: x + 0.5, Y: y + 0.5},
 			imgui.Vec2{X: x + cellW - 0.5, Y: y + cellH - 0.5},
-			r.Theme.Cursor, 0, 0, 1,
+			r.Theme.Cursor, 0, 1, 0,
 		)
 	case "underline":
 		drawList.AddRectFilled(

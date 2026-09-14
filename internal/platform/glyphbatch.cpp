@@ -21,7 +21,7 @@
 // so blitting it back through SRC_ALPHA blending would double-darken
 // the soft edges of every glyph. The blit brackets its AddImage in
 // draw-callbacks: switch to (ONE, ONE_MINUS_SRC_ALPHA), then
-// ImDrawCallback_ResetRenderState to hand the backend its state back.
+// platform_io.DrawCallback_ResetRenderState to hand the backend its state back.
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -173,7 +173,6 @@ int platform_render_quads_to_texture(
         gdd.CmdLists.Data = glists;
         gdd.CmdLists.Size = 1;
         gdd.CmdLists.Capacity = 1;
-        gdd.CmdListsCount = 1;
         gdd.TotalVtxCount = gdl.VtxBuffer.Size;
         gdd.TotalIdxCount = gdl.IdxBuffer.Size;
         gdd.DisplayPos = ImVec2(disp_x, disp_y);
@@ -261,7 +260,6 @@ int platform_render_quads_to_texture(
     dd.CmdLists.Data = lists;
     dd.CmdLists.Size = 1;
     dd.CmdLists.Capacity = 1;
-    dd.CmdListsCount = 1;
     dd.TotalVtxCount = dl.VtxBuffer.Size;
     dd.TotalIdxCount = dl.IdxBuffer.Size;
     dd.DisplayPos = ImVec2(disp_x, disp_y);
@@ -298,30 +296,34 @@ static void xt_premul_blend_cb(const ImDrawList*, const ImDrawCmd*) {
 }
 
 // GPU flavor: bind the premultiplied-blend clone of the backend's
-// pipeline (and a NEAREST sampler — the blit is 1:1) through the
-// xerotty-patched RenderState, which exposes the live render pass.
-// ImDrawCallback_ResetRenderState afterwards re-runs the backend's
-// SetupRenderState, restoring its pipeline and sampler.
+// pipeline through the xerotty-patched RenderState, which exposes
+// the live render pass. The NEAREST sampler (the blit is 1:1) is
+// requested through the backend's own standard draw callback
+// (platform_io.DrawCallback_SetSamplerNearest, ImGui 1.92.8+ — the
+// backend owns the sampler objects now; RenderState no longer
+// carries one). platform_io.DrawCallback_ResetRenderState afterwards
+// re-runs the backend's SetupRenderState, restoring its pipeline and
+// linear sampler.
 static void xt_premul_blend_cb_gpu(const ImDrawList*, const ImDrawCmd*) {
     ImGui_ImplSDLGPU3_RenderState* rs =
         (ImGui_ImplSDLGPU3_RenderState*)ImGui::GetPlatformIO().Renderer_RenderState;
     if (!rs || !rs->RenderPass) return;
     SDL_GPUGraphicsPipeline* p = (SDL_GPUGraphicsPipeline*)platform_gpu_premul_pipeline();
     if (p) SDL_BindGPUGraphicsPipeline(rs->RenderPass, p);
-    if (SDL_GPUSampler* ns = (SDL_GPUSampler*)platform_gpu_nearest_sampler())
-        rs->SamplerCurrent = ns;
 }
 
 void platform_drawlist_blit_premul(void* dl_ptr, unsigned long long tex,
                                    float x0, float y0, float x1, float y1) {
     ImDrawList* dl = (ImDrawList*)dl_ptr;
+    ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
     if (platform_use_gpu()) {
         // GPU renders the offscreen pass top-down — no V flip.
+        dl->AddCallback(pio.DrawCallback_SetSamplerNearest, nullptr);
         dl->AddCallback(xt_premul_blend_cb_gpu, nullptr);
         dl->AddImage(ImTextureRef((ImTextureID)tex),
                      ImVec2(x0, y0), ImVec2(x1, y1),
                      ImVec2(0, 0), ImVec2(1, 1), 0xFFFFFFFF);
-        dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+        dl->AddCallback(pio.DrawCallback_ResetRenderState, nullptr);
         return;
     }
     dl->AddCallback(xt_premul_blend_cb, nullptr);
@@ -330,7 +332,7 @@ void platform_drawlist_blit_premul(void* dl_ptr, unsigned long long tex,
     dl->AddImage(ImTextureRef((ImTextureID)tex),
                  ImVec2(x0, y0), ImVec2(x1, y1),
                  ImVec2(0, 1), ImVec2(1, 0), 0xFFFFFFFF);
-    dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    dl->AddCallback(pio.DrawCallback_ResetRenderState, nullptr);
 }
 
 } // extern "C"
