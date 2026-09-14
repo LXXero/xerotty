@@ -3,7 +3,7 @@ module github.com/LXXero/xerotty
 go 1.26.1
 
 require (
-	github.com/AllenDang/cimgui-go v1.4.0
+	github.com/AllenDang/cimgui-go v1.6.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260303162955-0b88c25f3fff
 	github.com/charmbracelet/x/ansi v0.11.8

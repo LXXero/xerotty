@@ -130,7 +130,6 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	terminalFontConfig := func() *imgui.FontConfig {
 		fc := imgui.NewFontConfig()
 		fc.SetPixelSnapH(true)
-		fc.SetPixelSnapV(true)
 		fc.SetOversampleH(1)
 		fc.SetOversampleV(1)
 		return fc
