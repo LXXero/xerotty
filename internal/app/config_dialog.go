@@ -2503,18 +2503,18 @@ func (a *Window) renderMenuLevel(items *[]menuEditorItem, depth int, idp string,
 		imgui.SameLineV(0, 2)
 
 		if item.isSubmenu {
-			if imgui.ButtonV("+##add"+id, imgui.Vec2{X: 22, Y: 0}) {
+			if imgui.ButtonV("+##add"+id, imgui.Vec2{X: 40, Y: 0}) {
 				addChildIdx = i
 			}
 		} else if item.action != "" && item.action != "separator" {
 			// Full edit via the same dialog Add uses: swap the
 			// action, relabel, change the arg or shortcut display —
 			// without remove-and-reshuffle.
-			if imgui.ButtonV("e##edit"+id, imgui.Vec2{X: 22, Y: 0}) {
+			if imgui.ButtonV("edit##edit"+id, imgui.Vec2{X: 40, Y: 0}) {
 				a.openMenuItemDialog(append(append([]int{}, path...), i), nil)
 			}
 		} else {
-			imgui.Dummy(imgui.Vec2{X: 22, Y: 0})
+			imgui.Dummy(imgui.Vec2{X: 40, Y: 0})
 		}
 
 		imgui.SameLineV(0, 2)
