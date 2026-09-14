@@ -8,8 +8,14 @@ import "testing"
 // without the flag renders at that full size, spilling past its cell.
 // Regression for the giant-plug bug: the old detector sampled pixel
 // colors (r!=g||g!=b) and flagged muted emoji like 🔌 as monochrome.
+//
+// Only emoji-only codepoints belong in this list. A BMP symbol with a
+// text presentation (⚡ U+26A1 was here) is legitimately served
+// monochrome by the base monospace font when that font covers it —
+// macOS's Menlo does — and that is correct fallback order, not a
+// detector failure.
 func TestColorEmojiIsColor(t *testing.T) {
-	for _, r := range []rune{'🔌', '⚡', '🦀', '🍕', '🌋'} {
+	for _, r := range []rune{'🔌', '🔥', '🦀', '🍕', '🌋'} {
 		path, err := Default.FindForCodepoint(r, "")
 		if err != nil || path == "" {
 			t.Skipf("no font on this box for %c (%v)", r, err)
