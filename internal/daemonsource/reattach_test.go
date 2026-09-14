@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestReattachRestoresTabsAndScrollback is the regression for
@@ -26,7 +27,7 @@ import (
 // even if it had, the new subscriber seeded lastScrollbackLen to
 // the daemon's current length so no history would ship.
 func TestReattachRestoresTabsAndScrollback(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

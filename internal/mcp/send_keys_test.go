@@ -11,14 +11,15 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPSendKeysSubmits is the "how do I press Enter" regression:
 // tab/keys with {text, keys:["enter"]} must actually run the command
-// — no JSON escape guessing, no incantations. Also checks an
+// — no JSON escape guessing, no incantations. Also checks an
 // unknown token errors loudly with the vocabulary.
 func TestMCPSendKeysSubmits(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

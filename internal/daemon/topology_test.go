@@ -12,13 +12,14 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // startDaemon spins up a daemon on a temp socket and returns it plus a
 // teardown. Shared by the topology tests.
 func startDaemon(t *testing.T) (*daemon.Daemon, string) {
 	t.Helper()
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

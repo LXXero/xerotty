@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPStandardProtocol exercises the Model Context Protocol
@@ -19,7 +20,7 @@ import (
 // just wrapped in the MCP envelope so generic MCP clients (Claude
 // Code, Xyphia) can connect.
 func TestMCPStandardProtocol(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

@@ -9,13 +9,14 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestClientsListAndKick exercises the wire path behind the GUI's
 // Clients menu: list every attached client (with the requester's own
 // entry marked You) and force-disconnect one by id.
 func TestClientsListAndKick(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 
 	d := daemon.New(&cfg, sockPath)

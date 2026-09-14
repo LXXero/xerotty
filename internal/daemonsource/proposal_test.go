@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestProposalGateWire exercises the propose-mode GUI gate's wire
@@ -16,7 +17,7 @@ import (
 // confirm a wire client receives ProposalsChanged, then resolve
 // it (approve) and confirm the queue empties.
 func TestProposalGateWire(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

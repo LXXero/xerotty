@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPCreateBroadcastsToWireClient verifies that a tab created by
@@ -16,7 +17,7 @@ import (
 // MsgTopologyChanged — i.e. MCP-driven structural changes route
 // through the same daemon funnel as wire ones.
 func TestMCPCreateBroadcastsToWireClient(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

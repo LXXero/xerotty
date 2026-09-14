@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // mcpProbe is a minimal line-JSON-RPC client for poking the test
@@ -93,8 +94,9 @@ func TestHotUpgradeE2E(t *testing.T) {
 		t.Skipf("test binary build failed: %v\n%s", err, out)
 	}
 
-	sock := filepath.Join(tmp, "d.sock")
-	mcpSock := filepath.Join(tmp, "d.mcp.sock")
+	sd := testutil.SockDir(t)
+	sock := filepath.Join(sd, "d.sock")
+	mcpSock := filepath.Join(sd, "d.mcp.sock")
 	logPath := filepath.Join(tmp, "daemon.log")
 	logF, _ := os.Create(logPath)
 	defer logF.Close()

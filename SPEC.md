@@ -27,8 +27,9 @@ xerotty is a companion to [SevenTTY](https://github.com/LXXero/SevenTTY), an SSH
 | GUI framework | [AllenDang/cimgui-go](https://github.com/AllenDang/cimgui-go) | Go bindings for Dear ImGui |
 | GUI backend | SDL2 + OpenGL 3.x | Window management, input, GPU rendering |
 | Config format | [BurntSushi/toml](https://github.com/BurntSushi/toml) | Configuration file parsing |
-| Config path | `~/.config/xerotty/config.toml` | User configuration |
-| Theme path | `~/.config/xerotty/themes/` | User theme files |
+| Config path | `~/.config/xerotty/config.toml` (macOS: `~/Library/Application Support/xerotty/`); `XEROTTY_CONFIG_DIR` relocates the directory | User configuration |
+| Theme path | `<config dir>/themes/` | User theme files |
+| Cache path | `~/.cache/xerotty/` (macOS: `~/Library/Caches/xerotty/`); `XEROTTY_CACHE_DIR` relocates it | Socket-path recordings, daemon log |
 
 ### Why These Choices
 

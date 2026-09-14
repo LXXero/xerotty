@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestScrollbackBurst is the regression for "running seq 80000
@@ -29,7 +30,7 @@ import (
 // Uses a smaller burst (5000) than `seq 80000` for test speed.
 // The principle is identical; the bug surfaces the same way.
 func TestScrollbackBurst(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

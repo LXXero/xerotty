@@ -14,6 +14,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPRoundTrip exercises every Phase 4 method against a live
@@ -28,7 +29,7 @@ import (
 //
 // The PTY echo confirms an MCP write actually landed on the tab.
 func TestMCPRoundTrip(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 
@@ -161,7 +162,7 @@ func TestMCPRoundTrip(t *testing.T) {
 // write request but does NOT pass it through to the PTY; it lands
 // on the session's proposed-actions queue instead.
 func TestMCPProposeQueuesWrite(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

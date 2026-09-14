@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPTabActivity checks that tabs/list surfaces the per-tab
@@ -17,7 +18,7 @@ import (
 // timestamps are populated and the ages are small; a distinct tab
 // with no recent activity reads a larger output age (the stale case).
 func TestMCPTabActivity(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

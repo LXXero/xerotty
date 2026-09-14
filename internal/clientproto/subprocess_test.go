@@ -12,6 +12,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestSubprocessDial spawns `go run ./cmd/xerotty serve --stdio` and
@@ -45,7 +46,7 @@ func TestSubprocessDial(t *testing.T) {
 	// --stdio mode now bridges to (or auto-spawns) a persistent
 	// daemon at the given --socket path; pointing it at a fresh
 	// tempdir keeps the test hermetic.
-	tmpSock := filepath.Join(t.TempDir(), "xerottyd.sock")
+	tmpSock := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	c, err := clientproto.DialCommand("go", "run", "./cmd/xerotty", "serve", "--stdio", "--socket", tmpSock)
 	if err != nil {
 		t.Fatalf("dial subprocess: %v", err)

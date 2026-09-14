@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestScrollbackStream produces output that overflows the visible
@@ -20,7 +21,7 @@ import (
 // Uses `for i in $(seq 1 60); do echo SBLINE$i; done` so we know
 // exactly how many lines to expect.
 func TestScrollbackStream(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 

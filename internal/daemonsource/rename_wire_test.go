@@ -8,6 +8,7 @@ import (
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestTabRenameSyncsAcrossClients guards the daemon-authoritative
@@ -16,7 +17,7 @@ import (
 // OTHER attached client via TabState — the divergence that used to
 // let a serve --upgrade reattach wipe GUI-only labels.
 func TestTabRenameSyncsAcrossClients(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

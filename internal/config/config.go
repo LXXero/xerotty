@@ -336,13 +336,40 @@ func Default() Config {
 	}
 }
 
-// Path returns the config file path.
-func Path() string {
-	configDir, err := os.UserConfigDir()
+// EnvConfigDir is the environment variable that relocates the whole
+// config directory (config.toml plus themes/). It exists because
+// os.UserConfigDir honors XDG_CONFIG_HOME only on Linux — on macOS it
+// is always ~/Library/Application Support — so tests and the
+// tools/*.sh harnesses had no cross-platform way to run against a
+// scratch config and, on a Mac, silently read the developer's real
+// one. Deliberately its own variable rather than teaching darwin
+// about XDG_CONFIG_HOME: dotfile setups commonly export that, and
+// honoring it would move a Mac user's config out from under them.
+const EnvConfigDir = "XEROTTY_CONFIG_DIR"
+
+// Dir returns the directory config.toml and themes/ live in:
+// $XEROTTY_CONFIG_DIR when set, else <os.UserConfigDir>/xerotty.
+// "" when neither resolves (UserConfigDir needs $HOME or the
+// platform equivalent).
+func Dir() string {
+	if dir := os.Getenv(EnvConfigDir); dir != "" {
+		return dir
+	}
+	base, err := os.UserConfigDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(configDir, "xerotty", "config.toml")
+	return filepath.Join(base, "xerotty")
+}
+
+// Path returns the config file path, or "" when no config dir
+// resolves (Load then falls back to defaults; Save refuses).
+func Path() string {
+	dir := Dir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "config.toml")
 }
 
 // Load reads config from the standard path, merging with defaults.

@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestScrollbackRangeWire exercises on-demand window fetch end-to-end
@@ -21,7 +22,7 @@ func TestScrollbackRangeWire(t *testing.T) {
 	defer func(c, p, f int) { scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = c, p, f }(scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan)
 	scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = 20, 5, 30
 
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	cfg.Scrollback.Mode = "unlimited"
 	d := daemon.New(&cfg, sockPath)

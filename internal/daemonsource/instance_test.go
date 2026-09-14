@@ -12,6 +12,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestTombstoneDroppedOnDaemonRestart is the layer-4c finding-1
@@ -25,7 +26,7 @@ import (
 // every snapshot and SendTabClose is replayed forever, killing the new
 // tab.
 func TestTombstoneDroppedOnDaemonRestart(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 
 	startDaemon := func() (*daemon.Daemon, chan error) {
 		cfg := config.Default()

@@ -33,8 +33,13 @@ func TestRuntimeDirPrefersXDG(t *testing.T) {
 	}
 }
 
+// TestRecordRoundTrip runs against XEROTTY_CACHE_DIR rather than
+// XDG_CACHE_HOME: os.UserCacheDir ignores the latter on macOS, so the
+// test used to leave test-sock.path in the developer's real cache dir
+// and fail its own "empty before record" check on the next run.
 func TestRecordRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir()) // isolate UserCacheDir
+	dir := t.TempDir()
+	t.Setenv(EnvCacheDir, dir)
 	if got := Recorded("test-sock"); got != "" {
 		t.Fatalf("expected empty before record, got %q", got)
 	}
@@ -43,6 +48,22 @@ func TestRecordRoundTrip(t *testing.T) {
 	}
 	if got := Recorded("test-sock"); got != "/some/where/x.sock" {
 		t.Fatalf("round trip: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "test-sock.path")); err != nil {
+		t.Fatalf("recording not under XEROTTY_CACHE_DIR: %v", err)
+	}
+}
+
+func TestDaemonLogFileHonorsCacheDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(EnvCacheDir, dir)
+	f := DaemonLogFile()
+	if f == nil {
+		t.Fatal("DaemonLogFile returned nil")
+	}
+	f.Close()
+	if _, err := os.Stat(filepath.Join(dir, "xerottyd.log")); err != nil {
+		t.Fatalf("log not under XEROTTY_CACHE_DIR: %v", err)
 	}
 }
 

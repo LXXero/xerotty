@@ -7,6 +7,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestReconcileTabSizeSmallestWins guards the multi-client resize war:
@@ -20,7 +21,7 @@ import (
 // test would need.
 func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 	cfg := config.Default()
-	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
+	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
@@ -109,7 +110,7 @@ func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 // and the owner typing must be a no-op (no thrash).
 func TestSizeOwnershipFollowsInput(t *testing.T) {
 	cfg := config.Default()
-	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
+	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
@@ -197,7 +198,7 @@ func TestSizeOwnershipFollowsInput(t *testing.T) {
 // zombie reconnects.
 func TestReattachDoesNotStealSize(t *testing.T) {
 	cfg := config.Default()
-	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
+	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {

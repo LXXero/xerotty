@@ -25,9 +25,12 @@ N="${1:-8}"
 BIN="${XEROTTY_BIN:-./xerotty}"
 TMP=$(mktemp -d)
 trap 'pkill -f "xerotty --separate" 2>/dev/null; rm -rf "$TMP"' EXIT
-export XDG_RUNTIME_DIR="$TMP/rt" XDG_CONFIG_HOME="$TMP/cfg"
-mkdir -p -m 700 "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME/xerotty"
-printf '[appearance.glow]\nenabled = true\nfps = 20\n' > "$XDG_CONFIG_HOME/xerotty/config.toml"
+# XEROTTY_CONFIG_DIR, not XDG_CONFIG_HOME: os.UserConfigDir ignores
+# XDG on macOS, so the glow config below used to be silently skipped
+# in favor of the real one.
+export XDG_RUNTIME_DIR="$TMP/rt" XEROTTY_CONFIG_DIR="$TMP/cfg" XEROTTY_CACHE_DIR="$TMP/cache"
+mkdir -p -m 700 "$XDG_RUNTIME_DIR" "$XEROTTY_CONFIG_DIR"
+printf '[appearance.glow]\nenabled = true\nfps = 20\n' > "$XEROTTY_CONFIG_DIR/config.toml"
 
 "$BIN" --separate >/dev/null 2>&1 &
 sleep 2

@@ -12,6 +12,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestOSC52ClipboardSet drives an OSC 52 clipboard-set sequence
@@ -19,7 +20,7 @@ import (
 // fires with the decoded text — the server→client clipboard sync
 // path (a remote app copies, the local OS clipboard should get it).
 func TestOSC52ClipboardSet(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)
@@ -73,7 +74,7 @@ func TestOSC52ClipboardSet(t *testing.T) {
 // confirms the daemon reassembles it + types a temp-file path the
 // PTY echoes. Proves the chunked InputImage path end-to-end.
 func TestChunkedImagePaste(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

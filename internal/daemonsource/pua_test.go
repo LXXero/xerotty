@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestPUAGlyphsSurviveWire regression-tests Private Use Area
@@ -21,7 +22,7 @@ import (
 // daemon's emulator holds, or daemon-mode tabs render missing glyphs
 // that pty-mode tabs show fine.
 func TestPUAGlyphsSurviveWire(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

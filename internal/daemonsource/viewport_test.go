@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestViewportConsistencyUnderBurst is the regression for the
@@ -27,7 +28,7 @@ import (
 // Mid-stream snapshots ARE allowed to be partial — only the
 // terminal state has to be consistent.
 func TestViewportConsistencyUnderBurst(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

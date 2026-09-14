@@ -8,6 +8,7 @@ import (
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestSourceActivityClock confirms the daemon's per-tab activity clock
@@ -15,7 +16,7 @@ import (
 // LastInput and LastOutput read recent (client clock, anchored from
 // the shipped ages + bumped by cell diffs).
 func TestSourceActivityClock(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

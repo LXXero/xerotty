@@ -13,6 +13,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestHubReconnectResyncsSources is the layer-4b regression: when the
@@ -22,7 +23,7 @@ import (
 // all without the caller doing anything. The daemon-side session
 // persists across the drop (same process), so the tab survives.
 func TestHubReconnectResyncsSources(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

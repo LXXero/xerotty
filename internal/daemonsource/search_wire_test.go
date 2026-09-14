@@ -8,6 +8,7 @@ import (
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestSearchWire exercises daemon-side search end to end: the windowed
@@ -18,7 +19,7 @@ func TestSearchWire(t *testing.T) {
 	defer func(c, p, f int) { scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = c, p, f }(scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan)
 	scrollbackWindowCap, scrollbackPrefetch, scrollbackFetchSpan = 20, 5, 30 // history exceeds the window
 
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	cfg.Scrollback.Mode = "unlimited"
 	d := daemon.New(&cfg, sockPath)

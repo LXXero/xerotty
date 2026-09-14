@@ -12,6 +12,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestCloseTombstoneSurvivesReconnect is the layer-4c regression for the
@@ -23,7 +24,7 @@ import (
 // close from its tombstone and keep the tab filtered out — locally and,
 // after the replay lands, on the daemon too.
 func TestCloseTombstoneSurvivesReconnect(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

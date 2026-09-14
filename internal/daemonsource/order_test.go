@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestScrollbackOrderUnderRotation is the regression for the user
@@ -27,7 +28,7 @@ import (
 // and asserts the row numbers come out monotonically increasing
 // with no duplicates or reordering.
 func TestScrollbackOrderUnderRotation(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	// User's "memory mode 8000" preference. NewDaemonHosted's
 	// override should ensure the daemon still uses unlimited+disk

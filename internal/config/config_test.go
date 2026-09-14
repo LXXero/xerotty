@@ -6,18 +6,39 @@ import (
 	"testing"
 )
 
-// writeConfig drops a config.toml under a temp XDG_CONFIG_HOME and
-// points os.UserConfigDir at it, so Load() reads our fixture.
+// writeConfig drops a config.toml in a scratch dir and points
+// XEROTTY_CONFIG_DIR at it, so Load() reads our fixture on every
+// platform. (It used to set XDG_CONFIG_HOME, which os.UserConfigDir
+// honors only on Linux — on macOS these tests read the developer's
+// real config and failed.)
 func writeConfig(t *testing.T, body string) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	xdir := filepath.Join(dir, "xerotty")
-	if err := os.MkdirAll(xdir, 0o755); err != nil {
+	t.Setenv(EnvConfigDir, dir)
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(xdir, "config.toml"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
+}
+
+// TestDirOverride pins the override contract: XEROTTY_CONFIG_DIR IS
+// the directory holding config.toml (no xerotty/ nesting), and the
+// unset default nests under the platform config dir.
+func TestDirOverride(t *testing.T) {
+	scratch := t.TempDir()
+	t.Setenv(EnvConfigDir, scratch)
+	if got := Dir(); got != scratch {
+		t.Fatalf("Dir() = %q, want override %q", got, scratch)
+	}
+	if got := Path(); got != filepath.Join(scratch, "config.toml") {
+		t.Fatalf("Path() = %q, want %q", got, filepath.Join(scratch, "config.toml"))
+	}
+
+	t.Setenv(EnvConfigDir, "")
+	if got := Dir(); filepath.Base(got) != "xerotty" {
+		t.Fatalf("default Dir() = %q, want .../xerotty", got)
+	}
+	if got := Path(); got != filepath.Join(Dir(), "config.toml") {
+		t.Fatalf("default Path() = %q, want Dir()/config.toml", got)
 	}
 }
 
@@ -127,7 +148,7 @@ default_mode = "propose"
 
 // TestLoadNoConfigReturnsDefaults — missing file → Default(), no error.
 func TestLoadNoConfigReturnsDefaults(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty dir, no config.toml
+	t.Setenv(EnvConfigDir, t.TempDir()) // empty dir, no config.toml
 	c, err := Load()
 	if err != nil {
 		t.Fatalf("Load with no file: %v", err)

@@ -17,7 +17,11 @@ BACKEND="${1:-gl}"
 BIN="${XEROTTY_BIN:-./xerotty}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/xerotty"
+# Hermetic config + cache. XEROTTY_CONFIG_DIR rather than
+# XDG_CONFIG_HOME: os.UserConfigDir ignores XDG on macOS, where this
+# would silently run against the real config.
+export XEROTTY_CONFIG_DIR="$TMP/xerotty" XEROTTY_CACHE_DIR="$TMP/cache"
+mkdir -p "$XEROTTY_CONFIG_DIR"
 cat > "$TMP/idle.sh" <<'SH'
 #!/bin/sh
 exec sleep 100000
@@ -32,7 +36,7 @@ TOML
 
 GPU=0
 [ "$BACKEND" = "gpu" ] && GPU=1
-OUT=$(XDG_CONFIG_HOME="$TMP" XEROTTY_GPU=$GPU XEROTTY_DEBUG_LOOP=1 \
+OUT=$(XEROTTY_GPU=$GPU XEROTTY_DEBUG_LOOP=1 \
       timeout 7 "$BIN" --separate 2>&1 | grep '^\[loop\]' || true)
 LINES=$(echo "$OUT" | wc -l)
 if [ "$LINES" -lt 4 ]; then

@@ -85,13 +85,34 @@ const (
 	RecordDaemonMCP = "daemon-mcp" // the local daemon's MCP socket
 )
 
-func recordPath(name string) (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
+// EnvCacheDir relocates xerotty's per-user cache dir (socket-path
+// recordings, the daemon log). Same story as config.EnvConfigDir:
+// os.UserCacheDir ignores XDG_CACHE_HOME on macOS, and every MCP
+// server start Records its socket — so `go test ./...` on a Mac used
+// to overwrite the recording the live GUI/daemon had left, and
+// `xerotty mcp` lost them until the next daemon start.
+const EnvCacheDir = "XEROTTY_CACHE_DIR"
+
+// cacheDir returns $XEROTTY_CACHE_DIR or <os.UserCacheDir>/xerotty,
+// created 0700.
+func cacheDir() (string, error) {
+	dir := os.Getenv(EnvCacheDir)
+	if dir == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(base, "xerotty")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, "xerotty")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	return dir, nil
+}
+
+func recordPath(name string) (string, error) {
+	dir, err := cacheDir()
+	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, name+".path"), nil
@@ -137,12 +158,8 @@ func Recorded(name string) string {
 // their client, and murdered one mid-`serve --upgrade`. Returns nil
 // (caller should treat as /dev/null) when the cache dir is unusable.
 func DaemonLogFile() *os.File {
-	dir, err := os.UserCacheDir()
+	d, err := cacheDir()
 	if err != nil {
-		return nil
-	}
-	d := filepath.Join(dir, "xerotty")
-	if err := os.MkdirAll(d, 0o700); err != nil {
 		return nil
 	}
 	path := filepath.Join(d, "xerottyd.log")

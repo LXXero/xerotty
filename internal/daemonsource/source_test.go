@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/terminal"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestSourceRoundTrip runs a daemon in-process, attaches a Hub +
@@ -18,7 +19,7 @@ import (
 // shows up in the shadow emulator that backs Source. Exercises the
 // full GUI ↔ daemon path the SDL3 app will use in daemon mode.
 func TestSourceRoundTrip(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 
@@ -77,7 +78,7 @@ func TestSourceRoundTrip(t *testing.T) {
 // surfaces on the Source's GetCWD / ForegroundProcessName /
 // AppCursorMode getters.
 func TestSourceTabState(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

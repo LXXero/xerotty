@@ -14,7 +14,9 @@ command -v magick >/dev/null || { echo "SKIP: imagemagick not installed"; exit 0
 BIN="${XEROTTY_BIN:-./xerotty}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/xerotty"
+# Hermetic config + cache (see loop-health-check.sh for why not XDG).
+export XEROTTY_CONFIG_DIR="$TMP/xerotty" XEROTTY_CACHE_DIR="$TMP/cache"
+mkdir -p "$XEROTTY_CONFIG_DIR"
 cat > "$TMP/fill.sh" <<'SH'
 #!/bin/sh
 printf '\033[1mBOLD\033[0m plain \033[4munderline\033[0m \033[9mstrike\033[0m \033[7mreverse\033[0m\n'
@@ -31,9 +33,9 @@ shell = "$TMP/fill.sh"
 enabled = false
 TOML
 
-XDG_CONFIG_HOME="$TMP" XEROTTY_GPU=0 "$BIN" --separate \
+XEROTTY_GPU=0 "$BIN" --separate \
     --screenshot "$TMP/gl.png" --screenshot-frames 90 >/dev/null 2>&1
-XDG_CONFIG_HOME="$TMP" XEROTTY_GPU=1 "$BIN" --separate \
+XEROTTY_GPU=1 "$BIN" --separate \
     --screenshot "$TMP/gpu.png" --screenshot-frames 90 >/dev/null 2>&1
 [ -f "$TMP/gl.png" ] && [ -f "$TMP/gpu.png" ] || { echo "FAIL: screenshot capture broke on a backend"; exit 1; }
 

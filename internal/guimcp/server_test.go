@@ -11,6 +11,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/guimcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // fakeBackend is a guimcp.Backend that doesn't need the GUI or a
@@ -110,7 +111,7 @@ func (c *mcpConn) call(t *testing.T, id int, method string, params any) (json.Ra
 
 func startServer(t *testing.T, b guimcp.Backend) string {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "gui.mcp.sock")
+	sock := filepath.Join(testutil.SockDir(t), "gui.mcp.sock")
 	srv := guimcp.New(b, sock)
 	done := make(chan error, 1)
 	go func() { done <- srv.Run() }()

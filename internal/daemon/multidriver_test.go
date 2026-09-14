@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMultiDriverBroadcast verifies that when one attached client
@@ -20,7 +21,7 @@ import (
 // Both clients see the marker because publishLoop runs per
 // (client, tab) and PTY DataCh fans out to every subscriber.
 func TestMultiDriverBroadcast(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 
@@ -81,7 +82,7 @@ func TestMultiDriverBroadcast(t *testing.T) {
 // TestHostnameInHelloAck confirms the daemon advertises its hostname
 // so UIs can render host badges.
 func TestHostnameInHelloAck(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

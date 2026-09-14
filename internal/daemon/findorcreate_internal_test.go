@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestFindOrCreateTabReuse exercises named-tab idempotency end to end:
@@ -15,7 +16,7 @@ import (
 // internal test.
 func TestFindOrCreateTabReuse(t *testing.T) {
 	cfg := config.Default()
-	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock"))
+	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
 	sess := d.session("default")
 
 	// First call spawns and tags the tab.

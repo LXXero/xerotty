@@ -12,6 +12,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestVanishDistinguishesRestartFromRemoteClose is the finding-1
@@ -27,7 +28,7 @@ import (
 // letting the window close.
 func TestVanishRestartVsRemoteClose(t *testing.T) {
 	t.Run("remote", func(t *testing.T) {
-		sockPath := filepath.Join(t.TempDir(), "d.sock")
+		sockPath := filepath.Join(testutil.SockDir(t), "d.sock")
 		cfg := config.Default()
 		d := daemon.New(&cfg, sockPath)
 		done := make(chan error, 1)
@@ -75,7 +76,7 @@ func TestVanishRestartVsRemoteClose(t *testing.T) {
 	})
 
 	t.Run("restart", func(t *testing.T) {
-		sockPath := filepath.Join(t.TempDir(), "d.sock")
+		sockPath := filepath.Join(testutil.SockDir(t), "d.sock")
 
 		startDaemon := func() (*daemon.Daemon, chan error) {
 			cfg := config.Default()
@@ -149,7 +150,7 @@ func TestVanishRestartVsRemoteClose(t *testing.T) {
 // numeric ID, so the reused ID kept the dead Source bound to the new
 // daemon's tab (never vanished) — the GUI would render a corpse.
 func TestRestartVanishesReusedID(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "d.sock")
 
 	startDaemon := func() (*daemon.Daemon, chan error) {
 		cfg := config.Default()

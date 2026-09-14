@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestNamedTabCreateReuses covers the wire-level idempotent create
@@ -16,7 +17,7 @@ import (
 // label must yield the SAME daemon tab, the second flagged reused —
 // the semantics the GUI's aggregating MCP create_tab leans on.
 func TestNamedTabCreateReuses(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)

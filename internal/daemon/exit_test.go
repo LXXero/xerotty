@@ -8,6 +8,7 @@ import (
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestDaemonChildExitFiresFrame is the regression test for the bug
@@ -19,7 +20,7 @@ import (
 // Setup: spawn daemon, attach, send `exit\r` to the shell, then
 // wait for a ChildExit frame. Must arrive within a couple seconds.
 func TestDaemonChildExitFiresFrame(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 

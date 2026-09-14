@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // readFrameExpect reads one frame and asserts its type.
@@ -130,7 +131,7 @@ func attachedBy(d *daemon.Daemon, id string) bool {
 // keeps this client alive — an idle non-ponging reader IS now reaped,
 // see TestIdleHungClientReaped.
 func TestFlowingReaderNotReaped(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
@@ -212,7 +213,7 @@ func TestFlowingReaderNotReaped(t *testing.T) {
 // forever. Excluding ping/pong from write-progress lets the pong clock
 // reap it.
 func TestIdleHungClientReaped(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	d.SetHeartbeat(25*time.Millisecond, 120*time.Millisecond)
@@ -349,7 +350,7 @@ func TestHandshakeHangNoZombie(t *testing.T) {
 // client that keeps ponging (clientproto auto-replies to pings) stays
 // attached well past the dead window, even with no user traffic.
 func TestResponsiveClientNotReaped(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 	d.SetHeartbeat(30*time.Millisecond, 150*time.Millisecond)

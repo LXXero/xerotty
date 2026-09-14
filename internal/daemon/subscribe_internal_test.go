@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestSubscribeRespectsAttachState is the deterministic guard for the
@@ -21,7 +22,7 @@ import (
 // networking a stress test would need.
 func TestSubscribeRespectsAttachState(t *testing.T) {
 	cfg := config.Default()
-	d := New(&cfg, filepath.Join(t.TempDir(), "xerottyd.sock")) // not Run; we drive subscribe directly
+	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock")) // not Run; we drive subscribe directly
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {

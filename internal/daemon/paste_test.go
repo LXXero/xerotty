@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestImagePasteRoundTrip exercises Phase 3's image-paste path: send
@@ -19,7 +20,7 @@ import (
 // typed-in path is then visible in the cell grid, and the temp file
 // has the bytes we sent.
 func TestImagePasteRoundTrip(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 
@@ -126,7 +127,7 @@ collect:
 
 // TestClipboardData verifies the daemon stores client clipboard text.
 func TestClipboardData(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 	d := daemon.New(&cfg, sockPath)
 

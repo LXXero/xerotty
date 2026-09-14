@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 type rpcClient struct {
@@ -114,8 +115,9 @@ func TestMCPFunctionalSession(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-tags", "headless", "-o", bin, "./../../cmd/xerotty").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v\n%s", err, out)
 	}
-	sock := filepath.Join(tmp, "d.sock")
-	mcpSock := filepath.Join(tmp, "d.mcp.sock")
+	sd := testutil.SockDir(t)
+	sock := filepath.Join(sd, "d.sock")
+	mcpSock := filepath.Join(sd, "d.mcp.sock")
 	srv := exec.Command(bin, "serve", "--socket", sock, "--mcp-socket", mcpSock)
 	if err := srv.Start(); err != nil {
 		t.Fatalf("serve: %v", err)

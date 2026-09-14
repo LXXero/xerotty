@@ -10,6 +10,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestDaemonRoundTrip is the Phase 0 end-to-end acceptance test:
@@ -21,7 +22,7 @@ import (
 // Skipped automatically if the test runs in an environment without
 // PTY support (CI sometimes blocks /dev/ptmx).
 func TestDaemonRoundTrip(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 
 	d := daemon.New(&cfg, sockPath)
@@ -129,7 +130,7 @@ func mirrorContains(mirror [][]protocol.Cell, needle string) bool {
 // survives. This is the "roam between machines, get my layout back"
 // promise made concrete.
 func TestDaemonWindowLayout(t *testing.T) {
-	sockPath := filepath.Join(t.TempDir(), "xerottyd.sock")
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
 
 	d := daemon.New(&cfg, sockPath)
@@ -228,4 +229,3 @@ func TestDaemonWindowLayout(t *testing.T) {
 		t.Errorf("total tabs: %d, want 3", len(attached2.Tabs))
 	}
 }
-

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/renderer"
 )
 
@@ -79,9 +80,10 @@ func Load(name string) (renderer.Theme, error) {
 func SearchDirs() []string {
 	var dirs []string
 
-	configDir, err := os.UserConfigDir()
-	if err == nil {
-		dirs = append(dirs, filepath.Join(configDir, "xerotty", "themes"))
+	// Via config.Dir so the XEROTTY_CONFIG_DIR override relocates
+	// user themes together with config.toml.
+	if dir := config.Dir(); dir != "" {
+		dirs = append(dirs, filepath.Join(dir, "themes"))
 	}
 
 	// Bundled themes relative to executable. The third path covers the

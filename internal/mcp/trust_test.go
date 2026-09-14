@@ -9,6 +9,7 @@ import (
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPTrustBoundary exercises the propose-as-gate config:
@@ -16,7 +17,7 @@ import (
 // An unauthenticated connection lands in propose, can't elevate to
 // auto, and can't approve. A token-authenticated connection can.
 func TestMCPTrustBoundary(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

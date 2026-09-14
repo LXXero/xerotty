@@ -11,6 +11,7 @@ import (
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/mcp"
 	"github.com/LXXero/xerotty/internal/screentext"
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestMCPStyledScreen covers the agent-visibility path for styled
@@ -20,7 +21,7 @@ import (
 // mistake the dim autocomplete hint after the prompt for text the
 // user actually typed — styled=true is the fix.
 func TestMCPStyledScreen(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.SockDir(t)
 	wireSock := filepath.Join(dir, "xerottyd.sock")
 	mcpSock := filepath.Join(dir, "xerottyd.mcp.sock")
 

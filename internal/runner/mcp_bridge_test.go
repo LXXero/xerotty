@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // echoServer answers each request line with a canned response and —
@@ -48,7 +50,7 @@ func echoServer(t *testing.T, ln net.Listener, dropAfter int) {
 // TestBridgeRoundTripAndCleanExit: request in, response out, exit 0
 // when the client closes stdin.
 func TestBridgeRoundTripAndCleanExit(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(testutil.SockDir(t), "mcp.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -77,7 +79,7 @@ func TestBridgeRoundTripAndCleanExit(t *testing.T) {
 // hangs up after the first response; the bridge must re-discover,
 // reconnect, and keep serving — the MCP client never notices.
 func TestBridgeReconnects(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(testutil.SockDir(t), "mcp.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -125,7 +127,7 @@ func TestBridgeReconnects(t *testing.T) {
 // requested mode on every reconnect — otherwise a daemon hot upgrade
 // silently demotes agents to observe and their writes start failing.
 func TestBridgeReplaysModeAcrossReconnect(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "mcp.sock")
+	sock := filepath.Join(testutil.SockDir(t), "mcp.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
