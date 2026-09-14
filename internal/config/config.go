@@ -487,10 +487,53 @@ func prettifyChord(chord, goos string) string {
 			if goos == "darwin" {
 				parts[i] = "Cmd"
 			}
+		case "Super":
+			// The darwin Cmd<->Ctrl swap puts physical Ctrl in the
+			// Super slot — display it as the key the user actually
+			// presses.
+			if goos == "darwin" {
+				parts[i] = "Ctrl"
+			}
 		case "Comma":
 			parts[i] = ","
 		case "Period":
 			parts[i] = "."
+		}
+	}
+	return strings.Join(parts, "+")
+}
+
+// NormalizeChord converts user-facing chord text (the PrettifyChord
+// space the keybind editor displays: Cmd+, on a mac, "," for Comma)
+// back to storage space. Inverse of PrettifyChord; storage-space
+// input passes through unchanged, so hand-typed raw chords keep
+// working.
+func NormalizeChord(chord string) string {
+	return normalizeChord(chord, runtime.GOOS)
+}
+
+func normalizeChord(chord, goos string) string {
+	parts := strings.Split(chord, "+")
+	for i, p := range parts {
+		switch p {
+		case "Cmd":
+			// On darwin the displayed "Cmd" IS the Ctrl slot (the
+			// ImGui swap); elsewhere Cmd already means Super and the
+			// matcher accepts it verbatim.
+			if goos == "darwin" {
+				parts[i] = "Ctrl"
+			}
+		case "Ctrl":
+			// On darwin a typed "Ctrl" means PHYSICAL Ctrl = the
+			// Super slot. Without this, a mac user typing Ctrl+T got
+			// a binding that fired on Cmd+T.
+			if goos == "darwin" {
+				parts[i] = "Super"
+			}
+		case ",":
+			parts[i] = "Comma"
+		case ".":
+			parts[i] = "Period"
 		}
 	}
 	return strings.Join(parts, "+")

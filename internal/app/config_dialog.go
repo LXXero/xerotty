@@ -1751,14 +1751,14 @@ func (a *Window) renderPrefKeybinds() {
 	if imgui.BeginTableV("##kbrows", 3, imgui.TableFlagsSizingStretchProp, imgui.NewVec2(0, 0), 0) {
 		for i, r := range d.kbRows {
 			imgui.TableNextColumn()
-			imgui.Text(r.chord)
+			imgui.Text(config.PrettifyChord(r.chord))
 			imgui.TableNextColumn()
 			imgui.Text(kbActionDisplay(r.action))
 			imgui.TableNextColumn()
 			if imgui.Button("edit##kbe" + r.chord) {
 				// Load the binding into the dialog; Save moves it.
 				d.kbEditChord = r.chord
-				d.kbAddChord = r.chord
+				d.kbAddChord = config.PrettifyChord(r.chord)
 				d.kbAddArg = ""
 				d.kbAddErr = ""
 				d.kbCapturing = false
@@ -1833,7 +1833,7 @@ func (a *Window) renderKeybindDialog() {
 			if imgui.IsKeyPressedBool(imgui.KeyEscape) {
 				d.kbCapturing = false
 			} else if chord, ok := input.PressedChord(); ok {
-				d.kbAddChord = chord
+				d.kbAddChord = config.PrettifyChord(chord)
 				d.kbCapturing = false
 			}
 		}
@@ -1873,7 +1873,10 @@ func (a *Window) renderKeybindDialog() {
 		}
 		if imgui.Button(saveLabel + "##kbsave") {
 			d.kbAddErr = ""
-			chord := strings.TrimSpace(d.kbAddChord)
+			// The field lives in display space (Cmd on a mac, "," for
+			// Comma); storage/matching space is what ValidChord and
+			// the keybind map speak.
+			chord := config.NormalizeChord(strings.TrimSpace(d.kbAddChord))
 			switch {
 			case chord == "" || !input.ValidChord(chord):
 				d.kbAddErr = "invalid chord — modifiers (Ctrl+ Shift+ Alt+ Cmd+) then a key name"
