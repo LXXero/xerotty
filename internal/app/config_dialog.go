@@ -383,6 +383,7 @@ type configDialog struct {
 	muDlgLabel      string
 	muDlgArg        string
 	muDlgShortIdx   int32
+	muDlgCustom     string
 	muDlgErr        string
 
 	// Clipboard
@@ -2553,6 +2554,7 @@ func (a *Window) openMenuItemDialog(editPath, parentPath []int) {
 	d.muDlgEditPath = editPath
 	d.muDlgParentPath = parentPath
 	d.muDlgLabel, d.muDlgArg, d.muDlgErr = "", "", ""
+	d.muDlgCustom = ""
 	d.muDlgShortIdx = 0
 	d.muDlgActionIdx = 0
 	d.muDlgPrevAction = ""
@@ -2651,40 +2653,44 @@ func (a *Window) renderMenuItemDialog() {
 			imgui.InputTextWithHint("##mudlgarg", hint, &d.muDlgArg, 0, nil)
 		}
 
-		// Shortcut display picker — only for real actions.
-		var shortOpts []string
+		// Shortcut display picker — only for real actions. Auto
+		// follows the live keybinds forever (fewest-modifiers chord
+		// wins when several are bound); picking a specific chord or
+		// typing a custom string stores that text as-is, so it will
+		// NOT follow later rebinds. None hides the hint entirely.
 		var shortVals []string
 		if sel != nil {
 			actStr := sel.ID
 			if sel.Arg != NoArg && strings.TrimSpace(d.muDlgArg) != "" {
 				actStr += ":" + strings.TrimSpace(d.muDlgArg)
 			}
-			shortOpts = []string{"Auto (from keybinds)", "None"}
+			shortOpts := []string{"Auto (follows keybinds)", "None"}
 			shortVals = []string{"", "none"}
 			for _, r := range d.kbRows {
 				if r.action == actStr {
 					pretty := config.PrettifyChord(r.chord)
-					shortOpts = append(shortOpts, pretty+" (fixed)")
+					shortOpts = append(shortOpts, pretty)
 					shortVals = append(shortVals, pretty)
 				}
 			}
-			// An edit restoring an explicit label that matches no
-			// current binding still shows and keeps it.
+			shortOpts = append(shortOpts, "Custom...")
+			shortVals = append(shortVals, "\x00custom")
+			// Restoring an edit: select the option matching the item's
+			// explicit shortcut; unmatched text lands in Custom.
 			if d.muDlgShortIdx == -1 {
 				existing := ""
 				if it := menuItemAt(&d.menuItems, d.muDlgEditPath); it != nil {
 					existing = it.shortcut
 				}
 				d.muDlgShortIdx = 0
-				for i, v := range shortVals {
+				for i, v := range shortVals[:len(shortVals)-1] {
 					if v == existing {
 						d.muDlgShortIdx = int32(i)
 					}
 				}
 				if existing != "" && existing != "none" && d.muDlgShortIdx == 0 {
-					shortOpts = append(shortOpts, existing+" (custom)")
-					shortVals = append(shortVals, existing)
-					d.muDlgShortIdx = int32(len(shortVals) - 1)
+					d.muDlgShortIdx = int32(len(shortVals) - 1) // Custom
+					d.muDlgCustom = existing
 				}
 			}
 			if int(d.muDlgShortIdx) >= len(shortOpts) {
@@ -2692,6 +2698,11 @@ func (a *Window) renderMenuItemDialog() {
 			}
 			imgui.Text("Shortcut Hint")
 			a.prefCombo("mudlgshort", &d.muDlgShortIdx, shortOpts, w*1.4)
+			if shortVals[d.muDlgShortIdx] == "\x00custom" {
+				imgui.SetNextItemWidth(w)
+				imgui.InputTextWithHint("##mudlgcustom", "shown verbatim", &d.muDlgCustom, 0, nil)
+			}
+			imgui.TextDisabled("Auto tracks keybind changes; a picked chord or custom\ntext is stored as-is and won't follow rebinds.")
 		}
 
 		imgui.Text("")
@@ -2728,6 +2739,10 @@ func (a *Window) renderMenuItemDialog() {
 					shortcut := ""
 					if int(d.muDlgShortIdx) < len(shortVals) {
 						shortcut = shortVals[d.muDlgShortIdx]
+					}
+					if shortcut == "\x00custom" {
+						// Empty custom text degrades to Auto.
+						shortcut = strings.TrimSpace(d.muDlgCustom)
 					}
 					it = menuEditorItem{label: label, action: act, shortcut: shortcut}
 				}
