@@ -12,11 +12,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
-	"github.com/charmbracelet/x/vt"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/vt"
 )
 
 // FlushScrollbackToDisk force-evicts EVERY in-memory scrollback line
@@ -133,6 +135,14 @@ type AdoptSpec struct {
 	CursorBlink          bool
 	CursorStyleSet       bool
 
+	// Modes the app had explicitly set/reset (ModeSnapshot's lists),
+	// replayed as DECSET/DECRST and SM/RM before the screen cells so
+	// a 1049 puts them on the alt buffer. All nil = a handoff written
+	// by a daemon that predates mode capture; AppCursor is the only
+	// mode known then.
+	DECModesSet, DECModesReset   []int
+	ANSIModesSet, ANSIModesReset []int
+
 	// Scrollback store, already rebuilt (same object in-process, or
 	// AdoptDiskScrollback(fd) across an exec). nil = none.
 	Disk *DiskScrollback
@@ -200,6 +210,17 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 
 	t.installCallbacks()
 
+	// Replay the app's mode state FIRST: 1049 must switch to the alt
+	// buffer before the cells land on it, and 25l must hide the
+	// cursor of the screen that will actually be shown. Ascending
+	// mode order gives exactly that. The callbacks installed above
+	// re-record each mode, so the next handoff carries it forward
+	// again; nothing else ever re-sends these (apps don't repeat
+	// DECSETs on SIGWINCH), which is why a daemon swap used to drop
+	// bracketed paste and mouse reporting for the rest of the tab's
+	// life.
+	replayModes(emu, spec)
+
 	// Replay the snapshot BEFORE the reader starts, so fresh PTY
 	// output lands on top of the restored screen, never under it.
 	for r, row := range spec.Screen {
@@ -221,6 +242,44 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 
 	t.startPipelines()
 	return t, nil
+}
+
+// replayModes writes one SM/RM (ANSI) or DECSET/DECRST (DEC private)
+// sequence per recorded mode into the fresh emulator, ascending by
+// mode number within each family.
+func replayModes(emu *vt.SafeEmulator, spec AdoptSpec) {
+	type entry struct {
+		mode int
+		set  bool
+	}
+	merge := func(set, reset []int) []entry {
+		var out []entry
+		for _, m := range set {
+			out = append(out, entry{m, true})
+		}
+		for _, m := range reset {
+			out = append(out, entry{m, false})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].mode < out[j].mode })
+		return out
+	}
+	var sb strings.Builder
+	for _, e := range merge(spec.ANSIModesSet, spec.ANSIModesReset) {
+		fmt.Fprintf(&sb, "\x1b[%d%c", e.mode, hOrL(e.set))
+	}
+	for _, e := range merge(spec.DECModesSet, spec.DECModesReset) {
+		fmt.Fprintf(&sb, "\x1b[?%d%c", e.mode, hOrL(e.set))
+	}
+	if sb.Len() > 0 {
+		_, _ = emu.Write([]byte(sb.String()))
+	}
+}
+
+func hOrL(set bool) byte {
+	if set {
+		return 'h'
+	}
+	return 'l'
 }
 
 // Handoff exports the disk store's plumbing for serialization: the

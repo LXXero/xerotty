@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -189,5 +190,79 @@ func TestAdoptDiskScrollbackFromFD(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no DISK_* line readable from the adopted store")
+	}
+}
+
+// TestAdoptReplaysModes: the modes a foreground app set before the
+// swap must be live in the adopted emulator. Regression for the
+// post-`serve --upgrade` bug where every tab silently lost bracketed
+// paste (multi-line pastes into Claude Code submitted line by line,
+// image-paste paths typed raw), mouse reporting, its hidden cursor and
+// the alt screen — nothing re-sends DECSETs after a daemon swap.
+func TestAdoptReplaysModes(t *testing.T) {
+	cfg := config.Default()
+	cfg.Shell = "/bin/sh"
+	old, err := NewDaemonHosted(&cfg, 80, 24, "")
+	if err != nil {
+		t.Skipf("no PTY available: %v", err)
+	}
+	// App-style setup: bracketed paste, SGR mouse, hidden cursor, alt
+	// screen; the marker proves the sequences ahead of it were parsed.
+	old.Write([]byte("printf '\\033[?2004h\\033[?1002h\\033[?1006h\\033[?25l\\033[?1049h'; printf 'MODES_%s\\n' SET\r"))
+	waitFor(t, old, "MODES_SET")
+	if !old.bracketedPaste.Load() || !old.sgrMouse.Load() || old.cursorVisible.Load() || !old.IsAltScreen() {
+		t.Fatalf("precondition: modes not parsed (paste=%v sgr=%v cursor=%v alt=%v)",
+			old.bracketedPaste.Load(), old.sgrMouse.Load(), old.cursorVisible.Load(), old.IsAltScreen())
+	}
+	decSet, decReset, ansiSet, ansiReset := old.ModeSnapshot()
+	screen := old.SnapshotViewport()
+	pos := old.CursorPosition()
+
+	ptmx, pid, disk, err := old.ReleaseForHandoff()
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	neu, err := Adopt(AdoptSpec{
+		Ptmx: ptmx, ChildPID: pid, Cols: 80, Rows: 24,
+		Screen: screen, CursorRow: pos.Y, CursorCol: pos.X, Disk: disk,
+		DECModesSet: decSet, DECModesReset: decReset,
+		ANSIModesSet: ansiSet, ANSIModesReset: ansiReset,
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	defer neu.Close()
+
+	if !neu.bracketedPaste.Load() {
+		t.Error("bracketed paste lost across adopt")
+	}
+	if !neu.sgrMouse.Load() {
+		t.Error("SGR mouse reporting lost across adopt")
+	}
+	if neu.cursorVisible.Load() {
+		t.Error("hidden cursor came back visible across adopt")
+	}
+	if !neu.IsAltScreen() {
+		t.Error("alt screen lost across adopt")
+	}
+	if !screenContains(neu, "MODES_SET") {
+		t.Error("alt-screen contents were not restored onto the alt buffer")
+	}
+	// The adopted terminal re-records the replayed modes, so a second
+	// handoff carries them forward again.
+	ds2, dr2, _, _ := neu.ModeSnapshot()
+	if !reflect.DeepEqual(ds2, decSet) || !reflect.DeepEqual(dr2, decReset) {
+		t.Errorf("adopted terminal's mode snapshot drifted: set %v/%v reset %v/%v", ds2, decSet, dr2, decReset)
+	}
+
+	// Still the same live shell, and later mode changes keep tracking
+	// through the adopted emulator's callbacks. Only the alt screen is
+	// asserted: /bin/sh is bash on some boxes, and bash re-arms
+	// bracketed paste (2004h) with every prompt, so 2004's state after
+	// the marker is a race against the next prompt.
+	neu.Write([]byte("printf '\\033[?1049l'; printf 'BACK_ON_%s\\n' MAIN\r"))
+	waitFor(t, neu, "BACK_ON_MAIN")
+	if neu.IsAltScreen() {
+		t.Error("mode changes after adopt not tracked")
 	}
 }

@@ -2,6 +2,7 @@ package handoff
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -26,6 +27,8 @@ func sampleState() *State {
 					{{Content: "宽", Width: 2}, {Content: " ", Width: 0}},
 				},
 				CursorRow: 0, CursorCol: 2, AppCursor: true,
+				DECModesSet: []int{1002, 1006, 2004}, DECModesReset: []int{25},
+				ANSIModesSet:  []int{4},
 				MemScrollback: [][]protocol.Cell{{{Content: "old", Width: 1}}},
 				DiskFD:        9, DiskOffsets: []int64{0, 128, 256}, DiskSize: 384,
 			},
@@ -60,6 +63,16 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if len(tb.Screen) != 2 || tb.Screen[1][0].Content != "宽" || tb.Screen[1][0].Width != 2 {
 		t.Fatalf("screen cells mangled: %+v", tb.Screen)
+	}
+	if !reflect.DeepEqual(tb.DECModesSet, []int{1002, 1006, 2004}) ||
+		!reflect.DeepEqual(tb.DECModesReset, []int{25}) ||
+		!reflect.DeepEqual(tb.ANSIModesSet, []int{4}) || tb.ANSIModesReset != nil {
+		t.Fatalf("mode lists mangled: %+v", tb)
+	}
+	// The second tab never touched a mode: lists stay nil (omitempty),
+	// which Adopt reads as "only AppCursor known".
+	if t4 := out.Tabs[1]; t4.DECModesSet != nil || t4.DECModesReset != nil {
+		t.Fatalf("untouched tab grew mode lists: %+v", t4)
 	}
 	if len(tb.DiskOffsets) != 3 || tb.DiskOffsets[2] != 256 || tb.DiskSize != 384 {
 		t.Fatalf("disk index mangled: %+v", tb)

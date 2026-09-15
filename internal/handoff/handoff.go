@@ -33,12 +33,16 @@ import (
 //	1 — initial: session topology, per-tab ptmx fd + child pid,
 //	    screen/scrollback as protocol.Cell rows, disk-scrollback
 //	    fd + offset index, listener fds.
+//	    2026-09-15: per-tab explicit mode lists (dec_set / dec_reset /
+//	    ansi_set / ansi_reset) added as omitempty fields — same
+//	    version on purpose, older readers skip unknown keys and newer
+//	    readers treat absence as "only AppCursor known".
 const Version uint16 = 1
 
 // State is the whole daemon, minus what deliberately does not
 // survive: client connections (they reconnect), propose-queue
-// entries (agents re-propose), deep emulator internals (SIGWINCH
-// wiggle repaints full-screen apps).
+// entries (agents re-propose), deep emulator internals beyond the
+// mode set (SIGWINCH wiggle repaints full-screen apps).
 type State struct {
 	Version uint16 `msg:"version"`
 
@@ -97,6 +101,16 @@ type TabState struct {
 	CursorBlink bool              `msg:"cursor_blink,omitempty"`
 	StyleSet    bool              `msg:"style_set,omitempty"`
 	AppCursor   bool              `msg:"app_cursor,omitempty"`
+
+	// DEC private and ANSI modes the app had explicitly set/reset at
+	// snapshot time (terminal.ModeSnapshot), replayed on adopt so
+	// bracketed paste, mouse reporting, cursor visibility and the alt
+	// screen survive the swap. Absent in files from older daemons —
+	// such tabs come back with only AppCursor restored, as before.
+	DECModesSet    []int `msg:"dec_set,omitempty"`
+	DECModesReset  []int `msg:"dec_reset,omitempty"`
+	ANSIModesSet   []int `msg:"ansi_set,omitempty"`
+	ANSIModesReset []int `msg:"ansi_reset,omitempty"`
 
 	// Scrollback. In-memory rows serialize as cells; the disk store
 	// (unlinked temp file — exists only through its fd) passes as

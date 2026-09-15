@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -137,6 +138,19 @@ type Terminal struct {
 	// events are wrapped in CSI ? 200 h and CSI ? 201 h.
 	bracketedPaste atomic.Bool
 
+	// modes records every DEC/ANSI mode the foreground app has set or
+	// reset, as last reported by the emulator's mode callbacks. It
+	// exists for hot-upgrade handoff: Adopt rebuilds a FRESH emulator
+	// and nothing re-sends DECSETs on a daemon swap, so without this
+	// bracketed paste (2004), mouse reporting (1000-1006), a hidden
+	// cursor (25l) and the alt screen (1049) all silently reverted to
+	// defaults after every `serve --upgrade`. The user-visible symptom
+	// was multi-line pastes into Claude Code arriving unbracketed
+	// (every newline submitted) and image-paste paths typed raw
+	// instead of recognized as a paste.
+	modeMu sync.Mutex
+	modes  map[ansi.Mode]bool
+
 	// disk-backed scrollback state, used only when the configured
 	// scrollback Mode is "unlimited". When vt's in-mem scrollback
 	// grows past 2*liveWindow, the oldest (memLen - liveWindow)
@@ -262,6 +276,7 @@ func (t *Terminal) installCallbacks() {
 			t.cursorStyleSet.Store(true)
 		},
 		EnableMode: func(mode ansi.Mode) {
+			t.noteMode(mode, true)
 			switch mode {
 			case ansi.ModeCursorKeys:
 				t.appCursor.Store(true)
@@ -272,6 +287,7 @@ func (t *Terminal) installCallbacks() {
 			}
 		},
 		DisableMode: func(mode ansi.Mode) {
+			t.noteMode(mode, false)
 			switch mode {
 			case ansi.ModeCursorKeys:
 				t.appCursor.Store(false)
@@ -282,6 +298,46 @@ func (t *Terminal) installCallbacks() {
 			}
 		},
 	})
+}
+
+// noteMode records a mode's latest setting for ModeSnapshot.
+func (t *Terminal) noteMode(mode ansi.Mode, set bool) {
+	t.modeMu.Lock()
+	if t.modes == nil {
+		t.modes = make(map[ansi.Mode]bool)
+	}
+	t.modes[mode] = set
+	t.modeMu.Unlock()
+}
+
+// ModeSnapshot returns the DEC private and ANSI modes the foreground
+// app has explicitly set or reset, each list ascending, for replay
+// into an adopted emulator (handoff.go). Modes the app never touched
+// are absent: the fresh emulator's defaults already cover them.
+func (t *Terminal) ModeSnapshot() (decSet, decReset, ansiSet, ansiReset []int) {
+	t.modeMu.Lock()
+	for mode, set := range t.modes {
+		switch m := mode.(type) {
+		case ansi.DECMode:
+			if set {
+				decSet = append(decSet, int(m))
+			} else {
+				decReset = append(decReset, int(m))
+			}
+		case ansi.ANSIMode:
+			if set {
+				ansiSet = append(ansiSet, int(m))
+			} else {
+				ansiReset = append(ansiReset, int(m))
+			}
+		}
+	}
+	t.modeMu.Unlock()
+	sort.Ints(decSet)
+	sort.Ints(decReset)
+	sort.Ints(ansiSet)
+	sort.Ints(ansiReset)
+	return decSet, decReset, ansiSet, ansiReset
 }
 
 // startPipelines launches the PTY reader, the emulator-response

@@ -97,15 +97,18 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 		screen := term.SnapshotViewport()
 		pos := term.CursorPosition()
 		style, blink, styleSet := term.CursorStyle()
+		decSet, decReset, ansiSet, ansiReset := term.ModeSnapshot()
 		ts := handoff.TabState{
 			ID: t.ID, Name: t.Name(), Title: t.Title(),
 			CWD:  term.GetCWD(),
 			Cols: term.Width(), Rows: term.Height(),
 			CursorRow: pos.Y, CursorCol: pos.X,
 			CursorStyle: style, CursorBlink: blink, StyleSet: styleSet,
-			AppCursor: term.AppCursorMode(),
-			Screen:    cellsToProto(screen),
-			DiskFD:    -1,
+			AppCursor:   term.AppCursorMode(),
+			DECModesSet: decSet, DECModesReset: decReset,
+			ANSIModesSet: ansiSet, ANSIModesReset: ansiReset,
+			Screen:       cellsToProto(screen),
+			DiskFD:       -1,
 			LastOutputAt: term.LastOutputUnixNano(),
 			LastInputAt:  term.LastInputUnixNano(),
 		}
@@ -206,6 +209,8 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 		Screen:    protoToUV(ts.Screen),
 		CursorRow: ts.CursorRow, CursorCol: ts.CursorCol,
 		AppCursor:   ts.AppCursor,
+		DECModesSet: ts.DECModesSet, DECModesReset: ts.DECModesReset,
+		ANSIModesSet: ts.ANSIModesSet, ANSIModesReset: ts.ANSIModesReset,
 		CursorStyle: ts.CursorStyle, CursorBlink: ts.CursorBlink, CursorStyleSet: ts.StyleSet,
 		Disk:         disk,
 		LastOutputAt: ts.LastOutputAt,

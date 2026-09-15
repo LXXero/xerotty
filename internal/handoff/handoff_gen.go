@@ -606,34 +606,110 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "AppCursor")
 				return
 			}
-		case "mem_scrollback":
+		case "dec_set":
 			var zb0004 uint32
 			zb0004, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesSet")
+				return
+			}
+			if cap(z.DECModesSet) >= int(zb0004) {
+				z.DECModesSet = (z.DECModesSet)[:zb0004]
+			} else {
+				z.DECModesSet = make([]int, zb0004)
+			}
+			for za0003 := range z.DECModesSet {
+				z.DECModesSet[za0003], err = dc.ReadInt()
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesSet", za0003)
+					return
+				}
+			}
+		case "dec_reset":
+			var zb0005 uint32
+			zb0005, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesReset")
+				return
+			}
+			if cap(z.DECModesReset) >= int(zb0005) {
+				z.DECModesReset = (z.DECModesReset)[:zb0005]
+			} else {
+				z.DECModesReset = make([]int, zb0005)
+			}
+			for za0004 := range z.DECModesReset {
+				z.DECModesReset[za0004], err = dc.ReadInt()
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesReset", za0004)
+					return
+				}
+			}
+		case "ansi_set":
+			var zb0006 uint32
+			zb0006, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesSet")
+				return
+			}
+			if cap(z.ANSIModesSet) >= int(zb0006) {
+				z.ANSIModesSet = (z.ANSIModesSet)[:zb0006]
+			} else {
+				z.ANSIModesSet = make([]int, zb0006)
+			}
+			for za0005 := range z.ANSIModesSet {
+				z.ANSIModesSet[za0005], err = dc.ReadInt()
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesSet", za0005)
+					return
+				}
+			}
+		case "ansi_reset":
+			var zb0007 uint32
+			zb0007, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesReset")
+				return
+			}
+			if cap(z.ANSIModesReset) >= int(zb0007) {
+				z.ANSIModesReset = (z.ANSIModesReset)[:zb0007]
+			} else {
+				z.ANSIModesReset = make([]int, zb0007)
+			}
+			for za0006 := range z.ANSIModesReset {
+				z.ANSIModesReset[za0006], err = dc.ReadInt()
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesReset", za0006)
+					return
+				}
+			}
+		case "mem_scrollback":
+			var zb0008 uint32
+			zb0008, err = dc.ReadArrayHeader()
 			if err != nil {
 				err = msgp.WrapError(err, "MemScrollback")
 				return
 			}
-			if cap(z.MemScrollback) >= int(zb0004) {
-				z.MemScrollback = (z.MemScrollback)[:zb0004]
+			if cap(z.MemScrollback) >= int(zb0008) {
+				z.MemScrollback = (z.MemScrollback)[:zb0008]
 			} else {
-				z.MemScrollback = make([][]protocol.Cell, zb0004)
+				z.MemScrollback = make([][]protocol.Cell, zb0008)
 			}
-			for za0003 := range z.MemScrollback {
-				var zb0005 uint32
-				zb0005, err = dc.ReadArrayHeader()
+			for za0007 := range z.MemScrollback {
+				var zb0009 uint32
+				zb0009, err = dc.ReadArrayHeader()
 				if err != nil {
-					err = msgp.WrapError(err, "MemScrollback", za0003)
+					err = msgp.WrapError(err, "MemScrollback", za0007)
 					return
 				}
-				if cap(z.MemScrollback[za0003]) >= int(zb0005) {
-					z.MemScrollback[za0003] = (z.MemScrollback[za0003])[:zb0005]
+				if cap(z.MemScrollback[za0007]) >= int(zb0009) {
+					z.MemScrollback[za0007] = (z.MemScrollback[za0007])[:zb0009]
 				} else {
-					z.MemScrollback[za0003] = make([]protocol.Cell, zb0005)
+					z.MemScrollback[za0007] = make([]protocol.Cell, zb0009)
 				}
-				for za0004 := range z.MemScrollback[za0003] {
-					err = z.MemScrollback[za0003][za0004].DecodeMsg(dc)
+				for za0008 := range z.MemScrollback[za0007] {
+					err = z.MemScrollback[za0007][za0008].DecodeMsg(dc)
 					if err != nil {
-						err = msgp.WrapError(err, "MemScrollback", za0003, za0004)
+						err = msgp.WrapError(err, "MemScrollback", za0007, za0008)
 						return
 					}
 				}
@@ -645,21 +721,21 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				return
 			}
 		case "disk_offsets":
-			var zb0006 uint32
-			zb0006, err = dc.ReadArrayHeader()
+			var zb0010 uint32
+			zb0010, err = dc.ReadArrayHeader()
 			if err != nil {
 				err = msgp.WrapError(err, "DiskOffsets")
 				return
 			}
-			if cap(z.DiskOffsets) >= int(zb0006) {
-				z.DiskOffsets = (z.DiskOffsets)[:zb0006]
+			if cap(z.DiskOffsets) >= int(zb0010) {
+				z.DiskOffsets = (z.DiskOffsets)[:zb0010]
 			} else {
-				z.DiskOffsets = make([]int64, zb0006)
+				z.DiskOffsets = make([]int64, zb0010)
 			}
-			for za0005 := range z.DiskOffsets {
-				z.DiskOffsets[za0005], err = dc.ReadInt64()
+			for za0009 := range z.DiskOffsets {
+				z.DiskOffsets[za0009], err = dc.ReadInt64()
 				if err != nil {
-					err = msgp.WrapError(err, "DiskOffsets", za0005)
+					err = msgp.WrapError(err, "DiskOffsets", za0009)
 					return
 				}
 			}
@@ -683,8 +759,8 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(23)
-	var zb0001Mask uint32 /* 23 bits */
+	zb0001Len := uint32(27)
+	var zb0001Mask uint32 /* 27 bits */
 	_ = zb0001Mask
 	if z.Name == "" {
 		zb0001Len--
@@ -730,17 +806,33 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 		zb0001Len--
 		zb0001Mask |= 0x40000
 	}
-	if z.MemScrollback == nil {
+	if z.DECModesSet == nil {
 		zb0001Len--
 		zb0001Mask |= 0x80000
 	}
-	if z.DiskOffsets == nil {
+	if z.DECModesReset == nil {
+		zb0001Len--
+		zb0001Mask |= 0x100000
+	}
+	if z.ANSIModesSet == nil {
 		zb0001Len--
 		zb0001Mask |= 0x200000
 	}
-	if z.DiskSize == 0 {
+	if z.ANSIModesReset == nil {
 		zb0001Len--
 		zb0001Mask |= 0x400000
+	}
+	if z.MemScrollback == nil {
+		zb0001Len--
+		zb0001Mask |= 0x800000
+	}
+	if z.DiskOffsets == nil {
+		zb0001Len--
+		zb0001Mask |= 0x2000000
+	}
+	if z.DiskSize == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x4000000
 	}
 	// variable map header, size zb0001Len
 	err = en.WriteMapHeader(zb0001Len)
@@ -977,6 +1069,82 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 			}
 		}
 		if (zb0001Mask & 0x80000) == 0 { // if not omitted
+			// write "dec_set"
+			err = en.Append(0xa7, 0x64, 0x65, 0x63, 0x5f, 0x73, 0x65, 0x74)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.DECModesSet)))
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesSet")
+				return
+			}
+			for za0003 := range z.DECModesSet {
+				err = en.WriteInt(z.DECModesSet[za0003])
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesSet", za0003)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x100000) == 0 { // if not omitted
+			// write "dec_reset"
+			err = en.Append(0xa9, 0x64, 0x65, 0x63, 0x5f, 0x72, 0x65, 0x73, 0x65, 0x74)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.DECModesReset)))
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesReset")
+				return
+			}
+			for za0004 := range z.DECModesReset {
+				err = en.WriteInt(z.DECModesReset[za0004])
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesReset", za0004)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x200000) == 0 { // if not omitted
+			// write "ansi_set"
+			err = en.Append(0xa8, 0x61, 0x6e, 0x73, 0x69, 0x5f, 0x73, 0x65, 0x74)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.ANSIModesSet)))
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesSet")
+				return
+			}
+			for za0005 := range z.ANSIModesSet {
+				err = en.WriteInt(z.ANSIModesSet[za0005])
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesSet", za0005)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x400000) == 0 { // if not omitted
+			// write "ansi_reset"
+			err = en.Append(0xaa, 0x61, 0x6e, 0x73, 0x69, 0x5f, 0x72, 0x65, 0x73, 0x65, 0x74)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.ANSIModesReset)))
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesReset")
+				return
+			}
+			for za0006 := range z.ANSIModesReset {
+				err = en.WriteInt(z.ANSIModesReset[za0006])
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesReset", za0006)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x800000) == 0 { // if not omitted
 			// write "mem_scrollback"
 			err = en.Append(0xae, 0x6d, 0x65, 0x6d, 0x5f, 0x73, 0x63, 0x72, 0x6f, 0x6c, 0x6c, 0x62, 0x61, 0x63, 0x6b)
 			if err != nil {
@@ -987,16 +1155,16 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 				err = msgp.WrapError(err, "MemScrollback")
 				return
 			}
-			for za0003 := range z.MemScrollback {
-				err = en.WriteArrayHeader(uint32(len(z.MemScrollback[za0003])))
+			for za0007 := range z.MemScrollback {
+				err = en.WriteArrayHeader(uint32(len(z.MemScrollback[za0007])))
 				if err != nil {
-					err = msgp.WrapError(err, "MemScrollback", za0003)
+					err = msgp.WrapError(err, "MemScrollback", za0007)
 					return
 				}
-				for za0004 := range z.MemScrollback[za0003] {
-					err = z.MemScrollback[za0003][za0004].EncodeMsg(en)
+				for za0008 := range z.MemScrollback[za0007] {
+					err = z.MemScrollback[za0007][za0008].EncodeMsg(en)
 					if err != nil {
-						err = msgp.WrapError(err, "MemScrollback", za0003, za0004)
+						err = msgp.WrapError(err, "MemScrollback", za0007, za0008)
 						return
 					}
 				}
@@ -1012,7 +1180,7 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 			err = msgp.WrapError(err, "DiskFD")
 			return
 		}
-		if (zb0001Mask & 0x200000) == 0 { // if not omitted
+		if (zb0001Mask & 0x2000000) == 0 { // if not omitted
 			// write "disk_offsets"
 			err = en.Append(0xac, 0x64, 0x69, 0x73, 0x6b, 0x5f, 0x6f, 0x66, 0x66, 0x73, 0x65, 0x74, 0x73)
 			if err != nil {
@@ -1023,15 +1191,15 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 				err = msgp.WrapError(err, "DiskOffsets")
 				return
 			}
-			for za0005 := range z.DiskOffsets {
-				err = en.WriteInt64(z.DiskOffsets[za0005])
+			for za0009 := range z.DiskOffsets {
+				err = en.WriteInt64(z.DiskOffsets[za0009])
 				if err != nil {
-					err = msgp.WrapError(err, "DiskOffsets", za0005)
+					err = msgp.WrapError(err, "DiskOffsets", za0009)
 					return
 				}
 			}
 		}
-		if (zb0001Mask & 0x400000) == 0 { // if not omitted
+		if (zb0001Mask & 0x4000000) == 0 { // if not omitted
 			// write "disk_size"
 			err = en.Append(0xa9, 0x64, 0x69, 0x73, 0x6b, 0x5f, 0x73, 0x69, 0x7a, 0x65)
 			if err != nil {
@@ -1051,8 +1219,8 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(23)
-	var zb0001Mask uint32 /* 23 bits */
+	zb0001Len := uint32(27)
+	var zb0001Mask uint32 /* 27 bits */
 	_ = zb0001Mask
 	if z.Name == "" {
 		zb0001Len--
@@ -1098,17 +1266,33 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 		zb0001Len--
 		zb0001Mask |= 0x40000
 	}
-	if z.MemScrollback == nil {
+	if z.DECModesSet == nil {
 		zb0001Len--
 		zb0001Mask |= 0x80000
 	}
-	if z.DiskOffsets == nil {
+	if z.DECModesReset == nil {
+		zb0001Len--
+		zb0001Mask |= 0x100000
+	}
+	if z.ANSIModesSet == nil {
 		zb0001Len--
 		zb0001Mask |= 0x200000
 	}
-	if z.DiskSize == 0 {
+	if z.ANSIModesReset == nil {
 		zb0001Len--
 		zb0001Mask |= 0x400000
+	}
+	if z.MemScrollback == nil {
+		zb0001Len--
+		zb0001Mask |= 0x800000
+	}
+	if z.DiskOffsets == nil {
+		zb0001Len--
+		zb0001Mask |= 0x2000000
+	}
+	if z.DiskSize == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x4000000
 	}
 	// variable map header, size zb0001Len
 	o = msgp.AppendMapHeader(o, zb0001Len)
@@ -1205,15 +1389,47 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 			o = msgp.AppendBool(o, z.AppCursor)
 		}
 		if (zb0001Mask & 0x80000) == 0 { // if not omitted
+			// string "dec_set"
+			o = append(o, 0xa7, 0x64, 0x65, 0x63, 0x5f, 0x73, 0x65, 0x74)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.DECModesSet)))
+			for za0003 := range z.DECModesSet {
+				o = msgp.AppendInt(o, z.DECModesSet[za0003])
+			}
+		}
+		if (zb0001Mask & 0x100000) == 0 { // if not omitted
+			// string "dec_reset"
+			o = append(o, 0xa9, 0x64, 0x65, 0x63, 0x5f, 0x72, 0x65, 0x73, 0x65, 0x74)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.DECModesReset)))
+			for za0004 := range z.DECModesReset {
+				o = msgp.AppendInt(o, z.DECModesReset[za0004])
+			}
+		}
+		if (zb0001Mask & 0x200000) == 0 { // if not omitted
+			// string "ansi_set"
+			o = append(o, 0xa8, 0x61, 0x6e, 0x73, 0x69, 0x5f, 0x73, 0x65, 0x74)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.ANSIModesSet)))
+			for za0005 := range z.ANSIModesSet {
+				o = msgp.AppendInt(o, z.ANSIModesSet[za0005])
+			}
+		}
+		if (zb0001Mask & 0x400000) == 0 { // if not omitted
+			// string "ansi_reset"
+			o = append(o, 0xaa, 0x61, 0x6e, 0x73, 0x69, 0x5f, 0x72, 0x65, 0x73, 0x65, 0x74)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.ANSIModesReset)))
+			for za0006 := range z.ANSIModesReset {
+				o = msgp.AppendInt(o, z.ANSIModesReset[za0006])
+			}
+		}
+		if (zb0001Mask & 0x800000) == 0 { // if not omitted
 			// string "mem_scrollback"
 			o = append(o, 0xae, 0x6d, 0x65, 0x6d, 0x5f, 0x73, 0x63, 0x72, 0x6f, 0x6c, 0x6c, 0x62, 0x61, 0x63, 0x6b)
 			o = msgp.AppendArrayHeader(o, uint32(len(z.MemScrollback)))
-			for za0003 := range z.MemScrollback {
-				o = msgp.AppendArrayHeader(o, uint32(len(z.MemScrollback[za0003])))
-				for za0004 := range z.MemScrollback[za0003] {
-					o, err = z.MemScrollback[za0003][za0004].MarshalMsg(o)
+			for za0007 := range z.MemScrollback {
+				o = msgp.AppendArrayHeader(o, uint32(len(z.MemScrollback[za0007])))
+				for za0008 := range z.MemScrollback[za0007] {
+					o, err = z.MemScrollback[za0007][za0008].MarshalMsg(o)
 					if err != nil {
-						err = msgp.WrapError(err, "MemScrollback", za0003, za0004)
+						err = msgp.WrapError(err, "MemScrollback", za0007, za0008)
 						return
 					}
 				}
@@ -1222,15 +1438,15 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 		// string "disk_fd"
 		o = append(o, 0xa7, 0x64, 0x69, 0x73, 0x6b, 0x5f, 0x66, 0x64)
 		o = msgp.AppendInt(o, z.DiskFD)
-		if (zb0001Mask & 0x200000) == 0 { // if not omitted
+		if (zb0001Mask & 0x2000000) == 0 { // if not omitted
 			// string "disk_offsets"
 			o = append(o, 0xac, 0x64, 0x69, 0x73, 0x6b, 0x5f, 0x6f, 0x66, 0x66, 0x73, 0x65, 0x74, 0x73)
 			o = msgp.AppendArrayHeader(o, uint32(len(z.DiskOffsets)))
-			for za0005 := range z.DiskOffsets {
-				o = msgp.AppendInt64(o, z.DiskOffsets[za0005])
+			for za0009 := range z.DiskOffsets {
+				o = msgp.AppendInt64(o, z.DiskOffsets[za0009])
 			}
 		}
-		if (zb0001Mask & 0x400000) == 0 { // if not omitted
+		if (zb0001Mask & 0x4000000) == 0 { // if not omitted
 			// string "disk_size"
 			o = append(o, 0xa9, 0x64, 0x69, 0x73, 0x6b, 0x5f, 0x73, 0x69, 0x7a, 0x65)
 			o = msgp.AppendInt64(o, z.DiskSize)
@@ -1397,34 +1613,110 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "AppCursor")
 				return
 			}
-		case "mem_scrollback":
+		case "dec_set":
 			var zb0004 uint32
 			zb0004, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesSet")
+				return
+			}
+			if cap(z.DECModesSet) >= int(zb0004) {
+				z.DECModesSet = (z.DECModesSet)[:zb0004]
+			} else {
+				z.DECModesSet = make([]int, zb0004)
+			}
+			for za0003 := range z.DECModesSet {
+				z.DECModesSet[za0003], bts, err = msgp.ReadIntBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesSet", za0003)
+					return
+				}
+			}
+		case "dec_reset":
+			var zb0005 uint32
+			zb0005, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "DECModesReset")
+				return
+			}
+			if cap(z.DECModesReset) >= int(zb0005) {
+				z.DECModesReset = (z.DECModesReset)[:zb0005]
+			} else {
+				z.DECModesReset = make([]int, zb0005)
+			}
+			for za0004 := range z.DECModesReset {
+				z.DECModesReset[za0004], bts, err = msgp.ReadIntBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "DECModesReset", za0004)
+					return
+				}
+			}
+		case "ansi_set":
+			var zb0006 uint32
+			zb0006, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesSet")
+				return
+			}
+			if cap(z.ANSIModesSet) >= int(zb0006) {
+				z.ANSIModesSet = (z.ANSIModesSet)[:zb0006]
+			} else {
+				z.ANSIModesSet = make([]int, zb0006)
+			}
+			for za0005 := range z.ANSIModesSet {
+				z.ANSIModesSet[za0005], bts, err = msgp.ReadIntBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesSet", za0005)
+					return
+				}
+			}
+		case "ansi_reset":
+			var zb0007 uint32
+			zb0007, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ANSIModesReset")
+				return
+			}
+			if cap(z.ANSIModesReset) >= int(zb0007) {
+				z.ANSIModesReset = (z.ANSIModesReset)[:zb0007]
+			} else {
+				z.ANSIModesReset = make([]int, zb0007)
+			}
+			for za0006 := range z.ANSIModesReset {
+				z.ANSIModesReset[za0006], bts, err = msgp.ReadIntBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "ANSIModesReset", za0006)
+					return
+				}
+			}
+		case "mem_scrollback":
+			var zb0008 uint32
+			zb0008, bts, err = msgp.ReadArrayHeaderBytes(bts)
 			if err != nil {
 				err = msgp.WrapError(err, "MemScrollback")
 				return
 			}
-			if cap(z.MemScrollback) >= int(zb0004) {
-				z.MemScrollback = (z.MemScrollback)[:zb0004]
+			if cap(z.MemScrollback) >= int(zb0008) {
+				z.MemScrollback = (z.MemScrollback)[:zb0008]
 			} else {
-				z.MemScrollback = make([][]protocol.Cell, zb0004)
+				z.MemScrollback = make([][]protocol.Cell, zb0008)
 			}
-			for za0003 := range z.MemScrollback {
-				var zb0005 uint32
-				zb0005, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			for za0007 := range z.MemScrollback {
+				var zb0009 uint32
+				zb0009, bts, err = msgp.ReadArrayHeaderBytes(bts)
 				if err != nil {
-					err = msgp.WrapError(err, "MemScrollback", za0003)
+					err = msgp.WrapError(err, "MemScrollback", za0007)
 					return
 				}
-				if cap(z.MemScrollback[za0003]) >= int(zb0005) {
-					z.MemScrollback[za0003] = (z.MemScrollback[za0003])[:zb0005]
+				if cap(z.MemScrollback[za0007]) >= int(zb0009) {
+					z.MemScrollback[za0007] = (z.MemScrollback[za0007])[:zb0009]
 				} else {
-					z.MemScrollback[za0003] = make([]protocol.Cell, zb0005)
+					z.MemScrollback[za0007] = make([]protocol.Cell, zb0009)
 				}
-				for za0004 := range z.MemScrollback[za0003] {
-					bts, err = z.MemScrollback[za0003][za0004].UnmarshalMsg(bts)
+				for za0008 := range z.MemScrollback[za0007] {
+					bts, err = z.MemScrollback[za0007][za0008].UnmarshalMsg(bts)
 					if err != nil {
-						err = msgp.WrapError(err, "MemScrollback", za0003, za0004)
+						err = msgp.WrapError(err, "MemScrollback", za0007, za0008)
 						return
 					}
 				}
@@ -1436,21 +1728,21 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				return
 			}
 		case "disk_offsets":
-			var zb0006 uint32
-			zb0006, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			var zb0010 uint32
+			zb0010, bts, err = msgp.ReadArrayHeaderBytes(bts)
 			if err != nil {
 				err = msgp.WrapError(err, "DiskOffsets")
 				return
 			}
-			if cap(z.DiskOffsets) >= int(zb0006) {
-				z.DiskOffsets = (z.DiskOffsets)[:zb0006]
+			if cap(z.DiskOffsets) >= int(zb0010) {
+				z.DiskOffsets = (z.DiskOffsets)[:zb0010]
 			} else {
-				z.DiskOffsets = make([]int64, zb0006)
+				z.DiskOffsets = make([]int64, zb0010)
 			}
-			for za0005 := range z.DiskOffsets {
-				z.DiskOffsets[za0005], bts, err = msgp.ReadInt64Bytes(bts)
+			for za0009 := range z.DiskOffsets {
+				z.DiskOffsets[za0009], bts, err = msgp.ReadInt64Bytes(bts)
 				if err != nil {
-					err = msgp.WrapError(err, "DiskOffsets", za0005)
+					err = msgp.WrapError(err, "DiskOffsets", za0009)
 					return
 				}
 			}
@@ -1481,11 +1773,11 @@ func (z *TabState) Msgsize() (s int) {
 			s += z.Screen[za0001][za0002].Msgsize()
 		}
 	}
-	s += 11 + msgp.IntSize + 11 + msgp.IntSize + 13 + msgp.Uint8Size + 13 + msgp.BoolSize + 10 + msgp.BoolSize + 11 + msgp.BoolSize + 15 + msgp.ArrayHeaderSize
-	for za0003 := range z.MemScrollback {
+	s += 11 + msgp.IntSize + 11 + msgp.IntSize + 13 + msgp.Uint8Size + 13 + msgp.BoolSize + 10 + msgp.BoolSize + 11 + msgp.BoolSize + 8 + msgp.ArrayHeaderSize + (len(z.DECModesSet) * (msgp.IntSize)) + 10 + msgp.ArrayHeaderSize + (len(z.DECModesReset) * (msgp.IntSize)) + 9 + msgp.ArrayHeaderSize + (len(z.ANSIModesSet) * (msgp.IntSize)) + 11 + msgp.ArrayHeaderSize + (len(z.ANSIModesReset) * (msgp.IntSize)) + 15 + msgp.ArrayHeaderSize
+	for za0007 := range z.MemScrollback {
 		s += msgp.ArrayHeaderSize
-		for za0004 := range z.MemScrollback[za0003] {
-			s += z.MemScrollback[za0003][za0004].Msgsize()
+		for za0008 := range z.MemScrollback[za0007] {
+			s += z.MemScrollback[za0007][za0008].Msgsize()
 		}
 	}
 	s += 8 + msgp.IntSize + 13 + msgp.ArrayHeaderSize + (len(z.DiskOffsets) * (msgp.Int64Size)) + 10 + msgp.Int64Size
