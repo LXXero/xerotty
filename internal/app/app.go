@@ -801,6 +801,30 @@ func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, _ /*ignored*/ uint32, idx int3
 // running over there" use openRemoteReattach instead. Both share
 // the per-host Hub so they use one SSH connection.
 func (w *Window) openRemoteTab(hostName string) error {
+	// Inherit the directory when the active tab is on the SAME host —
+	// "new tab on this host" lands where you were working over there.
+	return w.openRemoteTabCWD(hostName, w.inheritCWDFor(hostName))
+}
+
+// inheritCWDFor returns the directory a new tab on host ("" = local)
+// should start in under the tabs.inherit_cwd pref: the active tab's
+// CWD, but ONLY when that tab lives on the same host. A path from a
+// different machine is meaningless to the spawning daemon, so a host
+// mismatch yields "" (the daemon's default directory).
+func (w *Window) inheritCWDFor(host string) string {
+	if w == nil || w.tabs == nil || !w.app.cfg.Tabs.InheritCWD {
+		return ""
+	}
+	t := w.tabs.Active()
+	if t == nil || t.Terminal == nil || t.Host != host {
+		return ""
+	}
+	return t.Terminal.GetCWD()
+}
+
+// openRemoteTabCWD is openRemoteTab with an explicit starting
+// directory on the remote host ("" = the remote daemon's default).
+func (w *Window) openRemoteTabCWD(hostName, cwd string) error {
 	entry, err := w.app.remoteHubFor(hostName)
 	if err != nil {
 		return err
@@ -812,7 +836,7 @@ func (w *Window) openRemoteTab(hostName string) error {
 	// tabs piled into the same remote window, so reorder/focus
 	// later targeted the wrong window.
 	winID := w.windowIDForHub(entry.hub)
-	src, err := entry.hub.NewTabIn(winID, cols, rows, "", nil)
+	src, err := entry.hub.NewTabIn(winID, cols, rows, cwd, nil)
 	if err != nil {
 		return fmt.Errorf("hub.NewTabIn on %s: %w", hostName, err)
 	}
@@ -827,11 +851,14 @@ func (w *Window) openRemoteTab(hostName string) error {
 // PTY tab) and gets its own daemon-side window on the host's hub, so
 // its tabs/focus/reorder stay independent of the spawning window's.
 func (w *Window) openRemoteWindow(hostName string) error {
+	// Read the directory from THIS window before spawning — the new
+	// window is empty, so it has no active tab to inherit from.
+	cwd := w.inheritCWDFor(hostName)
 	nw := w.app.spawnEmptyWindow()
 	if nw == nil {
 		return fmt.Errorf("spawn window for %s failed", hostName)
 	}
-	return nw.openRemoteTab(hostName)
+	return nw.openRemoteTabCWD(hostName, cwd)
 }
 
 // openRemoteReattach drains UNADOPTED daemon windows the remote
@@ -2311,10 +2338,8 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		// shell's directory; it wins over InheritCWD, which is about
 		// Cmd+N from inside the GUI inheriting the parent tab.
 		cwd := a.spawnCWD
-		if cwd == "" && a.cfg.Tabs.InheritCWD && parent != nil {
-			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
-				cwd = parentTab.Terminal.GetCWD()
-			}
+		if cwd == "" && parent != nil {
+			cwd = parent.inheritCWDFor("")
 		}
 		if _, err := w.tabs.NewTabCmd(cols, rows, cwd, a.spawnCmd); err != nil {
 			return
@@ -2324,10 +2349,8 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 		// shell's directory; it wins over InheritCWD, which is about
 		// Cmd+N from inside the GUI inheriting the parent tab.
 		cwd := a.spawnCWD
-		if cwd == "" && a.cfg.Tabs.InheritCWD && parent != nil {
-			if parentTab := parent.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
-				cwd = parentTab.Terminal.GetCWD()
-			}
+		if cwd == "" && parent != nil {
+			cwd = parent.inheritCWDFor("")
 		}
 		if _, err := w.tabs.NewTabCmd(cols, rows, cwd, a.spawnCmd); err != nil {
 			return

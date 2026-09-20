@@ -3020,6 +3020,12 @@ func (z *Error) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Message")
 				return
 			}
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -3033,26 +3039,54 @@ func (z *Error) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z Error) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 2
-	// write "code"
-	err = en.Append(0x82, 0xa4, 0x63, 0x6f, 0x64, 0x65)
+	// check for omitted fields
+	zb0001Len := uint32(3)
+	var zb0001Mask uint8 /* 3 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint16(z.Code)
-	if err != nil {
-		err = msgp.WrapError(err, "Code")
-		return
-	}
-	// write "message"
-	err = en.Append(0xa7, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65)
-	if err != nil {
-		return
-	}
-	err = en.WriteString(z.Message)
-	if err != nil {
-		err = msgp.WrapError(err, "Message")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "code"
+		err = en.Append(0xa4, 0x63, 0x6f, 0x64, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint16(z.Code)
+		if err != nil {
+			err = msgp.WrapError(err, "Code")
+			return
+		}
+		// write "message"
+		err = en.Append(0xa7, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Message)
+		if err != nil {
+			err = msgp.WrapError(err, "Message")
+			return
+		}
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// write "req_id"
+			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteUint64(z.ReqID)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		}
 	}
 	return
 }
@@ -3060,13 +3094,31 @@ func (z Error) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z Error) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 2
-	// string "code"
-	o = append(o, 0x82, 0xa4, 0x63, 0x6f, 0x64, 0x65)
-	o = msgp.AppendUint16(o, z.Code)
-	// string "message"
-	o = append(o, 0xa7, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65)
-	o = msgp.AppendString(o, z.Message)
+	// check for omitted fields
+	zb0001Len := uint32(3)
+	var zb0001Mask uint8 /* 3 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x4
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "code"
+		o = append(o, 0xa4, 0x63, 0x6f, 0x64, 0x65)
+		o = msgp.AppendUint16(o, z.Code)
+		// string "message"
+		o = append(o, 0xa7, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65)
+		o = msgp.AppendString(o, z.Message)
+		if (zb0001Mask & 0x4) == 0 { // if not omitted
+			// string "req_id"
+			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			o = msgp.AppendUint64(o, z.ReqID)
+		}
+	}
 	return
 }
 
@@ -3100,6 +3152,12 @@ func (z *Error) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Message")
 				return
 			}
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -3114,7 +3172,7 @@ func (z *Error) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z Error) Msgsize() (s int) {
-	s = 1 + 5 + msgp.Uint16Size + 8 + msgp.StringPrefixSize + len(z.Message)
+	s = 1 + 5 + msgp.Uint16Size + 8 + msgp.StringPrefixSize + len(z.Message) + 7 + msgp.Uint64Size
 	return
 }
 

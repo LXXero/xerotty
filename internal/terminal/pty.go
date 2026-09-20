@@ -55,9 +55,7 @@ func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string, launch *LaunchC
 			cmd.Args[0] = "-" + filepath.Base(shell)
 		}
 	}
-	if cwd != "" {
-		cmd.Dir = cwd
-	}
+	cmd.Dir = usableCWD(cwd)
 
 	// Build environment
 	cmd.Env = append(os.Environ(),
@@ -104,4 +102,25 @@ func spawnPTY(cfg *config.Config, cols, rows uint16, cwd string, launch *LaunchC
 	}
 
 	return ptmx, cmd, nil
+}
+
+// usableCWD vets a requested starting directory. A cwd that isn't a
+// directory HERE — deleted since the parent tab reported it, or a path
+// from another machine (a remote tab's /home/you handed to a local
+// spawn) — would make exec fail the chdir and the whole tab create
+// with it. Open the tab in the user's home instead, like a fresh
+// terminal would; "" (inherit the process CWD) if even that is gone.
+func usableCWD(cwd string) string {
+	if cwd == "" {
+		return ""
+	}
+	if fi, err := os.Stat(cwd); err == nil && fi.IsDir() {
+		return cwd
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if fi, err := os.Stat(home); err == nil && fi.IsDir() {
+			return home
+		}
+	}
+	return ""
 }

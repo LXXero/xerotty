@@ -901,7 +901,9 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	}
 	t, w, created, err := c.daemon.CreateNamedTab(c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd, launch)
 	if err != nil {
-		c.send(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error()})
+		// Echo ReqID so the requester's NewTabIn fails NOW rather than
+		// blocking the GUI's UI thread for the whole create timeout.
+		c.send(protocol.MsgError, &protocol.Error{Code: 3, Message: err.Error(), ReqID: msg.ReqID})
 		return nil
 	}
 	// Unicast the ack to the requester, echoing ReqID so it can

@@ -228,9 +228,17 @@ type Detach struct{}
 
 // Error reports a protocol-level error. The server may close the
 // connection after sending one of these.
+//
+// ReqID, when non-zero, echoes the ReqID of the request that failed
+// (today: TabCreate) so the client can fail that one waiter at once
+// instead of sitting out its create timeout. Additive + omitempty, and
+// deliberately NOT a ProtocolVersion bump: an older daemon just never
+// sets it (the client degrades to the old timeout), and an older
+// client skips the unknown field. No skew pairing misbehaves.
 type Error struct {
 	Code    uint16 `msg:"code"`
 	Message string `msg:"message"`
+	ReqID   uint64 `msg:"req_id,omitempty"`
 }
 
 // TabCreate asks the daemon to spawn a new tab in the attached

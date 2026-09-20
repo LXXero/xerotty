@@ -111,12 +111,10 @@ func init() {
 		// through to xerotty's CWD when there's no active tab (first
 		// tab) or GetCWD returns "" (process gone, /proc lookup
 		// failed, etc.).
-		var cwd string
-		if w.app.cfg.Tabs.InheritCWD {
-			if parentTab := w.tabs.Active(); parentTab != nil && parentTab.Terminal != nil {
-				cwd = parentTab.Terminal.GetCWD()
-			}
-		}
+		// Host-aware: a REMOTE active tab's directory is a path on
+		// another machine, so a local new tab ignores it and opens in
+		// the default directory.
+		cwd := w.inheritCWDFor("")
 		if tab, err := w.tabs.NewTab(cols, rows, cwd); err == nil && tab != nil {
 			// AutoSelectNewTabs only catches new tabs once the bar has prior
 			// frame state. On the 1→2 transition (tab bar first appears) it

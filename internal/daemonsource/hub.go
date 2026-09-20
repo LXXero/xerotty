@@ -123,7 +123,7 @@ type Hub struct {
 	// creates coexist and stops a late ack from poisoning a newer one.
 	nextReqID      atomic.Uint64
 	createMu       sync.Mutex
-	pendingCreates map[uint64]chan *protocol.TabCreated
+	pendingCreates map[uint64]chan createResult
 	// pendingClientLists correlates ClientsListReq replies (the
 	// right-click Clients menu) the same way — ReqID → waiter.
 	pendingClientLists map[uint64]chan []protocol.ClientInfo
@@ -188,7 +188,7 @@ func NewHub(c *clientproto.Client) *Hub {
 		sources:        make(map[uint32]*Source),
 		tombstones:     make(map[uint32]struct{}),
 		pending:        make(map[uint32][]pendingFrame),
-		pendingCreates:       make(map[uint64]chan *protocol.TabCreated),
+		pendingCreates:       make(map[uint64]chan createResult),
 		pendingClientLists:   make(map[uint64]chan []protocol.ClientInfo),
 		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
 		createTimeout:        tabCreateTimeout,
@@ -527,7 +527,7 @@ func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string, launch
 	// Mint a request ID and register a waiter channel BEFORE sending,
 	// so the router can never deliver our ack before we're listening.
 	reqID := h.nextReqID.Add(1)
-	reply := make(chan *protocol.TabCreated, 1)
+	reply := make(chan createResult, 1)
 	h.createMu.Lock()
 	h.pendingCreates[reqID] = reply
 	h.createMu.Unlock()
@@ -551,7 +551,14 @@ func (h *Hub) newTabIn(windowID uint32, cols, rows int, cwd, name string, launch
 	// — so a dropped/hung daemon can't wedge the caller forever, and a
 	// late ack for a timed-out create can't bind us to the wrong tab.
 	select {
-	case tc := <-reply:
+	case res := <-reply:
+		if res.err != nil {
+			// The daemon REFUSED the create (bad cwd, spawn failure, …)
+			// and said so with our ReqID — fail now, don't sit out the
+			// timeout on the UI thread.
+			return nil, false, fmt.Errorf("daemonsource: daemon refused TabCreate: %w", res.err)
+		}
+		tc := res.tc
 		// Adopt at the dims the daemon actually allocated (it clamps
 		// to MaxTabDim), not what we requested — otherwise the local
 		// emulator would be sized wrong and desync from the daemon.
@@ -593,18 +600,46 @@ func (h *Hub) SeedRevision(rev uint64) {
 // by ReqID. Unmatched acks (a create that already timed out, or a tab
 // another client created — handled by topology reconcile) are dropped.
 func (h *Hub) deliverTabCreated(tc *protocol.TabCreated) {
+	h.resolveCreate(tc.ReqID, createResult{tc: tc})
+}
+
+// createResult is what a NewTabIn waiter receives: the daemon's ack,
+// or the error it answered our ReqID with.
+type createResult struct {
+	tc  *protocol.TabCreated
+	err error
+}
+
+// resolveCreate hands res to the waiter registered under reqID, if
+// any. Reports whether a waiter was found.
+func (h *Hub) resolveCreate(reqID uint64, res createResult) bool {
 	h.createMu.Lock()
-	reply, ok := h.pendingCreates[tc.ReqID]
+	reply, ok := h.pendingCreates[reqID]
 	if ok {
-		delete(h.pendingCreates, tc.ReqID)
+		delete(h.pendingCreates, reqID)
 	}
 	h.createMu.Unlock()
 	if ok {
 		select {
-		case reply <- tc:
+		case reply <- res:
 		default: // waiter already gave up; reply is cap-1 anyway
 		}
 	}
+	return ok
+}
+
+// deliverError handles a daemon MsgError. One that echoes a ReqID is
+// the daemon refusing a specific create: fail that waiter immediately.
+// Everything else is connection-scoped — surface it on stderr instead
+// of silently eating it.
+func (h *Hub) deliverError(e *protocol.Error) {
+	if e == nil {
+		return
+	}
+	if e.ReqID != 0 && h.resolveCreate(e.ReqID, createResult{err: errors.New(e.Message)}) {
+		return
+	}
+	log.Printf("xerotty: daemon error %d: %s", e.Code, e.Message)
 }
 
 // deliverClientsList routes a ClientsList reply to its waiter by
@@ -904,9 +939,7 @@ func (h *Hub) route(cli *clientproto.Client) {
 				cb(pc.Proposals)
 			}
 		case err := <-cli.Errors():
-			// Protocol errors aren't tied to a tab. Log to stderr
-			// via the Source-free fallback so the user sees it.
-			_ = err // TODO: route to a Hub-level error sink
+			h.deliverError(err)
 		}
 	}
 }
