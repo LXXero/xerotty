@@ -92,6 +92,16 @@ type Terminal struct {
 	closeOnce   sync.Once
 	done        chan struct{}
 
+	// readerDone closes when readPTY returns. It exists because closing
+	// done does NOT stop that goroutine promptly: the PTY master is a
+	// blocking fd (creack/pty hands it over that way), so ptmx.Close()
+	// cannot interrupt the read(2) the reader is parked in — it only
+	// wakes when the child writes again or the PTY dies. Anything that
+	// must know the reader is really gone (an in-process handoff, where
+	// a lingering reader would steal the adopter's next chunk) waits on
+	// this rather than assuming Close did it.
+	readerDone chan struct{}
+
 	// publishMu serializes the emulator's "ingest a chunk of PTY
 	// output" (readPTY → t.Emu.Write) with bulk snapshots of the
 	// grid + scrollback (SnapshotViewport / SnapshotScrollbackRange,
@@ -215,6 +225,8 @@ func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCm
 		rows:     rows,
 		ExitCode: -1,
 		done:     make(chan struct{}),
+
+		readerDone: make(chan struct{}),
 	}
 	t.applyScrollbackConfig(cfg)
 
@@ -1029,6 +1041,7 @@ func (t *Terminal) waitChild() {
 
 // readPTY reads from the PTY and writes to the SafeEmulator.
 func (t *Terminal) readPTY() {
+	defer close(t.readerDone)
 	buf := make([]byte, 32*1024)
 	// OSC pre-processor state. Carries over across Read calls in case an
 	// OSC sequence spans buffer boundaries.

@@ -66,17 +66,24 @@ func (t *Terminal) FlushScrollbackToDisk() {
 
 // ReleaseForHandoff stops this Terminal's goroutines and surrenders
 // its process plumbing WITHOUT killing the child or destroying the
-// PTY: the returned ptmx is a dup of the master (the original fd is
-// closed to unblock the reader), childPID is the live shell, disk is
-// the scrollback store (ownership transfers — Close on this
-// Terminal will no longer touch it).
+// PTY: the returned ptmx is a dup of the master, childPID is the live
+// shell, disk is the scrollback store (ownership transfers — Close on
+// this Terminal will no longer touch it).
 //
 // The released Terminal is dead: IsClosed() reports true, no
-// callbacks fire meaningfully again. One wrinkle: a cmd-based
-// waitChild goroutine stays parked in cmd.Wait() until the child
-// really dies — irrelevant in the real upgrade flow (exec replaces
-// the process image) and harmless in tests (the goroutine exits
-// when the adopted Terminal kills the child).
+// callbacks fire meaningfully again. Two wrinkles, both erased by the
+// exec in a real upgrade (it replaces the process image) but live for
+// any IN-PROCESS handoff:
+//
+//   - readPTY is NOT stopped. The master is a blocking fd, so closing
+//     the original cannot interrupt the read(2) the reader is parked
+//     in; it lingers on the still-open description and will swallow
+//     the NEXT chunk of PTY output into this dead emulator before it
+//     notices done and exits. An in-process adopter must wait for
+//     readerDone first, or it races that reader for its own output.
+//   - a cmd-based waitChild goroutine stays parked in cmd.Wait()
+//     until the child really dies (it exits when the adopted Terminal
+//     kills the child).
 func (t *Terminal) ReleaseForHandoff() (ptmx *os.File, childPID int, disk *DiskScrollback, err error) {
 	// Serialize against a mid-write snapshot/flush.
 	t.publishMu.Lock()
@@ -108,7 +115,9 @@ func (t *Terminal) ReleaseForHandoff() (ptmx *os.File, childPID int, disk *DiskS
 	// Tear down the pipelines exactly like Close, minus the kill:
 	// burn the closeOnce so a later Close() can't double-run, close
 	// done + the emulator input pipe (stops readEmu), close the
-	// ORIGINAL ptmx (unblocks readPTY's blocking Read).
+	// ORIGINAL ptmx. That close does NOT unblock readPTY (blocking fd:
+	// the real close is deferred until its read(2) returns) — see the
+	// doc comment above.
 	t.closeOnce.Do(func() {
 		close(t.done)
 		if pw, ok := t.Emu.InputPipe().(*io.PipeWriter); ok {
@@ -183,6 +192,7 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 		rows:        rows,
 		ExitCode:    -1,
 		done:        make(chan struct{}),
+		readerDone:  make(chan struct{}),
 	}
 	// Daemon-hosted scrollback shape: vt's ring uncapped, our disk
 	// mirror does the evicting (mirrors applyScrollbackConfig's

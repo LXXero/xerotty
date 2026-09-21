@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -27,13 +28,37 @@ func screenContains(t *Terminal, needle string) bool {
 	return false
 }
 
+// retireOldReader makes an in-process handoff faithful to the real one.
+// A real upgrade execs, which kills the old image's readPTY. In-process
+// nothing does: the PTY master is a blocking fd, so ReleaseForHandoff's
+// Close can't interrupt the read(2) the old reader is parked in — it
+// lingers and STEALS the adopter's next chunk of output into the dead
+// emulator. That was the long-running flake here: usually it ate only
+// the command echo (nothing asserts on it), but sometimes the marker
+// ("never appeared") or the ESC[?1049l ("mode changes not tracked").
+//
+// A single space is the gentlest poke that produces output: the tty (or
+// readline) echoes one byte — no newline, no prompt, no mode traffic —
+// which the old reader, still the PTY's only reader, swallows on its way
+// out. The leading space it leaves on the shell's input line is inert.
+func retireOldReader(t *testing.T, old *Terminal, ptmx *os.File) {
+	t.Helper()
+	if _, err := ptmx.Write([]byte(" ")); err != nil {
+		t.Fatalf("poke released pty: %v", err)
+	}
+	select {
+	case <-old.readerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("released terminal's reader never exited")
+	}
+}
+
 func waitFor(t *testing.T, term *Terminal, needle string) {
 	t.Helper()
-	// Generous safety deadline: the loop returns the instant the needle
-	// shows, so this only bites a genuine hang. 8s was too tight when
-	// the whole shell-spawning test suite runs in parallel and starves
-	// these real /bin/sh round-trips of CPU (flaky "never appeared").
-	deadline := time.Now().Add(45 * time.Second)
+	// A round-trip takes milliseconds; the deadline only bites a genuine
+	// hang. (It sat at 45s for a while on a wrong diagnosis — CPU
+	// starvation — of what was really retireOldReader's stolen chunk.)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if screenContains(term, needle) {
 			return
@@ -43,7 +68,21 @@ func waitFor(t *testing.T, term *Terminal, needle string) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("%q never appeared on screen", needle)
+	// Dump what IS on screen: a bare "never appeared" from CI says
+	// nothing about whether the shell echoed, ran, or never saw input.
+	var dump strings.Builder
+	for i, row := range term.SnapshotViewport() {
+		var sb strings.Builder
+		for c := range row {
+			if row[c].Content != "" {
+				sb.WriteString(row[c].Content)
+			}
+		}
+		if s := strings.TrimRight(sb.String(), " "); s != "" {
+			fmt.Fprintf(&dump, "\n  %2d| %s", i, s)
+		}
+	}
+	t.Fatalf("%q never appeared on screen (alt=%v); screen was:%s", needle, term.IsAltScreen(), dump.String())
 }
 
 // TestReleaseAdoptShellSurvives is Phase 1's acceptance test: tear a
@@ -93,7 +132,9 @@ func TestReleaseAdoptShellSurvives(t *testing.T) {
 	}
 
 	// Rebuild. In the real flow this happens in the new exec image;
-	// the object boundary is identical.
+	// the object boundary is identical — once the old reader is gone,
+	// which the exec does for free and we must do by hand.
+	retireOldReader(t, old, ptmx)
 	neu, err := Adopt(AdoptSpec{
 		Ptmx: ptmx, ChildPID: pid, Cols: 80, Rows: 24,
 		Screen: screen, CursorRow: pos.Y, CursorCol: pos.X,
@@ -222,6 +263,7 @@ func TestAdoptReplaysModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("release: %v", err)
 	}
+	retireOldReader(t, old, ptmx)
 	neu, err := Adopt(AdoptSpec{
 		Ptmx: ptmx, ChildPID: pid, Cols: 80, Rows: 24,
 		Screen: screen, CursorRow: pos.Y, CursorCol: pos.X, Disk: disk,
