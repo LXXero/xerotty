@@ -1004,10 +1004,17 @@ static void ImGui_ImplSDL3_UpdateMonitors()
 {
     ImGui_ImplSDL3_Data* bd = ImGui_ImplSDL3_GetBackendData();
     ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-    platform_io.Monitors.resize(0);
-    bd->WantUpdateMonitors = false;
+    // XEROTTY PATCH: build into a scratch list and only commit a
+    // non-empty result (see the tail of this function). Upstream
+    // cleared platform_io.Monitors up front, so a moment with zero
+    // displays left it empty and the next NewFrame asserted
+    // "Platform init didn't setup Monitors list?" -- a Go panic that
+    // killed the GUI on every VT switch (the compositor drops DRM
+    // master and every wl_output global goes away) and on any output
+    // disable.
+    ImVector<ImGuiPlatformMonitor> monitors;
 
-    int display_count;
+    int display_count = 0;
     SDL_DisplayID* displays = SDL_GetDisplays(&display_count);
     for (int n = 0; n < display_count; n++)
     {
@@ -1027,9 +1034,33 @@ static void ImGui_ImplSDL3_UpdateMonitors()
         monitor.PlatformHandle = (void*)(intptr_t)n;
         if (monitor.DpiScale <= 0.0f)
             continue; // Some accessibility applications are declaring virtual monitors with a DPI of 0, see #7902.
-        platform_io.Monitors.push_back(monitor);
+        monitors.push_back(monitor);
     }
     SDL_free(displays);
+
+    // XEROTTY PATCH: zero usable displays is a legal, transient state.
+    // Keep the last known list (same call the GLFW backend makes for
+    // macOS sleep, imgui #5683) so window placement math stays sane
+    // while nothing is visible anyway, and keep polling: leaving
+    // WantUpdateMonitors set re-queries on every frame until a display
+    // is back, so recovery doesn't hinge on a DISPLAY_ADDED event
+    // arriving. A GUI STARTED with no display (launched from another
+    // VT) has no list to keep, so it gets one placeholder monitor.
+    if (monitors.Size == 0)
+    {
+        if (platform_io.Monitors.Size == 0)
+        {
+            ImGuiPlatformMonitor placeholder;
+            placeholder.MainPos = placeholder.WorkPos = ImVec2(0.0f, 0.0f);
+            placeholder.MainSize = placeholder.WorkSize = ImVec2(1920.0f, 1080.0f);
+            placeholder.DpiScale = 1.0f;
+            platform_io.Monitors.push_back(placeholder);
+        }
+        bd->WantUpdateMonitors = true;
+        return;
+    }
+    platform_io.Monitors.swap(monitors);
+    bd->WantUpdateMonitors = false;
 }
 
 static void ImGui_ImplSDL3_GetWindowSizeAndFramebufferScale(SDL_Window* window, ImVec2* out_size, ImVec2* out_framebuffer_scale)

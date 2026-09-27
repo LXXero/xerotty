@@ -34,7 +34,7 @@ UNAME_S := $(shell uname -s)
 GOBIN := $(shell $(GO) env GOPATH)/bin
 export PATH := $(GOBIN):$(PATH)
 
-.PHONY: all build headless generate app install clean check-loop check-render check-mac-power
+.PHONY: all build headless generate app install clean check-loop check-render check-mac-power check-no-display
 
 
 all: build
@@ -194,3 +194,7 @@ check-render: build
 
 check-mac-power: build
 	./tools/mac-power-check.sh
+
+# Blanks every screen for ~3s (disables all outputs, then re-enables).
+check-no-display: build
+	./tools/no-display-check.sh

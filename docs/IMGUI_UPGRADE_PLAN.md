@@ -66,11 +66,14 @@ import `cimgui-go/backend`; `internal/platform` IS our backend.
 
 `grep -rn -i "xerotty patch" internal/platform/imgui_impl_* internal/platform/imgui_backends/`
 
-- **imgui_impl_sdl3.cpp** (8 markers / 10 hunks): cocoa_focus_darwin
+- **imgui_impl_sdl3.cpp** (9 markers / 12 hunks): cocoa_focus_darwin
   C-linkage decl; macOS-26 popup motion-coord rebuild; macOS key.mod
   lie during …; disable NSWindow animations; enable multi-viewport
   unconditionally (Wayland); popup-window mouse-fallback skip; popup
-  DisplayScale gating (HighPixelDensity); per-window text-input.
+  DisplayScale gating (HighPixelDensity); per-window text-input;
+  zero-display survival in UpdateMonitors (build into a scratch list,
+  keep the last known monitors when SDL reports none — VT switch /
+  output disable; regression: `make check-no-display`).
 - **imgui_impl_sdlgpu3.cpp** (5 hunks): C-linkage decl;
   CreatePipelineWithBlend (premul blit pipeline); RenderState exposes
   CommandBuffer/RenderPass; Metal drawable-pool cap; secondary-viewport
