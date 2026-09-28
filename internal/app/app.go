@@ -5632,6 +5632,22 @@ func (w *Window) renderContextMenu() {
 	if selectedAction != "" {
 		w.dispatchAction(selectedAction)
 	}
+	// macOS doesn't hand key-window status back to the parent when the
+	// popup's NSWindow is destroyed, so keystrokes go nowhere until the
+	// user clicks. Re-key this window through the pendingFocus handoff —
+	// unless the action spawned a window that already claimed focus.
+	if runtime.GOOS == "darwin" {
+		claimed := false
+		for _, other := range w.app.windows {
+			if other != w && other.pendingFocus {
+				claimed = true
+				break
+			}
+		}
+		if !claimed {
+			w.pendingFocus = true
+		}
+	}
 	platform.PostWake()
 }
 
