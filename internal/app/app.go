@@ -1809,6 +1809,16 @@ func (a *App) installSourceFactory(w *Window) {
 		// Snapshot the WindowID at call time, not closure-create
 		// time, so re-installs after daemonWindowID changes pick
 		// up the new value. 0 → daemon's default window.
+		//
+		// A window opened for remote tabs (spawnEmptyWindow) never
+		// minted a local daemon window. Routing its first local tab
+		// to 0 would drop it into the default window, which belongs
+		// to a different GUI window, so mint one for this window now.
+		if w.daemonWindowID == 0 && hub == a.daemonHub {
+			if id := w.windowIDForHub(hub); id != 0 {
+				w.daemonWindowID = id
+			}
+		}
 		return hub.NewTabIn(w.daemonWindowID, cols, rows, cwd, launch)
 	}
 }
