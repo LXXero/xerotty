@@ -8,12 +8,16 @@ package input
 import "C"
 
 import (
+	"bytes"
 	"errors"
+	"image/png"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"unsafe"
+
+	"golang.org/x/image/tiff"
 )
 
 // ClipboardRead reads from the OS clipboard via SDL's native binding —
@@ -51,6 +55,11 @@ var imagePasteMIMEs = []string{
 	"image/jpeg",
 	"image/gif",
 	"image/bmp",
+	// macOS "Copy Image" (Safari, Preview, Messages) and Qt apps like
+	// Flameshot put ONLY public.tiff on the pasteboard, and SDL does no
+	// format conversion. Last so a real PNG always wins; converted to
+	// PNG on read since most paste consumers (Claude Code) reject TIFF.
+	"image/tiff",
 }
 
 // ClipboardReadImage looks for an image on the OS clipboard and
@@ -82,9 +91,26 @@ func ClipboardReadImage() (mime string, data []byte, err error) {
 		// until we release it.
 		buf := C.GoBytes(unsafe.Pointer(ptr), C.int(sz))
 		C.SDL_free(unsafe.Pointer(ptr))
+		if m == "image/tiff" {
+			if pngBuf, err := tiffToPNG(buf); err == nil {
+				return "image/png", pngBuf, nil
+			}
+		}
 		return m, buf, nil
 	}
 	return "", nil, nil
+}
+
+func tiffToPNG(data []byte) ([]byte, error) {
+	img, err := tiff.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, img); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }
 
 // PrimaryRead reads from the X11/Wayland PRIMARY selection (the
