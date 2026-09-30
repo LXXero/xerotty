@@ -286,13 +286,25 @@ func (h *Hub) Client() *clientproto.Client { return h.client() }
 // unregister().
 func (h *Hub) register(s *Source) {
 	h.mu.Lock()
+	queued := h.registerLocked(s)
+	h.mu.Unlock()
+	h.replay(s, queued)
+}
+
+// registerLocked inserts s into the routing table and hands back the
+// frames stashed for its tab ID. Caller holds h.mu.
+func (h *Hub) registerLocked(s *Source) []pendingFrame {
 	h.sources[s.tabID] = s
 	queued := h.pending[s.tabID]
 	delete(h.pending, s.tabID)
-	h.mu.Unlock()
+	return queued
+}
 
-	// Replay in order. Sources expect frames in arrival order
-	// (CellFull before any CellDiff for the same paint cycle).
+// replay feeds stashed frames to a freshly registered Source, in
+// arrival order (CellFull before any CellDiff for the same paint
+// cycle). Runs outside h.mu: the apply methods take the Source's own
+// lock and may fire callbacks.
+func (h *Hub) replay(s *Source, queued []pendingFrame) {
 	for _, pf := range queued {
 		switch pf.tag {
 		case pendingCellFull:
@@ -801,11 +813,24 @@ func (h *Hub) applyTopology(topo *protocol.TopologyChanged) {
 // another client created). Idempotent: calling twice with the same
 // tabID returns the same Source.
 func (h *Hub) Adopt(tabID uint32, cols, rows int) *Source {
-	if s := h.lookup(tabID); s != nil {
+	// The existence check and the registration share ONE critical
+	// section. Adopt runs on three goroutines — the GUI MCP create
+	// handler, the router (topology reconcile), the UI thread — and
+	// the daemon's TabCreated ack and its TopologyChanged broadcast
+	// arrive back to back, so a lookup-then-register split let two
+	// callers both miss and build two Sources for one tab. The second
+	// register won the routing slot but the first had already drained
+	// the queued initial CellFull: the displayed tab showed a bare
+	// cursor and never caught up, resize or not.
+	h.mu.Lock()
+	if s := h.sources[tabID]; s != nil {
+		h.mu.Unlock()
 		return s
 	}
 	s := newSource(h, tabID, cols, rows)
-	h.register(s)
+	queued := h.registerLocked(s)
+	h.mu.Unlock()
+	h.replay(s, queued)
 	return s
 }
 
