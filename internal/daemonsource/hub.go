@@ -127,6 +127,11 @@ type Hub struct {
 	// pendingClientLists correlates ClientsListReq replies (the
 	// right-click Clients menu) the same way — ReqID → waiter.
 	pendingClientLists map[uint64]chan []protocol.ClientInfo
+	// pendingRanges correlates private scrollback fetches (MCP history
+	// reads of rows outside the GUI's window) — ReqID → waiter. Kept
+	// apart from the window path so a read never moves what the user
+	// is looking at.
+	pendingRanges map[uint64]chan *protocol.ScrollbackRange
 	// pendingWindowCreates is the WindowCreate analogue — same ReqID
 	// correlation (router-demuxed) so a late WindowCreated can't be
 	// adopted as a newer create's reply, and so undrained acks can't
@@ -190,6 +195,7 @@ func NewHub(c *clientproto.Client) *Hub {
 		pending:        make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan createResult),
 		pendingClientLists:   make(map[uint64]chan []protocol.ClientInfo),
+		pendingRanges:        make(map[uint64]chan *protocol.ScrollbackRange),
 		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
 		createTimeout:        tabCreateTimeout,
 		stopCh:               make(chan struct{}),
@@ -703,6 +709,60 @@ func (h *Hub) Clients(timeout time.Duration) ([]protocol.ClientInfo, error) {
 	}
 }
 
+// deliverScrollbackRange routes a correlated ScrollbackRange to its
+// waiter by ReqID; unmatched replies (waiter timed out) are dropped.
+func (h *Hub) deliverScrollbackRange(f *protocol.ScrollbackRange) {
+	h.createMu.Lock()
+	reply, ok := h.pendingRanges[f.ReqID]
+	if ok {
+		delete(h.pendingRanges, f.ReqID)
+	}
+	h.createMu.Unlock()
+	if ok {
+		select {
+		case reply <- f:
+		default:
+		}
+	}
+}
+
+// FetchScrollbackRange reads absolute scrollback rows [from, from+count)
+// straight from the daemon, without touching any Source's display
+// window. Blocks up to timeout — call off the UI thread. The reply's
+// From/len(Rows) is what was actually served (the daemon clamps to its
+// extent and to scrollbackRangeMax per reply). A daemon that predates
+// ReqID replies uncorrelated, so this times out (and that reply lands
+// in the window path, where it's merged like any window fetch).
+func (h *Hub) FetchScrollbackRange(tabID uint32, from, count int, timeout time.Duration) (*protocol.ScrollbackRange, error) {
+	cli := h.client()
+	if cli == nil {
+		return nil, fmt.Errorf("daemonsource: no connection")
+	}
+	reqID := h.nextReqID.Add(1)
+	reply := make(chan *protocol.ScrollbackRange, 1)
+	h.createMu.Lock()
+	h.pendingRanges[reqID] = reply
+	h.createMu.Unlock()
+	defer func() {
+		h.createMu.Lock()
+		delete(h.pendingRanges, reqID)
+		h.createMu.Unlock()
+	}()
+	if err := cli.SendScrollbackRequestReq(tabID, from, count, reqID); err != nil {
+		return nil, fmt.Errorf("daemonsource: SendScrollbackRequest: %w", err)
+	}
+	select {
+	case f := <-reply:
+		return f, nil
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("daemonsource: scrollback fetch timed out")
+	case <-cli.Closed():
+		return nil, fmt.Errorf("daemonsource: connection closed")
+	case <-h.stopCh:
+		return nil, fmt.Errorf("daemonsource: hub stopped")
+	}
+}
+
 // KickClient asks the daemon to force-disconnect a client by id.
 func (h *Hub) KickClient(clientID string) error {
 	cli := h.client()
@@ -926,6 +986,12 @@ func (h *Hub) route(cli *clientproto.Client) {
 				h.stash(f.ID, pendingScrollbackAppend, f)
 			}
 		case f := <-cli.ScrollbackRange():
+			// A correlated reply answers a private fetch (MCP read) —
+			// hand it to the waiter, never merge it into the window.
+			if f.ReqID != 0 {
+				h.deliverScrollbackRange(f)
+				break
+			}
 			// On-demand window fetch reply. If the tab's gone, just
 			// drop it — the request is re-issued on the next frame
 			// that needs the range (no stash needed; not a delta).

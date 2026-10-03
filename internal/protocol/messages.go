@@ -668,6 +668,11 @@ type ScrollbackRequest struct {
 	ID    uint32 `msg:"id"`
 	From  uint32 `msg:"from"`
 	Count uint32 `msg:"count"`
+	// ReqID, when non-zero, marks a PRIVATE fetch (an MCP history read)
+	// rather than a display-window fetch: the daemon echoes it, and the
+	// client routes the reply to the waiting caller instead of merging
+	// it into the GUI's scrollback window. 0 = window fetch.
+	ReqID uint64 `msg:"req_id,omitempty"`
 }
 
 // ScrollbackRange answers a ScrollbackRequest with the rows that
@@ -678,6 +683,8 @@ type ScrollbackRange struct {
 	ID   uint32   `msg:"id"`
 	From uint32   `msg:"from"`
 	Rows [][]Cell `msg:"rows"`
+	// ReqID echoes ScrollbackRequest.ReqID (0 = window fetch).
+	ReqID uint64 `msg:"req_id,omitempty"`
 }
 
 // SearchRequest asks the daemon to search the tab's ENTIRE scrollback

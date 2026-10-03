@@ -289,25 +289,102 @@ func (s *Source) SnapshotViewport() [][]uv.Cell {
 	return out
 }
 
-// SnapshotScrollbackRange returns rows [from, to) from the local
-// scrollback mirror as a consistent copy.
+// scrollbackFetchTimeout bounds each private daemon fetch a history
+// read makes for rows the windowed mirror doesn't hold.
+const scrollbackFetchTimeout = 5 * time.Second
+
+// SnapshotScrollbackRange returns ABSOLUTE scrollback rows [from, to)
+// (0 = oldest, the same index space as ScrollbackLen / SnapshotWindow /
+// ScrollbackCellAt) as a consistent copy.
+//
+// Capped mode: the mirror IS this client's whole history (ScrollbackLen
+// == len(mirror)), so absolute and mirror indices coincide.
+//
+// Windowed mode: ScrollbackLen is the daemon's true depth but the mirror
+// only holds [winStart, winStart+len). This used to index the mirror with
+// absolute rows directly — once a long tab outgrew the window, MCP
+// get_scrollback returned nothing for the newest rows and rows shifted by
+// winStart (mid-session text labelled as row 0) for the rest. Now held
+// rows come from the mirror and the rest are fetched from the daemon on a
+// private, correlated request that never moves the display window.
+//
+// The result is always a correctly-positioned PREFIX of [from, to): if a
+// fetch fails or comes back short, it stops there, so out[i] is always
+// absolute row from+i and callers can report from+len(out) as served.
+// Windowed reads may block on the daemon — call off the UI thread.
 func (s *Source) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	total := int(s.scrollbackLen.Load())
 	if from < 0 {
 		from = 0
 	}
-	if to > len(s.scrollback) {
-		to = len(s.scrollback)
+	if to > total {
+		to = total
 	}
 	if to <= from {
+		s.mu.Unlock()
 		return nil
 	}
+	base := 0 // absolute row of mirror index 0
+	if s.windowed {
+		base = s.winStart
+	}
+	lo, hi := max(from, base), min(to, base+len(s.scrollback))
+	var held [][]uv.Cell
+	for r := lo; r < hi; r++ {
+		src := s.scrollback[r-base]
+		row := make([]uv.Cell, len(src))
+		copy(row, src)
+		held = append(held, row)
+	}
+	windowed, tabID := s.windowed, s.tabID
+	s.mu.Unlock()
+
+	if !windowed {
+		return held
+	}
+	if hi <= lo { // nothing in range is held locally
+		return s.fetchScrollbackRows(tabID, from, to)
+	}
 	out := make([][]uv.Cell, 0, to-from)
-	for r := from; r < to; r++ {
-		row := make([]uv.Cell, len(s.scrollback[r]))
-		copy(row, s.scrollback[r])
-		out = append(out, row)
+	if from < lo {
+		got := s.fetchScrollbackRows(tabID, from, lo)
+		out = append(out, got...)
+		if len(got) < lo-from {
+			return out // gap below the held rows — stop at the prefix
+		}
+	}
+	out = append(out, held...)
+	if hi < to {
+		out = append(out, s.fetchScrollbackRows(tabID, hi, to)...)
+	}
+	return out
+}
+
+// fetchScrollbackRows reads absolute rows [from, to) from the daemon in
+// reply-sized chunks (scrollbackFetchSpan stays under the daemon's
+// per-reply cap), stopping at the first failure, misplaced reply or
+// short chunk so the result is always a correctly-positioned prefix.
+func (s *Source) fetchScrollbackRows(tabID uint32, from, to int) [][]uv.Cell {
+	if s.hub == nil {
+		return nil
+	}
+	var out [][]uv.Cell
+	for from < to {
+		n := min(to-from, scrollbackFetchSpan)
+		f, err := s.hub.FetchScrollbackRange(tabID, from, n, scrollbackFetchTimeout)
+		if err != nil || int(f.From) != from || len(f.Rows) == 0 {
+			return out
+		}
+		rows := uvRowsFromProto(f.Rows)
+		if len(rows) > n {
+			rows = rows[:n]
+		}
+		out = append(out, rows...)
+		from += len(rows)
+		if len(rows) < n {
+			return out
+		}
 	}
 	return out
 }

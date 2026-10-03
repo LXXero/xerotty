@@ -716,7 +716,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 				// a slow one must not stall input/heartbeat handling for
 				// this client. Replies carry From, so the client tolerates
 				// any ordering.
-				go c.sendScrollbackRange(t, int(msg.From), int(msg.Count))
+				go c.sendScrollbackRange(t, int(msg.From), int(msg.Count), msg.ReqID)
 			}
 		}
 		return nil
@@ -1637,8 +1637,9 @@ func protoRowsFromUV(uvRows [][]uv.Cell) [][]protocol.Cell {
 // rows in [from, from+count). Clamps to the tab's actual scrollback
 // extent; SnapshotScrollbackRange handles the disk/memory split. The
 // reply always carries From so the client can place the rows even if
-// the range was clamped or came back short.
-func (c *clientConn) sendScrollbackRange(t *Tab, from, count int) {
+// the range was clamped or came back short, and echoes ReqID so a
+// private (MCP) fetch reaches its waiter instead of the GUI window.
+func (c *clientConn) sendScrollbackRange(t *Tab, from, count int, reqID uint64) {
 	if count <= 0 {
 		return
 	}
@@ -1650,9 +1651,10 @@ func (c *clientConn) sendScrollbackRange(t *Tab, from, count int) {
 	}
 	uvRows := t.Term.SnapshotScrollbackRange(from, from+count)
 	c.send(protocol.MsgScrollbackRange, &protocol.ScrollbackRange{
-		ID:   t.ID,
-		From: uint32(from),
-		Rows: protoRowsFromUV(uvRows),
+		ID:    t.ID,
+		From:  uint32(from),
+		Rows:  protoRowsFromUV(uvRows),
+		ReqID: reqID,
 	})
 }
 

@@ -725,10 +725,19 @@ func (c *Client) SendClearScrollback(id uint32) error {
 // SendScrollbackRequest asks the daemon for the absolute scrollback
 // row range [from, from+count). The reply arrives on ScrollbackRange.
 func (c *Client) SendScrollbackRequest(id uint32, from, count int) error {
+	return c.SendScrollbackRequestReq(id, from, count, 0)
+}
+
+// SendScrollbackRequestReq is SendScrollbackRequest with a correlation
+// id: non-zero marks a private fetch whose reply goes to the waiting
+// caller, not into the GUI's scrollback window (see
+// protocol.ScrollbackRequest.ReqID).
+func (c *Client) SendScrollbackRequestReq(id uint32, from, count int, reqID uint64) error {
 	return c.send(protocol.MsgScrollbackRequest, &protocol.ScrollbackRequest{
 		ID:    id,
 		From:  uint32(from),
 		Count: uint32(count),
+		ReqID: reqID,
 	})
 }
 

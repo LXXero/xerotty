@@ -5649,6 +5649,12 @@ func (z *ScrollbackRange) DecodeMsg(dc *msgp.Reader) (err error) {
 					}
 				}
 			}
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -5662,47 +5668,75 @@ func (z *ScrollbackRange) DecodeMsg(dc *msgp.Reader) (err error) {
 
 // EncodeMsg implements msgp.Encodable
 func (z *ScrollbackRange) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 3
-	// write "id"
-	err = en.Append(0x83, 0xa2, 0x69, 0x64)
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x8
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint32(z.ID)
-	if err != nil {
-		err = msgp.WrapError(err, "ID")
-		return
-	}
-	// write "from"
-	err = en.Append(0xa4, 0x66, 0x72, 0x6f, 0x6d)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint32(z.From)
-	if err != nil {
-		err = msgp.WrapError(err, "From")
-		return
-	}
-	// write "rows"
-	err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
-	if err != nil {
-		return
-	}
-	err = en.WriteArrayHeader(uint32(len(z.Rows)))
-	if err != nil {
-		err = msgp.WrapError(err, "Rows")
-		return
-	}
-	for za0001 := range z.Rows {
-		err = en.WriteArrayHeader(uint32(len(z.Rows[za0001])))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
 		if err != nil {
-			err = msgp.WrapError(err, "Rows", za0001)
 			return
 		}
-		for za0002 := range z.Rows[za0001] {
-			err = z.Rows[za0001][za0002].EncodeMsg(en)
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		// write "from"
+		err = en.Append(0xa4, 0x66, 0x72, 0x6f, 0x6d)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.From)
+		if err != nil {
+			err = msgp.WrapError(err, "From")
+			return
+		}
+		// write "rows"
+		err = en.Append(0xa4, 0x72, 0x6f, 0x77, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteArrayHeader(uint32(len(z.Rows)))
+		if err != nil {
+			err = msgp.WrapError(err, "Rows")
+			return
+		}
+		for za0001 := range z.Rows {
+			err = en.WriteArrayHeader(uint32(len(z.Rows[za0001])))
 			if err != nil {
-				err = msgp.WrapError(err, "Rows", za0001, za0002)
+				err = msgp.WrapError(err, "Rows", za0001)
+				return
+			}
+			for za0002 := range z.Rows[za0001] {
+				err = z.Rows[za0001][za0002].EncodeMsg(en)
+				if err != nil {
+					err = msgp.WrapError(err, "Rows", za0001, za0002)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// write "req_id"
+			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteUint64(z.ReqID)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
 				return
 			}
 		}
@@ -5713,24 +5747,42 @@ func (z *ScrollbackRange) EncodeMsg(en *msgp.Writer) (err error) {
 // MarshalMsg implements msgp.Marshaler
 func (z *ScrollbackRange) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 3
-	// string "id"
-	o = append(o, 0x83, 0xa2, 0x69, 0x64)
-	o = msgp.AppendUint32(o, z.ID)
-	// string "from"
-	o = append(o, 0xa4, 0x66, 0x72, 0x6f, 0x6d)
-	o = msgp.AppendUint32(o, z.From)
-	// string "rows"
-	o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
-	o = msgp.AppendArrayHeader(o, uint32(len(z.Rows)))
-	for za0001 := range z.Rows {
-		o = msgp.AppendArrayHeader(o, uint32(len(z.Rows[za0001])))
-		for za0002 := range z.Rows[za0001] {
-			o, err = z.Rows[za0001][za0002].MarshalMsg(o)
-			if err != nil {
-				err = msgp.WrapError(err, "Rows", za0001, za0002)
-				return
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x8
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		// string "from"
+		o = append(o, 0xa4, 0x66, 0x72, 0x6f, 0x6d)
+		o = msgp.AppendUint32(o, z.From)
+		// string "rows"
+		o = append(o, 0xa4, 0x72, 0x6f, 0x77, 0x73)
+		o = msgp.AppendArrayHeader(o, uint32(len(z.Rows)))
+		for za0001 := range z.Rows {
+			o = msgp.AppendArrayHeader(o, uint32(len(z.Rows[za0001])))
+			for za0002 := range z.Rows[za0001] {
+				o, err = z.Rows[za0001][za0002].MarshalMsg(o)
+				if err != nil {
+					err = msgp.WrapError(err, "Rows", za0001, za0002)
+					return
+				}
 			}
+		}
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// string "req_id"
+			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			o = msgp.AppendUint64(o, z.ReqID)
 		}
 	}
 	return
@@ -5798,6 +5850,12 @@ func (z *ScrollbackRange) UnmarshalMsg(bts []byte) (o []byte, err error) {
 					}
 				}
 			}
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -5819,6 +5877,7 @@ func (z *ScrollbackRange) Msgsize() (s int) {
 			s += z.Rows[za0001][za0002].Msgsize()
 		}
 	}
+	s += 7 + msgp.Uint64Size
 	return
 }
 
@@ -5858,6 +5917,12 @@ func (z *ScrollbackRequest) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "Count")
 				return
 			}
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -5870,54 +5935,100 @@ func (z *ScrollbackRequest) DecodeMsg(dc *msgp.Reader) (err error) {
 }
 
 // EncodeMsg implements msgp.Encodable
-func (z ScrollbackRequest) EncodeMsg(en *msgp.Writer) (err error) {
-	// map header, size 3
-	// write "id"
-	err = en.Append(0x83, 0xa2, 0x69, 0x64)
+func (z *ScrollbackRequest) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x8
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
 	if err != nil {
 		return
 	}
-	err = en.WriteUint32(z.ID)
-	if err != nil {
-		err = msgp.WrapError(err, "ID")
-		return
-	}
-	// write "from"
-	err = en.Append(0xa4, 0x66, 0x72, 0x6f, 0x6d)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint32(z.From)
-	if err != nil {
-		err = msgp.WrapError(err, "From")
-		return
-	}
-	// write "count"
-	err = en.Append(0xa5, 0x63, 0x6f, 0x75, 0x6e, 0x74)
-	if err != nil {
-		return
-	}
-	err = en.WriteUint32(z.Count)
-	if err != nil {
-		err = msgp.WrapError(err, "Count")
-		return
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "id"
+		err = en.Append(0xa2, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.ID)
+		if err != nil {
+			err = msgp.WrapError(err, "ID")
+			return
+		}
+		// write "from"
+		err = en.Append(0xa4, 0x66, 0x72, 0x6f, 0x6d)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.From)
+		if err != nil {
+			err = msgp.WrapError(err, "From")
+			return
+		}
+		// write "count"
+		err = en.Append(0xa5, 0x63, 0x6f, 0x75, 0x6e, 0x74)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.Count)
+		if err != nil {
+			err = msgp.WrapError(err, "Count")
+			return
+		}
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// write "req_id"
+			err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteUint64(z.ReqID)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		}
 	}
 	return
 }
 
 // MarshalMsg implements msgp.Marshaler
-func (z ScrollbackRequest) MarshalMsg(b []byte) (o []byte, err error) {
+func (z *ScrollbackRequest) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
-	// map header, size 3
-	// string "id"
-	o = append(o, 0x83, 0xa2, 0x69, 0x64)
-	o = msgp.AppendUint32(o, z.ID)
-	// string "from"
-	o = append(o, 0xa4, 0x66, 0x72, 0x6f, 0x6d)
-	o = msgp.AppendUint32(o, z.From)
-	// string "count"
-	o = append(o, 0xa5, 0x63, 0x6f, 0x75, 0x6e, 0x74)
-	o = msgp.AppendUint32(o, z.Count)
+	// check for omitted fields
+	zb0001Len := uint32(4)
+	var zb0001Mask uint8 /* 4 bits */
+	_ = zb0001Mask
+	if z.ReqID == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x8
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "id"
+		o = append(o, 0xa2, 0x69, 0x64)
+		o = msgp.AppendUint32(o, z.ID)
+		// string "from"
+		o = append(o, 0xa4, 0x66, 0x72, 0x6f, 0x6d)
+		o = msgp.AppendUint32(o, z.From)
+		// string "count"
+		o = append(o, 0xa5, 0x63, 0x6f, 0x75, 0x6e, 0x74)
+		o = msgp.AppendUint32(o, z.Count)
+		if (zb0001Mask & 0x8) == 0 { // if not omitted
+			// string "req_id"
+			o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+			o = msgp.AppendUint64(o, z.ReqID)
+		}
+	}
 	return
 }
 
@@ -5957,6 +6068,12 @@ func (z *ScrollbackRequest) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "Count")
 				return
 			}
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -5970,8 +6087,8 @@ func (z *ScrollbackRequest) UnmarshalMsg(bts []byte) (o []byte, err error) {
 }
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
-func (z ScrollbackRequest) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.Uint32Size + 6 + msgp.Uint32Size
+func (z *ScrollbackRequest) Msgsize() (s int) {
+	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.Uint32Size + 6 + msgp.Uint32Size + 7 + msgp.Uint64Size
 	return
 }
 

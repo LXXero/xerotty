@@ -363,6 +363,14 @@ func (s *Server) getScrollback(id json.RawMessage, params json.RawMessage) *rpcR
 	res := map[string]any{"from": from, "to": to, "total": total}
 	if to > from {
 		grid := src.SnapshotScrollbackRange(from, to)
+		// The source returns a correctly-positioned prefix; if part of
+		// the range couldn't be served (daemon unreachable / fetch timed
+		// out) say so instead of letting the caller mistake a short read
+		// for empty or shifted history.
+		if served := from + len(grid); served < to {
+			res["to"] = served
+			res["truncated"] = true
+		}
 		if p.Styled {
 			res["runs"] = screentext.StyledLines(grid)
 		} else {
@@ -495,7 +503,7 @@ func toolCatalog() []map[string]any {
 	return []map[string]any{
 		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\".", "inputSchema": obj(map[string]any{})},
 		{"name": "get_screen", "description": "Read a tab's visible viewport. tab_id is the namespaced ID from list_tabs. Always includes cursor {row, col, visible}. With styled=true, lines become runs of styled text ({t, fg, bg, a}) instead of flat strings — use it to tell presentation apart from content: faint (a:\"faint\") text at/after the cursor is typically a TUI's autocomplete ghost text the user has NOT typed; red fg usually means an error.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "styled": map[string]any{"type": "boolean", "description": "return styled runs instead of flat lines"}}, "tab_id")},
-		{"name": "get_scrollback", "description": "Read a tab's scrollback history. Defaults to the last 200 rows. styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
+		{"name": "get_scrollback", "description": "Read a tab's scrollback history. from/to are absolute row indices (0 = oldest; total = current depth); defaults to the last 200 rows. The reply's from/to is the range actually served — truncated=true means rows past `to` could not be read (e.g. daemon unreachable). styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. The string is used as-is after standard JSON unescaping — no extra escape layer. Prefer send_keys for keystrokes (enter, ctrl+c, arrows): it cannot be mis-escaped.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
 		{"name": "send_keys", "description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is typed first, completely literally (no escape interpretation), then each `keys` token is pressed in order. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("literal text typed before the keys"), "keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "key tokens pressed in order"}}, "tab_id")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
