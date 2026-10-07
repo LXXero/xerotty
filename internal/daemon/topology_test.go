@@ -21,6 +21,10 @@ func startDaemon(t *testing.T) (*daemon.Daemon, string) {
 	t.Helper()
 	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
+	// /bin/sh, not the developer's zsh: zsh can drop input typed
+	// before its prompt is ready, so "exit\r" was lost when the whole
+	// suite ran in parallel and zsh started slowly.
+	cfg.Shell = "/bin/sh"
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)
 	go func() { doneRun <- d.Run() }()

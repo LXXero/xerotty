@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,10 @@ func TestMCPFunctionalSession(t *testing.T) {
 	sock := filepath.Join(sd, "d.sock")
 	mcpSock := filepath.Join(sd, "d.mcp.sock")
 	srv := exec.Command(bin, "serve", "--socket", sock, "--mcp-socket", mcpSock)
+	// /bin/sh, not the developer's zsh: zsh can drop input typed
+	// before its prompt is ready, so the send_input below was lost
+	// when the whole suite ran in parallel and zsh started slowly.
+	srv.Env = append(os.Environ(), "SHELL=/bin/sh")
 	srv.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // supervisor + child
 	if err := srv.Start(); err != nil {
 		t.Fatalf("serve: %v", err)
