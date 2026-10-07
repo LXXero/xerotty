@@ -18,13 +18,13 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/handoff"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/supervise"
 )
 
 // execUpgrade is the point of no return: serialize the session,
@@ -145,105 +145,97 @@ func resumeFromFile(d *daemon.Daemon, path string) (net.Listener, error) {
 	return ln, d.ResumeFromHandoff(st)
 }
 
-// upgradeOnSignal arms SIGUSR2 as the upgrade trigger (the nginx
-// convention): on signal, stop serving and exec the binary at our
-// own installed path. Phase 4 adds the `serve --upgrade` CLI
-// trigger over the wire; the signal path is what it drives and is
-// independently useful (`pkill -USR2 -f 'xerotty serve'` upgrades
-// in place TODAY).
+// upgradeOnSignal arms the two upgrade triggers and returns a channel
+// that closes the moment an upgrade begins — the serve main loop must
+// PARK on it after Run returns instead of exiting, because quiesce
+// stops the listener (which gracefully ends Run) while the upgrade
+// goroutine is still mid-flight. Without the park, main exits and
+// takes the upgrade down with it.
+//
+//   - SIGUSR2 (the nginx convention): exec the binary at our own
+//     installed path in place. Under a supervisor that announced it
+//     handles upgrades itself (CapsMsg), the supervisor owns the
+//     signal and we ignore it here — a pkill that hits both processes
+//     must not upgrade twice.
+//   - An UpgradeMsg from the supervisor: hand off and exit, and the
+//     supervisor starts the new binary from our handoff.
 //
 // The target binary is resolved via the PATH-installed name when
 // possible — NOT /proc/self/exe, which pins the old (possibly
 // deleted) inode and would "upgrade" to the same code forever.
-// The returned channel closes the moment an upgrade begins — the
-// serve main loop must PARK on it after Run returns instead of
-// exiting, because quiesce stops the listener (which gracefully
-// ends Run) while this goroutine is still mid-flight to the exec.
-// Without the park, main exits and takes the upgrade down with it.
-func upgradeOnSignal(d *daemon.Daemon, mcpSrv *mcp.Server, socketPath, mcpSocketPath string) <-chan struct{} {
+func upgradeOnSignal(d *daemon.Daemon, mcpSrv *mcp.Server, sup *supervise.Client, socketPath, mcpSocketPath string) <-chan struct{} {
 	upgrading := make(chan struct{})
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGUSR2)
+	var requests <-chan supervise.UpgradeMsg
+	if sup != nil {
+		requests = sup.UpgradeRequests()
+	}
 	go func() {
-		for range ch {
-			target := upgradeTargetBinary()
-			fmt.Fprintf(os.Stderr, "xerotty serve: SIGUSR2 — upgrading to %s\n", target)
-			close(upgrading)
-			// Quiesce: no new clients, no publishers mid-release.
-			// Step logs are deliberate — if an upgrade ever wedges,
-			// the last line names the stuck step. The wire listener
-			// is SUSPENDED, not stopped — its fd survives the exec
-			// so the socket never closes.
-			if mcpSrv != nil {
-				fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: stopping mcp")
-				_ = mcpSrv.Stop()
-			}
-			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: suspending listener")
-			d.Suspend()
-			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: disconnecting clients")
-			d.DisconnectClients()
-			fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: serializing")
-			if err := execUpgrade(d, target, socketPath, mcpSocketPath); err != nil {
-				// Past Stop() the daemon can't serve anymore; if the
-				// terminals were released the sessions are gone too.
-				// Exiting beats running on as a zombie.
-				fmt.Fprintf(os.Stderr, "xerotty serve: upgrade failed: %v\n", err)
-				os.Exit(1)
+		for {
+			select {
+			case <-ch:
+				if sup != nil && sup.SupervisorUpgrades() {
+					fmt.Fprintf(os.Stderr, "xerotty serve: SIGUSR2 ignored: the supervisor (pid %d) runs upgrades\n", os.Getppid())
+					continue
+				}
+				target := upgradeTargetBinary()
+				fmt.Fprintf(os.Stderr, "xerotty serve: SIGUSR2 — upgrading to %s\n", target)
+				close(upgrading)
+				quiesce(d, mcpSrv)
+				if err := execUpgrade(d, target, socketPath, mcpSocketPath); err != nil {
+					// Past Stop() the daemon can't serve anymore; if the
+					// terminals were released the sessions are gone too.
+					// Exiting beats running on as a zombie.
+					fmt.Fprintf(os.Stderr, "xerotty serve: upgrade failed: %v\n", err)
+					os.Exit(1)
+				}
+			case req := <-requests:
+				fmt.Fprintln(os.Stderr, "xerotty serve: supervisor asked for an upgrade handoff")
+				close(upgrading)
+				quiesce(d, mcpSrv)
+				os.Exit(handOffToSupervisor(d, req.Handoff))
 			}
 		}
 	}()
 	return upgrading
 }
 
-// upgradeCLI implements `xerotty serve --upgrade`: find the running
-// daemon through its socket (SO_PEERCRED — no pidfile to go stale),
-// send SIGUSR2, and confirm the daemon is still answering after.
-// The daemon does the rest (see upgradeOnSignal).
-func upgradeCLI(socketPath string) int {
-	conn, err := net.Dial("unix", socketPath)
+// quiesce stops serving before a handoff: no new clients, no
+// publishers mid-release. Step logs are deliberate — if an upgrade
+// ever wedges, the last line names the stuck step. The wire listener
+// is SUSPENDED, not stopped — its fd must outlive this process image.
+func quiesce(d *daemon.Daemon, mcpSrv *mcp.Server) {
+	if mcpSrv != nil {
+		fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: stopping mcp")
+		_ = mcpSrv.Stop()
+	}
+	fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: suspending listener")
+	d.Suspend()
+	fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: disconnecting clients")
+	d.DisconnectClients()
+	fmt.Fprintln(os.Stderr, "xerotty serve: upgrade: serializing")
+}
+
+// handOffToSupervisor writes the full session state for the
+// supervisor and returns the exit status to leave with. The fd
+// numbers in the file are ours and die with us: the supervisor has
+// held its own copy of every PTY master and scrollback file since
+// each tab spawned, and keeps the listener. Any failure exits
+// non-zero, which the supervisor treats as a crash and resumes from
+// the topology we streamed.
+func handOffToSupervisor(d *daemon.Daemon, path string) int {
+	st, _, err := d.SerializeUpgrade()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: no daemon on %s: %v\n", socketPath, err)
+		fmt.Fprintf(os.Stderr, "xerotty serve: upgrade handoff: %v\n", err)
 		return 1
 	}
-	uc, ok := conn.(*net.UnixConn)
-	if !ok {
-		conn.Close()
-		fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: not a unix socket connection")
+	if err := st.WriteFile(path); err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty serve: upgrade handoff: %v\n", err)
 		return 1
 	}
-	pid, err := peerPID(uc)
-	conn.Close()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: peer pid: %v\n", err)
-		return 1
-	}
-	if err := syscall.Kill(pid, syscall.SIGUSR2); err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: signal daemon %d: %v\n", pid, err)
-		return 1
-	}
-	fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: triggered hot upgrade of daemon %d\n", pid)
-	// Confirm the (same-pid) daemon is serving again. The listener
-	// fd passes through the exec so dial keeps succeeding; the
-	// meaningful check is that the PROCESS survived — exec failure
-	// exits it.
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
-			fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: daemon died during upgrade — check its log; sessions may be lost")
-			return 1
-		}
-		if c, err := net.Dial("unix", socketPath); err == nil {
-			c.Close()
-			time.Sleep(300 * time.Millisecond) // let the exec land
-			if err := syscall.Kill(pid, 0); err == nil {
-				fmt.Fprintf(os.Stderr, "xerotty serve --upgrade: daemon %d upgraded and serving\n", pid)
-				return 0
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	fmt.Fprintln(os.Stderr, "xerotty serve --upgrade: timed out confirming; check the daemon log")
-	return 1
+	fmt.Fprintf(os.Stderr, "xerotty serve: upgrade handoff written (%d tabs); exiting for the supervisor\n", len(st.Tabs))
+	return supervise.ExitUpgrade
 }
 
 // upgradeTargetBinary picks what to exec, in order:

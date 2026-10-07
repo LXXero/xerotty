@@ -6,7 +6,11 @@ the shells it hosts; the wire listener fd passes through the exec
 so clients reconnect with zero refused-connection window, and
 InstanceID is preserved (same logical daemon). The pre-exec
 validation gate aborts cleanly on an incompatible target binary.
-E2E: internal/runner/upgrade_e2e_test.go.
+Under the supervisor (the default since the crash-restore work) the
+supervisor runs the upgrade instead: see "Upgrading under the
+supervisor" in docs/CRASH_RESTORE_PLAN.md.
+E2E: internal/runner/upgrade_adopt_e2e_test.go (unsupervised),
+internal/runner/upgrade_supervised_e2e_test.go (supervised).
 
 Goal: `xerotty serve --upgrade` replaces the running daemon binary
 WITHOUT killing the shells it hosts. Today a daemon binary swap

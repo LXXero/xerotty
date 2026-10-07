@@ -108,12 +108,34 @@ func TestUpgradeAdoptsSupervisorE2E(t *testing.T) {
 		t.Fatal("shell pid never echoed")
 	}
 
+	// A new build installed over the path, as `make build` does: the
+	// upgrade has to end with the new inode mapped.
+	data, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin+".new", data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(bin+".new", bin); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := statFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	// ---- THE UPGRADE: the single process execs into a supervisor.
 	up := exec.Command(bin, "serve", "--upgrade", "--socket", sock)
 	up.Env = srv.Env
-	if out, err := up.CombinedOutput(); err != nil {
+	out, err := up.CombinedOutput()
+	if err != nil {
 		t.Fatalf("serve --upgrade: %v\n%s", err, out)
 	}
+	if !strings.Contains(string(out), "upgraded to "+bin) {
+		t.Fatalf("no success line:\n%s", out)
+	}
+	mustMap(t, daemonPID, newID, true, "supervisor (the old daemon pid)")
 	freshProbe := func() *mcpProbe {
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
@@ -134,6 +156,7 @@ func TestUpgradeAdoptsSupervisorE2E(t *testing.T) {
 	}
 	// The old pid is now the supervisor; a daemon child hangs off it.
 	child := childOf(t, daemonPID)
+	mustMap(t, child, newID, true, "daemon child")
 	sameShell := func(p *mcpProbe, marker string) {
 		t.Helper()
 		if _, err := p.call("tab/input", map[string]any{"tab_id": tabID, "bytes": "echo " + marker + "_$$\r"}); err != nil {

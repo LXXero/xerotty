@@ -8,10 +8,14 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/LXXero/xerotty/internal/handoff"
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -25,6 +29,11 @@ type Config struct {
 	NoMCP         bool
 	Listener      *os.File // the bound wire listener, supervisor-owned
 	Log           io.Writer
+
+	// NoUpgrade makes the supervisor act like one that predates
+	// SIGUSR2 upgrades: no pidfile, no CapsMsg, SIGUSR2 ignored.
+	// Test hook for `serve --upgrade`'s fallback path.
+	NoUpgrade bool
 }
 
 // tabPlumb is the supervisor's copy of one tab's process plumbing.
@@ -50,6 +59,11 @@ type Supervisor struct {
 	tabs  map[uint32]*tabPlumb
 	state []byte // last KindState payload (msgpack handoff.State)
 	ctl   *Conn  // current child's control channel (nil between children)
+	// ctlDone closes when readControl for the current child returns.
+	ctlDone chan struct{}
+	// upgradeFile is the handoff path the in-flight UpgradeMsg named;
+	// "" when no upgrade is in flight.
+	upgradeFile string
 
 	// reapMu is held across starting a child and recording its pid,
 	// and around each wait4 in reapAll, so a child that dies at once
@@ -99,15 +113,30 @@ const (
 	resumeBudget = 3
 )
 
+// upgradeTimeout bounds the child's quiesce + serialize after an
+// UpgradeMsg. A child that never hands off (wedged, or too old to
+// know the frame) is SIGKILLed: the crash-resume path then restarts
+// it from the binary on disk.
+const upgradeTimeout = 20 * time.Second
+
 // Run supervises daemon children until one exits cleanly (its own
 // choice, or ours after SIGTERM/SIGINT). It only returns on that or
-// on a spawn failure.
+// on a spawn failure. A SIGUSR2 upgrade does not return: Run execs
+// the new binary in place (see reexec).
 func (s *Supervisor) Run() error {
 	if err := platformInit(); err != nil {
 		s.logf("%v", err)
 	}
 	sigs := make(chan os.Signal, 8)
-	signal.Notify(sigs, syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT)
+	notify := []os.Signal{syscall.SIGCHLD, syscall.SIGTERM, syscall.SIGINT}
+	if !s.cfg.NoUpgrade {
+		notify = append(notify, syscall.SIGUSR2)
+		if err := writePIDFile(s.cfg.SocketPath); err != nil {
+			s.logf("write pidfile: %v (serve --upgrade will take this for a supervisor that cannot upgrade)", err)
+		}
+		defer removePIDFile(s.cfg.SocketPath)
+	}
+	signal.Notify(sigs, notify...)
 	defer signal.Stop(sigs)
 	go s.reapLoop(sigs)
 	go s.forwardShellExits()
@@ -125,16 +154,45 @@ func (s *Supervisor) Run() error {
 		}
 		st := <-s.childExit
 		_ = pid
+		// Frames the child sent right before it exited (a tab it just
+		// spawned, its last topology) may still sit in the socket.
+		// Drain them before anything is built from what we know.
+		s.mu.Lock()
+		done := s.ctlDone
+		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+		}
 		s.mu.Lock()
 		stopping := s.stopping
+		upgradeFile := s.upgradeFile
+		s.upgradeFile = ""
 		if s.ctl != nil {
 			_ = s.ctl.Close()
 			s.ctl = nil
 		}
 		s.mu.Unlock()
 		if stopping {
+			if upgradeFile != "" {
+				_ = os.Remove(upgradeFile)
+			}
 			s.logf("daemon %d exited after shutdown request; done", st.pid)
 			return nil
+		}
+		if upgradeFile != "" {
+			if st.status.Exited() && st.status.ExitStatus() == ExitUpgrade && s.adoptUpgradeHandoff(upgradeFile) {
+				s.logf("daemon %d handed off for the upgrade", st.pid)
+				err := s.reexec() // returns only on failure
+				s.logf("re-exec %s: %v — resuming the daemon under this supervisor as is", s.cfg.Binary, err)
+				// An upgrade is not a crash: no resume budget spent.
+				resumeFile = s.writeHandoff()
+				continue
+			}
+			_ = os.Remove(upgradeFile)
+			s.logf("daemon %d did not complete the upgrade handoff", st.pid)
 		}
 		if st.status.Exited() && st.status.ExitStatus() == 0 {
 			s.logf("daemon %d exited cleanly; done", st.pid)
@@ -198,9 +256,11 @@ func (s *Supervisor) spawn(resumeFile string) (int, error) {
 		s.afterStart()
 	}
 	pid := cmd.Process.Pid
+	done := make(chan struct{})
 	s.mu.Lock()
 	s.childPID = pid
 	s.ctl = parent
+	s.ctlDone = done
 	s.mu.Unlock()
 	s.reapMu.Unlock()
 	_ = childEnd.Close()
@@ -208,7 +268,13 @@ func (s *Supervisor) spawn(resumeFile string) (int, error) {
 	// (Release also forgets the pid, hence the copy above.)
 	_ = cmd.Process.Release()
 	s.logf("daemon %d started%s", pid, map[bool]string{true: " (resume)", false: ""}[resumeFile != ""])
-	go s.readControl(parent)
+	go func() {
+		s.readControl(parent)
+		close(done)
+	}()
+	if !s.cfg.NoUpgrade {
+		_ = parent.SendJSON(KindCaps, CapsMsg{Upgrade: true})
+	}
 	return pid, nil
 }
 
@@ -287,6 +353,8 @@ func (s *Supervisor) reapLoop(sigs <-chan os.Signal) {
 		switch sig {
 		case syscall.SIGCHLD:
 			s.reapAll()
+		case syscall.SIGUSR2:
+			s.requestUpgrade()
 		case syscall.SIGTERM, syscall.SIGINT:
 			s.mu.Lock()
 			s.stopping = true
@@ -308,6 +376,11 @@ func (s *Supervisor) reapAll() {
 		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
 		s.mu.Lock()
 		isDaemon := pid > 0 && pid == s.childPID
+		if isDaemon {
+			// Reaped: the pid may be reused from here on, so nothing
+			// may signal it anymore.
+			s.childPID = 0
+		}
 		s.mu.Unlock()
 		s.reapMu.Unlock()
 		if err == syscall.EINTR {
@@ -390,17 +463,45 @@ func (s *Supervisor) resumeFiles() []*os.File {
 // child sent plus our plumbing, and writes it next to the socket.
 // Returns "" (fresh start) when there is nothing to resume.
 func (s *Supervisor) writeHandoff() string {
+	st, _ := s.buildHandoff(false)
+	if st == nil {
+		return ""
+	}
+	path := s.handoffPath()
+	if err := st.WriteFile(path); err != nil {
+		s.logf("write handoff: %v — starting fresh", err)
+		return ""
+	}
+	s.logf("handoff written: %d tabs", len(st.Tabs))
+	return path
+}
+
+func (s *Supervisor) handoffPath() string {
+	return filepath.Join(filepath.Dir(s.cfg.SocketPath), "xerottyd.handoff")
+}
+
+// buildHandoff builds the resume state from the last topology the
+// child sent plus our plumbing. For a child (forExec false) the fd
+// numbers follow spawn's ExtraFiles layout, and a state with no live
+// tab is nil. For our own exec (forExec true) they are the real
+// descriptors in this process, returned as keep, and the state is
+// never nil: it carries the listener even with no tabs.
+func (s *Supervisor) buildHandoff(forExec bool) (st *handoff.State, keep []*os.File) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var st handoff.State
+	st = &handoff.State{}
 	if len(s.state) > 0 {
 		if _, err := st.UnmarshalMsg(s.state); err != nil {
 			s.logf("stored state unreadable (%v); resuming from plumbing only", err)
-			st = handoff.State{}
+			st = &handoff.State{}
 		}
 	}
 	st.Version = handoff.Version
 	st.WireListenFD = 3
+	if forExec {
+		st.WireListenFD = int(s.cfg.Listener.Fd())
+		keep = append(keep, s.cfg.Listener)
+	}
 	st.MCPListenFD = -1
 	st.SocketPath = s.cfg.SocketPath
 	st.MCPSocket = s.cfg.MCPSocketPath
@@ -412,8 +513,8 @@ func (s *Supervisor) writeHandoff() string {
 	st.InstanceID = firstNonEmpty(st.InstanceID, s.adoptedInstance)
 	st.Tabs = st.Tabs[:0]
 	live := s.liveTabIDs()
-	if len(live) == 0 {
-		return ""
+	if len(live) == 0 && !forExec {
+		return nil, nil
 	}
 	fd := 5 // after listener (3) and control (4)
 	alive := make(map[uint32]bool, len(live))
@@ -432,6 +533,14 @@ func (s *Supervisor) writeHandoff() string {
 		if tp.disk != nil {
 			ts.DiskFD = fd
 			fd++
+		}
+		if forExec {
+			ts.PtmxFD = int(tp.ptmx.Fd())
+			keep = append(keep, tp.ptmx)
+			if tp.disk != nil {
+				ts.DiskFD = int(tp.disk.Fd())
+				keep = append(keep, tp.disk)
+			}
 		}
 		if !s.stateFull {
 			// Crash path: the daemon never streams its offset index
@@ -468,7 +577,7 @@ func (s *Supervisor) writeHandoff() string {
 		}
 		wins = append(wins, w)
 	}
-	if len(wins) == 0 {
+	if len(wins) == 0 && len(live) > 0 {
 		wins = []protocol.WindowInfo{{ID: 1, TabIDs: live, FocusedTabID: live[0], Width: 800, Height: 600}}
 		if st.NextWindowID < 2 {
 			st.NextWindowID = 2
@@ -481,13 +590,141 @@ func (s *Supervisor) writeHandoff() string {
 		}
 	}
 
-	path := filepath.Join(filepath.Dir(s.cfg.SocketPath), "xerottyd.handoff")
-	if err := st.WriteFile(path); err != nil {
-		s.logf("write handoff: %v — starting fresh", err)
-		return ""
+	return st, keep
+}
+
+// requestUpgrade answers SIGUSR2: after the new binary passes the
+// validation gate, ask the child to hand off (UpgradeMsg). Run takes
+// it from there when the child exits with ExitUpgrade. Runs on the
+// reaper goroutine, so reapAll cannot steal the validator's exit
+// status from os/exec.
+func (s *Supervisor) requestUpgrade() {
+	s.mu.Lock()
+	pid, ctl, busy := s.childPID, s.ctl, s.upgradeFile != "" || s.stopping
+	s.mu.Unlock()
+	if busy {
+		s.logf("SIGUSR2: an upgrade or shutdown is already in progress; ignored")
+		return
 	}
-	s.logf("handoff written: %d tabs", len(st.Tabs))
-	return path
+	if ctl == nil || pid == 0 {
+		s.logf("SIGUSR2: no daemon running; ignored")
+		return
+	}
+	if err := s.validateBinary(); err != nil {
+		s.logf("SIGUSR2: upgrade aborted, daemon %d untouched: %v", pid, err)
+		return
+	}
+	path := s.handoffPath() + ".upgrade"
+	s.mu.Lock()
+	if s.ctl != ctl || s.stopping {
+		s.mu.Unlock()
+		s.logf("SIGUSR2: daemon %d went away during validation; ignored", pid)
+		return
+	}
+	s.upgradeFile = path
+	s.mu.Unlock()
+	if err := ctl.SendJSON(KindUpgrade, UpgradeMsg{Handoff: path}); err != nil {
+		s.mu.Lock()
+		if s.upgradeFile == path {
+			s.upgradeFile = ""
+		}
+		s.mu.Unlock()
+		s.logf("SIGUSR2: ask daemon %d to hand off: %v", pid, err)
+		return
+	}
+	s.logf("SIGUSR2: asked daemon %d to hand off for an upgrade to %s", pid, s.cfg.Binary)
+	time.AfterFunc(upgradeTimeout, func() {
+		s.mu.Lock()
+		stuck := s.upgradeFile == path && s.childPID == pid
+		s.mu.Unlock()
+		if stuck {
+			s.logf("daemon %d did not hand off within %s; killing it so it resumes from %s", pid, upgradeTimeout, s.cfg.Binary)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+}
+
+// validateBinary is the upgrade's gate, run while aborting is still
+// free: the new binary must execute and accept this handoff version.
+func (s *Supervisor) validateBinary() error {
+	probe := s.handoffPath() + ".probe"
+	st := &handoff.State{WireListenFD: -1, MCPListenFD: -1}
+	if err := st.WriteFile(probe); err != nil {
+		return fmt.Errorf("write probe: %w", err)
+	}
+	defer os.Remove(probe)
+	out, err := exec.Command(s.cfg.Binary, "serve", "--validate-handoff", probe).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s rejected handoff v%d (%v: %s)", s.cfg.Binary, handoff.Version, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// adoptUpgradeHandoff loads the full state the child wrote for the
+// upgrade (screens, modes, scrollback index). Its fd numbers are the
+// dead child's; buildHandoff replaces them with our copies.
+func (s *Supervisor) adoptUpgradeHandoff(path string) bool {
+	st, err := handoff.ReadFile(path)
+	// It holds terminal contents: gone the moment it is parsed.
+	_ = os.Remove(path)
+	if err != nil {
+		s.logf("upgrade handoff: %v; resuming as after a crash", err)
+		return false
+	}
+	b, err := st.MarshalMsg(nil)
+	if err != nil {
+		s.logf("upgrade handoff: %v; resuming as after a crash", err)
+		return false
+	}
+	s.mu.Lock()
+	s.state = b
+	s.stateFull = true
+	s.mu.Unlock()
+	return true
+}
+
+// reexec replaces this supervisor's image with s.cfg.Binary so the
+// supervisor runs the new code too. Called between children, so only
+// descriptors have to survive: the wire listener and every live tab's
+// PTY master and scrollback file ride through the exec, and the new
+// image adopts them exactly as it adopts an unsupervised daemon's
+// upgrade (`serve --resume` → AdoptHandoff), then starts the child.
+// The pid stays, so the shells stay our children. Returns only on
+// failure, with this process still able to carry on.
+func (s *Supervisor) reexec() error {
+	st, keep := s.buildHandoff(true)
+	path := s.handoffPath()
+	if err := st.WriteFile(path); err != nil {
+		return fmt.Errorf("write handoff: %w", err)
+	}
+	// Go opens everything close-on-exec; survival is opt-in per fd.
+	for i, f := range keep {
+		if _, err := unix.FcntlInt(f.Fd(), unix.F_SETFD, 0); err != nil {
+			setCloexec(keep[:i])
+			_ = os.Remove(path)
+			return fmt.Errorf("clear close-on-exec on fd %d: %w", f.Fd(), err)
+		}
+	}
+	argv := []string{"xerotty", "serve", "--resume", path, "--socket", s.cfg.SocketPath}
+	if s.cfg.NoMCP || s.cfg.MCPSocketPath == "" {
+		argv = append(argv, "--no-mcp")
+	} else {
+		argv = append(argv, "--mcp-socket", s.cfg.MCPSocketPath)
+	}
+	s.logf("re-exec %s (%d tabs)", s.cfg.Binary, len(st.Tabs))
+	err := syscall.Exec(s.cfg.Binary, argv, os.Environ())
+	// The files' finalizers would close the fds the state names.
+	runtime.KeepAlive(keep)
+	// Still here: children spawned from now on must not inherit them.
+	setCloexec(keep)
+	_ = os.Remove(path)
+	return err
+}
+
+func setCloexec(files []*os.File) {
+	for _, f := range files {
+		unix.CloseOnExec(int(f.Fd()))
+	}
 }
 
 func firstNonEmpty(a, b string) string {

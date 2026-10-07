@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -14,6 +15,9 @@ type Client struct {
 	conn  *Conn
 	exits chan ExitMsg
 	done  chan struct{}
+
+	upgrades    chan UpgradeMsg
+	supUpgrades atomic.Bool
 }
 
 // NewClient wraps the inherited control fd and starts reading exit
@@ -23,7 +27,7 @@ func NewClient(f *os.File) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{conn: conn, exits: make(chan ExitMsg, 64), done: make(chan struct{})}
+	c := &Client{conn: conn, exits: make(chan ExitMsg, 64), done: make(chan struct{}), upgrades: make(chan UpgradeMsg, 1)}
 	go c.readLoop()
 	return c, nil
 }
@@ -41,18 +45,39 @@ func (c *Client) readLoop() {
 		if err != nil {
 			return
 		}
-		if kind != KindExit {
-			continue
-		}
-		var m ExitMsg
-		if json.Unmarshal(payload, &m) == nil {
-			select {
-			case c.exits <- m:
-			default: // a wedged consumer must not stall the control channel
+		switch kind {
+		case KindExit:
+			var m ExitMsg
+			if json.Unmarshal(payload, &m) == nil {
+				select {
+				case c.exits <- m:
+				default: // a wedged consumer must not stall the control channel
+				}
+			}
+		case KindCaps:
+			var m CapsMsg
+			if json.Unmarshal(payload, &m) == nil {
+				c.supUpgrades.Store(m.Upgrade)
+			}
+		case KindUpgrade:
+			var m UpgradeMsg
+			if json.Unmarshal(payload, &m) == nil && m.Handoff != "" {
+				select {
+				case c.upgrades <- m:
+				default: // one is already pending; it does the same work
+				}
 			}
 		}
 	}
 }
+
+// UpgradeRequests delivers the supervisor's requests to hand off for
+// an upgrade.
+func (c *Client) UpgradeRequests() <-chan UpgradeMsg { return c.upgrades }
+
+// SupervisorUpgrades reports whether the supervisor said it handles
+// SIGUSR2 upgrades itself (CapsMsg).
+func (c *Client) SupervisorUpgrades() bool { return c.supUpgrades.Load() }
 
 // SendTab hands the supervisor a tab's plumbing. fds[0] must be the
 // PTY master; fds[1], if present, the disk scrollback file. The
