@@ -2252,11 +2252,10 @@ func (a *App) spawnWindowImpl(adopt terminal.Source) {
 	cols, rows := w.gridSize()
 
 	// Daemon-side window association. Three cases:
-	//   1. adopt != nil   — cross-Window tab drag, no fresh daemon
-	//                       window needed; the dragged source keeps
-	//                       its existing daemon-window membership
-	//                       (TODO: emit SendWindowMoveTab here when
-	//                       the source is daemon-backed).
+	//   1. adopt != nil   — cross-Window tab drag: when the source
+	//                       is daemon-backed, persistDaemonTabMove
+	//                       mints this window's daemon window and
+	//                       sends SendWindowMoveTab.
 	//   2. adoptQueue !=  — reattach restore: pop the next daemon
 	//      empty (daemon)   window snapshot, claim its ID, adopt
 	//                       its tabs.
