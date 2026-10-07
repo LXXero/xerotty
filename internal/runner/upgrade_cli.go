@@ -239,7 +239,12 @@ func (u *upgrader) describe(pid int) string {
 		return "an unknown binary (" + err.Error() + ")"
 	case ok:
 		return u.target
-	case mapped == "":
+	}
+	return describeMapped(mapped)
+}
+
+func describeMapped(mapped string) string {
+	if mapped == "" {
 		return "an old binary"
 	}
 	return "the old binary " + mapped
@@ -350,7 +355,8 @@ func (u *upgrader) supervised(child int) int {
 // margins, scrollback index) and an exec of the new binary in place.
 // The pid stays, so the shells stay its children, and the control fd
 // rides through, so it stays supervised. Only when that does not
-// happen is the child SIGKILLed: the supervisor's crash resume then
+// happen, and the child provably still maps another binary, is it
+// SIGKILLed: the supervisor's crash resume then
 // restarts it from the binary at its path with whatever state it last
 // streamed, which on supervisors this old means no screens.
 func (u *upgrader) oldSupervisor(child int) int {
@@ -376,7 +382,63 @@ func (u *upgrader) oldSupervisor(child int) int {
 		fmt.Fprintln(os.Stderr, upgradeMsg+"FAILED: "+err.Error())
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, upgradeMsg+"daemon child %d did not re-execute (%v).\n", child, err)
+	return u.noHandoff(child, err)
+}
+
+// childVerdict is what one last look at a daemon child shows after
+// the wait for its handoff ran out.
+type childVerdict int
+
+const (
+	childGone    childVerdict = iota // no longer the supervisor's daemon child
+	childServing                     // maps the target and answers the handshake
+	childUnsure                      // cannot be shown to run the old binary
+	childStuck                       // provably maps a binary that is not the target
+)
+
+// judgeChild decides from that look. Only positive evidence that the
+// child still runs another binary makes it childStuck: failing to
+// observe something (no lsof, no handshake) never leads to a SIGKILL.
+func judgeChild(isChild, mapsTarget bool, mapsErr error, serving func() bool) childVerdict {
+	switch {
+	case !isChild:
+		return childGone
+	case mapsErr != nil:
+		return childUnsure
+	case !mapsTarget:
+		return childStuck
+	case serving():
+		return childServing
+	}
+	return childUnsure
+}
+
+// noHandoff follows a wait that saw no handoff from child. The wait
+// can miss one that happened (macOS once failed to find a child that
+// had exec'd in place), so the child is looked at again, and is
+// SIGKILLed only when it provably still runs another binary.
+func (u *upgrader) noHandoff(child int, waitErr error) int {
+	ok, mapped, mapsErr := mapsFile(child, u.id)
+	switch judgeChild(daemonChild(u.pid) == child, ok, mapsErr, u.serving) {
+	case childServing:
+		fmt.Fprintf(os.Stderr, upgradeMsg+"daemon child %d runs %s and is serving, but its handoff was not seen (%v); left running. Supervisor %d still runs its old code until `xerotty serve` is restarted.\n", child, u.target, waitErr, u.pid)
+		return 0
+	case childGone:
+		if next := daemonChild(u.pid); next > 0 && next != child && u.runs(next) && u.serving() {
+			fmt.Fprintf(os.Stderr, upgradeMsg+"daemon child %d exited instead of re-executing; supervisor %d resumed its sessions in daemon child %d, which runs %s%s.\n"+crashResumeWarning, child, u.pid, next, u.target, u.platformNote())
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, upgradeMsg+"FAILED: daemon child %d is gone and supervisor %d has no daemon child serving %s (%v) — check its log\n", child, u.pid, u.target, waitErr)
+		return 1
+	case childUnsure:
+		what := "runs " + u.target + " but does not answer the handshake"
+		if mapsErr != nil {
+			what = "cannot be shown to run the old binary (" + mapsErr.Error() + ")"
+		}
+		fmt.Fprintf(os.Stderr, upgradeMsg+"FAILED: daemon child %d did not confirm a re-exec (%v) and %s; not killing it — check its log\n", child, waitErr, what)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, upgradeMsg+"daemon child %d did not re-execute (%v) and still runs %s.\n", child, waitErr, describeMapped(mapped))
 	return u.killChild(child)
 }
 

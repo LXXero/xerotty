@@ -96,7 +96,9 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 		}
 	}
 
-	argv := []string{"xerotty", "serve", "--resume", stateFile, "--socket", socketPath}
+	// argv[0] is the absolute path: macOS ps reports argv[0] as comm,
+	// and `serve --upgrade` reads the daemon's binary from there.
+	argv := []string{bin, "serve", "--resume", stateFile, "--socket", socketPath}
 	if mcpSocketPath != "" {
 		argv = append(argv, "--mcp-socket", mcpSocketPath)
 	} else {

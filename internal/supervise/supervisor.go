@@ -704,7 +704,8 @@ func (s *Supervisor) reexec() error {
 			return fmt.Errorf("clear close-on-exec on fd %d: %w", f.Fd(), err)
 		}
 	}
-	argv := []string{"xerotty", "serve", "--resume", path, "--socket", s.cfg.SocketPath}
+	// argv[0] is the path, not "xerotty": macOS ps shows it as comm.
+	argv := []string{s.cfg.Binary, "serve", "--resume", path, "--socket", s.cfg.SocketPath}
 	if s.cfg.NoMCP || s.cfg.MCPSocketPath == "" {
 		argv = append(argv, "--no-mcp")
 	} else {

@@ -91,3 +91,30 @@ func TestLsofTxt(t *testing.T) {
 		t.Errorf("empty output: (%v, %q)", ok, mapped)
 	}
 }
+
+// TestJudgeChild: after a wait that saw no handoff, only a child that
+// provably maps another binary is SIGKILLed. One that already runs the
+// target and serves — macOS once missed exactly that exec — is not.
+func TestJudgeChild(t *testing.T) {
+	yes := func() bool { return true }
+	no := func() bool { return false }
+	for _, tc := range []struct {
+		name       string
+		isChild    bool
+		mapsTarget bool
+		mapsErr    error
+		serving    func() bool
+		want       childVerdict
+	}{
+		{"exec'd in place, serving", true, true, nil, yes, childServing},
+		{"runs the target, no handshake", true, true, nil, no, childUnsure},
+		{"maps unreadable", true, false, errNoMaps, yes, childUnsure},
+		{"lsof failed", true, false, errors.New("lsof -p 6675: exit status 1"), no, childUnsure},
+		{"still the old binary", true, false, nil, yes, childStuck},
+		{"gone", false, false, nil, yes, childGone},
+	} {
+		if got := judgeChild(tc.isChild, tc.mapsTarget, tc.mapsErr, tc.serving); got != tc.want {
+			t.Errorf("%s: judgeChild = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

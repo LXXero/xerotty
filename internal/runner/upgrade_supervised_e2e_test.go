@@ -398,6 +398,29 @@ func TestUpgradeKillFallbackE2E(t *testing.T) {
 	f.sameSession("AFTER")
 }
 
+// TestUpgradeKillFallbackSkippedE2E: when the wait sees no handoff
+// but the daemon child already runs the target and serves, it is left
+// alone. On macOS a child that had exec'd in place was SIGKILLed this
+// way because the wait could not find it.
+func TestUpgradeKillFallbackSkippedE2E(t *testing.T) {
+	f := startUpgradeFixture(t, nil, "XEROTTY_TEST_LEGACY_SUPERVISOR=1", "XEROTTY_TEST_IGNORE_SIGUSR2=1", "XEROTTY_UPGRADE_TIMEOUT=4s")
+	sup := f.srv.Process.Pid
+	child := childOf(t, sup)
+	// --force with the binary it already runs: no handoff comes, and
+	// the child provably runs the target.
+	out, err := f.upgrade("--force")
+	if err != nil {
+		t.Fatalf("serve --upgrade --force: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "handoff was not seen") || strings.Contains(out, "SIGKILL") {
+		t.Fatalf("want the child left running, no SIGKILL:\n%s", out)
+	}
+	if c := childOf(t, sup); c != child {
+		t.Fatalf("daemon child changed %d -> %d", child, c)
+	}
+	f.sameSession("KEPT")
+}
+
 // TestUpgradeForceE2E: with the installed binary already running,
 // --upgrade leaves the daemon alone and --force upgrades it anyway,
 // under both kinds of supervisor.
