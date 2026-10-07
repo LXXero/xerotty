@@ -51,14 +51,11 @@ func TestFrameAndRightsRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(payload, &tm); err != nil || tm.ID != 7 || tm.PID != 4242 {
 		t.Fatalf("payload mangled: %s (%v)", payload, err)
 	}
-	got, err := os.ReadFile("/dev/fd/" + itoa(int(files[0].Fd())))
-	if err != nil {
-		// /dev/fd may not be readable this way everywhere; fall back
-		// to reading through the received file itself.
-		got = make([]byte, 64)
-		n, _ := files[0].ReadAt(got, 0)
-		got = got[:n]
-	}
+	// Read by offset: the received descriptor shares the sender's
+	// file offset, which sits at end-of-file after the WriteString.
+	got := make([]byte, 64)
+	n, _ := files[0].ReadAt(got, 0)
+	got = got[:n]
 	if !bytes.Contains(got, []byte("hello through scm_rights")) {
 		t.Fatalf("received fd does not read the sender's file: %q", got)
 	}
@@ -81,9 +78,4 @@ func TestFrameAndRightsRoundTrip(t *testing.T) {
 	if _, _, _, err := parent.Recv(); err == nil {
 		t.Fatal("expected EOF after the child closed")
 	}
-}
-
-func itoa(i int) string {
-	b, _ := json.Marshal(i)
-	return string(b)
 }
