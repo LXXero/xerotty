@@ -10,8 +10,10 @@ import (
 )
 
 // peerPID returns the pid of the process on the other end of a unix
-// socket connection. macOS spells SO_PEERCRED as LOCAL_PEERPID on
-// the SOL_LOCAL level.
+// socket connection. LOCAL_PEERPID is not SO_PEERCRED under another
+// name: it names the process that accepted the connection, not the
+// one that called listen() — under a supervisor that is the daemon
+// child, which socketOwner resolves to its supervisor.
 func peerPID(conn *net.UnixConn) (int, error) {
 	raw, err := conn.SyscallConn()
 	if err != nil {

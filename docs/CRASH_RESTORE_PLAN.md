@@ -81,7 +81,12 @@ supervisor. (The first version of this plan assumed it named the
 child; it never did, so `--upgrade` under a supervisor signalled a
 process that ignored SIGUSR2 and then reported success because the
 pid was alive. Fixed 2026-10-07; see "Upgrading under the
-supervisor".)
+supervisor".) On macOS LOCAL_PEERPID names the process that accepted
+the connection instead — the daemon child, which holds the inherited
+listener — so `--upgrade` resolves a peer whose argv is `serve
+--child` to its parent before choosing a path; until 2026-10-07 it
+took a supervised child for an unsupervised daemon and reported
+FAILED after an upgrade that worked.
 
 ### Control channel (internal/supervise)
 

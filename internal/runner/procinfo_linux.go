@@ -20,35 +20,58 @@ func daemonChild(ppid int) int {
 	if err != nil {
 		return 0
 	}
-	want := strconv.Itoa(ppid)
 	for _, e := range ents {
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil {
 			continue
 		}
-		stat, err := os.ReadFile("/proc/" + e.Name() + "/stat")
-		if err != nil {
+		// cmdline only for ppid's children: this runs in poll loops.
+		if p, err := procPPID(pid); err != nil || p != ppid {
 			continue
 		}
-		// comm may hold spaces and parens: the fields that follow it
-		// start after the LAST ')'. Then: state, ppid, ...
-		i := bytes.LastIndexByte(stat, ')')
-		if i < 0 {
-			continue
-		}
-		f := strings.Fields(string(stat[i+1:]))
-		if len(f) < 2 || f[1] != want {
-			continue
-		}
-		cmdline, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
-		if err != nil {
-			continue
-		}
-		if isDaemonChildArgv(strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")) {
+		if argv, err := procArgv(pid); err == nil && isDaemonChildArgv(argv) {
 			return pid
 		}
 	}
 	return 0
+}
+
+func procInfoOf(pid int) (procInfo, error) {
+	ppid, err := procPPID(pid)
+	if err != nil {
+		return procInfo{}, err
+	}
+	argv, err := procArgv(pid)
+	if err != nil {
+		return procInfo{}, err
+	}
+	return procInfo{ppid: ppid, argv: argv}, nil
+}
+
+func procPPID(pid int) (int, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	// comm may hold spaces and parens: the fields that follow it
+	// start after the LAST ')'. Then: state, ppid, ...
+	i := bytes.LastIndexByte(stat, ')')
+	if i < 0 {
+		return 0, fmt.Errorf("/proc/%d/stat: no comm", pid)
+	}
+	f := strings.Fields(string(stat[i+1:]))
+	if len(f) < 2 {
+		return 0, fmt.Errorf("/proc/%d/stat: no ppid", pid)
+	}
+	return strconv.Atoi(f[1])
+}
+
+func procArgv(pid int) ([]string, error) {
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"), nil
 }
 
 // exePath is the path pid was started from. After an install replaced
