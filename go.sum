@@ -2,10 +2,10 @@ github.com/AllenDang/cimgui-go v1.6.0 h1:fv1M00FcNz3OMK1q0nOt208DxItmRGipSKcKitE
 github.com/AllenDang/cimgui-go v1.6.0/go.mod h1:gz4dVFwmfoyUkBgVzBhiCJj1JXXWISQa8SQ190MlouY=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/LXXero/ultraviolet v0.0.0-20261007012353-efd5e1f27e12 h1:mcrCrUV7lO1Tbu7iYGUheIbCWI5xdhdMlsom1+DL3qE=
-github.com/LXXero/ultraviolet v0.0.0-20261007012353-efd5e1f27e12/go.mod h1:JFvmQPZh3uAu7PpSZU91bcR0BrIy24HhW+0EsW1uGxE=
-github.com/LXXero/x/vt v0.0.0-20261007012352-6888bf05aaf5 h1:KKvbiimgaaCpl7T61aQ2ovu1G0mGSlnG/TNI8Omg2Xw=
-github.com/LXXero/x/vt v0.0.0-20261007012352-6888bf05aaf5/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
+github.com/LXXero/ultraviolet v0.0.0-20261007044817-302e101ed973 h1:6lXrAzAZtJR92s2BmInCqS93qWBRs3xfUXrV6D0lmm4=
+github.com/LXXero/ultraviolet v0.0.0-20261007044817-302e101ed973/go.mod h1:D9SVXVpAsD1pP6xR6BiERbe4+dUU6EW9US1TFrNutGA=
+github.com/LXXero/x/vt v0.0.0-20261007045748-1aa8d8b0b368 h1:FC5EgJIX5O+Baabiyg0yiRrDvahieCxrg68HwOf0KjA=
+github.com/LXXero/x/vt v0.0.0-20261007045748-1aa8d8b0b368/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/colorprofile v0.4.3 h1:QPa1IWkYI+AOB+fE+mg/5/4HRMZcaXex9t5KX76i20Q=
 github.com/charmbracelet/colorprofile v0.4.3/go.mod h1:/zT4BhpD5aGFpqQQqw7a+VtHCzu+zrQtt1zhMt9mR4Q=
 github.com/charmbracelet/x/ansi v0.11.8 h1:JMFwp0CgDC2+jcOB162HH5k7I3FVbgFSMMYg7dSPBQQ=
