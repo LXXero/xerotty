@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -160,6 +161,12 @@ type Terminal struct {
 	// instead of recognized as a paste.
 	modeMu sync.Mutex
 	modes  map[ansi.Mode]bool
+
+	// emuPanics counts emulator panics contained by readPTY (under
+	// mu); ingestHook is a test-only tap into ingest, read under
+	// publishMu, used to inject one.
+	emuPanics  int
+	ingestHook func(p []byte)
 
 	// disk-backed scrollback state, used only when the configured
 	// scrollback Mode is "unlimited". When vt's in-mem scrollback
@@ -1039,9 +1046,29 @@ func (t *Terminal) waitChild() {
 	}
 }
 
-// readPTY reads from the PTY and writes to the SafeEmulator.
+// readPTY reads from the PTY and writes to the SafeEmulator. It is
+// also a containment boundary: a panic raised while feeding the
+// emulator (an emulator bug tripped by THIS tab's byte stream) is
+// recovered and the reader resumes, instead of unwinding the whole
+// process and taking every other tab with it — which is how one
+// stale scroll margin killed a daemon and all its sessions on
+// 2026-10-06.
 func (t *Terminal) readPTY() {
 	defer close(t.readerDone)
+	for t.readPTYLoop() {
+	}
+}
+
+// readPTYLoop runs the read loop until the terminal is done (returns
+// false) or a panic was contained and the loop should start over
+// (returns true). The OSC pre-processor state is local, so a restart
+// begins clean.
+func (t *Terminal) readPTYLoop() (again bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			again = t.containPanic(r, debug.Stack())
+		}
+	}()
 	buf := make([]byte, 32*1024)
 	// OSC pre-processor state. Carries over across Read calls in case an
 	// OSC sequence spans buffer boundaries.
@@ -1050,7 +1077,7 @@ func (t *Terminal) readPTY() {
 	for {
 		select {
 		case <-t.done:
-			return
+			return false
 		default:
 		}
 
@@ -1060,25 +1087,7 @@ func (t *Terminal) readPTY() {
 			oscBuf = newOSCBuf
 			inOSC = newInOSC
 			if len(cleaned) > 0 {
-				// publishMu serializes this write with daemon-side
-				// bulk snapshots so they see a consistent grid +
-				// scrollback rather than a half-shifted mid-write
-				// state.
-				t.publishMu.Lock()
-				t.Emu.Write(cleaned)
-				// Activity clock: real child output just landed. Stamp
-				// here (not on cursor blink / GUI animation, which never
-				// reach readPTY) so idle-age reflects genuine output.
-				t.lastOutputAt.Store(time.Now().UnixNano())
-				// Mirror new scrollback lines to disk in unlimited
-				// mode. No-op otherwise. Runs on this goroutine so
-				// the mirror always sees writes in PTY-arrival order.
-				t.mirrorScrollback()
-				// Inside publishMu: equal-gen ⇒ identical-content
-				// requires readers seeing the new gen to also see
-				// the completed write.
-				t.renderGen.Add(1)
-				t.publishMu.Unlock()
+				t.ingest(cleaned)
 			}
 			select {
 			case t.DataCh <- struct{}{}:
@@ -1098,9 +1107,105 @@ func (t *Terminal) readPTY() {
 			if err != io.EOF {
 				// PTY closed or error — mark terminal as done
 			}
-			return
+			return false
 		}
 	}
+}
+
+// ingest feeds one cleaned PTY chunk to the emulator. publishMu
+// serializes it with daemon-side bulk snapshots so they see a
+// consistent grid + scrollback rather than a half-shifted mid-write
+// state; the unlock is DEFERRED so a panic inside the emulator can't
+// leave publishMu held (every snapshot would then deadlock behind it).
+func (t *Terminal) ingest(cleaned []byte) {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	if t.ingestHook != nil {
+		t.ingestHook(cleaned)
+	}
+	t.Emu.Write(cleaned)
+	// Activity clock: real child output just landed. Stamp here (not
+	// on cursor blink / GUI animation, which never reach readPTY) so
+	// idle-age reflects genuine output.
+	t.lastOutputAt.Store(time.Now().UnixNano())
+	// Mirror new scrollback lines to disk in unlimited mode. No-op
+	// otherwise. Runs on this goroutine so the mirror always sees
+	// writes in PTY-arrival order.
+	t.mirrorScrollback()
+	// Inside publishMu: equal-gen ⇒ identical-content requires
+	// readers seeing the new gen to also see the completed write.
+	t.renderGen.Add(1)
+}
+
+// maxEmulatorPanics is how many contained panics one terminal gets
+// before it is closed: a stream that keeps tripping the emulator is
+// poison, and the alternative is a hot loop of reset-and-crash.
+const maxEmulatorPanics = 3
+
+// containPanic handles a panic recovered from the read loop. It logs
+// the stack, resets the SAME emulator (RIS — SafeEmulator releases
+// its lock through a defer, so the object is usable; swapping the
+// Emu pointer would race every unsynchronized reader), pokes the
+// child with SIGWINCH so full-screen apps repaint, and reports
+// whether the reader should resume. Past the panic budget, or if
+// the reset itself panics, the tab is closed instead — the
+// pre-existing outcome for every tab, now limited to this one.
+func (t *Terminal) containPanic(r any, stack []byte) bool {
+	t.mu.Lock()
+	t.emuPanics++
+	n := t.emuPanics
+	pid := t.childPIDLocked()
+	t.mu.Unlock()
+	fmt.Fprintf(os.Stderr, "xerotty: terminal: contained emulator panic %d/%d (child pid %d): %v\n%s",
+		n, maxEmulatorPanics, pid, r, stack)
+	if n >= maxEmulatorPanics {
+		fmt.Fprintf(os.Stderr, "xerotty: terminal: closing tab (child pid %d) after %d emulator panics\n", pid, n)
+		go t.Close()
+		return false
+	}
+	if !t.resetEmulator() {
+		fmt.Fprintf(os.Stderr, "xerotty: terminal: emulator reset panicked too; closing tab (child pid %d)\n", pid)
+		go t.Close()
+		return false
+	}
+	if pid > 0 {
+		_ = unix.Kill(pid, unix.SIGWINCH)
+	}
+	select {
+	case t.DataCh <- struct{}{}:
+	default:
+	}
+	if Wake != nil {
+		Wake()
+	}
+	return true
+}
+
+// resetEmulator writes RIS to the emulator under publishMu. ok is
+// false if the reset itself panicked (the emulator is beyond use).
+func (t *Terminal) resetEmulator() (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	_, _ = t.Emu.Write([]byte("\x1bc"))
+	t.renderGen.Add(1)
+	return true
+}
+
+// childPIDLocked returns the shell's pid (spawned or adopted), 0 if
+// none. Caller holds t.mu.
+func (t *Terminal) childPIDLocked() int {
+	switch {
+	case t.cmd != nil && t.cmd.Process != nil:
+		return t.cmd.Process.Pid
+	case t.adoptedProc != nil:
+		return t.adoptedProc.Pid
+	}
+	return 0
 }
 
 // preprocessOSC intercepts OSC sequences before they reach the vt emulator,
