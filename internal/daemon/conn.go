@@ -899,7 +899,7 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 	if len(msg.Command) > 0 {
 		launch = &terminal.LaunchCmd{Argv: msg.Command, Shell: msg.CommandShell}
 	}
-	t, w, created, err := c.daemon.CreateNamedTab(c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd, launch)
+	t, w, created, err := c.daemon.createNamedTabFor(c, c.session, msg.Name, msg.WindowID, cols, rows, msg.Cwd, launch)
 	if err != nil {
 		// Echo ReqID so the requester's NewTabIn fails NOW rather than
 		// blocking the GUI's UI thread for the whole create timeout.
@@ -925,6 +925,25 @@ func (c *clientConn) handleTabCreate(msg *protocol.TabCreate) error {
 		Reused:   !created,
 	})
 	return nil
+}
+
+// claimCreatedTab makes the client that created tab t its size owner,
+// at the grid the tab was minted with. The creating GUI sizes the
+// request to the window that shows the tab, so a matching grid means
+// it never sends a Resize. Without a claim, another attached GUI that
+// mirrors the tab into a differently-sized window would make the FIRST
+// claim with its own size report (a seeding report only defers when
+// someone already owns the tab), and the daemon would resize the PTY
+// to that other window's grid: `xerotty -e mutt` in a new 80x24 window
+// drew mutt at another machine's 152x57, cut off at the bottom.
+func (c *clientConn) claimCreatedTab(t *Tab) {
+	c.subsMu.Lock()
+	if sub, ok := c.subs[t.ID]; ok && sub.desiredCols == 0 && sub.desiredRows == 0 {
+		sub.desiredCols = uint16(t.Term.Width())
+		sub.desiredRows = uint16(t.Term.Height())
+		sub.resizeSeq = c.daemon.resizeSeq.Add(1)
+	}
+	c.subsMu.Unlock()
 }
 
 func (c *clientConn) handleWindowCreate(msg *protocol.WindowCreate) error {
