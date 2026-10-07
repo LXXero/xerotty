@@ -490,9 +490,10 @@ func (t *Terminal) mirrorNewLines(disk *DiskScrollback) (mirrored, memLen int) {
 		// what's on disk stays history; nothing in memory is new.
 		mirrored = memLen
 	}
+	var batch []uv.Line
 	if newN := memLen - mirrored; newN > 0 {
 		if sb := t.Emu.Scrollback(); sb != nil {
-			batch := make([]uv.Line, 0, newN)
+			batch = make([]uv.Line, 0, newN)
 			for i := memLen - newN; i < memLen; i++ {
 				line := sb.Line(i)
 				if line == nil {
@@ -500,11 +501,19 @@ func (t *Terminal) mirrorNewLines(disk *DiskScrollback) (mirrored, memLen int) {
 				}
 				batch = append(batch, line)
 			}
-			wrote, _ := disk.AppendBatch(batch)
-			mirrored += wrote
 		}
 	}
+	// The disk append and the memMirrored bump happen under ONE t.mu
+	// hold: scrollbackLayout reads disk.Len() and memMirrored under
+	// t.mu, and a reader landing between the two (the daemon's
+	// lock-free ScrollbackLen in sendNewScrollback) used to count the
+	// freshly mirrored lines twice — once on disk, once still
+	// "unmirrored" in memory. That overstated total made the daemon
+	// ship a short ScrollbackAppend whose Total and next BaseIdx left
+	// a gap the windowed client could never close.
 	t.mu.Lock()
+	wrote, _ := disk.AppendBatch(batch)
+	mirrored += wrote
 	t.memMirrored = mirrored
 	t.mu.Unlock()
 	return mirrored, memLen
@@ -515,9 +524,18 @@ func (t *Terminal) mirrorNewLines(disk *DiskScrollback) (mirrored, memLen int) {
 // starts (rows >= memStart are served from memory, the rest from
 // disk). Without a disk store memory is everything.
 func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, memLen int) {
+	// disk.Len() and memMirrored are read as one pair under t.mu —
+	// mirrorNewLines changes them together under it, so the pair is
+	// never half-updated. memLen is read after: ingest only grows it
+	// (genuinely new lines) and the trim shrinks it only once every
+	// line is mirrored, which the clamp below absorbs.
 	t.mu.Lock()
 	disk = t.disk
 	mirrored := t.memMirrored
+	diskLen := 0
+	if disk != nil {
+		diskLen = disk.Len()
+	}
 	t.mu.Unlock()
 	memLen = t.Emu.ScrollbackLen()
 	if disk == nil {
@@ -526,7 +544,7 @@ func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, me
 	if mirrored > memLen {
 		mirrored = memLen
 	}
-	total = disk.Len() + memLen - mirrored
+	total = diskLen + memLen - mirrored
 	return disk, total, total - memLen, memLen
 }
 
@@ -936,12 +954,11 @@ func (t *Terminal) ClearScrollback() {
 	t.publishMu.Lock()
 	t.Emu.ClearScrollback()
 	t.mu.Lock()
-	disk := t.disk
+	if t.disk != nil {
+		_ = t.disk.Clear()
+	}
 	t.memMirrored = 0
 	t.mu.Unlock()
-	if disk != nil {
-		_ = disk.Clear()
-	}
 	t.renderGen.Add(1)
 	t.publishMu.Unlock()
 	// Wake any DataChan waiter so the GUI repaints the now-empty
