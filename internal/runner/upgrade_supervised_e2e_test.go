@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/testutil"
 )
 
@@ -233,6 +234,60 @@ func (f *upgradeFixture) sameSession(marker string) {
 	}
 }
 
+// shellExitCloses proves the daemon still learns when the tab's shell
+// exits: a wire client attached now must get the tab's ChildExit
+// once `exit` is typed. After an upgrade the shell is no longer the
+// daemon child's process child (it belongs to the supervisor, or to
+// nobody on macOS, where only a kqueue watch reports it); a lost
+// exit leaves a tab open that eats every keystroke.
+func (f *upgradeFixture) shellExitCloses() {
+	f.t.Helper()
+	cli, err := clientproto.Dial(f.sock)
+	if err != nil {
+		f.t.Fatalf("wire dial: %v", err)
+	}
+	defer cli.Close()
+	if _, err := cli.Hello("upgrade-e2e-exit"); err != nil {
+		f.t.Fatalf("wire hello: %v", err)
+	}
+	go cli.Run()
+	if err := cli.Attach("", false); err != nil {
+		f.t.Fatalf("wire attach: %v", err)
+	}
+	select {
+	case <-cli.Attached():
+	case <-time.After(5 * time.Second):
+		f.t.Fatal("never attached")
+	}
+	p := f.probe()
+	if _, err := p.call("tab/input", map[string]any{"tab_id": f.tabID, "bytes": "exit\r"}); err != nil {
+		f.t.Fatalf("input: %v", err)
+	}
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case ex := <-cli.ChildExit():
+			if ex.ID == f.tabID {
+				return
+			}
+		case <-cli.CellFull():
+		case <-cli.CellDiff():
+		case <-cli.Cursor():
+		case <-cli.TabState():
+		case <-cli.ScrollbackAppend():
+		case <-cli.Topology():
+		case <-cli.TabCreated():
+		case <-cli.Title():
+		case <-cli.Errors():
+		case <-cli.Closed():
+			f.t.Fatal("wire connection closed before the shell's exit was reported")
+		case <-deadline:
+			alive := exec.Command("kill", "-0", f.shellPID).Run() == nil
+			f.t.Fatalf("shell %s typed exit (still alive: %v) but the daemon never reported tab %d's exit", f.shellPID, alive, f.tabID)
+		}
+	}
+}
+
 func mustMap(t *testing.T, pid int, id fileID, want bool, who string) {
 	t.Helper()
 	ok, mapped, err := mapsFile(pid, id)
@@ -293,6 +348,10 @@ func TestSupervisedUpgradeE2E(t *testing.T) {
 	p := f.probe()
 	f.waitScreen(p, func(scr string) bool { return strings.Contains(scr, "FILLER_39") }, "screen lost across the upgrade")
 	f.sameSession("AFTER")
+	// The shell was spawned by the replaced daemon child: on Linux it
+	// re-parented to the supervisor (subreaper), on macOS to launchd,
+	// where only the kqueue watch AdoptHandoff registered reports it.
+	f.shellExitCloses()
 }
 
 // TestUpgradeOldSupervisorFallbackE2E: a supervisor that predates
@@ -396,6 +455,7 @@ func TestUpgradeKillFallbackE2E(t *testing.T) {
 	}
 	mustMap(t, newChild, newID, true, "daemon child")
 	f.sameSession("AFTER")
+	f.shellExitCloses()
 }
 
 // TestUpgradeKillFallbackSkippedE2E: when the wait sees no handoff

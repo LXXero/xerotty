@@ -92,12 +92,20 @@ func New(cfg Config) *Supervisor {
 	if cfg.Log == nil {
 		cfg.Log = io.Discard
 	}
-	return &Supervisor{
+	s := &Supervisor{
 		cfg:       cfg,
 		tabs:      make(map[uint32]*tabPlumb),
 		childExit: make(chan childStatus, 4),
 		shellExit: make(chan ExitMsg, 64),
 	}
+	// Installed here, not in Run: AdoptHandoff runs before Run and
+	// registers the adopted shells with watchPID, and on macOS a
+	// registration made before the sink existed delivered nothing,
+	// so a shell orphaned by a replaced daemon child could exit
+	// without its tab ever closing. The sink only queues on a
+	// buffered channel that forwardShellExits drains once Run starts.
+	setExitSink(func(m ExitMsg) { s.shellExit <- m })
+	return s
 }
 
 func (s *Supervisor) logf(format string, args ...any) {
@@ -140,7 +148,6 @@ func (s *Supervisor) Run() error {
 	defer signal.Stop(sigs)
 	go s.reapLoop(sigs)
 	go s.forwardShellExits()
-	setExitSink(func(m ExitMsg) { s.shellExit <- m })
 
 	resumeFile := ""
 	if s.resumeFirst {
@@ -328,18 +335,31 @@ func (s *Supervisor) readControl(c *Conn) {
 	}
 }
 
-// forwardShellExits marks exited tabs and tells the live child.
+// forwardShellExits marks exited tabs and tells the live child. A
+// shell that is our own process child and also kqueue-watched (one
+// adopted on macOS) is reported by wait4 and by kqueue: the second
+// notice finds its tabs already marked and is dropped. A pid no tab
+// knows is forwarded as is.
 func (s *Supervisor) forwardShellExits() {
 	for m := range s.shellExit {
 		s.mu.Lock()
+		matched, fresh := false, false
 		for _, tp := range s.tabs {
-			if tp.pid == m.PID {
+			if tp.pid != m.PID {
+				continue
+			}
+			matched = true
+			if !tp.exited {
+				fresh = true
 				tp.exited = true
 				tp.code = m.Code
 			}
 		}
 		ctl := s.ctl
 		s.mu.Unlock()
+		if matched && !fresh {
+			continue
+		}
 		if ctl != nil {
 			_ = ctl.SendJSON(KindExit, m)
 		}

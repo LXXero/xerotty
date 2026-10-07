@@ -1,7 +1,6 @@
 package supervise
 
 import (
-	"fmt"
 	"sync"
 	"syscall"
 
@@ -16,6 +15,7 @@ var (
 	kqOnce sync.Once
 	kq     int
 	kqErr  error
+	kqMu   sync.Mutex
 	kqSink func(ExitMsg)
 )
 
@@ -24,7 +24,9 @@ func platformInit() error {
 }
 
 // watchPID registers pid for exit notification. The first call
-// starts the kqueue loop.
+// starts the kqueue loop. Registration does not depend on a sink
+// being set: the notice is delivered to whatever sink is installed
+// when the process exits.
 func watchPID(pid int) {
 	kqOnce.Do(func() {
 		kq, kqErr = unix.Kqueue()
@@ -32,7 +34,7 @@ func watchPID(pid int) {
 			go kqLoop()
 		}
 	})
-	if kqErr != nil || kqSink == nil {
+	if kqErr != nil {
 		return
 	}
 	ev := unix.Kevent_t{
@@ -59,14 +61,19 @@ func kqLoop() {
 				continue
 			}
 			ws := syscall.WaitStatus(ev.Data)
-			if kqSink != nil {
-				kqSink(ExitMsg{PID: int(ev.Ident), Code: exitCode(ws)})
+			kqMu.Lock()
+			sink := kqSink
+			kqMu.Unlock()
+			if sink != nil {
+				sink(ExitMsg{PID: int(ev.Ident), Code: exitCode(ws)})
 			}
 		}
 	}
 }
 
 // setExitSink receives kqueue exit notices.
-func setExitSink(fn func(ExitMsg)) { kqSink = fn }
-
-var _ = fmt.Sprintf
+func setExitSink(fn func(ExitMsg)) {
+	kqMu.Lock()
+	kqSink = fn
+	kqMu.Unlock()
+}
