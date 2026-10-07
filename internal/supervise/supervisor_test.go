@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,8 +18,13 @@ func TestRunSeesDaemonThatExitsRightAfterStart(t *testing.T) {
 	}
 	defer r.Close()
 	defer w.Close()
+	// `true` is /bin/true on Linux and /usr/bin/true on macOS.
+	trueBin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no `true` on PATH")
+	}
 	s := New(Config{
-		Binary:     "/bin/true",
+		Binary:     trueBin,
 		SocketPath: filepath.Join(t.TempDir(), "sock"),
 		NoMCP:      true,
 		Listener:   r,

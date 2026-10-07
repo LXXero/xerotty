@@ -129,6 +129,7 @@ func upgradeCLI(socketPath string, force bool) int {
 			target = upgradeTargetBinary()
 		}
 	}
+	target = resolveTarget(target, upgradeTargetBinary)
 	id, err := statFile(target)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, upgradeMsg+"target binary: %v\n", err)
@@ -154,6 +155,29 @@ func upgradeCLI(socketPath string, force bool) int {
 	default:
 		return u.unsupervised()
 	}
+}
+
+// resolveTarget turns the chosen target into an absolute path. A
+// bare name (no separator) is a PATH lookup, never a file in the cwd:
+// os.Stat would accept ./xerotty while exec.Command then fails to
+// find "xerotty" on PATH. A bare name that is not on PATH falls back
+// to fallback (the CLI's own executable, re-stat'd). A relative path
+// with a separator is made absolute so messages and the handoff name
+// one file.
+func resolveTarget(target string, fallback func() string) string {
+	if !strings.ContainsRune(target, os.PathSeparator) {
+		if p, err := exec.LookPath(target); err == nil {
+			target = p
+		} else if fb := fallback(); strings.ContainsRune(fb, os.PathSeparator) {
+			target = fb
+		} else {
+			return target // let statFile report it
+		}
+	}
+	if abs, err := filepath.Abs(target); err == nil {
+		return abs
+	}
+	return target
 }
 
 type upgrader struct {

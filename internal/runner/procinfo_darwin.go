@@ -6,19 +6,29 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 // daemonChild returns the pid of the `serve --child` process whose
-// parent is ppid, or 0 when there is none.
+// parent is ppid, or 0 when there is none. The children come from
+// pgrep -P and each argv from ps, matched by isDaemonChildArgv: a
+// child that exec'd in place has `--child` after `--resume`, not next
+// to `serve`, so a `pgrep -f "serve --child"` substring misses it and
+// the CLI would wait out the handoff and SIGKILL a child that
+// upgraded fine.
 func daemonChild(ppid int) int {
-	out, err := exec.Command("pgrep", "-P", strconv.Itoa(ppid), "-f", "serve --child").Output()
+	out, err := exec.Command("pgrep", "-P", strconv.Itoa(ppid)).Output()
 	if err != nil {
 		return 0
 	}
 	for _, f := range strings.Fields(string(out)) {
-		if pid, err := strconv.Atoi(f); err == nil && pid > 0 {
+		pid, err := strconv.Atoi(f)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if info, err := procInfoOf(pid); err == nil && isDaemonChildArgv(info.argv) {
 			return pid
 		}
 	}
@@ -44,14 +54,37 @@ func procInfoOf(pid int) (procInfo, error) {
 	return procInfo{ppid: ppid, argv: f[1:]}, nil
 }
 
-// exePath is the path pid was started from (ps prints the full path
-// as comm on macOS).
+// exePath is the path of the executable pid runs. `ps -o comm=` prints
+// argv[0] as the process was started: the full path when it was
+// launched by path, but a bare "xerotty" when a shell or the GUI found
+// it on PATH, and that name must not be taken for a file (relative to
+// the caller's cwd it stats whatever happens to be there and the
+// validation gate's exec then fails the PATH lookup). A relative comm
+// is resolved from lsof's txt vnodes, whose first entry is the
+// executable's path; with no lsof the caller falls back to its own
+// executable.
 func exePath(pid int) (string, error) {
 	out, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	comm := strings.TrimSpace(string(out))
+	if filepath.IsAbs(comm) {
+		return comm, nil
+	}
+	lsof := lsofPath()
+	if lsof == "" {
+		return "", fmt.Errorf("pid %d: comm %q is not a path and lsof is unavailable", pid, comm)
+	}
+	out, err = exec.Command(lsof, "-w", "-a", "-p", strconv.Itoa(pid), "-d", "txt", "-F", "Din").Output()
+	if err != nil {
+		return "", fmt.Errorf("lsof -p %d: %w", pid, err)
+	}
+	_, exe := lsofTxt(out, fileID{})
+	if !filepath.IsAbs(exe) {
+		return "", fmt.Errorf("pid %d: lsof lists no executable", pid)
+	}
+	return exe, nil
 }
 
 // mapsFile reports whether pid runs id. macOS has no
