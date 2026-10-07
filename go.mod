@@ -31,6 +31,6 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 )
 
-replace github.com/charmbracelet/ultraviolet => github.com/LXXero/ultraviolet v0.0.0-20261007012353-efd5e1f27e12
+replace github.com/charmbracelet/ultraviolet => github.com/LXXero/ultraviolet v0.0.0-20261007044817-302e101ed973
 
-replace github.com/charmbracelet/x/vt => github.com/LXXero/x/vt v0.0.0-20261007012352-6888bf05aaf5
+replace github.com/charmbracelet/x/vt => github.com/LXXero/x/vt v0.0.0-20261007045748-1aa8d8b0b368
