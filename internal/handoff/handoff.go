@@ -37,12 +37,19 @@ import (
 //	    ansi_set / ansi_reset) added as omitempty fields — same
 //	    version on purpose, older readers skip unknown keys and newer
 //	    readers treat absence as "only AppCursor known".
+//	    2026-10-07: per-tab scroll margins and charset state added as
+//	    omitempty pointers (nil = the power-on default), same version
+//	    for the same reason. The crash-resume state the daemon streams
+//	    to its supervisor now carries every emulator field the
+//	    in-place handoff does (screen, cursor, modes, margins,
+//	    charsets); only fds and the scrollback offset index differ.
 const Version uint16 = 1
 
 // State is the whole daemon, minus what deliberately does not
 // survive: client connections (they reconnect), propose-queue
 // entries (agents re-propose), deep emulator internals beyond the
-// mode set (SIGWINCH wiggle repaints full-screen apps).
+// modes, margins and charsets (SIGWINCH wiggle repaints full-screen
+// apps).
 type State struct {
 	Version uint16 `msg:"version"`
 
@@ -118,6 +125,16 @@ type TabState struct {
 	ANSIModesSet   []int `msg:"ansi_set,omitempty"`
 	ANSIModesReset []int `msg:"ansi_reset,omitempty"`
 
+	// Scroll margins of the active screen (DECSTBM, and DECSLRM when
+	// DECLRMM is set). They are not modes, so the mode lists miss
+	// them: a pager or mail client that scrolls a region came back
+	// scrolling the whole screen. nil = the whole screen.
+	Margins *Margins `msg:"margins,omitempty"`
+	// Character set designations and shifts (SCS, SO/SI, LS2/LS3,
+	// LS1R..LS3R). nil = the power-on default (ASCII everywhere, G0
+	// in GL, G1 in GR).
+	Charsets *Charsets `msg:"charsets,omitempty"`
+
 	// Scrollback. In-memory rows serialize as cells; the disk store
 	// (unlinked temp file — exists only through its fd) passes as
 	// DiskFD (-1 = none) plus its in-memory offset index, which is
@@ -129,6 +146,24 @@ type TabState struct {
 	// resume: the supervisor never had it) and must be rebuilt by
 	// scanning the file's length-prefixed records.
 	DiskSize int64 `msg:"disk_size,omitempty"`
+}
+
+// Margins are the scroll region as the DECSTBM / DECSLRM parameters
+// that set it: 1-based, inclusive.
+type Margins struct {
+	Top    int `msg:"top"`
+	Bottom int `msg:"bottom"`
+	Left   int `msg:"left"`
+	Right  int `msg:"right"`
+}
+
+// Charsets is the ISO 2022 character set state. G holds the SCS final
+// byte designated into G0..G3 ('B' ASCII, '0' DEC Special Graphics,
+// 'A' UK); GL and GR name the set invoked into each half.
+type Charsets struct {
+	G  string `msg:"g"`
+	GL int    `msg:"gl"`
+	GR int    `msg:"gr"`
 }
 
 // WriteFile serializes s to path, 0600. The caller owns deletion

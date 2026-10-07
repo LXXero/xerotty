@@ -78,10 +78,10 @@ type Supervisor struct {
 	// adopted state (AdoptHandoff) instead of fresh.
 	resumeFirst     bool
 	adoptedInstance string
-	// stateFull: s.state is a complete daemon handoff (screens, modes,
-	// scrollback index) adopted from an exec-in-place upgrade, not
-	// the fd-less topology the child streams. The first KindState
-	// frame from a child clears it.
+	// stateFull: s.state is a complete daemon handoff adopted from an
+	// exec-in-place upgrade, scrollback offset index included, not
+	// the fd-less state the child streams (which has no index). The
+	// first KindState frame from a child clears it.
 	stateFull bool
 
 	afterStart func() // test hook: runs between Start and recording the pid
@@ -543,14 +543,13 @@ func (s *Supervisor) buildHandoff(forExec bool) (st *handoff.State, keep []*os.F
 			}
 		}
 		if !s.stateFull {
-			// Crash path: the daemon never streams its offset index
-			// or screens; the resumed daemon rebuilds the index from
-			// the file and apps repaint on the resume SIGWINCH. (An
-			// adopted hot-upgrade handoff carries both; they ride
-			// through untouched.)
+			// Crash path: the daemon streams its screens and replay
+			// state (modes, margins, charsets) but not its offset
+			// index; the resumed daemon rebuilds the index from the
+			// file. (An adopted hot-upgrade handoff carries the index;
+			// it rides through untouched.)
 			ts.DiskOffsets = nil
 			ts.DiskSize = -1
-			ts.Screen = nil
 		}
 		ts.ChildPID = tp.pid
 		ts.ForeignChild = true

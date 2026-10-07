@@ -55,6 +55,8 @@ func Serve(args []string) int {
 	fs.StringVar(&validateHandoff, "validate-handoff", "", "validate a handoff file and exit (internal: the upgrade's pre-exec gate)")
 	var doUpgrade bool
 	fs.BoolVar(&doUpgrade, "upgrade", false, "hot-upgrade the RUNNING daemon to the currently-installed binary (shells survive), then exit")
+	var force bool
+	fs.BoolVar(&force, "force", false, "with --upgrade: upgrade even when the daemon already runs the installed binary (to exercise the upgrade path)")
 	var child bool
 	var listenFD, controlFD int
 	var noSupervisor bool
@@ -81,7 +83,7 @@ func Serve(args []string) int {
 		if target == "" {
 			target = defaultSocketPath()
 		}
-		return upgradeCLI(target)
+		return upgradeCLI(target, force)
 	}
 
 	cfg, err := config.Load()

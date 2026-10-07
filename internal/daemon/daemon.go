@@ -54,7 +54,7 @@ type Daemon struct {
 
 	// sup is the supervisor control channel when this daemon runs as
 	// a supervised child (see supervised.go); nil otherwise.
-	sup *supervision
+	sup atomic.Pointer[supervision]
 
 	// instanceID is a random nonce minted once at New() — the identity
 	// of THIS daemon process's tab-id space. Shipped in every Attached

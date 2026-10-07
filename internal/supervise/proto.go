@@ -74,9 +74,9 @@ type CapsMsg struct {
 	Upgrade bool `json:"upgrade"`
 }
 
-// maxFrame bounds a frame payload. State frames carry topology and
-// names, not screens, so this is generous.
-const maxFrame = 16 << 20
+// MaxFrame bounds a frame payload. State frames carry every tab's
+// screen; the daemon drops the screens from one that would not fit.
+const MaxFrame = 16 << 20
 
 // Conn is one end of the control channel.
 type Conn struct {
@@ -125,7 +125,7 @@ func (c *Conn) Close() error { return c.uc.Close() }
 // to the frame's first byte; the receiver gets its own descriptors,
 // so the caller may close its copies afterwards.
 func (c *Conn) Send(kind byte, payload []byte, fds ...int) error {
-	if len(payload) > maxFrame {
+	if len(payload) > MaxFrame {
 		return fmt.Errorf("supervise: frame of %d bytes exceeds limit", len(payload))
 	}
 	buf := make([]byte, 5+len(payload))
@@ -196,7 +196,7 @@ func (c *Conn) Recv() (kind byte, payload []byte, files []*os.File, err error) {
 	}
 	size := binary.BigEndian.Uint32(hdr)
 	kind = hdr[4]
-	if size > maxFrame {
+	if size > MaxFrame {
 		closeAll(files)
 		return 0, nil, nil, fmt.Errorf("supervise: frame of %d bytes exceeds limit", size)
 	}

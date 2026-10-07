@@ -471,7 +471,9 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 		// poll — both ends laggy. Per-sub wake reaches all of them.
 		term.SetOnData(func() {
 			s.daemon.WakeTabSubscribers(t.ID)
+			s.daemon.pushStateAfterOutput()
 		})
+		term.SetOnStateChange(s.daemon.pushState)
 		term.SetOnBell(func() {
 			s.daemon.broadcastBell(t.ID)
 		})
