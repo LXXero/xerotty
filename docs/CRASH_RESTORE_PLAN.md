@@ -73,10 +73,15 @@ reader keeps going, and the third panic closes the tab.
 
 The child is today's daemon, unchanged in role. `serve --stdio`
 auto-spawn and the GUI's EnsureLocalDaemon keep running plain
-`xerotty serve`, so they get the supervisor for free. `serve
---upgrade` still targets the child: SO_PEERCRED on the wire socket
-names the process that ACCEPTED the connection, and exec-in-place
-keeps that pid, so the supervisor's wait() is undisturbed.
+`xerotty serve`, so they get the supervisor for free.
+
+`serve --upgrade` targets the SUPERVISOR: SO_PEERCRED on the wire
+socket names the process that called listen(), and that is the
+supervisor. (The first version of this plan assumed it named the
+child; it never did, so `--upgrade` under a supervisor signalled a
+process that ignored SIGUSR2 and then reported success because the
+pid was alive. Fixed 2026-10-07; see "Upgrading under the
+supervisor".)
 
 ### Control channel (internal/supervise)
 
@@ -98,6 +103,11 @@ supervisor → child:
 - `exit {pid, code}` — a shell exited. Only meaningful for tabs the
   child did not spawn itself (see "foreign children"); for its own
   children waitpid already told it.
+- `caps {upgrade}` — sent once right after spawn by a supervisor
+  that handles SIGUSR2 itself. A child that has it ignores SIGUSR2;
+  one that never got it (old supervisor) keeps exec-in-place.
+- `upgrade {handoff}` — write the full handoff to that path and exit
+  with status 75 (ExitUpgrade).
 
 ### Who holds what
 
@@ -158,9 +168,46 @@ number of later upgrades, and the flag rides along in the handoff.
   Three resume failures inside 30 s means the state is poison: start
   a fresh child without --resume (service restored, sessions lost,
   which is today's behavior) and log loudly.
-- SIGUSR2 is NOT forwarded: `serve --upgrade` signals the child
-  directly, and a pkill that hits both processes must not upgrade
-  twice.
+- SIGUSR2 is the supervisor's: see below. It is not forwarded, and
+  the child ignores its own copy, so a pkill that hits both processes
+  upgrades once.
+
+### Upgrading under the supervisor
+
+1. SIGUSR2 reaches the supervisor. It runs the validation gate
+   (`<binary> serve --validate-handoff`) on the binary at its path;
+   a rejected binary aborts with the child untouched.
+2. It sends `upgrade {handoff}`. The child quiesces exactly like an
+   exec-in-place upgrade, writes the full handoff (screens, modes,
+   scrollback index), and exits 75. No fd travels: the supervisor
+   has held a copy of every PTY master and scrollback file since
+   each tab spawned, and the listener never leaves it.
+3. The supervisor drains the control channel, loads that handoff,
+   and execs the new binary in place with the listener and every
+   tab's fds left open (`serve --resume`, the same adoption an
+   unsupervised daemon's upgrade uses). Same pid, so the shells
+   stay its children. The new image starts a child from the full
+   handoff. If the exec fails, the old supervisor starts the child
+   itself from the same handoff.
+4. A child that does not exit within 20 s is SIGKILLed and resumed
+   from the new binary as after a crash.
+
+A supervisor that handles SIGUSR2 writes `<socket>.supervisor`
+(`{"pid":…,"upgrade":true}`). `serve --upgrade` uses it to tell such
+a supervisor from one that predates this. For an old supervisor the
+only lever is its crash-resume path: the CLI SIGKILLs the child (a
+clean exit would make the supervisor stop and drop the sessions) and
+the supervisor restarts it from the binary on disk. Screens come
+back blank as after any crash, and the supervisor keeps its old code
+until `xerotty serve` is restarted. The CLI prints which of these it
+did.
+
+`serve --upgrade` reports success only when the kernel shows the new
+code running: the target binary's inode in /proc/PID/maps of the new
+child (and of the supervisor, when it re-execs), a new child pid,
+and a daemon answering the wire handshake. /proc/PID/exe is not
+used: its path reads the same after the file was replaced. On macOS,
+which has no maps file, only the new pid is checked.
 
 ### What comes back after a crash
 
@@ -188,4 +235,10 @@ restore brings back arrangement and text with fresh shells).
 - `internal/runner/upgrade_adopt_e2e_test.go` — unsupervised daemon,
   `serve --upgrade`, supervisor + child with the same shell and
   screen, then a child SIGKILL, same shell again.
+- `internal/runner/upgrade_supervised_e2e_test.go` — supervised
+  daemon: a build the gate rejects leaves everything running and the
+  CLI fails; a new build (new inode at the same path) ends with a
+  new child and the supervisor mapping it, same shell, screen and
+  scrollback. Plus the old-supervisor fallback
+  (`XEROTTY_TEST_LEGACY_SUPERVISOR=1`).
 - Fleet: `serve --upgrade` is the whole rollout; see "Deploying it".

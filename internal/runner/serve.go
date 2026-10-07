@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/LXXero/xerotty/internal/config"
@@ -169,7 +170,6 @@ func Serve(args []string) int {
 		}
 		inheritedLn = ln
 	}
-	_ = supClient
 
 	var mcpSrv *mcp.Server
 	if !noMCP {
@@ -193,7 +193,7 @@ func Serve(args []string) int {
 		_ = d.Stop()
 	}()
 
-	upgrading := upgradeOnSignal(d, mcpSrv, socketPath, mcpSocketPath)
+	upgrading := upgradeOnSignal(d, mcpSrv, supClient, socketPath, mcpSocketPath)
 
 	log.Printf("xerotty serve: listening on %s", socketPath)
 	if !child {
@@ -250,11 +250,14 @@ func runSupervisor(socketPath, mcpSocketPath string, noMCP bool, resumeFile stri
 		return 1
 	}
 	sup := supervise.New(supervise.Config{
-		Binary:        self,
+		// The path, not the inode: children (and an upgrade's re-exec)
+		// start whatever binary is installed there at that moment.
+		Binary:        strings.TrimSuffix(self, " (deleted)"),
 		SocketPath:    socketPath,
 		MCPSocketPath: mcpSocketPath,
 		NoMCP:         noMCP,
 		Log:           os.Stderr,
+		NoUpgrade:     os.Getenv("XEROTTY_TEST_LEGACY_SUPERVISOR") != "",
 	})
 	var lf *os.File
 	if resumeFile != "" {

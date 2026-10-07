@@ -17,6 +17,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 )
 
@@ -26,7 +27,15 @@ const (
 	KindTabGone byte = 2 // child → sup: TabGoneMsg
 	KindState   byte = 3 // child → sup: raw msgpack handoff.State (no fds/screens)
 	KindExit    byte = 4 // sup → child: ExitMsg
+	KindUpgrade byte = 5 // sup → child: UpgradeMsg
+	KindCaps    byte = 6 // sup → child: CapsMsg, once right after spawn
 )
+
+// ExitUpgrade is the daemon child's exit status after it wrote the
+// handoff an UpgradeMsg asked for: the supervisor resumes the next
+// child from that handoff instead of treating the exit as a crash.
+// 75 is EX_TEMPFAIL from sysexits.h; nothing else in xerotty uses it.
+const ExitUpgrade = 75
 
 // TabMsg introduces a tab's process plumbing. The frame carries the
 // PTY master as fds[0] and, when present, the disk scrollback file as
@@ -48,13 +57,31 @@ type ExitMsg struct {
 	Code int `json:"code"`
 }
 
+// UpgradeMsg asks the daemon child to stop serving, write its full
+// session handoff (screens, modes, scrollback index) to Handoff and
+// exit with ExitUpgrade. The supervisor already holds every tab's
+// PTY master and scrollback file, so nothing else has to travel.
+type UpgradeMsg struct {
+	Handoff string `json:"handoff"`
+}
+
+// CapsMsg tells the child what its supervisor does. A supervisor
+// that predates a field never sends it, so the zero value is the old
+// behavior. Upgrade: the supervisor handles SIGUSR2 itself, so the
+// child must not also exec-in-place on a SIGUSR2 that reached it
+// (a pkill that hits both processes).
+type CapsMsg struct {
+	Upgrade bool `json:"upgrade"`
+}
+
 // maxFrame bounds a frame payload. State frames carry topology and
 // names, not screens, so this is generous.
 const maxFrame = 16 << 20
 
 // Conn is one end of the control channel.
 type Conn struct {
-	uc *net.UnixConn
+	uc  *net.UnixConn
+	wmu sync.Mutex // one frame at a time: a short write is finished in a second call
 }
 
 // Pair creates the socketpair. The child end is meant for
@@ -109,6 +136,8 @@ func (c *Conn) Send(kind byte, payload []byte, fds ...int) error {
 	if len(fds) > 0 {
 		oob = syscall.UnixRights(fds...)
 	}
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	// One sendmsg for the whole frame: ancillary data is delivered
 	// with the first byte the receiver reads, and the receiver reads
 	// the header first.

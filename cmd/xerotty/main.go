@@ -58,8 +58,9 @@ USAGE
 
   xerotty serve --upgrade    Hot-upgrade the RUNNING daemon to the
                              currently-installed binary. Shells and
-                             tabs survive (exec-in-place; see
-                             docs/UPGRADE_PLAN.md).
+                             tabs survive. Reports success only once
+                             the new binary is running (see
+                             docs/CRASH_RESTORE_PLAN.md).
 
   xerotty serve   --help     Show flags for the serve subcommand.
   xerotty connect --help     Show flags for the connect subcommand.
