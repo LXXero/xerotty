@@ -55,6 +55,16 @@ type Supervisor struct {
 	childExit chan childStatus
 	shellExit chan ExitMsg
 	stopping  bool
+
+	// resumeFirst: the first child starts from a handoff built from
+	// adopted state (AdoptHandoff) instead of fresh.
+	resumeFirst     bool
+	adoptedInstance string
+	// stateFull: s.state is a complete daemon handoff (screens, modes,
+	// scrollback index) adopted from an exec-in-place upgrade, not
+	// the fd-less topology the child streams. The first KindState
+	// frame from a child clears it.
+	stateFull bool
 }
 
 // New builds a supervisor. Run does the work.
@@ -98,6 +108,9 @@ func (s *Supervisor) Run() error {
 	setExitSink(func(m ExitMsg) { s.shellExit <- m })
 
 	resumeFile := ""
+	if s.resumeFirst {
+		resumeFile = s.writeHandoff()
+	}
 	var resumes []time.Time
 	for {
 		pid, err := s.spawn(resumeFile)
@@ -229,6 +242,7 @@ func (s *Supervisor) readControl(c *Conn) {
 			closeAll(files)
 			s.mu.Lock()
 			s.state = payload
+			s.stateFull = false
 			s.mu.Unlock()
 		default:
 			closeAll(files)
@@ -381,6 +395,7 @@ func (s *Supervisor) writeHandoff() string {
 	for _, ts := range st.Tabs {
 		known[ts.ID] = ts
 	}
+	st.InstanceID = firstNonEmpty(st.InstanceID, s.adoptedInstance)
 	st.Tabs = st.Tabs[:0]
 	live := s.liveTabIDs()
 	if len(live) == 0 {
@@ -404,9 +419,16 @@ func (s *Supervisor) writeHandoff() string {
 			ts.DiskFD = fd
 			fd++
 		}
-		ts.DiskOffsets = nil
-		ts.DiskSize = -1 // index rebuilt from the file by the resumed daemon
-		ts.Screen = nil  // blank; the resume SIGWINCH makes apps repaint
+		if !s.stateFull {
+			// Crash path: the daemon never streams its offset index
+			// or screens; the resumed daemon rebuilds the index from
+			// the file and apps repaint on the resume SIGWINCH. (An
+			// adopted hot-upgrade handoff carries both; they ride
+			// through untouched.)
+			ts.DiskOffsets = nil
+			ts.DiskSize = -1
+			ts.Screen = nil
+		}
 		ts.ChildPID = tp.pid
 		ts.ForeignChild = true
 		ts.Exited = false
@@ -453,3 +475,54 @@ func (s *Supervisor) writeHandoff() string {
 	s.logf("handoff written: %d tabs", len(st.Tabs))
 	return path
 }
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// AdoptHandoff turns an exec-in-place upgrade of an UNSUPERVISED
+// daemon into a supervised one with no session loss. The old daemon
+// serialized its session and exec'd this image with every tab's
+// ptmx/disk fd (and the wire listener) still open in the fd table;
+// instead of resuming them ourselves we keep them, become the
+// supervisor, and start a child from the same state. The shells
+// stay our process children (same pid as the old daemon), so their
+// exits reach reapAll like any re-parented shell would. Returns the
+// listener file recorded in the state, or nil to bind fresh.
+func (s *Supervisor) AdoptHandoff(st *handoff.State) *os.File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.adoptedInstance = st.InstanceID
+	for _, ts := range st.Tabs {
+		if ts.Exited || ts.PtmxFD < 0 || ts.ChildPID <= 0 {
+			continue
+		}
+		tp := &tabPlumb{pid: ts.ChildPID, ptmx: os.NewFile(uintptr(ts.PtmxFD), "ptmx-adopted")}
+		if ts.DiskFD >= 0 {
+			tp.disk = os.NewFile(uintptr(ts.DiskFD), "scrollback-adopted")
+		}
+		if old := s.tabs[ts.ID]; old != nil {
+			old.close()
+		}
+		s.tabs[ts.ID] = tp
+		watchPID(ts.ChildPID)
+	}
+	// Keep the full state (screens, modes, offsets): writeHandoff only
+	// remaps the fd numbers and marks the children foreign.
+	if b, err := st.MarshalMsg(nil); err == nil {
+		s.state = b
+		s.stateFull = true
+	}
+	s.resumeFirst = len(s.tabs) > 0
+	var lf *os.File
+	if st.WireListenFD >= 0 {
+		lf = os.NewFile(uintptr(st.WireListenFD), "wire-listener-adopted")
+	}
+	return lf
+}
+
+// SetListener installs the bound wire listener before Run.
+func (s *Supervisor) SetListener(f *os.File) { s.cfg.Listener = f }

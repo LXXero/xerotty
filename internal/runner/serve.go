@@ -123,12 +123,15 @@ func Serve(args []string) int {
 		mcpSocketPath = defaultMCPSocketPath(socketPath)
 	}
 
-	if !child && !noSupervisor && resumeFile == "" {
+	if !child && !noSupervisor {
 		// Default: the supervisor owns the listener and this process;
 		// the daemon proper runs as its child (see
-		// docs/CRASH_RESTORE_PLAN.md). Everything below this block is
-		// the child's (or an unsupervised daemon's) path.
-		return runSupervisor(socketPath, mcpSocketPath, noMCP)
+		// docs/CRASH_RESTORE_PLAN.md). With --resume this is an
+		// exec-in-place upgrade of an unsupervised daemon: the
+		// supervisor adopts the handoff and the sessions move into a
+		// child. Everything below this block is the child's (or an
+		// unsupervised daemon's) path.
+		return runSupervisor(socketPath, mcpSocketPath, noMCP, resumeFile)
 	}
 
 	d := daemon.New(&cfg, socketPath)
@@ -240,40 +243,54 @@ func DefaultSocketPath() string { return defaultSocketPath() }
 // runSupervisor is the default `xerotty serve`: bind the wire socket,
 // then run daemon children under internal/supervise until one exits
 // cleanly. The socket path goes to stdout once, for auto-spawn.
-func runSupervisor(socketPath, mcpSocketPath string, noMCP bool) int {
-	ln, err := daemon.ListenSocket(socketPath)
-	if err != nil {
-		log.Printf("xerotty serve: %v", err)
-		return 1
-	}
-	ul, ok := ln.(*net.UnixListener)
-	if !ok {
-		log.Printf("xerotty serve: %s is not a unix listener", socketPath)
-		return 1
-	}
-	// Keep the socket file: closing the Go listener must not unlink
-	// the path the children serve on through the inherited fd.
-	ul.SetUnlinkOnClose(false)
-	lf, err := ul.File()
-	_ = ul.Close()
-	if err != nil {
-		log.Printf("xerotty serve: listener fd: %v", err)
-		return 1
-	}
+func runSupervisor(socketPath, mcpSocketPath string, noMCP bool, resumeFile string) int {
 	self, err := os.Executable()
 	if err != nil {
 		log.Printf("xerotty serve: locate self: %v", err)
 		return 1
 	}
-	fmt.Println(socketPath) // stdout so auto-spawn can locate the socket
 	sup := supervise.New(supervise.Config{
 		Binary:        self,
 		SocketPath:    socketPath,
 		MCPSocketPath: mcpSocketPath,
 		NoMCP:         noMCP,
-		Listener:      lf,
 		Log:           os.Stderr,
 	})
+	var lf *os.File
+	if resumeFile != "" {
+		st, err := handoff.ReadFile(resumeFile)
+		_ = os.Remove(resumeFile)
+		if err != nil {
+			log.Printf("xerotty serve: adopt handoff: %v (starting fresh)", err)
+		} else {
+			lf = sup.AdoptHandoff(st)
+			fmt.Fprintf(os.Stderr, "xerotty serve: supervisor adopted %d tabs from the upgrade handoff\n", len(st.Tabs))
+		}
+	}
+	if lf == nil {
+		ln, err := daemon.ListenSocket(socketPath)
+		if err != nil {
+			log.Printf("xerotty serve: %v", err)
+			return 1
+		}
+		ul, ok := ln.(*net.UnixListener)
+		if !ok {
+			log.Printf("xerotty serve: %s is not a unix listener", socketPath)
+			return 1
+		}
+		// Keep the socket file: closing the Go listener must not
+		// unlink the path the children serve on through the
+		// inherited fd.
+		ul.SetUnlinkOnClose(false)
+		lf, err = ul.File()
+		_ = ul.Close()
+		if err != nil {
+			log.Printf("xerotty serve: listener fd: %v", err)
+			return 1
+		}
+		fmt.Println(socketPath) // stdout so auto-spawn can locate the socket
+	}
+	sup.SetListener(lf)
 	err = sup.Run()
 	_ = os.Remove(socketPath)
 	if err != nil {

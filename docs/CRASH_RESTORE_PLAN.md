@@ -7,11 +7,15 @@ SIGKILL and proves the same shell answers on the same socket with
 its scrollback. See docs/UPGRADE_PLAN.md for the hot-upgrade handoff
 this reuses.
 
-Deploying it: `serve --upgrade` keeps an UNSUPERVISED daemon
-unsupervised (exec-in-place keeps the single process). Each box gets
-the supervisor on its next real daemon restart — reboot, or stop the
-daemon and let the next GUI launch / ssh bridge auto-spawn it. That
-one restart loses the sessions it hosts, like any restart today.
+Deploying it: `serve --upgrade` on an UNSUPERVISED daemon migrates it
+with no session loss. The exec-in-place lands in the new binary with
+every tab's fds and the listener still in the fd table; instead of
+resuming them itself the image becomes the supervisor, adopts the
+handoff (screens, modes and scrollback index included), and starts a
+daemon child from it. The shells stay the supervisor's own process
+children, so exits reach it directly; the child sees them as foreign.
+`internal/runner/upgrade_adopt_e2e_test.go` runs that migration and
+then SIGKILLs the child to prove the adopted tabs resume as well.
 
 ## Why
 
@@ -181,6 +185,7 @@ restore brings back arrangement and text with fresh shells).
   daemon, attach, echo the shell pid, `kill -9` the child daemon,
   reattach through the SAME socket, prove the same shell pid answers
   and the scrollback marker survived.
-- Fleet: deploy = `serve --upgrade` does NOT install a supervisor
-  (exec-in-place keeps the unsupervised pid). The first supervised
-  run on each box needs one real restart of the daemon.
+- `internal/runner/upgrade_adopt_e2e_test.go` — unsupervised daemon,
+  `serve --upgrade`, supervisor + child with the same shell and
+  screen, then a child SIGKILL, same shell again.
+- Fleet: `serve --upgrade` is the whole rollout; see "Deploying it".
