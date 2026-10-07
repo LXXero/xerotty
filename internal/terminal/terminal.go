@@ -162,11 +162,13 @@ type Terminal struct {
 	modeMu sync.Mutex
 	modes  map[ansi.Mode]bool
 
-	// emuPanics counts emulator panics contained by readPTY (under
-	// mu); ingestHook is a test-only tap into ingest, read under
-	// publishMu, used to inject one.
+	// emuPanics counts emulator panics contained by readPTY and
+	// Resize (under mu); ingestHook and resizeHook are test-only taps
+	// into ingest (read under publishMu) and Resize (read under mu),
+	// used to inject one.
 	emuPanics  int
 	ingestHook func(p []byte)
+	resizeHook func(cols, rows int)
 
 	// disk-backed scrollback state, used only when the configured
 	// scrollback Mode is "unlimited". When vt's in-mem scrollback
@@ -624,8 +626,30 @@ func unixNanoTime(n int64) time.Time {
 	return time.Unix(0, n)
 }
 
-// Resize updates the PTY and emulator dimensions.
+// Resize updates the PTY and emulator dimensions. Like readPTY it
+// is a containment boundary: an emulator panic during the resize
+// goes through containPanic, and after a successful reset the resize
+// is retried on the clean emulator so its size matches the PTY. Past
+// the panic budget the tab is closed; the caller (a client's resize
+// request, or the GUI) keeps running either way.
 func (t *Terminal) Resize(cols, rows int) {
+	for {
+		r, stack := t.resize(cols, rows)
+		if r == nil || !t.containPanic(r, stack) {
+			return
+		}
+	}
+}
+
+// resize does one Resize attempt and returns the recovered panic, if
+// any. The unlock is deferred so a panic can't leave mu held, and
+// containPanic (which takes mu) runs only after this returns.
+func (t *Terminal) resize(cols, rows int) (r any, stack []byte) {
+	defer func() {
+		if r = recover(); r != nil {
+			stack = debug.Stack()
+		}
+	}()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cols = cols
@@ -634,8 +658,12 @@ func (t *Terminal) Resize(cols, rows int) {
 		Rows: uint16(rows),
 		Cols: uint16(cols),
 	})
+	if t.resizeHook != nil {
+		t.resizeHook(cols, rows)
+	}
 	t.Emu.Resize(cols, rows)
 	t.renderGen.Add(1)
+	return nil, nil
 }
 
 // Close shuts down the terminal: kills the child, closes the PTY, stops
@@ -1438,7 +1466,16 @@ func (t *Terminal) dispatchOSC52(data []byte) {
 }
 
 // readEmu reads device responses from the SafeEmulator and writes them back to the PTY.
+// A panic here closes only this tab rather than unwinding the
+// process; there is no emulator state to reset on this side.
 func (t *Terminal) readEmu() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: terminal: device-response reader panicked; closing tab (child pid %d): %v\n%s",
+				t.ChildPID(), r, debug.Stack())
+			go t.Close()
+		}
+	}()
 	buf := make([]byte, 4096)
 	for {
 		select {
