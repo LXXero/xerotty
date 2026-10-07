@@ -51,6 +51,10 @@ type Supervisor struct {
 	state []byte // last KindState payload (msgpack handoff.State)
 	ctl   *Conn  // current child's control channel (nil between children)
 
+	// reapMu is held across starting a child and recording its pid,
+	// and around each wait4 in reapAll, so a child that dies at once
+	// is never reaped before childPID names it.
+	reapMu    sync.Mutex
 	childPID  int
 	childExit chan childStatus
 	shellExit chan ExitMsg
@@ -65,6 +69,8 @@ type Supervisor struct {
 	// the fd-less topology the child streams. The first KindState
 	// frame from a child clears it.
 	stateFull bool
+
+	afterStart func() // test hook: runs between Start and recording the pid
 }
 
 // New builds a supervisor. Run does the work.
@@ -181,17 +187,23 @@ func (s *Supervisor) spawn(resumeFile string) (int, error) {
 	if resumeFile != "" {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, s.resumeFiles()...)
 	}
+	s.reapMu.Lock()
 	if err := cmd.Start(); err != nil {
+		s.reapMu.Unlock()
 		parent.Close()
 		childEnd.Close()
 		return 0, fmt.Errorf("supervise: start daemon: %w", err)
 	}
-	_ = childEnd.Close()
+	if s.afterStart != nil {
+		s.afterStart()
+	}
 	pid := cmd.Process.Pid
 	s.mu.Lock()
 	s.childPID = pid
 	s.ctl = parent
 	s.mu.Unlock()
+	s.reapMu.Unlock()
+	_ = childEnd.Close()
 	// Our reaper owns every wait(); os/exec must never reap this pid.
 	// (Release also forgets the pid, hence the copy above.)
 	_ = cmd.Process.Release()
@@ -292,16 +304,18 @@ func (s *Supervisor) reapLoop(sigs <-chan os.Signal) {
 func (s *Supervisor) reapAll() {
 	for {
 		var ws syscall.WaitStatus
+		s.reapMu.Lock()
 		pid, err := syscall.Wait4(-1, &ws, syscall.WNOHANG, nil)
+		s.mu.Lock()
+		isDaemon := pid > 0 && pid == s.childPID
+		s.mu.Unlock()
+		s.reapMu.Unlock()
 		if err == syscall.EINTR {
 			continue
 		}
 		if err != nil || pid <= 0 {
 			return
 		}
-		s.mu.Lock()
-		isDaemon := pid == s.childPID
-		s.mu.Unlock()
 		if isDaemon {
 			s.childExit <- childStatus{pid: pid, status: ws}
 			continue
