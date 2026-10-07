@@ -1777,6 +1777,14 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	// the disk evict-from-memory step happens under publishMu, so
 	// here we get a coherent view.)
 	uvRows := t.Term.SnapshotScrollbackRange(last, end)
+	if len(uvRows) == 0 {
+		return
+	}
+	// Advance by what was actually shipped, not by the requested end:
+	// the client extends its window only from BaseIdx == its end, so
+	// claiming rows the snapshot didn't return would open a gap it
+	// silently drops every later append behind.
+	end = last + len(uvRows)
 	c.send(protocol.MsgScrollbackAppend, &protocol.ScrollbackAppend{
 		ID:      t.ID,
 		BaseIdx: uint32(last),
