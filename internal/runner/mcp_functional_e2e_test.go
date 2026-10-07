@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -119,10 +120,11 @@ func TestMCPFunctionalSession(t *testing.T) {
 	sock := filepath.Join(sd, "d.sock")
 	mcpSock := filepath.Join(sd, "d.mcp.sock")
 	srv := exec.Command(bin, "serve", "--socket", sock, "--mcp-socket", mcpSock)
+	srv.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // supervisor + child
 	if err := srv.Start(); err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	defer func() { _ = srv.Process.Kill(); _, _ = srv.Process.Wait() }()
+	defer func() { _ = syscall.Kill(-srv.Process.Pid, syscall.SIGKILL); _, _ = srv.Process.Wait() }()
 
 	// A wire client must attach first — that mints the "default"
 	// session MCP tools target (in real life, the GUI). Mirrors how

@@ -52,6 +52,10 @@ type Daemon struct {
 	// bounds the synchronous handshake (watchdog).
 	livenessWindow time.Duration
 
+	// sup is the supervisor control channel when this daemon runs as
+	// a supervised child (see supervised.go); nil otherwise.
+	sup *supervision
+
 	// instanceID is a random nonce minted once at New() — the identity
 	// of THIS daemon process's tab-id space. Shipped in every Attached
 	// so clients can tell a reconnect-to-same-daemon (same ID) from a
@@ -383,6 +387,7 @@ func (d *Daemon) CloseWindow(sess *Session, id uint32) {
 // are skipped via the sessionName atomic mirror, which is safe to read
 // off the read-loop goroutine (unlike c.session).
 func (d *Daemon) broadcastTopology(sess *Session) {
+	d.pushState()
 	snap := sess.TopologySnapshot()
 	d.clientsMu.Lock()
 	conns := make([]*clientConn, 0, len(d.clients))
@@ -621,36 +626,48 @@ func (d *Daemon) SocketPath() string { return d.socketPath }
 // another goroutine. The default session is created lazily on the
 // first Attach.
 func (d *Daemon) Run() error {
+	ln, err := ListenSocket(d.socketPath)
+	if err != nil {
+		return err
+	}
+	return d.RunWithListener(ln)
+}
+
+// ListenSocket binds the wire socket at path, taking over a stale
+// socket file but refusing a live one. The supervisor binds through
+// this too, so the listener it hands its children is the same thing
+// an unsupervised daemon would have made.
+func ListenSocket(path string) (net.Listener, error) {
 	// If a stale socket file exists and nobody's listening on it,
 	// remove and retry. Real "another daemon already running"
 	// would manifest as a connect-succeeds probe; we don't do
 	// that here because callers know whether they expect to be
 	// the first daemon. Phase 0 just refuses if the file exists.
-	if fi, err := os.Stat(d.socketPath); err == nil {
+	if fi, err := os.Stat(path); err == nil {
 		// Only ever remove an actual socket. If something else owns
 		// this path (a regular file, a directory the user pointed us
 		// at by mistake), refuse rather than silently delete their
 		// data on a dial failure.
 		if fi.Mode()&os.ModeSocket == 0 {
-			return fmt.Errorf("daemon: %s exists and is not a socket; refusing to remove it", d.socketPath)
+			return nil, fmt.Errorf("daemon: %s exists and is not a socket; refusing to remove it", path)
 		}
 		// Try to connect — if successful, another daemon is live
 		// and we bail. If it fails, the socket is stale and we
 		// can take over.
-		if c, err := net.Dial("unix", d.socketPath); err == nil {
+		if c, err := net.Dial("unix", path); err == nil {
 			c.Close()
-			return fmt.Errorf("daemon: socket %s is already in use by another xerottyd", d.socketPath)
+			return nil, fmt.Errorf("daemon: socket %s is already in use by another xerottyd", path)
 		}
-		_ = os.Remove(d.socketPath)
+		_ = os.Remove(path)
 	}
 
-	ln, err := net.Listen("unix", d.socketPath)
+	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return fmt.Errorf("daemon: listen %s: %w", d.socketPath, err)
+		return nil, fmt.Errorf("daemon: listen %s: %w", path, err)
 	}
 	// Filesystem-perm gate: only this user can connect.
-	_ = os.Chmod(d.socketPath, 0o600)
-	return d.RunWithListener(ln)
+	_ = os.Chmod(path, 0o600)
+	return ln, nil
 }
 
 // RunWithListener serves on an already-bound listener. The hot

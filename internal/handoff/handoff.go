@@ -84,6 +84,12 @@ type TabState struct {
 	ChildPID int  `msg:"child_pid"`
 	Exited   bool `msg:"exited,omitempty"`
 	ExitCode int  `msg:"exit_code,omitempty"`
+	// ForeignChild marks a shell that is NOT the resuming daemon's
+	// child: after a daemon crash the supervisor restarts the daemon
+	// in a new process, and the shells have re-parented elsewhere.
+	// Such a tab cannot be waitpid'ed; its exit arrives from the
+	// supervisor instead. Carried across later hot upgrades too.
+	ForeignChild bool `msg:"foreign_child,omitempty"`
 
 	// Activity clock (unix nanos) — carried across the upgrade so a
 	// long-idle tab keeps its real last-output/last-input age instead
@@ -119,7 +125,10 @@ type TabState struct {
 	MemScrollback [][]protocol.Cell `msg:"mem_scrollback,omitempty"`
 	DiskFD        int               `msg:"disk_fd"`
 	DiskOffsets   []int64           `msg:"disk_offsets,omitempty"`
-	DiskSize      int64             `msg:"disk_size,omitempty"`
+	// DiskSize < 0 means the offset index was not carried (a crash
+	// resume: the supervisor never had it) and must be rebuilt by
+	// scanning the file's length-prefixed records.
+	DiskSize int64 `msg:"disk_size,omitempty"`
 }
 
 // WriteFile serializes s to path, 0600. The caller owns deletion

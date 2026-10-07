@@ -60,7 +60,9 @@ func TestSubprocessDial(t *testing.T) {
 		// + the `go run` reaper keeps the test process from
 		// exiting cleanly.
 		_ = net.Dial // keep import live in case future cleanup uses it
-		killCmd := exec.Command("pkill", "-f", "xerotty serve --socket "+tmpSock)
+		// Matches the supervisor ("serve --socket X") and its daemon
+		// child ("serve --child --socket X").
+		killCmd := exec.Command("pkill", "-f", "serve.*--socket "+tmpSock)
 		_ = killCmd.Run()
 	})
 

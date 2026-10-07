@@ -1,8 +1,17 @@
 # Daemon crash restore — containment + supervisor
 
-Status: IN PROGRESS (2026-10-06). Phase A (containment) first, then
-Phase B (supervisor). See docs/UPGRADE_PLAN.md for the hot-upgrade
-handoff this reuses.
+Status: SHIPPED 2026-10-06 — Phase A (18a59b2) and Phase B (this
+commit). `xerotty serve` is now a supervisor plus a daemon child;
+`internal/runner/crash_restore_e2e_test.go` kills the child with
+SIGKILL and proves the same shell answers on the same socket with
+its scrollback. See docs/UPGRADE_PLAN.md for the hot-upgrade handoff
+this reuses.
+
+Deploying it: `serve --upgrade` keeps an UNSUPERVISED daemon
+unsupervised (exec-in-place keeps the single process). Each box gets
+the supervisor on its next real daemon restart — reboot, or stop the
+daemon and let the next GUI launch / ssh bridge auto-spawn it. That
+one restart loses the sessions it hosts, like any restart today.
 
 ## Why
 
@@ -105,6 +114,13 @@ supervisor → child:
   format is length-prefixed, so a resumed daemon rebuilds the index
   by scanning the file once (`DiskScrollback.RebuildIndex`). The
   handoff marks this with `DiskSize = -1`.
+- Scrollback contents: disk-backed scrollback became WRITE-THROUGH
+  for this. Before, lines reached the disk store only when they aged
+  out of vt's in-memory ring (up to 8192 lines), which a crash would
+  have lost; now every line is appended (batched, one write per PTY
+  read) as it scrolls off the grid, and the ring is a read cache for
+  the newest ones. Total rows = disk count + the not-yet-written
+  tail; `Terminal.scrollbackLayout` is the one place that math lives.
 
 ### Foreign children
 

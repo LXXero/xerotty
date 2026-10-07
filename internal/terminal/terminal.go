@@ -176,12 +176,27 @@ type Terminal struct {
 	// ring for the rest.
 	disk       *DiskScrollback
 	liveWindow int // soft cap on in-mem scrollback when disk-backed
+	// memMirrored is how many of vt's in-memory scrollback lines
+	// (its oldest ones) are already on disk. Disk-backed scrollback
+	// is WRITE-THROUGH: every line reaches the disk store as it
+	// scrolls off the grid (so a daemon death loses none of it —
+	// the supervisor hands the file to the next daemon), and vt's
+	// ring is only a read cache for the newest liveWindow lines.
+	// Total = disk.Len() + (memLen - memMirrored). Guarded by mu.
+	memMirrored int
 
 	// adoptedProc is set instead of cmd for terminals rebuilt around
 	// an inherited PTY + child PID (hot-upgrade resume, see
 	// handoff.go). waitChild/Close use it when cmd is nil — legal
 	// only because exec-in-place keeps us the child's parent.
 	adoptedProc *os.Process
+
+	// foreign marks an adopted child that is NOT our process child
+	// (crash resume via the supervisor): waitpid is impossible, so
+	// waitChild blocks on exitCh, fed by NotifyExit when the
+	// supervisor relays the exit.
+	foreign bool
+	exitCh  chan int
 }
 
 // New creates a terminal with the given dimensions and starts the shell.
@@ -444,61 +459,81 @@ func (t *Terminal) mirrorScrollback() {
 	disk := t.disk
 	liveWindow := t.liveWindow
 	t.mu.Unlock()
-
 	if disk == nil || liveWindow <= 0 {
 		return
 	}
+	mirrored, memLen := t.mirrorNewLines(disk)
+	// Trim the cache once everything in it is on disk. The shrink
+	// drops the OLDEST lines, which are exactly the mirrored prefix.
+	if memLen > liveWindow*2 && mirrored == memLen {
+		t.Emu.SetScrollbackSize(liveWindow)
+		t.Emu.SetScrollbackSize(int(^uint(0) >> 1))
+		t.mu.Lock()
+		t.memMirrored = t.Emu.ScrollbackLen()
+		t.mu.Unlock()
+	}
+}
 
-	memLen := t.Emu.ScrollbackLen()
-	if memLen <= liveWindow*2 {
-		return
+// mirrorNewLines appends every in-memory scrollback line that is not
+// on disk yet, in one batched write, and returns the updated
+// (mirrored, memLen). Runs under publishMu (ingest / flush), the only
+// place vt's ring changes, so the tail indices are stable here.
+func (t *Terminal) mirrorNewLines(disk *DiskScrollback) (mirrored, memLen int) {
+	t.mu.Lock()
+	mirrored = t.memMirrored
+	t.mu.Unlock()
+	memLen = t.Emu.ScrollbackLen()
+	if mirrored > memLen {
+		// The ring shrank under us (ED 3 from the app clears it):
+		// what's on disk stays history; nothing in memory is new.
+		mirrored = memLen
 	}
-	dropCount := memLen - liveWindow
-
-	sb := t.Emu.Scrollback()
-	if sb == nil {
-		return
-	}
-	lines := sb.Lines()
-	// Defensive: lines should always have at least dropCount entries
-	// (we just read memLen and dropCount = memLen - liveWindow), but
-	// guard against a concurrent ScrollbackLen change between read
-	// and Lines().
-	if dropCount > len(lines) {
-		dropCount = len(lines)
-	}
-	for i := 0; i < dropCount; i++ {
-		if err := disk.Append(lines[i]); err != nil {
-			// Disk write failed mid-eviction — stop and let vt
-			// keep these lines in memory. Next call retries
-			// from this point. Partial-eviction is safe: the
-			// lines we DID write are gone from vt only after
-			// SetScrollbackSize runs below.
-			dropCount = i
-			break
+	if newN := memLen - mirrored; newN > 0 {
+		if sb := t.Emu.Scrollback(); sb != nil {
+			batch := make([]uv.Line, 0, newN)
+			for i := memLen - newN; i < memLen; i++ {
+				line := sb.Line(i)
+				if line == nil {
+					break
+				}
+				batch = append(batch, line)
+			}
+			wrote, _ := disk.AppendBatch(batch)
+			mirrored += wrote
 		}
 	}
-	if dropCount <= 0 {
-		return
+	t.mu.Lock()
+	t.memMirrored = mirrored
+	t.mu.Unlock()
+	return mirrored, memLen
+}
+
+// scrollbackLayout resolves the disk/memory split for reads: total
+// absolute rows, and the absolute row at which vt's in-memory cache
+// starts (rows >= memStart are served from memory, the rest from
+// disk). Without a disk store memory is everything.
+func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, memLen int) {
+	t.mu.Lock()
+	disk = t.disk
+	mirrored := t.memMirrored
+	t.mu.Unlock()
+	memLen = t.Emu.ScrollbackLen()
+	if disk == nil {
+		return nil, memLen, 0, memLen
 	}
-	// Drop the oldest dropCount lines from vt. SetScrollbackSize
-	// shrink path discards exactly the prefix we already wrote.
-	t.Emu.SetScrollbackSize(liveWindow)
-	t.Emu.SetScrollbackSize(int(^uint(0) >> 1))
+	if mirrored > memLen {
+		mirrored = memLen
+	}
+	total = disk.Len() + memLen - mirrored
+	return disk, total, total - memLen, memLen
 }
 
 // ScrollbackLen returns total scrollback length (disk + in-memory).
 // Used by the renderer and scroll-offset clamping logic; replaces
 // callers that used to read Emu.ScrollbackLen() directly.
 func (t *Terminal) ScrollbackLen() int {
-	t.mu.Lock()
-	disk := t.disk
-	t.mu.Unlock()
-	memLen := t.Emu.ScrollbackLen()
-	if disk == nil {
-		return memLen
-	}
-	return disk.Len() + memLen
+	_, total, _, _ := t.scrollbackLayout()
+	return total
 }
 
 // ScrollbackCellAt returns the cell at (col, row) in scrollback,
@@ -506,23 +541,16 @@ func (t *Terminal) ScrollbackLen() int {
 // in-memory ring for rows above. Returns nil for out-of-range or
 // past-end-of-line indices (renderer treats as empty cell).
 func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
-	t.mu.Lock()
-	disk := t.disk
-	t.mu.Unlock()
-
-	if disk == nil {
-		return t.Emu.ScrollbackCellAt(col, row)
+	disk, _, memStart, _ := t.scrollbackLayout()
+	if disk == nil || row >= memStart {
+		return t.Emu.ScrollbackCellAt(col, row-memStart)
 	}
-	diskLen := disk.Len()
-	if row < diskLen {
-		line := disk.LineAt(row)
-		if line == nil || col < 0 || col >= len(line) {
-			return nil
-		}
-		c := line[col]
-		return &c
+	line := disk.LineAt(row)
+	if line == nil || col < 0 || col >= len(line) {
+		return nil
 	}
-	return t.Emu.ScrollbackCellAt(col, row-diskLen)
+	c := line[col]
+	return &c
 }
 
 // ScrollbackLineText returns row's text in ONE disk read — the
@@ -531,18 +559,13 @@ func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
 // once per CELL in disk mode: a 200-column search row cost 400
 // pread syscalls + 200 decodes instead of 2 + 1.
 func (t *Terminal) ScrollbackLineText(row, cols int) string {
-	t.mu.Lock()
-	disk := t.disk
-	t.mu.Unlock()
+	disk, _, memStart, _ := t.scrollbackLayout()
 
 	var line []uv.Cell
-	if disk != nil {
-		diskLen := disk.Len()
-		if row < diskLen {
-			line = disk.LineAt(row)
-		} else {
-			row -= diskLen
-		}
+	if disk != nil && row < memStart {
+		line = disk.LineAt(row)
+	} else {
+		row -= memStart
 	}
 
 	var b strings.Builder
@@ -705,17 +728,11 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 		return nil
 	}
 	cols := t.Emu.Width()
-	t.mu.Lock()
-	disk := t.disk
-	t.mu.Unlock()
-	diskLen := 0
-	if disk != nil {
-		diskLen = disk.Len()
-	}
+	disk, _, memStart, _ := t.scrollbackLayout()
 	out := make([][]uv.Cell, 0, to-from)
 	for r := from; r < to; r++ {
 		row := make([]uv.Cell, cols)
-		if disk != nil && r < diskLen {
+		if disk != nil && r < memStart {
 			// ONE disk read+decode for the whole line. The per-cell
 			// path (ScrollbackCellAt per column) re-read and re-decoded
 			// the entire line once PER COLUMN — an 80× disk amplifier
@@ -726,7 +743,7 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 				row[col] = line[col]
 			}
 		} else {
-			mr := r - diskLen
+			mr := r - memStart
 			for col := 0; col < cols; col++ {
 				if c := t.Emu.ScrollbackCellAt(col, mr); c != nil {
 					row[col] = *c
@@ -892,6 +909,7 @@ func (t *Terminal) ClearScrollback() {
 	t.Emu.ClearScrollback()
 	t.mu.Lock()
 	disk := t.disk
+	t.memMirrored = 0
 	t.mu.Unlock()
 	if disk != nil {
 		_ = disk.Clear()
@@ -1024,6 +1042,11 @@ func (t *Terminal) waitChild() {
 		} else {
 			code = 1
 		}
+	} else if t.exitCh != nil {
+		// Foreign child (crash resume): not our child, so no waitpid.
+		// The supervisor reaps or observes it and the daemon relays
+		// the exit code here.
+		code = <-t.exitCh
 	} else {
 		// Adopted child (hot-upgrade resume): wait by pid. Works
 		// because exec-in-place preserved our PID, so the shell is
@@ -1194,6 +1217,69 @@ func (t *Terminal) resetEmulator() (ok bool) {
 	_, _ = t.Emu.Write([]byte("\x1bc"))
 	t.renderGen.Add(1)
 	return true
+}
+
+// ChildPID returns the shell's pid, 0 if none.
+func (t *Terminal) ChildPID() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.childPIDLocked()
+}
+
+// ForeignChild reports whether the shell is not this process's child
+// (see AdoptSpec.ForeignChild). The handoff carries it forward.
+func (t *Terminal) ForeignChild() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.foreign
+}
+
+// NotifyExit delivers a foreign child's exit code (relayed from the
+// supervisor). No-op for terminals that wait on their own child.
+func (t *Terminal) NotifyExit(code int) {
+	if t.exitCh == nil {
+		return
+	}
+	select {
+	case t.exitCh <- code:
+	default:
+	}
+}
+
+// DupFiles returns fresh duplicates of the PTY master and the disk
+// scrollback file (nil when there is none) for handing to the
+// supervisor over SCM_RIGHTS. Duplicated through SyscallConn, never
+// Fd(): Fd() flips the file to blocking mode, after which Close no
+// longer interrupts a pending Read in readPTY. The caller closes the
+// returned files once sent.
+func (t *Terminal) DupFiles() (ptmx, disk *os.File, err error) {
+	rc, err := t.ptmx.SyscallConn()
+	if err != nil {
+		return nil, nil, err
+	}
+	var dupErr error
+	var dupFD int
+	if cerr := rc.Control(func(fd uintptr) {
+		dupFD, dupErr = unix.Dup(int(fd))
+	}); cerr != nil {
+		return nil, nil, cerr
+	}
+	if dupErr != nil {
+		return nil, nil, dupErr
+	}
+	unix.CloseOnExec(dupFD)
+	ptmx = os.NewFile(uintptr(dupFD), "ptmx-dup")
+	t.mu.Lock()
+	d := t.disk
+	t.mu.Unlock()
+	if d != nil {
+		disk, err = d.DupFile()
+		if err != nil {
+			_ = ptmx.Close()
+			return nil, nil, err
+		}
+	}
+	return ptmx, disk, nil
 }
 
 // childPIDLocked returns the shell's pid (spawned or adopted), 0 if

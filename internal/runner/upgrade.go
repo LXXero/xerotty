@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -100,6 +101,12 @@ func execUpgrade(d *daemon.Daemon, newBinary, socketPath, mcpSocketPath string) 
 		argv = append(argv, "--mcp-socket", mcpSocketPath)
 	} else {
 		argv = append(argv, "--no-mcp")
+	}
+	// A supervised child stays supervised across the exec: the control
+	// channel rides through as a non-cloexec fd, and the new image
+	// re-attaches to the same supervisor.
+	if cfd := d.SupervisorExecFD(); cfd >= 0 {
+		argv = append(argv, "--child", "--control-fd", strconv.Itoa(cfd))
 	}
 	fmt.Fprintf(os.Stderr, "xerotty serve: exec-in-place upgrade -> %s (%d tabs)\n", bin, len(st.Tabs))
 	// Exec only returns on failure. The old image (goroutines and

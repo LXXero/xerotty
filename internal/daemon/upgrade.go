@@ -98,20 +98,14 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 		pos := term.CursorPosition()
 		style, blink, styleSet := term.CursorStyle()
 		decSet, decReset, ansiSet, ansiReset := term.ModeSnapshot()
-		ts := handoff.TabState{
-			ID: t.ID, Name: t.Name(), Title: t.Title(),
-			CWD:  term.GetCWD(),
-			Cols: term.Width(), Rows: term.Height(),
-			CursorRow: pos.Y, CursorCol: pos.X,
-			CursorStyle: style, CursorBlink: blink, StyleSet: styleSet,
-			AppCursor:   term.AppCursorMode(),
-			DECModesSet: decSet, DECModesReset: decReset,
-			ANSIModesSet: ansiSet, ANSIModesReset: ansiReset,
-			Screen:       cellsToProto(screen),
-			DiskFD:       -1,
-			LastOutputAt: term.LastOutputUnixNano(),
-			LastInputAt:  term.LastInputUnixNano(),
-		}
+		ts := tabMeta(t)
+		ts.CursorRow, ts.CursorCol = pos.Y, pos.X
+		ts.CursorStyle, ts.CursorBlink, ts.StyleSet = style, blink, styleSet
+		ts.AppCursor = term.AppCursorMode()
+		ts.DECModesSet, ts.DECModesReset = decSet, decReset
+		ts.ANSIModesSet, ts.ANSIModesReset = ansiSet, ansiReset
+		ts.Screen = cellsToProto(screen)
+		ts.DiskFD = -1
 
 		ptmx, pid, disk, err := term.ReleaseForHandoff()
 		if err != nil {
@@ -160,6 +154,9 @@ func (d *Daemon) ResumeFromHandoff(st *handoff.State) error {
 	var firstErr error
 	resumed := map[uint32]bool{}
 	for _, ts := range st.Tabs {
+		if ts.Exited {
+			continue // the supervisor saw this shell die while we were down
+		}
 		if err := sess.restoreTab(ts); err != nil {
 			// One broken tab must not sink the rest.
 			if firstErr == nil {
@@ -215,6 +212,7 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 		Disk:         disk,
 		LastOutputAt: ts.LastOutputAt,
 		LastInputAt:  ts.LastInputAt,
+		ForeignChild: ts.ForeignChild,
 	})
 	if err != nil {
 		return err

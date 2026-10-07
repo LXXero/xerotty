@@ -38,8 +38,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/charmbracelet/x/ansi"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/sys/unix"
 )
 
 // DiskScrollback is the append-only on-disk store for old scrollback
@@ -95,6 +96,107 @@ func (d *DiskScrollback) Append(line uv.Line) error {
 	}
 	d.offsets = append(d.offsets, off)
 	d.size = off + int64(n) + int64(len(buf))
+	return nil
+}
+
+// AppendBatch writes lines as consecutive records in ONE WriteAt and
+// returns how many landed. The write-through mirror calls this once
+// per PTY read, so a flood of output costs one syscall per chunk, not
+// one per line. A failed write leaves the index at the last complete
+// record.
+func (d *DiskScrollback) AppendBatch(lines []uv.Line) (int, error) {
+	if len(lines) == 0 {
+		return 0, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return 0, os.ErrClosed
+	}
+	var buf []byte
+	var hdr [binary.MaxVarintLen64]byte
+	offs := make([]int64, 0, len(lines))
+	off := d.size
+	for _, line := range lines {
+		body := encodeLine(line)
+		n := binary.PutUvarint(hdr[:], uint64(len(body)))
+		offs = append(offs, off)
+		buf = append(buf, hdr[:n]...)
+		buf = append(buf, body...)
+		off += int64(n) + int64(len(body))
+	}
+	wrote, err := d.f.WriteAt(buf, d.size)
+	// Keep only records that are entirely on disk.
+	count := 0
+	end := d.size
+	for i, o := range offs {
+		next := off
+		if i+1 < len(offs) {
+			next = offs[i+1]
+		}
+		if o+(next-o) > d.size+int64(wrote) {
+			break
+		}
+		count++
+		end = next
+	}
+	d.offsets = append(d.offsets, offs[:count]...)
+	d.size = end
+	if err != nil {
+		return count, err
+	}
+	return count, nil
+}
+
+// DupFile returns a duplicate of the store's file for handing to the
+// supervisor. Positional reads and writes don't care about blocking
+// mode, so Fd() is fine here.
+func (d *DiskScrollback) DupFile() (*os.File, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil, os.ErrClosed
+	}
+	fd, err := unix.Dup(int(d.f.Fd()))
+	if err != nil {
+		return nil, err
+	}
+	unix.CloseOnExec(fd)
+	return os.NewFile(uintptr(fd), "scrollback-dup"), nil
+}
+
+// RebuildIndex reconstructs offsets by walking the file's records
+// (varint length prefix, then the body). Used when the index was not
+// carried across a restart. A truncated trailing record (the daemon
+// died mid-Append) ends the scan; the next Append overwrites it.
+func (d *DiskScrollback) RebuildIndex() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	st, err := d.f.Stat()
+	if err != nil {
+		return err
+	}
+	end := st.Size()
+	var offsets []int64
+	var off int64
+	var hdr [binary.MaxVarintLen64]byte
+	for off < end {
+		n, err := d.f.ReadAt(hdr[:], off)
+		if n <= 0 && err != nil && err != io.EOF {
+			break
+		}
+		bodyLen, hn := binary.Uvarint(hdr[:n])
+		if hn <= 0 || off+int64(hn)+int64(bodyLen) > end {
+			break // partial final record
+		}
+		offsets = append(offsets, off)
+		off += int64(hn) + int64(bodyLen)
+	}
+	d.offsets = offsets
+	d.size = off
+	if off < end {
+		return fmt.Errorf("%d trailing bytes after the last complete record", end-off)
+	}
 	return nil
 }
 

@@ -27,7 +27,7 @@ type Session struct {
 	// that need it guard.
 	daemon *Daemon
 
-	mu       sync.Mutex
+	mu        sync.Mutex
 	nextTabID uint32
 	nextWinID uint32
 
@@ -107,9 +107,9 @@ func (t *Tab) SetTitle(s string) {
 // who approves or rejects each. Until a UI consumer ships, the
 // queue grows unbounded; Phase 4 punts on retention policy.
 type ProposedAction struct {
-	TabID  uint32
+	TabID   uint32
 	IsPaste bool   // true → Paste(), false → Write()
-	Bytes  []byte // raw for input, paste text encoded as bytes
+	Bytes   []byte // raw for input, paste text encoded as bytes
 }
 
 // MaxTabDim bounds client-requested grid dimensions. A bogus or
@@ -298,9 +298,9 @@ type Window struct {
 
 func newSession(name string, cfg *config.Config, d *Daemon) *Session {
 	return &Session{
-		Name:      name,
-		cfg:       cfg,
-		daemon:    d,
+		Name:       name,
+		cfg:        cfg,
+		daemon:     d,
 		nextTabID:  1,
 		nextWinID:  1,
 		tabs:       make(map[uint32]*Tab),
@@ -403,7 +403,6 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 		return nil, nil, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	t := &Tab{
 		ID:     s.nextTabID,
 		name:   name,
@@ -439,6 +438,11 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 		s.focusedTabID = t.ID
 	}
 	s.revision++
+	s.mu.Unlock()
+	// Outside the lock: dups fds and talks to the supervisor.
+	if s.daemon != nil {
+		s.daemon.tabSpawned(t)
+	}
 	return t, w, nil
 }
 
@@ -451,6 +455,9 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 	term := t.Term
 	term.SetOnTitle(func(title string) {
 		t.SetTitle(title)
+		if s.daemon != nil {
+			s.daemon.pushState() // titles ride the resume handoff
+		}
 	})
 	// Bell fan-out — when the PTY child emits BEL, broadcast
 	// MsgBell to every client attached to this tab. Without this
@@ -491,6 +498,9 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 		defer func() { _ = recover() }()
 		atomic.StoreInt32(&t.ExitCode, int32(code))
 		close(t.Exited)
+		if s.daemon != nil {
+			s.daemon.tabGone(t.ID)
+		}
 	})
 }
 
@@ -855,6 +865,9 @@ func (s *Session) CloseTab(id uint32) {
 	s.revision++
 	s.mu.Unlock()
 	t.Term.Close()
+	if s.daemon != nil {
+		s.daemon.tabGone(id)
+	}
 }
 
 // RenameTab sets a tab's assigned name, keeping the tabsByName reuse
@@ -880,6 +893,9 @@ func (s *Session) RenameTab(id uint32, name string) bool {
 	t.setName(name)
 	if name != "" {
 		s.tabsByName[name] = id
+	}
+	if s.daemon != nil {
+		s.daemon.pushState() // names ride the resume handoff
 	}
 	return true
 }

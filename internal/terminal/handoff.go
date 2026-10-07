@@ -35,33 +35,19 @@ func (t *Terminal) FlushScrollbackToDisk() {
 	if disk == nil {
 		return
 	}
-	sb := t.Emu.Scrollback()
-	if sb == nil {
-		return
+	// Write-through means the ring is at most a few lines behind the
+	// disk; catch it up, then drop the cache. ClearScrollback is the
+	// real "drop the ring" (vt treats SetScrollbackSize(<=0) as "use
+	// default" and would keep the lines, double-counting them
+	// against the disk copy).
+	mirrored, memLen := t.mirrorNewLines(disk)
+	if mirrored != memLen {
+		return // disk write failed; keep the unwritten tail in memory
 	}
-	lines := sb.Lines()
-	wrote := 0
-	for _, line := range lines {
-		if err := disk.Append(line); err != nil {
-			break
-		}
-		wrote++
-	}
-	if wrote == 0 {
-		return
-	}
-	if wrote == len(lines) {
-		// vt treats SetScrollbackSize(<=0) as "use default", so a
-		// shrink-to-zero dance would silently keep the lines (and
-		// double-count them against the disk copy). ClearScrollback
-		// is the real "drop the ring".
-		t.Emu.ClearScrollback()
-	} else {
-		// Partial flush (disk write failed midway): drop only the
-		// prefix we actually wrote, mirrorScrollback-style.
-		t.Emu.SetScrollbackSize(len(lines) - wrote)
-		t.Emu.SetScrollbackSize(int(^uint(0) >> 1))
-	}
+	t.Emu.ClearScrollback()
+	t.mu.Lock()
+	t.memMirrored = 0
+	t.mu.Unlock()
 }
 
 // ReleaseForHandoff stops this Terminal's goroutines and surrenders
@@ -161,6 +147,11 @@ type AdoptSpec struct {
 	// tab reads fresh rather than 1970.
 	LastOutputAt int64
 	LastInputAt  int64
+
+	// ForeignChild: the shell is not this process's child (crash
+	// resume). The terminal then waits on NotifyExit instead of
+	// waitpid. Kill still works — signals don't need parentage.
+	ForeignChild bool
 }
 
 // Adopt rebuilds a Terminal around an inherited PTY master + child
@@ -187,12 +178,16 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 		Emu:         emu,
 		ptmx:        spec.Ptmx,
 		adoptedProc: proc,
+		foreign:     spec.ForeignChild,
 		DataCh:      make(chan struct{}, 1),
 		cols:        cols,
 		rows:        rows,
 		ExitCode:    -1,
 		done:        make(chan struct{}),
 		readerDone:  make(chan struct{}),
+	}
+	if spec.ForeignChild {
+		t.exitCh = make(chan int, 1)
 	}
 	// Daemon-hosted scrollback shape: vt's ring uncapped, our disk
 	// mirror does the evicting (mirrors applyScrollbackConfig's
@@ -306,6 +301,16 @@ func (d *DiskScrollback) Handoff() (f *os.File, offsets []int64, size int64) {
 
 // AdoptDiskScrollback rebuilds a store around an inherited fd + its
 // serialized offset index — the across-exec counterpart of Handoff.
+// size < 0 means the index was not carried (crash resume): it is
+// rebuilt by scanning the file's length-prefixed records.
 func AdoptDiskScrollback(f *os.File, offsets []int64, size int64) *DiskScrollback {
-	return &DiskScrollback{f: f, offsets: offsets, size: size}
+	d := &DiskScrollback{f: f, offsets: offsets, size: size}
+	if size < 0 {
+		d.offsets = nil
+		d.size = 0
+		if err := d.RebuildIndex(); err != nil {
+			fmt.Fprintf(os.Stderr, "xerotty: scrollback index rebuild: %v (history truncated at the last readable record)\n", err)
+		}
+	}
+	return d
 }

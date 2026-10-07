@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -109,18 +110,20 @@ func TestHotUpgradeE2E(t *testing.T) {
 	)
 	srv.Stdout = logF
 	srv.Stderr = logF
+	// Own process group: `serve` is a supervisor plus a daemon child,
+	// and cleanup must take both.
+	srv.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := srv.Start(); err != nil {
 		t.Skipf("start daemon: %v", err)
 	}
-	daemonPID := srv.Process.Pid
 	defer func() {
 		if t.Failed() {
 			// SIGQUIT first: the Go runtime dumps all goroutine
 			// stacks to stderr (our log file) — names the wedge.
-			_ = srv.Process.Signal(syscall.SIGQUIT)
+			_ = syscall.Kill(-srv.Process.Pid, syscall.SIGQUIT)
 			time.Sleep(500 * time.Millisecond)
 		}
-		_ = srv.Process.Kill()
+		_ = syscall.Kill(-srv.Process.Pid, syscall.SIGKILL)
 		_, _ = srv.Process.Wait()
 		if t.Failed() {
 			if b, err := os.ReadFile(logPath); err == nil {
@@ -200,9 +203,17 @@ func TestHotUpgradeE2E(t *testing.T) {
 	// SIGUSR2 trigger, the pre-exec validation gate, the exec.
 	up := exec.Command(bin, "serve", "--upgrade", "--socket", sock)
 	up.Env = srv.Env
-	if out, err := up.CombinedOutput(); err != nil {
+	out, err := up.CombinedOutput()
+	if err != nil {
 		t.Fatalf("serve --upgrade: %v\n%s", err, out)
 	}
+	// The CLI names the daemon it signalled (the supervised child,
+	// found through SO_PEERCRED) — that pid must survive the exec.
+	m := regexp.MustCompile(`hot upgrade of daemon (\d+)`).FindSubmatch(out)
+	if m == nil {
+		t.Fatalf("upgrade CLI did not name the daemon pid:\n%s", out)
+	}
+	daemonPID, _ := strconv.Atoi(string(m[1]))
 
 	// Wait for the OLD listener to actually go down first —
 	// otherwise the dial below can win the race against the signal
