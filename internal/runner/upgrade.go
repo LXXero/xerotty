@@ -175,6 +175,12 @@ func upgradeOnSignal(d *daemon.Daemon, mcpSrv *mcp.Server, sup *supervise.Client
 		for {
 			select {
 			case <-ch:
+				if os.Getenv("XEROTTY_TEST_IGNORE_SIGUSR2") != "" {
+					// Test hook: a child that never answers SIGUSR2, for
+					// `serve --upgrade`'s SIGKILL fallback.
+					fmt.Fprintln(os.Stderr, "xerotty serve: SIGUSR2 ignored (XEROTTY_TEST_IGNORE_SIGUSR2)")
+					continue
+				}
 				if sup != nil && sup.SupervisorUpgrades() {
 					fmt.Fprintf(os.Stderr, "xerotty serve: SIGUSR2 ignored: the supervisor (pid %d) runs upgrades\n", os.Getppid())
 					continue

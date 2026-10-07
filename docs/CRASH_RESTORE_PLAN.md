@@ -94,10 +94,16 @@ child → supervisor:
   spawn. The supervisor dups nothing else; these are its copies.
 - `tab_gone {id}` — tab closed; the supervisor drops its copies.
 - `state <msgpack handoff.State>` — the session topology (windows,
-  counters, names, titles, InstanceID) WITHOUT fds or screens.
-  Sent on every topology revision bump and on name/title changes,
-  debounced to 100 ms. This is what the supervisor would otherwise
-  have to reconstruct.
+  counters, names, titles, InstanceID) plus, per tab, the same
+  emulator state the in-place upgrade handoff carries: screen,
+  cursor, DEC/ANSI modes, scroll margins, charsets. No fds and no
+  scrollback offset index. Sent 100 ms after a topology, name or
+  title change or a change to replay state (a mode, the margins, a
+  charset), 1 s after PTY output, and never sooner than 500 ms after
+  the previous one. A frame that would exceed 16 MB goes without
+  screens. (Until 2026-10-07 it carried topology only, so a crash
+  resume restored no modes: mutt's arrow keys and scroll regions
+  broke after one.)
 
 supervisor → child:
 - `exit {pid, code}` — a shell exited. Only meaningful for tabs the
@@ -194,13 +200,23 @@ number of later upgrades, and the flag rides along in the handoff.
 
 A supervisor that handles SIGUSR2 writes `<socket>.supervisor`
 (`{"pid":…,"upgrade":true}`). `serve --upgrade` uses it to tell such
-a supervisor from one that predates this. For an old supervisor the
-only lever is its crash-resume path: the CLI SIGKILLs the child (a
-clean exit would make the supervisor stop and drop the sessions) and
-the supervisor restarts it from the binary on disk. Screens come
-back blank as after any crash, and the supervisor keeps its old code
-until `xerotty serve` is restarted. The CLI prints which of these it
-did.
+a supervisor from one that predates this. An old supervisor ignores
+SIGUSR2, but its child does not: with no `caps` frame from its
+supervisor it answers SIGUSR2 like an unsupervised daemon, with the
+full handoff and an exec of the new binary in place (same pid; the
+control fd rides through, so it stays supervised). The CLI runs the
+validation gate itself, signals the child, and proves the exec: the
+wire connection it held drops (the handoff disconnects every
+client), then the same pid maps the target and answers the
+handshake. Only a child that does not do this within the wait is
+SIGKILLed, so the supervisor's crash resume restarts it from the
+binary on disk; the CLI then warns that full-screen apps may need a
+restart (an old supervisor strips screens, and an old child streamed
+no modes). Either way the supervisor keeps its old code until
+`xerotty serve` is restarted. The CLI prints which of these it did.
+
+A daemon that already runs the installed binary is left alone;
+`serve --upgrade --force` upgrades it anyway, to exercise the path.
 
 `serve --upgrade` reports success only when the kernel shows the new
 code running: the target binary's inode in /proc/PID/maps of the new
@@ -211,12 +227,15 @@ which has no maps file, only the new pid is checked.
 
 ### What comes back after a crash
 
-Shells, scrollback (disk-backed, rebuilt index), tab ids, names,
-titles, window topology, InstanceID (clients keep their
-tombstones), the activity clock. Screens come back blank with a
-SIGWINCH wiggle, exactly like the upgrade path's "deep emulator
-internals" caveat: full-screen apps redraw, a shell at a prompt
-redraws its line and the rest is in scrollback.
+Shells, scrollback (disk-backed, written through, rebuilt index),
+tab ids, names, titles, window topology, InstanceID (clients keep
+their tombstones), the activity clock, and each tab's emulator state
+as of the last push (at most about a second old): screen, cursor,
+modes (app cursor keys, keypad, alt screen, origin, autowrap, mouse,
+bracketed paste…), scroll margins, charsets. Plus a SIGWINCH wiggle
+so full-screen apps repaint what changed since. Output from the last
+second before the crash can appear both in scrollback and on the
+restored screen.
 
 ### Out of scope
 
@@ -240,5 +259,15 @@ restore brings back arrangement and text with fresh shells).
   CLI fails; a new build (new inode at the same path) ends with a
   new child and the supervisor mapping it, same shell, screen and
   scrollback. Plus the old-supervisor fallback
-  (`XEROTTY_TEST_LEGACY_SUPERVISOR=1`).
+  (`XEROTTY_TEST_LEGACY_SUPERVISOR=1`: child SIGUSR2, same pid), the
+  same against a real 7f3fb13 supervisor + child pair (built from
+  `git archive`, or `XEROTTY_TEST_OLD_BINARY`), the SIGKILL fallback
+  (`XEROTTY_TEST_IGNORE_SIGUSR2=1`) and `--force`.
+- `internal/runner/crash_resume_appstate_e2e_test.go` — an app sets
+  app cursor keys, a scroll region and the alt screen after the last
+  topology push; after a child SIGKILL Up arrives as ESC O A and
+  output scrolls inside the region.
+- `internal/daemon/crash_state_internal_test.go` — the crash-resume
+  state equals the in-place handoff field by field (fds and the
+  offset index aside), and the push triggers and rate cap.
 - Fleet: `serve --upgrade` is the whole rollout; see "Deploying it".

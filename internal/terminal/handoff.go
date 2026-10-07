@@ -18,6 +18,7 @@ import (
 	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/vt"
 )
 
@@ -138,6 +139,10 @@ type AdoptSpec struct {
 	DECModesSet, DECModesReset   []int
 	ANSIModesSet, ANSIModesReset []int
 
+	// Scroll margins and charset state (EmuState); nil = default.
+	Margins  *Margins
+	Charsets *Charsets
+
 	// Scrollback store, already rebuilt (same object in-process, or
 	// AdoptDiskScrollback(fd) across an exec). nil = none.
 	Disk *DiskScrollback
@@ -237,13 +242,20 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 			emu.SetCell(c, r, cell)
 		}
 	}
+	replayEmuExtras(emu, spec)
 	// Cursor + DECCKM via escape replay (same trick as
 	// daemonsource.applyCursor): the emulator parses them and its
 	// internal state — and our mode callbacks — both line up.
 	if spec.AppCursor {
 		_, _ = emu.Write([]byte("\x1b[?1h"))
 	}
-	_, _ = emu.Write([]byte(fmt.Sprintf("\x1b[%d;%dH", spec.CursorRow+1, spec.CursorCol+1)))
+	// The recorded cursor is absolute; under origin mode CUP counts
+	// from the scroll region, so step out of it to place the cursor.
+	cup := fmt.Sprintf("\x1b[%d;%dH", spec.CursorRow+1, spec.CursorCol+1)
+	if modeIn(spec.DECModesSet, int(ansi.ModeOrigin)) {
+		cup = "\x1b[?6l" + cup + "\x1b[?6h"
+	}
+	_, _ = emu.Write([]byte(cup))
 
 	t.startPipelines()
 	return t, nil

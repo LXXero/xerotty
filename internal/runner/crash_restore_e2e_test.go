@@ -202,12 +202,13 @@ func mustAtoi(s string) int {
 // briefly so a just-respawned child is found. Filtered on the child's
 // argv: after an adopting upgrade the supervisor's children include
 // the shells too (they were the old daemon's), and the first pgrep
-// hit would be one of those.
+// hit would be one of those. A child that exec'd an upgrade in place
+// runs `serve --resume ... --child`, hence the pattern.
 func childOf(t *testing.T, ppid int) int {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		out, err := exec.Command("pgrep", "-P", strconv.Itoa(ppid), "-f", "serve --child").Output()
+		out, err := exec.Command("pgrep", "-P", strconv.Itoa(ppid), "-f", "serve .*--child").Output()
 		if err == nil {
 			for _, f := range strings.Fields(string(out)) {
 				if pid, err := strconv.Atoi(f); err == nil && pid > 0 {

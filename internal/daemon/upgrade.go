@@ -94,17 +94,8 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 
 		// Snapshot BEFORE release (release kills the emulator feed).
 		term.FlushScrollbackToDisk()
-		screen := term.SnapshotViewport()
-		pos := term.CursorPosition()
-		style, blink, styleSet := term.CursorStyle()
-		decSet, decReset, ansiSet, ansiReset := term.ModeSnapshot()
 		ts := tabMeta(t)
-		ts.CursorRow, ts.CursorCol = pos.Y, pos.X
-		ts.CursorStyle, ts.CursorBlink, ts.StyleSet = style, blink, styleSet
-		ts.AppCursor = term.AppCursorMode()
-		ts.DECModesSet, ts.DECModesReset = decSet, decReset
-		ts.ANSIModesSet, ts.ANSIModesReset = ansiSet, ansiReset
-		ts.Screen = cellsToProto(screen)
+		tabEmuState(t, &ts)
 		ts.DiskFD = -1
 
 		ptmx, pid, disk, err := term.ReleaseForHandoff()
@@ -183,6 +174,9 @@ func (d *Daemon) ResumeFromHandoff(st *handoff.State) error {
 		w.TabIDs = kept
 	}
 	sess.mu.Unlock()
+	// A supervisor holding state from the image before this one (an
+	// older binary may have streamed no modes or screens) gets ours.
+	d.pushState()
 	return firstErr
 }
 
@@ -200,6 +194,7 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 			os.NewFile(uintptr(ts.DiskFD), "scrollback-resume"),
 			ts.DiskOffsets, ts.DiskSize)
 	}
+	margins, charsets := emuSpec(ts)
 	term, err := terminal.Adopt(terminal.AdoptSpec{
 		Ptmx: ptmx, ChildPID: ts.ChildPID,
 		Cols: ts.Cols, Rows: ts.Rows,
@@ -208,6 +203,7 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 		AppCursor:   ts.AppCursor,
 		DECModesSet: ts.DECModesSet, DECModesReset: ts.DECModesReset,
 		ANSIModesSet: ts.ANSIModesSet, ANSIModesReset: ts.ANSIModesReset,
+		Margins: margins, Charsets: charsets,
 		CursorStyle: ts.CursorStyle, CursorBlink: ts.CursorBlink, CursorStyleSet: ts.StyleSet,
 		Disk:         disk,
 		LastOutputAt: ts.LastOutputAt,

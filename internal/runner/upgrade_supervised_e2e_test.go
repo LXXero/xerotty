@@ -36,6 +36,14 @@ type upgradeFixture struct {
 
 func startUpgradeFixture(t *testing.T, serveArgs []string, env ...string) *upgradeFixture {
 	t.Helper()
+	return startUpgradeFixtureFrom(t, nil, serveArgs, env...)
+}
+
+// startUpgradeFixtureFrom starts the daemon from initial (another
+// build, e.g. an old release) instead of the fresh build; installs
+// and the CLI still use the fresh build.
+func startUpgradeFixtureFrom(t *testing.T, initial []byte, serveArgs []string, env ...string) *upgradeFixture {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("builds a binary; skipped in -short")
 	}
@@ -51,7 +59,10 @@ func startUpgradeFixture(t *testing.T, serveArgs []string, env ...string) *upgra
 		t.Fatal(err)
 	}
 	f := &upgradeFixture{t: t, build: data, bin: filepath.Join(tmp, "xerotty"), cli: filepath.Join(tmp, "xerotty-cli")}
-	f.install(data)
+	if initial == nil {
+		initial = data
+	}
+	f.install(initial)
 	if err := os.WriteFile(f.cli, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -157,9 +168,9 @@ func (f *upgradeFixture) install(data []byte) fileID {
 	return id
 }
 
-// upgrade runs `serve --upgrade` from the separate CLI copy.
-func (f *upgradeFixture) upgrade() (string, error) {
-	cmd := exec.Command(f.cli, "serve", "--upgrade", "--socket", f.sock)
+// upgrade runs `serve --upgrade [args]` from the separate CLI copy.
+func (f *upgradeFixture) upgrade(args ...string) (string, error) {
+	cmd := exec.Command(f.cli, append([]string{"serve", "--upgrade", "--socket", f.sock}, args...)...)
 	cmd.Env = f.env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -285,11 +296,60 @@ func TestSupervisedUpgradeE2E(t *testing.T) {
 }
 
 // TestUpgradeOldSupervisorFallbackE2E: a supervisor that predates
-// SIGUSR2 upgrades (every host before this change) gets its child
-// SIGKILLed, restarts it from the new binary on disk through the
-// crash-resume path, and the CLI says that is what it did.
+// SIGUSR2 upgrades (every host before f026be9) is left alone, and its
+// daemon child gets SIGUSR2 instead: it hands off in full and execs
+// the new binary in place — same pid, screen intact, no crash resume.
+// A build that fails the handoff gate is refused before anything is
+// signalled.
 func TestUpgradeOldSupervisorFallbackE2E(t *testing.T) {
 	f := startUpgradeFixture(t, nil, "XEROTTY_TEST_LEGACY_SUPERVISOR=1")
+	sup := f.srv.Process.Pid
+	child := childOf(t, sup)
+	oldID, err := statFile(f.bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f.install([]byte("#!/bin/sh\nexit 1\n"))
+	out, err := f.upgrade()
+	if err == nil || !strings.Contains(out, "nothing was signalled") {
+		t.Fatalf("upgrade to a broken build must be refused up front (err %v):\n%s", err, out)
+	}
+	if c := childOf(t, sup); c != child {
+		t.Fatalf("daemon child changed %d -> %d on a refused upgrade", child, c)
+	}
+	mustMap(t, child, oldID, true, "daemon child")
+
+	newID := f.install(f.build)
+	out, err = f.upgrade()
+	if err != nil {
+		t.Fatalf("serve --upgrade: %v\n%s", err, out)
+	}
+	for _, want := range []string{"predates in-place upgrades", "sending SIGUSR2 to its daemon child", "re-executed in place", "still runs its old code"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "SIGKILL") {
+		t.Fatalf("fell back to SIGKILL although the child handles SIGUSR2:\n%s", out)
+	}
+	if c := childOf(t, sup); c != child {
+		t.Fatalf("daemon child pid changed %d -> %d: that was a restart, not an exec in place", child, c)
+	}
+	mustMap(t, child, newID, true, "daemon child")
+	mustMap(t, sup, oldID, true, "supervisor") // can't upgrade itself
+	// The full handoff carried the screen; a crash resume through
+	// this supervisor would not have.
+	f.waitScreen(f.probe(), func(scr string) bool { return strings.Contains(scr, "FILLER_39") }, "screen lost across the upgrade")
+	f.sameSession("AFTER")
+}
+
+// TestUpgradeRealOldPairE2E runs the fallback against the code xero's
+// hosts actually ran: supervisor AND child built from 7f3fb13 (set
+// XEROTTY_TEST_OLD_BINARY to use a prebuilt one instead).
+func TestUpgradeRealOldPairE2E(t *testing.T) {
+	old := oldBuild(t, "7f3fb13")
+	f := startUpgradeFixtureFrom(t, old, nil)
 	sup := f.srv.Process.Pid
 	child := childOf(t, sup)
 	oldID, err := statFile(f.bin)
@@ -301,7 +361,31 @@ func TestUpgradeOldSupervisorFallbackE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serve --upgrade: %v\n%s", err, out)
 	}
-	for _, want := range []string{"predates in-place upgrades", "SIGKILLing its daemon child", "still runs its old code"} {
+	if !strings.Contains(out, "re-executed in place") || strings.Contains(out, "SIGKILL") {
+		t.Fatalf("want an in-place exec of the old child, no SIGKILL:\n%s", out)
+	}
+	if c := childOf(t, sup); c != child {
+		t.Fatalf("daemon child pid changed %d -> %d", child, c)
+	}
+	mustMap(t, child, newID, true, "daemon child")
+	mustMap(t, sup, oldID, true, "old supervisor")
+	f.waitScreen(f.probe(), func(scr string) bool { return strings.Contains(scr, "FILLER_39") }, "screen lost across the upgrade")
+	f.sameSession("AFTER")
+}
+
+// TestUpgradeKillFallbackE2E: a child that does not answer SIGUSR2 is
+// SIGKILLed after the wait so the supervisor's crash resume restarts
+// it from the new binary, and the CLI warns about full-screen apps.
+func TestUpgradeKillFallbackE2E(t *testing.T) {
+	f := startUpgradeFixture(t, nil, "XEROTTY_TEST_LEGACY_SUPERVISOR=1", "XEROTTY_TEST_IGNORE_SIGUSR2=1", "XEROTTY_UPGRADE_TIMEOUT=4s")
+	sup := f.srv.Process.Pid
+	child := childOf(t, sup)
+	newID := f.install(f.build)
+	out, err := f.upgrade()
+	if err != nil {
+		t.Fatalf("serve --upgrade: %v\n%s", err, out)
+	}
+	for _, want := range []string{"did not re-execute", "SIGKILLing daemon child", "WARNING", "full-screen apps"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output lacks %q:\n%s", want, out)
 		}
@@ -311,6 +395,84 @@ func TestUpgradeOldSupervisorFallbackE2E(t *testing.T) {
 		t.Fatalf("daemon child %d was not replaced:\n%s", child, out)
 	}
 	mustMap(t, newChild, newID, true, "daemon child")
-	mustMap(t, sup, oldID, true, "supervisor") // can't upgrade itself
 	f.sameSession("AFTER")
+}
+
+// TestUpgradeForceE2E: with the installed binary already running,
+// --upgrade leaves the daemon alone and --force upgrades it anyway,
+// under both kinds of supervisor.
+func TestUpgradeForceE2E(t *testing.T) {
+	t.Run("supervisor", func(t *testing.T) {
+		f := startUpgradeFixture(t, nil)
+		sup := f.srv.Process.Pid
+		child := childOf(t, sup)
+		out, err := f.upgrade()
+		if err != nil || !strings.Contains(out, "nothing to do") {
+			t.Fatalf("unchanged binary: want nothing to do (err %v):\n%s", err, out)
+		}
+		if c := childOf(t, sup); c != child {
+			t.Fatalf("daemon child changed %d -> %d without --force", child, c)
+		}
+		out, err = f.upgrade("--force")
+		if err != nil || !strings.Contains(out, "upgraded: supervisor") {
+			t.Fatalf("--force: %v\n%s", err, out)
+		}
+		if c := childOf(t, sup); c == child {
+			t.Fatalf("--force left daemon child %d in place:\n%s", child, out)
+		}
+		f.sameSession("FORCED")
+	})
+	t.Run("old supervisor", func(t *testing.T) {
+		f := startUpgradeFixture(t, nil, "XEROTTY_TEST_LEGACY_SUPERVISOR=1")
+		sup := f.srv.Process.Pid
+		child := childOf(t, sup)
+		out, err := f.upgrade()
+		if err != nil || !strings.Contains(out, "already runs") {
+			t.Fatalf("unchanged binary: want already runs (err %v):\n%s", err, out)
+		}
+		// Same binary, same pid: only the dropped connection proves
+		// the exec happened, so this is the path that needs it.
+		out, err = f.upgrade("--force")
+		if err != nil || !strings.Contains(out, "re-executed in place") {
+			t.Fatalf("--force: %v\n%s", err, out)
+		}
+		if c := childOf(t, sup); c != child {
+			t.Fatalf("daemon child pid changed %d -> %d", child, c)
+		}
+		f.waitScreen(f.probe(), func(scr string) bool { return strings.Contains(scr, "FILLER_39") }, "screen lost across the upgrade")
+		f.sameSession("FORCED")
+	})
+}
+
+// oldBuild returns a headless binary built from rev, or skips. The
+// tree comes from `git archive`, so the build sees exactly that
+// commit; its dependencies come from the module cache or the proxy.
+func oldBuild(t *testing.T, rev string) []byte {
+	t.Helper()
+	if testing.Short() {
+		t.Skip("builds binaries; skipped in -short")
+	}
+	if p := os.Getenv("XEROTTY_TEST_OLD_BINARY"); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("XEROTTY_TEST_OLD_BINARY: %v", err)
+		}
+		return b
+	}
+	src := t.TempDir()
+	if out, err := exec.Command("sh", "-c", `git -C ../.. archive "$1" | tar -x -C "$2"`, "sh", rev, src).CombinedOutput(); err != nil {
+		t.Skipf("cannot check out %s (set XEROTTY_TEST_OLD_BINARY): %v\n%s", rev, err, out)
+	}
+	bin := filepath.Join(t.TempDir(), "xerotty-"+rev)
+	build := exec.Command("go", "build", "-buildvcs=false", "-tags", "headless", "-o", bin, "./cmd/xerotty")
+	build.Dir = src
+	build.Env = append(os.Environ(), "GOFLAGS=-mod=mod", "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Skipf("cannot build %s (set XEROTTY_TEST_OLD_BINARY): %v\n%s", rev, err, out)
+	}
+	b, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

@@ -162,6 +162,13 @@ type Terminal struct {
 	modeMu sync.Mutex
 	modes  map[ansi.Mode]bool
 
+	// onStateChange fires when the app changes state a resumed
+	// terminal has to replay (a mode, the scroll margins, a charset).
+	// The daemon uses it to refresh its supervisor's crash-resume
+	// state promptly. Runs on the reader goroutine under publishMu, so
+	// it must only schedule work. Set via SetOnStateChange.
+	onStateChange func()
+
 	// emuPanics counts emulator panics contained by readPTY and
 	// Resize (under mu); ingestHook and resizeHook are test-only taps
 	// into ingest (read under publishMu) and Resize (read under mu),
@@ -273,6 +280,7 @@ func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCm
 // installCallbacks wires the vt emulator's event callbacks to this
 // Terminal's state + observer hooks. Shared by New and Adopt.
 func (t *Terminal) installCallbacks() {
+	t.observeStateSequences()
 	t.Emu.Emulator.SetCallbacks(vt.Callbacks{
 		Title: func(title string) {
 			// Snapshot OnTitle under t.mu so this read doesn't
@@ -313,6 +321,7 @@ func (t *Terminal) installCallbacks() {
 		},
 		EnableMode: func(mode ansi.Mode) {
 			t.noteMode(mode, true)
+			t.stateChanged()
 			switch mode {
 			case ansi.ModeCursorKeys:
 				t.appCursor.Store(true)
@@ -324,6 +333,7 @@ func (t *Terminal) installCallbacks() {
 		},
 		DisableMode: func(mode ansi.Mode) {
 			t.noteMode(mode, false)
+			t.stateChanged()
 			switch mode {
 			case ansi.ModeCursorKeys:
 				t.appCursor.Store(false)
@@ -334,6 +344,22 @@ func (t *Terminal) installCallbacks() {
 			}
 		},
 	})
+}
+
+// SetOnStateChange registers the hook described on onStateChange.
+func (t *Terminal) SetOnStateChange(fn func()) {
+	t.mu.Lock()
+	t.onStateChange = fn
+	t.mu.Unlock()
+}
+
+func (t *Terminal) stateChanged() {
+	t.mu.Lock()
+	fn := t.onStateChange
+	t.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // noteMode records a mode's latest setting for ModeSnapshot.
@@ -739,6 +765,11 @@ func (t *Terminal) IsAltScreen() bool {
 func (t *Terminal) SnapshotViewport() [][]uv.Cell {
 	t.publishMu.Lock()
 	defer t.publishMu.Unlock()
+	return t.viewportLocked()
+}
+
+// viewportLocked is SnapshotViewport for a caller holding publishMu.
+func (t *Terminal) viewportLocked() [][]uv.Cell {
 	cols := t.Emu.Width()
 	rows := t.Emu.Height()
 	out := make([][]uv.Cell, rows)
