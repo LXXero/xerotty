@@ -42,7 +42,7 @@ const upgradeMsg = "xerotty serve --upgrade: "
 // to be serving; XEROTTY_UPGRADE_TIMEOUT (a Go duration) overrides it.
 const defaultUpgradeWait = 30 * time.Second
 
-var errNoMaps = errors.New("this platform cannot show which binary a process runs")
+var errNoMaps = errors.New("this system cannot show which binary a process runs")
 
 // fileID identifies a binary on disk the way /proc/<pid>/maps does.
 type fileID struct {
@@ -77,6 +77,32 @@ func isDaemonChildArgv(args []string) bool {
 	return false
 }
 
+// procInfo is what the CLI needs to know about a process to tell a
+// daemon child from the daemon that owns the socket.
+type procInfo struct {
+	ppid int
+	argv []string
+}
+
+// socketOwner resolves the pid at the other end of a connection to
+// the daemon socket to the daemon that owns it, and to its daemon
+// child when the peer is that child (0: not known yet). The peer is
+// not the same process everywhere: Linux's SO_PEERCRED names the
+// process that called listen() — the supervisor when there is one —
+// while macOS's LOCAL_PEERPID names the one that accepted, which
+// under a supervisor is the daemon child holding the inherited
+// listener. Taking that child for an unsupervised daemon sends it
+// down the adoption path, which waits for a supervisor that never
+// appears. A daemon child orphaned to init has no supervisor left
+// and is treated as the owner.
+func socketOwner(peer int, info func(int) (procInfo, error)) (owner, child int) {
+	pi, err := info(peer)
+	if err != nil || pi.ppid <= 1 || !isDaemonChildArgv(pi.argv) {
+		return peer, 0
+	}
+	return pi.ppid, peer
+}
+
 func upgradeCLI(socketPath string, force bool) int {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -89,14 +115,13 @@ func upgradeCLI(socketPath string, force bool) int {
 		fmt.Fprintln(os.Stderr, upgradeMsg+"not a unix socket connection")
 		return 1
 	}
-	// SO_PEERCRED names the process that called listen(): the
-	// supervisor when there is one, not the child serving the conn.
-	pid, err := peerPID(uc)
+	peer, err := peerPID(uc)
 	conn.Close()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, upgradeMsg+"peer pid: %v\n", err)
 		return 1
 	}
+	pid, child := socketOwner(peer, procInfoOf)
 
 	target := os.Getenv("XEROTTY_UPGRADE_BINARY")
 	if target == "" {
@@ -115,7 +140,6 @@ func upgradeCLI(socketPath string, force bool) int {
 	}
 
 	// A supervisor between children has none for a moment.
-	child := 0
 	for deadline := time.Now().Add(time.Second); child == 0 && time.Now().Before(deadline); {
 		if child = daemonChild(pid); child == 0 {
 			time.Sleep(50 * time.Millisecond)
