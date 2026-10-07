@@ -338,12 +338,22 @@ func (d *Daemon) CreateTab(sess *Session, windowID uint32, cols, rows int, cwd s
 // subscribed and the topology hasn't changed. name == "" is the
 // plain always-spawn path.
 func (d *Daemon) CreateNamedTab(sess *Session, name string, windowID uint32, cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Tab, *Window, bool, error) {
+	return d.createNamedTabFor(nil, sess, name, windowID, cols, rows, cwd, launch)
+}
+
+// createNamedTabFor is CreateNamedTab on behalf of a wire client. A
+// non-nil creator claims the new tab's grid (see claimCreatedTab)
+// BEFORE the topology broadcast, so no other client can claim it first.
+func (d *Daemon) createNamedTabFor(creator *clientConn, sess *Session, name string, windowID uint32, cols, rows int, cwd string, launch *terminal.LaunchCmd) (*Tab, *Window, bool, error) {
 	t, w, created, err := sess.FindOrCreateTab(name, windowID, cols, rows, cwd, launch)
 	if err != nil {
 		return nil, nil, false, err
 	}
 	if created {
 		d.subscribeSessionClients(sess, t)
+		if creator != nil {
+			creator.claimCreatedTab(t)
+		}
 		d.broadcastTopology(sess)
 	}
 	return t, w, created, nil
