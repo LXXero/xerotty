@@ -35,6 +35,10 @@ func TestScrollbackOrderUnderRotation(t *testing.T) {
 	// so this preference can't cause rotation-induced corruption.
 	cfg.Scrollback.Mode = "memory"
 	cfg.Scrollback.Lines = 8000
+	// No zsh prompt noise: a long prompt (cwd + git branch) wraps the
+	// echoed "seq 12000" at 40 columns, leaving "12000" alone on a
+	// row, which the walk below reads as an out-of-order number.
+	cfg.Shell = "/bin/sh"
 
 	d := daemon.New(&cfg, sockPath)
 	doneRun := make(chan error, 1)
