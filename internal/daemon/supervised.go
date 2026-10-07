@@ -229,7 +229,7 @@ func (d *Daemon) SnapshotState() *handoff.State {
 			continue
 		default:
 		}
-		ts := tabMeta(t)
+		ts := d.tabMeta(sess, t)
 		tabEmuState(t, &ts)
 		ts.PtmxFD = -1
 		ts.DiskFD = -1
@@ -263,12 +263,15 @@ func (s *Session) snapshotTopologyInto(st *handoff.State) []*Tab {
 
 // tabMeta is the per-tab handoff metadata that needs no quiesce:
 // identity, size, activity clock, child pid and whether it is ours.
-func tabMeta(t *Tab) handoff.TabState {
+func (d *Daemon) tabMeta(sess *Session, t *Tab) handoff.TabState {
 	term := t.Term
 	return handoff.TabState{
 		ID: t.ID, Name: t.Name(), Title: t.Title(),
 		CWD:  term.GetCWD(),
 		Cols: term.Width(), Rows: term.Height(),
+		// Owned by a client (or still by a previous image's handoff):
+		// the resumed daemon keeps this size through the reconnects.
+		SizeOwned:    d.maxTabResizeSeq(sess, t.ID) > 0,
 		ChildPID:     term.ChildPID(),
 		ForeignChild: term.ForeignChild(),
 		LastOutputAt: term.LastOutputUnixNano(),

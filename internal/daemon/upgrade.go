@@ -22,6 +22,17 @@ import (
 // the closed conns, so nothing snapshots a terminal mid-release.
 // Clients treat it like any daemon restart and reconnect-loop.
 func (d *Daemon) DisconnectClients() {
+	// Size ownership lives in the connections about to go: move each
+	// owned tab's claim onto the tab itself first, so the handoff
+	// records it (tabMeta) and the teardown's reconcile does not
+	// reflow the grid to whichever client is torn down last.
+	if sess := d.SessionByName("default"); sess != nil {
+		for _, t := range sess.Tabs() {
+			if seq := d.maxTabResizeSeq(sess, t.ID); seq > 0 {
+				t.sizeOwnerSeq.Store(seq)
+			}
+		}
+	}
 	d.mu.Lock()
 	conns := make([]*clientConn, 0, len(d.clients))
 	for c := range d.clients {
@@ -94,7 +105,7 @@ func (d *Daemon) SerializeUpgrade() (*handoff.State, []*os.File, error) {
 
 		// Snapshot BEFORE release (release kills the emulator feed).
 		term.FlushScrollbackToDisk()
-		ts := tabMeta(t)
+		ts := d.tabMeta(sess, t)
 		tabEmuState(t, &ts)
 		ts.DiskFD = -1
 
@@ -220,6 +231,10 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 		Exited: make(chan struct{}),
 	}
 	t.SetTitle(ts.Title)
+	if ts.SizeOwned {
+		// Hold the carried grid until a client claims the tab anew.
+		t.sizeOwnerSeq.Store(s.daemon.resizeSeq.Add(1))
+	}
 	s.mu.Lock()
 	s.tabs[t.ID] = t
 	if ts.Name != "" {

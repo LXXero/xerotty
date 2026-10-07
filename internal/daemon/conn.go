@@ -1009,7 +1009,7 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 	// client's subs under subsMu, including ours. The read is racy
 	// against concurrent claims, but a lost race just means one extra
 	// no-op reconcile.
-	owned := c.daemon.maxTabResizeSeq(t.ID) > 0
+	owned := c.daemon.maxTabResizeSeq(c.session, t.ID) > 0
 	c.subsMu.Lock()
 	sub, ok := c.subs[msg.ID]
 	seeding := ok && sub.desiredCols == 0 && sub.desiredRows == 0
@@ -1079,7 +1079,7 @@ func (c *clientConn) noteSizeActivity(tabID uint32) {
 	c.subsMu.Unlock()
 	// Can't own a size we haven't reported yet; and skip when we're
 	// already the most-recent owner (the hot path).
-	if !ok || dc == 0 || dr == 0 || mySeq >= c.daemon.maxTabResizeSeq(tabID) {
+	if !ok || dc == 0 || dr == 0 || mySeq >= c.daemon.maxTabResizeSeq(c.session, tabID) {
 		return
 	}
 	// Behind the current owner → claim: stamp a fresh max and size the

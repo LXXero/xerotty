@@ -83,6 +83,14 @@ type TabState struct {
 	CWD   string `msg:"cwd,omitempty"`
 	Cols  int    `msg:"cols"`
 	Rows  int    `msg:"rows"`
+	// SizeOwned records that some attached client had claimed the
+	// tab's grid size (resized it, or typed in it) when the state was
+	// taken. The resumed daemon then treats the carried Cols/Rows as
+	// owned: a client's first size report after reconnecting does not
+	// claim the grid, so whichever client reconnects first (the local
+	// GUI, with no ssh hop) cannot take it from the one that was
+	// using the tab; only a real resize or typing moves it.
+	SizeOwned bool `msg:"size_owned,omitempty"`
 
 	// Process plumbing. PtmxFD is the master fd number (survives
 	// exec). ChildPID is waited on by pid in the new image —

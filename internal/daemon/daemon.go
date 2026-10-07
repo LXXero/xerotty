@@ -466,7 +466,11 @@ func (d *Daemon) sessionClients(sess *Session) []*clientConn {
 // in one scan, whether the calling client is already the size owner —
 // the common case (you keep typing on the machine you're on), which
 // then short-circuits without touching the grid.
-func (d *Daemon) maxTabResizeSeq(tabID uint32) uint64 {
+//
+// A tab resumed from a handoff that recorded an owner carries its own
+// stamp (Tab.sizeOwnerSeq) and counts as owned until a client claims
+// it afresh.
+func (d *Daemon) maxTabResizeSeq(sess *Session, tabID uint32) uint64 {
 	d.clientsMu.Lock()
 	conns := make([]*clientConn, 0, len(d.clients))
 	for c := range d.clients {
@@ -474,6 +478,11 @@ func (d *Daemon) maxTabResizeSeq(tabID uint32) uint64 {
 	}
 	d.clientsMu.Unlock()
 	var max uint64
+	if sess != nil {
+		if t := sess.Tab(tabID); t != nil {
+			max = t.sizeOwnerSeq.Load()
+		}
+	}
 	for _, c := range conns {
 		c.subsMu.Lock()
 		if sub, ok := c.subs[tabID]; ok && sub.resizeSeq > max {
@@ -536,6 +545,12 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	}
 	if bestCols == 0 || bestRows == 0 {
 		return // no attached client has expressed a size yet
+	}
+	if own := t.sizeOwnerSeq.Load(); own > bestSeq {
+		// The grid was owned when the handoff was taken and nobody
+		// has claimed it since this image started: the carried size
+		// stands, whatever the reconnecting clients report.
+		return
 	}
 	bestCols = ClampTabDim(bestCols)
 	bestRows = ClampTabDim(bestRows)

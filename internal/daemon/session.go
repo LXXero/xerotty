@@ -280,6 +280,15 @@ type Tab struct {
 	// right value. Single-shot — Tab is never reused after exit.
 	Exited   chan struct{}
 	ExitCode int32
+
+	// sizeOwnerSeq is a resize claim stamp held by the tab itself: set
+	// on resume when the handoff says a client owned the grid, so the
+	// carried size stays until a client makes a NEW claim (a genuine
+	// resize or input stamps a higher seq). Seeding size reports from
+	// reconnecting clients see the tab as owned and do not claim it.
+	// 0 = no such stamp. Read and written through atomics; the
+	// reconcile path compares it against the clients' stamps.
+	sizeOwnerSeq atomic.Uint64
 }
 
 // Window is a logical UI window — a grouping of tabs. The daemon
