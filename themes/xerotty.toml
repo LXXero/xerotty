@@ -1,0 +1,47 @@
+# Tango colors on a black background. Tango itself is unchanged.
+[theme]
+name = "xerotty"
+
+[theme.colors]
+foreground = "#EEEEEC"
+background = "#000000"
+cursor = "#EEEEEC"
+selection_fg = "#000000"
+selection_bg = "#D3D7CF"
+bold = "#FFFFFF"
+
+[theme.colors.ansi]
+black          = "#2E3436"
+red            = "#CC0000"
+green          = "#4E9A06"
+yellow         = "#C4A000"
+blue           = "#3465A4"
+magenta        = "#75507B"
+cyan           = "#06989A"
+white          = "#D3D7CF"
+bright_black   = "#555753"
+bright_red     = "#EF2929"
+bright_green   = "#8AE234"
+bright_yellow  = "#FCE94F"
+bright_blue    = "#729FCF"
+bright_magenta = "#AD7FA8"
+bright_cyan    = "#34E2E2"
+bright_white   = "#EEEEEC"
+
+[theme.ui]
+scrollbar_bg = "#000000"
+scrollbar_thumb = "#555753"
+scrollbar_thumb_hover = "#888A85"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#141718"
+inactive_bg   = "#1F2426"
+inactive_text = "#EEEEEC"
+active_bg     = "#2E3436"
+active_text   = "#EEEEEC"
+active_marker = "#729FCF"
+hover_bg      = "#283033"
+activity      = "#FCAF3E"
+bell          = "#FF6B6B"
