@@ -230,6 +230,7 @@ type App struct {
 	// other layout* fields are main-thread only.
 	lastTopo      map[*daemonsource.Hub]*protocol.TopologyChanged
 	layoutFP      string
+	layoutDirty   bool // the GUI layout changed locally since the last reconcile
 	layoutDue     time.Time
 	layoutLast    time.Time
 	layoutSeenRev map[*daemonsource.Hub]uint64
@@ -1604,8 +1605,13 @@ func (a *App) applyPendingTopology() {
 	pend := a.pendingTopo
 	a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
 	a.topoMu.Unlock()
+	pre := a.layoutFingerprint()
+	synced := pre == a.layoutFP
 	for hub, ps := range pend {
 		a.reconcileDaemonTabs(hub, ps.host, ps.snap)
+	}
+	if synced {
+		a.layoutFP = a.layoutFingerprint() // following a remote change isn't a local one
 	}
 }
 

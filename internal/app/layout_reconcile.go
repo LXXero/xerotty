@@ -3,11 +3,13 @@ package app
 import (
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/tabs"
 )
 
 // The GUI is the reference for which tabs share a window, their order
@@ -66,7 +68,14 @@ type layoutOp struct {
 // may be attached to the same daemon); they only get pushed behind the
 // GUI's tabs in a window the GUI owns. owned lists daemon windows this
 // GUI created or adopted, the only emptied windows it may close.
-func planLayout(gui []guiLayoutWindow, daemon []protocol.WindowInfo, owned map[uint32]bool) []layoutOp {
+//
+// push says the GUI's layout just changed locally, so every difference
+// is this GUI's to correct. Without it (a topology change or the slow
+// timer) the difference may be another GUI's edit to the shared daemon
+// record, which this GUI follows instead (followDaemonOrder): it then
+// only moves tabs into daemon windows that don't exist yet, never
+// reorders within or moves between existing ones, and sends no focus.
+func planLayout(gui []guiLayoutWindow, daemon []protocol.WindowInfo, owned map[uint32]bool, push bool) []layoutOp {
 	sim := make(map[uint32][]uint32, len(daemon))
 	focus := make(map[uint32]uint32, len(daemon))
 	var order []uint32
@@ -105,6 +114,9 @@ func planLayout(gui []guiLayoutWindow, daemon []protocol.WindowInfo, owned map[u
 			if from == d && indexOf(d, tid) == i {
 				continue
 			}
+			if !push && d < synthWindowBase {
+				continue // another GUI's edit; followed, not undone
+			}
 			ops = append(ops, layoutOp{kind: opMoveTab, tab: tid, win: d, from: from, index: int32(i)})
 			// Apply to the simulation, mirroring Session.MoveTab.
 			src := sim[from]
@@ -133,6 +145,9 @@ func planLayout(gui []guiLayoutWindow, daemon []protocol.WindowInfo, owned map[u
 				focus[d] = tid
 			}
 		}
+	}
+	if !push {
+		return ops
 	}
 	for gi, g := range gui {
 		d := dest[gi]
@@ -200,16 +215,76 @@ func (a *App) forgetDaemonWindow(hub *daemonsource.Hub, id uint32) {
 	}
 }
 
+// followDaemonOrder applies the daemon's tab order to each GUI window
+// that maps to a daemon window, for the tabs both show, leaving the
+// slots of tabs from elsewhere and the active tab alone. It is how a
+// reorder made by another GUI on the same daemon reaches this one
+// (cross-window moves are followed by relocateDaemonTab). Main thread.
+func (a *App) followDaemonOrder(hub *daemonsource.Hub, topo *protocol.TopologyChanged) {
+	cli := hub.Client()
+	for _, w := range a.windows {
+		if w.tabs == nil || w.pendingClose {
+			continue
+		}
+		d := w.daemonWindowForHub(hub)
+		if d == 0 {
+			continue
+		}
+		var order []uint32
+		for _, wi := range topo.Windows {
+			if wi.ID == d {
+				order = wi.TabIDs
+			}
+		}
+		rank := make(map[uint32]int, len(order))
+		for i, id := range order {
+			rank[id] = i
+		}
+		var slots []int
+		for i, t := range w.tabs.Tabs {
+			ds, ok := t.Terminal.(*daemonsource.Source)
+			if !ok || ds.HubClient() != cli {
+				continue
+			}
+			if p, ok := w.pendingDaemonMove.(*daemonsource.Source); ok && p == ds {
+				continue
+			}
+			if _, in := rank[ds.TabID()]; in {
+				slots = append(slots, i)
+			}
+		}
+		picked := make([]*tabs.Tab, len(slots))
+		for k, i := range slots {
+			picked[k] = w.tabs.Tabs[i]
+		}
+		sort.SliceStable(picked, func(x, y int) bool {
+			return rank[picked[x].Terminal.(*daemonsource.Source).TabID()] < rank[picked[y].Terminal.(*daemonsource.Source).TabID()]
+		})
+		var active *tabs.Tab
+		if w.tabs.ActiveIdx >= 0 && w.tabs.ActiveIdx < len(w.tabs.Tabs) {
+			active = w.tabs.Tabs[w.tabs.ActiveIdx]
+		}
+		for k, i := range slots {
+			w.tabs.Tabs[i] = picked[k]
+		}
+		for i, t := range w.tabs.Tabs {
+			if t == active {
+				w.tabs.ActiveIdx = i
+			}
+		}
+	}
+}
+
 // reconcileDaemonLayout makes the daemon's window record on hub match
 // the GUI windows, per planLayout, and returns how many corrections it
 // sent. Runs on the main thread (it reads the window/tab structures
 // and may block briefly creating a daemon window).
-func (a *App) reconcileDaemonLayout(hub *daemonsource.Hub, host string, topo *protocol.TopologyChanged) int {
+func (a *App) reconcileDaemonLayout(hub *daemonsource.Hub, host string, topo *protocol.TopologyChanged, push bool) int {
 	if hub == nil || topo == nil || hub.Client() == nil {
 		return 0
 	}
 	gui, wins, owned := a.guiLayoutFor(hub)
-	ops := planLayout(gui, topo.Windows, owned)
+	ops := planLayout(gui, topo.Windows, owned, push)
 	if len(ops) == 0 {
 		return 0
 	}
@@ -316,6 +391,16 @@ func (a *App) layoutFingerprint() string {
 	return string(b)
 }
 
+// layoutPass is one reconcile: a local change is pushed to the daemon;
+// otherwise the daemon's order is followed first. Returns the number of
+// corrections sent.
+func (a *App) layoutPass(hub *daemonsource.Hub, host string, topo *protocol.TopologyChanged, push bool) int {
+	if !push {
+		a.followDaemonOrder(hub, topo)
+	}
+	return a.reconcileDaemonLayout(hub, host, topo, push)
+}
+
 // maybeReconcileLayout runs once per frame on the main thread. It
 // reconciles shortly after the GUI layout or the daemon's record
 // changes, and on a slow timer in case a change went unnoticed.
@@ -327,6 +412,7 @@ func (a *App) maybeReconcileLayout() {
 	wake := func() { time.AfterFunc(layoutSettle+50*time.Millisecond, platform.PostWake) }
 	if fp := a.layoutFingerprint(); fp != a.layoutFP {
 		a.layoutFP = fp
+		a.layoutDirty = true
 		a.layoutDue = now.Add(layoutSettle)
 		wake()
 	}
@@ -355,10 +441,17 @@ func (a *App) maybeReconcileLayout() {
 	}
 	a.layoutDue = time.Time{}
 	a.layoutLast = now
+	// Only a change made on this GUI is pushed to the daemon; anything
+	// else may be another GUI's edit to the shared record and is followed.
+	push := a.layoutDirty
+	a.layoutDirty = false
 	for name, hub := range a.hubsByName() {
 		if t := topos[hub]; t != nil {
-			a.reconcileDaemonLayout(hub, name, t)
+			a.layoutPass(hub, name, t, push)
 		}
+	}
+	if !push {
+		a.layoutFP = a.layoutFingerprint() // following isn't a local change
 	}
 }
 
