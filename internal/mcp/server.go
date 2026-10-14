@@ -51,6 +51,7 @@ import (
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
+	"github.com/LXXero/xerotty/internal/tabs"
 )
 
 // Server is the MCP listener. Like daemon.Daemon it owns a unix
@@ -500,10 +501,10 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 	if sess == nil {
 		return ok(req.ID, []tabSummary{})
 	}
-	tabs := sess.Tabs()
-	out := make([]tabSummary, 0, len(tabs))
+	sessTabs := sess.Tabs()
+	out := make([]tabSummary, 0, len(sessTabs))
 	wins := sess.Windows()
-	windowOf := make(map[uint32]uint32, len(tabs))
+	windowOf := make(map[uint32]uint32, len(sessTabs))
 	for _, w := range wins {
 		for _, id := range w.TabIDs {
 			windowOf[id] = w.ID
@@ -511,17 +512,21 @@ func (c *agentConn) handleTabsList(req *rpcRequest) *rpcResponse {
 	}
 	focused := sess.FocusedTab()
 	now := time.Now()
-	for _, t := range tabs {
+	for _, t := range sessTabs {
 		lastOut := t.Term.LastOutput()
 		lastIn := t.Term.LastInput()
 		lastAny := lastOut
 		if lastIn.After(lastAny) {
 			lastAny = lastIn
 		}
+		name, title := t.Name(), t.Title()
 		out = append(out, tabSummary{
-			ID:              t.ID,
-			Name:            t.Name(),
-			Title:           t.Title(),
+			ID: t.ID,
+			// No host prefix: this daemon can't know whether the
+			// user's GUI sees it as local or as a remote host.
+			Label:           tabs.Label("", name, title, t.Term.ForegroundProcessName()),
+			Name:            name,
+			Title:           title,
 			Cols:            uint16(t.Term.Width()),
 			Rows:            uint16(t.Term.Height()),
 			WindowID:        windowOf[t.ID],

@@ -69,6 +69,7 @@ func invalidParams(id json.RawMessage, detail string) *rpcResponse {
 // own clock) are given; the agent uses whichever fits.
 type tabSummary struct {
 	ID              uint32 `json:"id"`
+	Label           string `json:"label"` // text on the user's tab bar (tabs.Label); refer to the tab by this
 	Name            string `json:"name,omitempty"`
 	Title           string `json:"title"`
 	Cols            uint16 `json:"cols"`

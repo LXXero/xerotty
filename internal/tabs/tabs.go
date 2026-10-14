@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/terminal"
@@ -79,11 +80,53 @@ const foregroundCacheTTL = 500 * time.Millisecond
 // Remote tabs (t.Host != "") get a "host: " prefix so the user can
 // tell at a glance which machine the tab lives on.
 func (t *Tab) DisplayTitle() string {
-	base := t.titleBase()
-	if t.Host != "" {
-		return t.Host + ": " + base
+	return withHost(t.Host, t.titleBase())
+}
+
+func withHost(host, base string) string {
+	if host != "" {
+		return host + ": " + base
 	}
 	return base
+}
+
+// pickTitle is the tab bar's fallback chain once there is no assigned
+// name: the OSC title, else the foreground process, else "shell".
+func pickTitle(title, foreground string) string {
+	if title != "" {
+		return title
+	}
+	if foreground != "" {
+		return foreground
+	}
+	return "shell"
+}
+
+// Label is the text the tab bar shows for a tab, built from plain
+// values so the MCP servers can compute it off the render thread:
+// the assigned name, else the OSC title, else the foreground process,
+// with a "host: " prefix for remote tabs (host "" = local). Unlike
+// DisplayTitle, leading status glyphs are removed from the title
+// (Claude Code's "✳ Claude Code" / spinner frames), so the label stays
+// the same while the app works and an agent can name the tab to the
+// user by it.
+func Label(host, name, title, foreground string) string {
+	if name != "" {
+		return withHost(host, name)
+	}
+	return withHost(host, pickTitle(StripStatusGlyphs(title), foreground))
+}
+
+// StripStatusGlyphs removes leading status symbols (✳ ◐ ⠂ ● · and the
+// like: Unicode "other symbol" runes plus middle dot and bullet) and
+// the spaces around them from a title. A title that is only glyphs
+// becomes "".
+func StripStatusGlyphs(s string) string {
+	return strings.TrimLeftFunc(s, func(r rune) bool {
+		return unicode.Is(unicode.So, r) || unicode.IsSpace(r) ||
+			unicode.Is(unicode.Mn, r) || // variation selectors (U+FE0F)
+			r == '·' || r == '•'
+	})
 }
 
 // Name returns the assigned label for a local tab ("" = none).
@@ -162,13 +205,7 @@ func (t *Tab) titleBase() string {
 		t.foregroundCache = fg
 		t.foregroundAt = time.Now()
 	}
-	if tt := t.Title(); tt != "" {
-		return tt
-	}
-	if t.foregroundCache != "" {
-		return t.foregroundCache
-	}
-	return "shell"
+	return pickTitle(t.Title(), t.foregroundCache)
 }
 
 // Manager manages the set of open tabs.

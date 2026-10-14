@@ -14,7 +14,7 @@
 // Speaks the same line-delimited JSON-RPC 2.0 + MCP shape
 // (initialize / tools/list / tools/call) as internal/mcp. Tools:
 //
-//	list_tabs                    -> [{id, host, title, cols, rows}]
+//	list_tabs                    -> [{id, host, label, title, cols, rows}]
 //	get_screen   {tab_id}         -> {cols, rows, lines}
 //	get_scrollback {tab_id, ...}  -> {from, to, total, lines}
 //	send_input   {tab_id, bytes}
@@ -42,6 +42,7 @@ import (
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
+	"github.com/LXXero/xerotty/internal/tabs"
 )
 
 // Backend is what the GUI provides: enumeration of all tabs across
@@ -179,7 +180,9 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 			// client (same idea as the daemon server's instructions).
 			"instructions": "xerotty GUI aggregator: every terminal tab across all daemons this GUI is attached to " +
 				"(local + remote hosts). Tab IDs are namespaced strings '<host>:<id>' (e.g. 'local:1', 'kh:3') — list_tabs " +
-				"shows cwd/foreground/focused for triage. No trust gating here (this is the user's own GUI). " +
+				"shows cwd/foreground/focused for triage. Each tab's `label` is the text on the user's tab bar: when " +
+				"talking to the user, refer to a tab by its label (e.g. \"the build tab\", \"kh: vim\"); use tab_id only " +
+				"in tool calls — the user never sees ids. No trust gating here (this is the user's own GUI). " +
 				"(xerotty also has per-daemon MCP sockets with plain-integer ids and a trust model; which server " +
 				"you are connected to was fixed when this connection was created and cannot switch mid-session.) " +
 				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
@@ -264,6 +267,7 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 			"id":                 r.NSID,
 			"host":               r.Host,
 			"name":               r.Name,
+			"label":              tabLabel(r),
 			"title":              r.Title,
 			"cols":               r.Cols,
 			"rows":               r.Rows,
@@ -281,6 +285,16 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 		}
 	}
 	return okResp(id, out)
+}
+
+// tabLabel is the text on the user's tab bar for r. Local tabs carry
+// no host prefix there, so neither does the label.
+func tabLabel(r TabRef) string {
+	host := r.Host
+	if host == "local" {
+		host = ""
+	}
+	return tabs.Label(host, r.Name, r.Title, r.Foreground)
 }
 
 // rfc3339OrEmpty / ageMs mirror the per-daemon MCP server so the
@@ -500,7 +514,7 @@ func toolCatalog() []map[string]any {
 		return m
 	}
 	return []map[string]any{
-		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\".", "inputSchema": obj(map[string]any{})},
+		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\". label is the text on the user's tab bar (assigned name, else program title without status glyphs, else foreground process; \"host: \" prefix for remote tabs) — refer to tabs by label when talking to the user, and use the id only in tool calls.", "inputSchema": obj(map[string]any{})},
 		{"name": "get_screen", "description": "Read a tab's visible viewport. tab_id is the namespaced ID from list_tabs. Always includes cursor {row, col, visible}. With styled=true, lines become runs of styled text ({t, fg, bg, a}) instead of flat strings — use it to tell presentation apart from content: faint (a:\"faint\") text at/after the cursor is typically a TUI's autocomplete ghost text the user has NOT typed; red fg usually means an error.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "styled": map[string]any{"type": "boolean", "description": "return styled runs instead of flat lines"}}, "tab_id")},
 		{"name": "get_scrollback", "description": "Read a tab's scrollback history. from/to are absolute row indices (0 = oldest; total = current depth); defaults to the last 200 rows. The reply's from/to is the range actually served — truncated=true means rows past `to` could not be read (e.g. daemon unreachable). styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. The string is used as-is after standard JSON unescaping — no extra escape layer. Prefer send_keys for keystrokes (enter, ctrl+c, arrows): it cannot be mis-escaped.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
