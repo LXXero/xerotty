@@ -365,14 +365,10 @@ func init() {
 
 	// --- remote ---
 	registerAction(Action{ID: "new_tab_remote", Label: "New Remote Tab", Category: "remote", Arg: StringArg, ArgHint: "host alias", Run: func(w *Window, arg string) {
-		if err := w.openRemoteTab(arg); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: new_tab_remote %s: %v\n", arg, err)
-		}
+		w.openRemoteTab(arg)
 	}})
 	registerAction(Action{ID: "attach_remote", Label: "Attach Remote Tabs", Category: "remote", Arg: StringArg, ArgHint: "host alias", Run: func(w *Window, arg string) {
-		if err := w.openRemoteReattach(arg); err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: attach_remote %s: %v\n", arg, err)
-		}
+		w.openRemoteReattach(arg)
 	}})
 	registerAction(Action{ID: "connect_remote", Label: "Connect to Host…", Category: "remote", Run: func(w *Window, _ string) {
 		w.openConnectDialog()
@@ -415,15 +411,13 @@ func init() {
 // window on the same remote box you're looking at. No-op (with a
 // note) when the active tab is local; the plain new_tab/new_window
 // actions cover the local case.
-func runRemoteOnActiveHost(w *Window, name string, open func(string) error) {
+func runRemoteOnActiveHost(w *Window, name string, open func(string)) {
 	t := w.tabs.Active()
 	if t == nil || t.Host == "" {
 		fmt.Fprintf(os.Stderr, "xerotty: %s: active tab is not on a remote host\n", name)
 		return
 	}
-	if err := open(t.Host); err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty: %s %s: %v\n", name, t.Host, err)
-	}
+	open(t.Host)
 }
 
 // validateActionRefs warns (stderr, once at startup) about keybind

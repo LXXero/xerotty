@@ -167,7 +167,11 @@ type Terminal struct {
 	// The daemon uses it to refresh its supervisor's crash-resume
 	// state promptly. Runs on the reader goroutine under publishMu, so
 	// it must only schedule work. Set via SetOnStateChange.
-	onStateChange func()
+	//
+	// Atomic, not guarded by mu: the reader fires it while holding the
+	// emulator lock, and resize takes mu then the emulator lock. Taking
+	// mu here deadlocked a tab that changed mode during a resize.
+	onStateChange atomic.Pointer[func()]
 
 	// emuPanics counts emulator panics contained by readPTY and
 	// Resize (under mu); ingestHook and resizeHook are test-only taps
@@ -348,17 +352,16 @@ func (t *Terminal) installCallbacks() {
 
 // SetOnStateChange registers the hook described on onStateChange.
 func (t *Terminal) SetOnStateChange(fn func()) {
-	t.mu.Lock()
-	t.onStateChange = fn
-	t.mu.Unlock()
+	if fn == nil {
+		t.onStateChange.Store(nil)
+		return
+	}
+	t.onStateChange.Store(&fn)
 }
 
 func (t *Terminal) stateChanged() {
-	t.mu.Lock()
-	fn := t.onStateChange
-	t.mu.Unlock()
-	if fn != nil {
-		fn()
+	if fn := t.onStateChange.Load(); fn != nil {
+		(*fn)()
 	}
 }
 

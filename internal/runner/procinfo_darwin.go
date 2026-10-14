@@ -12,23 +12,37 @@ import (
 )
 
 // daemonChild returns the pid of the `serve --child` process whose
-// parent is ppid, or 0 when there is none. The children come from
-// pgrep -P and each argv from ps, matched by isDaemonChildArgv: a
-// child that exec'd in place has `--child` after `--resume`, not next
-// to `serve`, so a `pgrep -f "serve --child"` substring misses it and
-// the CLI would wait out the handoff and SIGKILL a child that
-// upgraded fine.
+// parent is ppid, or 0 when there is none. Each argv is matched by
+// isDaemonChildArgv: a child that exec'd in place has `--child` after
+// `--resume`, not next to `serve`, so a `"serve --child"` substring
+// match misses it.
+//
+// The children come from ps, not pgrep. On macOS 27 pgrep silently
+// skips some processes ps lists (seen: a supervisor and its daemon
+// child), so `pgrep -P` found no child, the CLI waited out the
+// handoff of a child that had upgraded fine, and reported it gone.
 func daemonChild(ppid int) int {
-	out, err := exec.Command("pgrep", "-P", strconv.Itoa(ppid)).Output()
+	out, err := exec.Command("ps", "-A", "-ww", "-o", "pid=", "-o", "ppid=", "-o", "args=").Output()
 	if err != nil {
 		return 0
 	}
-	for _, f := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(f)
-		if err != nil || pid <= 0 {
+	return daemonChildFromPS(string(out), ppid)
+}
+
+// daemonChildFromPS picks ppid's daemon child out of `ps -o pid= -o
+// ppid= -o args=` output.
+func daemonChildFromPS(out string, ppid int) int {
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 3 {
 			continue
 		}
-		if info, err := procInfoOf(pid); err == nil && isDaemonChildArgv(info.argv) {
+		pid, err1 := strconv.Atoi(f[0])
+		parent, err2 := strconv.Atoi(f[1])
+		if err1 != nil || err2 != nil || pid <= 0 || parent != ppid {
+			continue
+		}
+		if isDaemonChildArgv(f[2:]) {
 			return pid
 		}
 	}

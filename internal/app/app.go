@@ -112,6 +112,16 @@ type App struct {
 	remoteHubsMu sync.Mutex
 	remoteHubs   map[string]*remoteHubEntry
 
+	// remoteDials holds the ssh dials in flight, one per host. The
+	// render thread owns it (see remote_dial.go). remoteDialsDraining
+	// keeps cancelled dials until their goroutine reports back, so a
+	// connection that completed anyway is closed rather than leaked.
+	remoteDials         map[string]*remoteDial
+	remoteDialsDraining []*remoteDial
+	// remoteDialer performs a dial; nil means dialRemoteDaemon. Tests
+	// substitute one that needs no ssh.
+	remoteDialer remoteDialFunc
+
 	// adhocHosts holds ad-hoc "Connect to host…" targets the user
 	// typed this session — connections NOT backed by a [[hosts]]
 	// bookmark. Keyed by the same string used as the hub registry
@@ -799,10 +809,10 @@ func (w *Window) sendDaemonMoveTab(tab *tabs.Tab, _ /*ignored*/ uint32, idx int3
 // dest — all resolved by remoteHubFor. For "show me what's already
 // running over there" use openRemoteReattach instead. Both share
 // the per-host Hub so they use one SSH connection.
-func (w *Window) openRemoteTab(hostName string) error {
+func (w *Window) openRemoteTab(hostName string) {
 	// Inherit the directory when the active tab is on the SAME host —
 	// "new tab on this host" lands where you were working over there.
-	return w.openRemoteTabCWD(hostName, w.inheritCWDFor(hostName))
+	w.openRemoteTabCWD(hostName, w.inheritCWDFor(hostName))
 }
 
 // inheritCWDFor returns the directory a new tab on host ("" = local)
@@ -823,11 +833,16 @@ func (w *Window) inheritCWDFor(host string) string {
 
 // openRemoteTabCWD is openRemoteTab with an explicit starting
 // directory on the remote host ("" = the remote daemon's default).
-func (w *Window) openRemoteTabCWD(hostName, cwd string) error {
-	entry, err := w.app.remoteHubFor(hostName)
-	if err != nil {
-		return err
-	}
+// The host is dialed first when it has no hub yet; see withRemoteHub.
+func (w *Window) openRemoteTabCWD(hostName, cwd string) {
+	w.withRemoteHub(hostName, func(entry *remoteHubEntry) error {
+		return w.newRemoteTab(entry, hostName, cwd)
+	})
+}
+
+// newRemoteTab creates a tab on an already-connected host and adopts
+// it into this window.
+func (w *Window) newRemoteTab(entry *remoteHubEntry, hostName, cwd string) error {
 	cols, rows := w.gridSize()
 	// Bind the new remote tab to THIS GUI window's dedicated
 	// window on the remote daemon (lazily minted). Using 0
@@ -849,15 +864,19 @@ func (w *Window) openRemoteTabCWD(hostName, cwd string) error {
 // tab for hostName inside it. The window starts empty (no stray local
 // PTY tab) and gets its own daemon-side window on the host's hub, so
 // its tabs/focus/reorder stay independent of the spawning window's.
-func (w *Window) openRemoteWindow(hostName string) error {
+func (w *Window) openRemoteWindow(hostName string) {
 	// Read the directory from THIS window before spawning — the new
-	// window is empty, so it has no active tab to inherit from.
+	// window is empty, so it has no active tab to inherit from. The
+	// window itself is spawned only once the host is connected, so a
+	// dial that fails or is cancelled leaves no empty window behind.
 	cwd := w.inheritCWDFor(hostName)
-	nw := w.app.spawnEmptyWindow()
-	if nw == nil {
-		return fmt.Errorf("spawn window for %s failed", hostName)
-	}
-	return nw.openRemoteTabCWD(hostName, cwd)
+	w.withRemoteHub(hostName, func(entry *remoteHubEntry) error {
+		nw := w.app.spawnEmptyWindow()
+		if nw == nil {
+			return fmt.Errorf("spawn window for %s failed", hostName)
+		}
+		return nw.newRemoteTab(entry, hostName, cwd)
+	})
 }
 
 // openRemoteReattach drains UNADOPTED daemon windows the remote
@@ -871,11 +890,14 @@ func (w *Window) openRemoteWindow(hostName string) error {
 //
 // No-op when nothing's pending falls through to openRemoteTab
 // so the action isn't confusingly silent.
-func (w *Window) openRemoteReattach(hostName string) error {
-	entry, err := w.app.remoteHubFor(hostName)
-	if err != nil {
-		return err
-	}
+func (w *Window) openRemoteReattach(hostName string) {
+	w.withRemoteHub(hostName, func(entry *remoteHubEntry) error {
+		return w.adoptRemoteWindows(entry, hostName)
+	})
+}
+
+// adoptRemoteWindows is the connected half of openRemoteReattach.
+func (w *Window) adoptRemoteWindows(entry *remoteHubEntry, hostName string) error {
 	cols, rows := w.gridSize()
 
 	w.app.remoteHubsMu.Lock()
@@ -884,7 +906,7 @@ func (w *Window) openRemoteReattach(hostName string) error {
 	w.app.remoteHubsMu.Unlock()
 
 	if len(pending) == 0 {
-		return w.openRemoteTab(hostName)
+		return w.newRemoteTab(entry, hostName, w.inheritCWDFor(hostName))
 	}
 
 	// First daemon-window's tabs land in the CURRENT GUI window.
@@ -971,11 +993,36 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 // connected client + Attached snapshot. Takes the already-resolved host
 // (not a name to re-resolve) so it's safe to call from the Hub's
 // reconnect goroutine without racing the main-thread-only a.adhocHosts.
-func (a *App) dialRemoteDaemon(name string, host config.RemoteHost) (*clientproto.Client, *protocol.Attached, error) {
+//
+// Blocks for as long as ssh takes, so it never runs on the render
+// thread: remoteHubAsync calls it from a goroutine, the Hub's redial
+// from its reconnect goroutine. cancel, when non-nil, closes the
+// half-made connection out from under the handshake so the blocked
+// read below fails promptly.
+func (a *App) dialRemoteDaemon(name string, host config.RemoteHost, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
 	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
 	}
+	return a.finishRemoteDial(name, cli, cancel)
+}
+
+// finishRemoteDial runs the handshake on a freshly dialed client.
+// Split from dialRemoteDaemon so a test can hand it a client that
+// reached a daemon without ssh.
+func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+	// settled stops the cancel watcher once the client is handed to
+	// the caller; a cancel that lands after that is the caller's to
+	// apply (pollRemoteDials closes a connection it no longer wants).
+	settled := make(chan struct{})
+	defer close(settled)
+	go func() {
+		select {
+		case <-cancel:
+			_ = cli.Close()
+		case <-settled:
+		}
+	}()
 	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
 		_ = cli.Close()
 		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
@@ -996,6 +1043,9 @@ func (a *App) dialRemoteDaemon(name string, host config.RemoteHost) (*clientprot
 
 // remoteHubFor returns the registry entry for the named host,
 // lazily building it (SSH-dial + hello + attach) on first request.
+// The dial blocks, so this is for startup only (the daemon:<host>
+// default source, before any window exists); everything the user
+// triggers from a window goes through withRemoteHub instead.
 // Subsequent calls reuse the same Hub so one SSH connection serves
 // many tabs on that host. name is resolved by resolveRemote (a
 // cfg.Hosts bookmark, a session ad-hoc target, or a bare SSH dest),
@@ -1021,71 +1071,11 @@ func (a *App) remoteHubFor(name string) (*remoteHubEntry, error) {
 		return nil, fmt.Errorf("remote host %q: empty destination", name)
 	}
 
-	cli, attached, err := a.dialRemoteDaemon(name, host)
+	cli, attached, err := a.dialRemoteDaemon(name, host, nil)
 	if err != nil {
 		return nil, err
 	}
-	hub := daemonsource.NewHub(cli)
-	// Self-heal over SSH. Capture the resolved host (NOT a re-resolve
-	// inside the closure) so the reconnect dialer never touches
-	// a.adhocHosts off the main goroutine — SSH params don't change
-	// mid-session anyway.
-	hub.SetRedial(func() (*clientproto.Client, *protocol.Attached, error) {
-		return a.dialRemoteDaemon(name, host)
-	})
-	hub.SeedRevision(attached.Revision)
-	hub.SeedInstance(attached.InstanceID)
-	a.wireHubCallbacks(name, hub)
-
-	entry := &remoteHubEntry{hub: hub}
-	// Group tabs by their daemon-side window so reattach preserves
-	// the user's remote layout. Same shape used for the local
-	// daemon's daemonAdoptQueue.
-	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
-	for _, ti := range attached.Tabs {
-		tabByID[ti.ID] = daemonTabSnapshot{
-			ID:    ti.ID,
-			Title: ti.Title,
-			Cols:  ti.Cols,
-			Rows:  ti.Rows,
-		}
-	}
-	for _, wi := range attached.Windows {
-		snap := daemonWindowSnapshot{
-			WindowID:     wi.ID,
-			PosX:         wi.PosX,
-			PosY:         wi.PosY,
-			Width:        wi.Width,
-			Height:       wi.Height,
-			FocusedTabID: wi.FocusedTabID,
-		}
-		for _, tid := range wi.TabIDs {
-			if t, ok := tabByID[tid]; ok {
-				snap.Tabs = append(snap.Tabs, t)
-				delete(tabByID, tid)
-			}
-		}
-		if len(snap.Tabs) > 0 {
-			entry.reattachQueue = append(entry.reattachQueue, snap)
-		}
-	}
-	if len(tabByID) > 0 {
-		// Sweep orphans (tabs not in any window) into a synthetic
-		// snapshot so they're not silently dropped.
-		var orphans []daemonTabSnapshot
-		for _, t := range tabByID {
-			orphans = append(orphans, t)
-		}
-		entry.reattachQueue = append(entry.reattachQueue, daemonWindowSnapshot{Tabs: orphans})
-	}
-
-	a.remoteHubsMu.Lock()
-	if a.remoteHubs == nil {
-		a.remoteHubs = make(map[string]*remoteHubEntry)
-	}
-	a.remoteHubs[name] = entry
-	a.remoteHubsMu.Unlock()
-	return entry, nil
+	return a.registerRemoteHub(name, cli, attached), nil
 }
 
 // resolveRemote maps a hub-registry key to the SSH connection params
@@ -2588,6 +2578,9 @@ func (a *App) Run() error {
 		// Apply any forwarded single-instance launches before the
 		// window walk so a "new window" request renders this frame.
 		a.drainLaunchRequests()
+		// Apply finished ssh dials: register the hub, then run what
+		// the user asked for (new tab, reattach, new window).
+		a.pollRemoteDials()
 		// Keep the daemons' window-geometry hints tracking the live
 		// size/position (deduped to changes; values are last frame's,
 		// which is fine). Reattach restores from these.
@@ -6321,6 +6314,16 @@ func (w *Window) renderConnectDialog() {
 		imgui.WindowFlagsNoSavedSettings |
 		imgui.WindowFlagsNoDocking
 	if imgui.BeginV("Connect to host###connectdlg"+w.imguiSuffix(), nil, flags) {
+		if w.connectPending {
+			// The dial runs off the render thread; this dialog is the
+			// progress indicator and the only way to give up early.
+			imgui.Text("Connecting to " + w.connectTarget + "…")
+			if imgui.Button("Cancel") {
+				w.app.cancelRemoteDial(w.connectTarget)
+			}
+			imgui.End()
+			return
+		}
 		imgui.Text("SSH destination (user@host, host, or ~/.ssh/config alias):")
 		submit := false
 		// Land keyboard focus in the dest field when the dialog opens so
@@ -6365,9 +6368,13 @@ func (w *Window) renderConnectDialog() {
 // doConnect dials the typed ad-hoc destination, registers it as a
 // session host so re-dials/reattach can find it, and reattaches the
 // host's existing tabs (or opens a fresh one if it has none).
-// On failure it keeps the dialog open with the error so the user can
-// correct the input.
+// On failure the dialog stays open with the error so the user can
+// correct the input. A resubmit overwrites the ad-hoc entry, so a
+// failed attempt never shadows a retry with corrected args.
 func (w *Window) doConnect() {
+	if w.connectPending {
+		return
+	}
 	dest := strings.TrimSpace(w.connectBuffer)
 	if dest == "" {
 		w.connectError = "destination is required"
@@ -6387,16 +6394,10 @@ func (w *Window) doConnect() {
 	// daemon keeps PTYs alive across disconnects, so connecting should
 	// restore whatever was already running there (e.g. a long-lived
 	// shell or editor). openRemoteReattach falls back to a new tab when
-	// the host has nothing to reattach to.
-	if err := w.openRemoteReattach(dest); err != nil {
-		// Drop the half-registered entry so a later retry with
-		// corrected args isn't shadowed by this failed attempt.
-		delete(w.app.adhocHosts, dest)
-		w.connectError = err.Error()
-		return
-	}
-	w.connectingHost = false
-	w.connectError = ""
+	// the host has nothing to reattach to. The dial is asynchronous:
+	// the dialog shows it in progress and closes itself on success, or
+	// shows the error so the input can be corrected.
+	w.openRemoteReattach(dest)
 }
 
 func (w *Window) handleMouseSelection() {
