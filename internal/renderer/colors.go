@@ -73,12 +73,12 @@ var (
 	defaultActivityLight = hexToABGR("#A55A00")
 )
 
-// DefaultTheme returns the xerotty theme (Tango colors, white on
+// DefaultTheme returns the xerotty theme (Tango colors, gray text on
 // black), the same values as themes/xerotty.toml, for when no theme
 // file is found at all.
 func DefaultTheme() Theme {
 	return Theme{
-		Foreground:     hexToABGR("#FFFFFF"),
+		Foreground:     hexToABGR("#D9D9D9"), // below bold/bright white so they stand out
 		Background:     hexToABGR("#000000"),
 		Bold:           hexToABGR("#FFFFFF"),
 		Cursor:         hexToABGR("#FFFFFF"),
