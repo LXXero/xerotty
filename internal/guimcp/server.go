@@ -14,7 +14,7 @@
 // Speaks the same line-delimited JSON-RPC 2.0 + MCP shape
 // (initialize / tools/list / tools/call) as internal/mcp. Tools:
 //
-//	list_tabs                    -> [{id, host, label, title, cols, rows}]
+//	list_tabs                    -> [{id, host, label, title, cols, rows, window, daemon_window_id, ...}]
 //	get_screen   {tab_id}         -> {cols, rows, lines}
 //	get_scrollback {tab_id, ...}  -> {from, to, total, lines}
 //	send_input   {tab_id, bytes}
@@ -84,6 +84,15 @@ type TabRef struct {
 	Focused    bool      // the user's currently-focused tab in the GUI
 	LastOutput time.Time // most recent PTY output (zero = unknown)
 	LastInput  time.Time // most recent input written (zero = unknown)
+
+	// WindowIndex is the GUI window showing the tab (index in the
+	// GUI's window list, -1 = not shown). DaemonWindowID is the window
+	// the daemon's record has it in (0 = unknown); GUIDaemonWindowID is
+	// the daemon window that GUI window maps to. They differ when the
+	// daemon's record has drifted from what the GUI shows.
+	WindowIndex       int
+	DaemonWindowID    uint32
+	GUIDaemonWindowID uint32
 }
 
 // Server is the GUI's aggregating MCP listener.
@@ -265,24 +274,27 @@ func (s *Server) listTabs(id json.RawMessage) *rpcResponse {
 			lastAny = r.LastInput
 		}
 		out[i] = map[string]any{
-			"id":                 r.NSID,
-			"host":               r.Host,
-			"name":               r.Name,
-			"label":              tabLabel(r),
-			"title":              r.Title,
-			"cols":               r.Cols,
-			"rows":               r.Rows,
-			"cwd":                r.CWD,
-			"foreground":         r.Foreground,
-			"closed":             r.Closed,
-			"exit_code":          r.ExitCode,
-			"focused":            r.Focused,
-			"last_output":        rfc3339OrEmpty(r.LastOutput),
-			"last_input":         rfc3339OrEmpty(r.LastInput),
-			"last_output_age_ms": ageMs(now, r.LastOutput),
-			"last_input_age_ms":  ageMs(now, r.LastInput),
-			"last_activity":      rfc3339OrEmpty(lastAny),
-			"idle_ms":            ageMs(now, lastAny),
+			"id":                   r.NSID,
+			"host":                 r.Host,
+			"name":                 r.Name,
+			"label":                tabLabel(r),
+			"title":                r.Title,
+			"cols":                 r.Cols,
+			"rows":                 r.Rows,
+			"cwd":                  r.CWD,
+			"foreground":           r.Foreground,
+			"closed":               r.Closed,
+			"exit_code":            r.ExitCode,
+			"focused":              r.Focused,
+			"last_output":          rfc3339OrEmpty(r.LastOutput),
+			"last_input":           rfc3339OrEmpty(r.LastInput),
+			"last_output_age_ms":   ageMs(now, r.LastOutput),
+			"last_input_age_ms":    ageMs(now, r.LastInput),
+			"last_activity":        rfc3339OrEmpty(lastAny),
+			"idle_ms":              ageMs(now, lastAny),
+			"window":               r.WindowIndex,
+			"daemon_window_id":     r.DaemonWindowID,
+			"gui_window_daemon_id": r.GUIDaemonWindowID,
 		}
 	}
 	return okResp(id, out)

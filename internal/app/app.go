@@ -225,6 +225,19 @@ type App struct {
 	topoMu      sync.Mutex
 	pendingTopo map[*daemonsource.Hub]pendingTopoSnap
 
+	// lastTopo is the daemon's latest window record per hub (guarded by
+	// topoMu); layout reconcile diffs the GUI windows against it. The
+	// other layout* fields are main-thread only.
+	lastTopo      map[*daemonsource.Hub]*protocol.TopologyChanged
+	layoutFP      string
+	layoutDue     time.Time
+	layoutLast    time.Time
+	layoutSeenRev map[*daemonsource.Hub]uint64
+	driftLogged   map[string]bool
+	// tabLayout is the per-tab GUI window placement published for the
+	// guimcp goroutine, like focusedSources.
+	tabLayout atomic.Pointer[map[*daemonsource.Source]tabPlacement]
+
 	// dragTab is the process-wide state for an in-progress drag of a
 	// tab across windows. nil when no drag is happening. Set when the
 	// user drags a tab down past the tab bar (lift-off threshold)
@@ -1295,6 +1308,7 @@ func (a *App) initDaemonSource() error {
 	// Seed the topology-revision gate from the attach snapshot so
 	// later MsgTopologyChanged broadcasts are applied only when newer.
 	hub.SeedRevision(attached.Revision)
+	a.noteAttached(hub, attached)
 	// Seed the daemon identity so the first reconnect can distinguish a
 	// same-daemon resync from a restarted-daemon one (tombstone scoping).
 	hub.SeedInstance(attached.InstanceID)
@@ -1366,7 +1380,7 @@ func (a *App) ListTabs() []guimcp.TabRef {
 	var refs []guimcp.TabRef
 	for name, hub := range a.hubsByName() {
 		for _, src := range hub.Sources() {
-			refs = append(refs, guimcp.TabRef{
+			ref := guimcp.TabRef{
 				NSID:       guimcp.MakeNSID(name, src.TabID()),
 				Name:       src.Name(),
 				Host:       name,
@@ -1380,7 +1394,16 @@ func (a *App) ListTabs() []guimcp.TabRef {
 				Focused:    focused[src],
 				LastOutput: src.LastOutput(),
 				LastInput:  src.LastInput(),
-			})
+			}
+			ref.WindowIndex = -1
+			if m := a.tabLayout.Load(); m != nil {
+				if p, ok := (*m)[src]; ok {
+					ref.WindowIndex = p.windowIndex
+					ref.GUIDaemonWindowID = p.guiWindowID
+				}
+			}
+			ref.DaemonWindowID = a.recordedWindow(hub, src.TabID())
+			refs = append(refs, ref)
 		}
 	}
 	return refs
@@ -1535,6 +1558,7 @@ func (a *App) wireHubCallbacks(name string, hub *daemonsource.Hub) {
 	// latest and wake the loop; the actual GUI mutation runs on the
 	// main thread in applyPendingTopology.
 	hub.SetTopologyCallback(func(s *protocol.TopologyChanged) {
+		a.noteTopology(hub, s)
 		a.topoMu.Lock()
 		if a.pendingTopo == nil {
 			a.pendingTopo = make(map[*daemonsource.Hub]pendingTopoSnap)
@@ -2902,6 +2926,10 @@ func (a *App) Run() error {
 		// goroutine now that this frame's window/tab mutations are
 		// settled (see publishFocusedSources).
 		a.publishFocusedSources()
+		a.publishTabLayout()
+		// Bring the daemon's window record back in line with what the
+		// GUI shows (see layout_reconcile.go).
+		a.maybeReconcileLayout()
 		// Tell the render loop how long it may park before the next
 		// forced frame (next blink toggle, or the safety net).
 		platform.SetIdleTimeout(a.idleWakeMs)
