@@ -34,7 +34,6 @@ import (
 	"github.com/LXXero/xerotty/internal/sockpath"
 	"github.com/LXXero/xerotty/internal/tabs"
 	"github.com/LXXero/xerotty/internal/terminal"
-	"github.com/LXXero/xerotty/internal/themes"
 )
 
 // disableMirror is a runtime kill switch for the macOS mouse-event
@@ -2437,11 +2436,7 @@ func (a *App) Run() error {
 	w := a.active // initial Window allocated by New()
 
 	// Load theme
-	theme, err := themes.Load(a.cfg.Appearance.Theme)
-	if err != nil {
-		theme = renderer.DefaultTheme()
-	}
-	applyColorOverrides(&theme, &a.cfg)
+	theme := loadTheme(&a.cfg)
 	a.theme = theme
 
 	w.width, w.height = w.initialWindowSize()
@@ -5057,7 +5052,7 @@ func (w *Window) drawTabDragGhost() {
 	if dl == nil {
 		return
 	}
-	accent := w.app.theme.TabActivityGlow
+	accent := w.app.theme.Tabs.Activity
 	fill := (accent & 0x00FFFFFF) | 0x28000000 // ~16% alpha wash
 
 	// Target highlight: outline the tab-bar strip (or where it will
@@ -5144,14 +5139,22 @@ func (w *Window) renderTabBar() {
 	tabW := totalW / float32(numTabs)
 
 	style := imgui.CurrentStyle()
-	col := func(c imgui.Col) uint32 { return imgui.ColorU32Col(c) }
-	activeBg := col(imgui.ColTabSelected)
-	hoverBg := col(imgui.ColTabHovered)
-	inactiveBg := col(imgui.ColTab)
-	textCol := col(imgui.ColText)
-	underlineCol := col(imgui.ColTabSelectedOverline)
+	// Theme colors, not ImGui's style: the stock dark style is all
+	// blue, which made current / background / unseen-output tabs read
+	// as shades of one color. ResolveTabs has filled every field.
+	tc := w.renderer.Theme.Tabs
+	activityStyle := w.app.cfg.Appearance.Tabs.ActivityStyle
+	activityBar := activityStyle != "dot"
+	activityDot := activityStyle == "dot" || activityStyle == "both"
 
 	drawList := imgui.WindowDrawList()
+	// Bar backdrop: shows in the gaps between tabs and around their
+	// rounded corners.
+	drawList.AddRectFilled(
+		imgui.Vec2{X: originX, Y: originY},
+		imgui.Vec2{X: originX + totalW, Y: originY + height},
+		tc.BarBg,
+	)
 	closeBtnW := imgui.FrameHeight() * 0.6
 	framePad := style.FramePadding()
 	clickedIdx := -1
@@ -5230,13 +5233,15 @@ func (w *Window) renderTabBar() {
 			imgui.EndTooltip()
 		}
 
-		// Background
-		bg := inactiveBg
+		// Background + title color. Background tab titles are dimmed
+		// (never below 4.5:1, see ResolveTabs); hover restores full
+		// strength.
+		bg, textCol := tc.InactiveBg, tc.InactiveTextDimmed
 		switch {
 		case isActive:
-			bg = activeBg
+			bg, textCol = tc.ActiveBg, tc.ActiveText
 		case hovered:
-			bg = hoverBg
+			bg, textCol = tc.HoverBg, tc.InactiveText
 		}
 		// Visible tab body: inset only on the right edge (except for
 		// the last tab) so adjacent tabs have a single-pixel gap
@@ -5260,12 +5265,8 @@ func (w *Window) renderTabBar() {
 		// the tab's TOP edge (background layer, no size change) — a
 		// background tab lights up when it produces output you haven't
 		// looked at, and goes dark when you switch to it.
-		if unviewed {
-			glowCol := w.renderer.Theme.TabActivityGlow
-			if glowCol == 0 { // theme didn't set one → fall back to the tab accent
-				glowCol = underlineCol
-			}
-			accent := glowCol & 0x00FFFFFF // color only; the gradient supplies alpha
+		if unviewed && activityBar {
+			accent := tc.Activity & 0x00FFFFFF // color only; the gradient supplies alpha
 			// Crisp edge line (rounded top to match the tab body).
 			drawList.AddRectFilledV(
 				imgui.Vec2{X: bgX0, Y: y0},
@@ -5288,18 +5289,30 @@ func (w *Window) renderTabBar() {
 			drawList.AddRectFilled(
 				imgui.Vec2{X: bgX0, Y: y1 - overlineH},
 				imgui.Vec2{X: bgX1, Y: y1},
-				underlineCol,
+				tc.ActiveMarker,
 			)
 		}
 
 		// Centered label, clipped to the tab's interior so long
 		// titles don't bleed into the close button or the next tab.
-		// Prefix a bell marker for background tabs that beeped.
+		// Prefix a dot for background tabs that beeped (bell color)
+		// or, in "dot"/"both" activity style, have unseen output. Bell
+		// wins: it's the rarer, more urgent signal.
 		label := tab.DisplayTitle()
-		if tab.BellPending() && !isActive {
-			label = "● " + label
+		var marker string
+		var markerCol uint32
+		switch {
+		case tab.BellPending() && !isActive:
+			marker, markerCol = "● ", tc.Bell
+		case unviewed && activityDot:
+			marker, markerCol = "● ", tc.Activity
+		}
+		var markerW float32
+		if marker != "" {
+			markerW = imgui.CalcTextSize(marker).X
 		}
 		labelSize := imgui.CalcTextSize(label)
+		labelSize.X += markerW
 		labelX := x0 + framePad.X
 		labelMaxX := x1 - closeBtnW - framePad.X*2
 		if labelMaxX-labelX > labelSize.X {
@@ -5313,7 +5326,10 @@ func (w *Window) renderTabBar() {
 			imgui.Vec2{X: labelMaxX, Y: y1},
 			true,
 		)
-		drawList.AddTextVec2V(imgui.Vec2{X: labelX, Y: labelY}, textCol, label)
+		if marker != "" {
+			drawList.AddTextVec2V(imgui.Vec2{X: labelX, Y: labelY}, markerCol, marker)
+		}
+		drawList.AddTextVec2V(imgui.Vec2{X: labelX + markerW, Y: labelY}, textCol, label)
 		drawList.PopClipRect()
 
 		// Manual hover-test for the close-button area (no separate
@@ -5332,7 +5348,7 @@ func (w *Window) renderTabBar() {
 				drawList.AddRectFilled(
 					imgui.Vec2{X: closeX0, Y: closeY0},
 					imgui.Vec2{X: closeX1, Y: closeY1},
-					hoverBg,
+					tc.HoverBg,
 				)
 			}
 			pad := closeBtnW * 0.25

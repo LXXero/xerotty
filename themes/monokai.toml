@@ -27,4 +27,19 @@ bright_cyan    = "#A1EFE4"
 bright_white   = "#F9F8F5"
 
 [theme.ui]
-tab_activity_glow = "#A1EFE4"   # background-tab unseen-output glow
+scrollbar_bg = "#272822"
+scrollbar_thumb = "#49483E"
+scrollbar_thumb_hover = "#75715E"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#1E1F1C"
+inactive_bg   = "#272822"
+inactive_text = "#F8F8F2"
+active_bg     = "#49483E"
+active_text   = "#F8F8F2"
+active_marker = "#66D9EF"
+hover_bg      = "#3E3D32"
+activity      = "#FD971F"
+bell          = "#F92672"

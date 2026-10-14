@@ -3,6 +3,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -17,16 +18,72 @@ import (
 	"github.com/LXXero/xerotty/internal/themes"
 )
 
+// loadTheme resolves the theme cfg selects: terminal half from
+// terminal_theme (else theme), UI half from ui_theme, then the user's
+// overrides, then the derived tab colors. Every theme switch goes
+// through here so startup, prefs and set_theme can't disagree.
+func loadTheme(cfg *config.Config) renderer.Theme {
+	return loadThemeNamed(cfg.Appearance.TerminalThemeName(), cfg)
+}
+
+// loadThemeNamed is loadTheme with the terminal theme named
+// explicitly (set_theme:<name>); ui_theme still applies, since a UI
+// pick is the user's explicit choice and a theme switch shouldn't
+// silently undo it.
+func loadThemeNamed(terminal string, cfg *config.Config) renderer.Theme {
+	t, err := themes.LoadSet(terminal, cfg.Appearance.UIThemeName())
+	if err != nil {
+		t = renderer.DefaultTheme()
+	}
+	applyColorOverrides(&t, cfg)
+	t.ResolveTabs(cfg.Appearance.Tabs.InactiveTextDim)
+	return t
+}
+
 // applyColorOverrides applies user hex overrides from cfg onto a loaded theme.
 // Only applies when the corresponding *_colors mode is "custom" and the hex is set.
 func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
-	if cfg.Appearance.TerminalColors == "custom" {
-		if cfg.Appearance.Foreground != "" {
-			t.Foreground = renderer.HexToABGR(cfg.Appearance.Foreground)
+	ap := &cfg.Appearance
+	if ap.TerminalColors == "custom" {
+		if ap.Foreground != "" {
+			t.Foreground = renderer.HexToABGR(ap.Foreground)
 		}
-		if cfg.Appearance.Background != "" {
-			t.Background = renderer.HexToABGR(cfg.Appearance.Background)
+		if ap.Background != "" {
+			t.Background = renderer.HexToABGR(ap.Background)
 		}
+	}
+	if ap.TabColors == "custom" {
+		// Original flat keys first so [appearance.tabs] wins.
+		themes.TabSection{
+			BarBg:        ap.TabBarBg,
+			ActiveBg:     ap.TabActiveBg,
+			ActiveText:   ap.TabActiveFg,
+			InactiveBg:   ap.TabInactiveBg,
+			InactiveText: ap.TabInactiveFg,
+		}.Apply(&t.Tabs)
+		tabSectionFrom(ap.Tabs).Apply(&t.Tabs)
+	}
+	if ap.ScrollbarColors == "custom" {
+		if ap.ScrollbarBg != "" {
+			t.ScrollbarBg = renderer.HexToABGR(ap.ScrollbarBg)
+		}
+		if ap.ScrollbarThumb != "" {
+			t.ScrollbarThumb = renderer.HexToABGR(ap.ScrollbarThumb)
+		}
+	}
+}
+
+func tabSectionFrom(c config.TabAppearance) themes.TabSection {
+	return themes.TabSection{
+		BarBg:        c.BarBg,
+		InactiveBg:   c.InactiveBg,
+		InactiveText: c.InactiveText,
+		ActiveBg:     c.ActiveBg,
+		ActiveText:   c.ActiveText,
+		ActiveMarker: c.ActiveMarker,
+		HoverBg:      c.HoverBg,
+		Activity:     c.Activity,
+		Bell:         c.Bell,
 	}
 }
 
@@ -44,6 +101,7 @@ var (
 	// on configDialog.tabSourceOpts.
 	prefTabSourcesBase = []string{"pty", "daemon"}
 	prefColorModes     = []string{"theme", "custom"}
+	prefActivityStyles = []string{"bar", "dot", "both"}
 	prefBSModes        = []string{"ascii_del", "ascii_bs"}
 	prefDelModes       = []string{"vt_sequence", "ascii_del"}
 	prefShiftEnters    = []string{"newline", "escape_sequence"}
@@ -279,6 +337,9 @@ type configDialog struct {
 	// to a window that isn't app.active.
 	focused    bool
 	themeNames []string
+	// uiThemeNames is "same" plus every theme file with a UI half.
+	uiThemeNames []string
+	uiThemeIdx   int32
 
 	// Appearance
 	themeIdx           int32
@@ -304,10 +365,16 @@ type configDialog struct {
 	foregroundHex      string
 	backgroundHex      string
 	tabBarBg           string
-	tabActiveBg        string
-	tabActiveFg        string
 	tabInactiveBg      string
-	tabInactiveFg      string
+	tabInactiveText    string
+	tabActiveBg        string
+	tabActiveText      string
+	tabActiveMarker    string
+	tabHoverBg         string
+	tabActivity        string
+	tabBell            string
+	activityStyleIdx   int32
+	inactiveTextDim    float32
 	scrollbarBgHex     string
 	scrollbarThumbHex  string
 
@@ -532,27 +599,63 @@ func scanThemeDir(dir string, names *[]string, seen map[string]bool) {
 	}
 }
 
-func (d *configDialog) loadFrom(cfg *config.Config) {
-	d.themeNames = discoverThemes()
-	// Ensure current theme is in the list.
-	if cfg.Appearance.Theme != "" {
-		found := false
-		for _, n := range d.themeNames {
-			if n == cfg.Appearance.Theme {
-				found = true
-				break
-			}
+// splitThemeNames sorts theme files into the two pickers: terminal
+// themes (anything with a terminal half, or with neither half, as
+// before the split) and UI themes ("same" first, then every file
+// with a UI half — full sets included, so one set's tabs can go with
+// another's terminal colors).
+func splitThemeNames(names []string, halves func(string) (bool, bool)) (terminal, ui []string) {
+	ui = []string{"same"}
+	for _, n := range names {
+		term, hasUI := halves(n)
+		if term || !hasUI {
+			terminal = append(terminal, n)
 		}
-		if !found {
-			d.themeNames = append(d.themeNames, cfg.Appearance.Theme)
-			sort.Strings(d.themeNames)
+		if hasUI {
+			ui = append(ui, n)
 		}
 	}
+	return terminal, ui
+}
+
+// ensureName adds a configured name the scan didn't find so the
+// picker can still show (and keep) it.
+func ensureName(names []string, name string) []string {
+	if name == "" {
+		return names
+	}
+	for _, n := range names {
+		if n == name {
+			return names
+		}
+	}
+	names = append(names, name)
+	sort.Strings(names)
+	return names
+}
+
+func firstSet(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (d *configDialog) loadFrom(cfg *config.Config) {
+	d.themeNames, d.uiThemeNames = splitThemeNames(discoverThemes(), themes.Halves)
+	// Ensure current themes are in the lists.
+	d.themeNames = ensureName(d.themeNames, cfg.Appearance.TerminalThemeName())
 	if len(d.themeNames) == 0 {
 		d.themeNames = []string{"default"}
 	}
+	if ui := cfg.Appearance.UIThemeName(); ui != "" {
+		d.uiThemeNames = append(d.uiThemeNames[:1], ensureName(d.uiThemeNames[1:], ui)...)
+	}
 
-	d.themeIdx = prefIndexOf(d.themeNames, cfg.Appearance.Theme)
+	d.themeIdx = prefIndexOf(d.themeNames, cfg.Appearance.TerminalThemeName())
+	d.uiThemeIdx = prefIndexOf(d.uiThemeNames, cfg.Appearance.UIThemeName()) // "" → 0 = same
 	d.opacity = cfg.Appearance.Opacity
 	d.glowOn = cfg.Appearance.Glow.Enabled
 	d.glowIntensity = float32(cfg.Appearance.Glow.Intensity)
@@ -592,12 +695,22 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.resizeOverlayDur = cfg.Appearance.ResizeOverlayDuration
 	d.foregroundHex = cfg.Appearance.Foreground
 	d.backgroundHex = cfg.Appearance.Background
-	d.tabBarBg = cfg.Appearance.TabBarBg
-	d.tabActiveBg = cfg.Appearance.TabActiveBg
-	d.tabActiveFg = cfg.Appearance.TabActiveFg
-	d.tabInactiveBg = cfg.Appearance.TabInactiveBg
-	d.tabInactiveFg = cfg.Appearance.TabInactiveFg
+	// [appearance.tabs] first, then the original flat keys, so a
+	// config written before the split shows (and keeps) its values.
+	ap, tb := &cfg.Appearance, &cfg.Appearance.Tabs
+	d.tabBarBg = firstSet(tb.BarBg, ap.TabBarBg)
+	d.tabInactiveBg = firstSet(tb.InactiveBg, ap.TabInactiveBg)
+	d.tabInactiveText = firstSet(tb.InactiveText, ap.TabInactiveFg)
+	d.tabActiveBg = firstSet(tb.ActiveBg, ap.TabActiveBg)
+	d.tabActiveText = firstSet(tb.ActiveText, ap.TabActiveFg)
+	d.tabActiveMarker = tb.ActiveMarker
+	d.tabHoverBg = tb.HoverBg
+	d.tabActivity = tb.Activity
+	d.tabBell = tb.Bell
+	d.activityStyleIdx = prefIndexOf(prefActivityStyles, tb.ActivityStyle)
+	d.inactiveTextDim = float32(tb.InactiveTextDim)
 	d.scrollbarBgHex = cfg.Appearance.ScrollbarBg
+	d.scrollbarThumbHex = cfg.Appearance.ScrollbarThumb
 	d.scrollbarThumbHex = cfg.Appearance.ScrollbarThumb
 
 	d.fontFamily = cfg.Font.Family
@@ -704,7 +817,14 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 
 func (d *configDialog) applyTo(cfg *config.Config) {
 	if int(d.themeIdx) < len(d.themeNames) {
+		// The picker shows the effective terminal theme; writing it
+		// as the set + ui_theme says the same thing with one key less.
 		cfg.Appearance.Theme = d.themeNames[d.themeIdx]
+		cfg.Appearance.TerminalTheme = ""
+	}
+	cfg.Appearance.UITheme = ""
+	if d.uiThemeIdx > 0 && int(d.uiThemeIdx) < len(d.uiThemeNames) {
+		cfg.Appearance.UITheme = d.uiThemeNames[d.uiThemeIdx]
 	}
 	cfg.Appearance.Opacity = d.opacity
 	cfg.Appearance.Glow.Enabled = d.glowOn
@@ -741,11 +861,27 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Appearance.ResizeOverlayDuration = d.resizeOverlayDur
 	cfg.Appearance.Foreground = d.foregroundHex
 	cfg.Appearance.Background = d.backgroundHex
-	cfg.Appearance.TabBarBg = d.tabBarBg
-	cfg.Appearance.TabActiveBg = d.tabActiveBg
-	cfg.Appearance.TabActiveFg = d.tabActiveFg
-	cfg.Appearance.TabInactiveBg = d.tabInactiveBg
-	cfg.Appearance.TabInactiveFg = d.tabInactiveFg
+	cfg.Appearance.Tabs.BarBg = d.tabBarBg
+	cfg.Appearance.Tabs.InactiveBg = d.tabInactiveBg
+	cfg.Appearance.Tabs.InactiveText = d.tabInactiveText
+	cfg.Appearance.Tabs.ActiveBg = d.tabActiveBg
+	cfg.Appearance.Tabs.ActiveText = d.tabActiveText
+	cfg.Appearance.Tabs.ActiveMarker = d.tabActiveMarker
+	cfg.Appearance.Tabs.HoverBg = d.tabHoverBg
+	cfg.Appearance.Tabs.Activity = d.tabActivity
+	cfg.Appearance.Tabs.Bell = d.tabBell
+	if int(d.activityStyleIdx) < len(prefActivityStyles) {
+		cfg.Appearance.Tabs.ActivityStyle = prefActivityStyles[d.activityStyleIdx]
+	}
+	// Round off the slider's float32 so config.toml gets 0.4, not
+	// 0.4000000059604645.
+	cfg.Appearance.Tabs.InactiveTextDim = math.Round(float64(d.inactiveTextDim)*100) / 100
+	// Migrated into [appearance.tabs] above (loadFrom read them).
+	cfg.Appearance.TabBarBg = ""
+	cfg.Appearance.TabActiveBg = ""
+	cfg.Appearance.TabActiveFg = ""
+	cfg.Appearance.TabInactiveBg = ""
+	cfg.Appearance.TabInactiveFg = ""
 	cfg.Appearance.ScrollbarBg = d.scrollbarBgHex
 	cfg.Appearance.ScrollbarThumb = d.scrollbarThumbHex
 
@@ -891,20 +1027,18 @@ func (a *Window) applyPreferences() {
 	// so SetBgColor and updateEventLoopBg are process-wide and only run
 	// once. The renderer is per-Window though — loop so theme switches
 	// from prefs in Window A still re-color Windows B, C, ...
-	if t, err := themes.Load(a.app.cfg.Appearance.Theme); err == nil {
-		applyColorOverrides(&t, &a.app.cfg)
-		a.app.theme = t
-		for _, win := range a.app.windows {
-			if win.renderer != nil {
-				win.renderer.Theme = t
-				win.renderer.InvalidateCellCache()
-			}
+	t := loadTheme(&a.app.cfg)
+	a.app.theme = t
+	for _, win := range a.app.windows {
+		if win.renderer != nil {
+			win.renderer.Theme = t
+			win.renderer.InvalidateCellCache()
 		}
-		bgR := float32((t.Background>>0)&0xFF) / 255.0
-		bgG := float32((t.Background>>8)&0xFF) / 255.0
-		bgB := float32((t.Background>>16)&0xFF) / 255.0
-		platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	}
+	bgR := float32((t.Background>>0)&0xFF) / 255.0
+	bgG := float32((t.Background>>8)&0xFF) / 255.0
+	bgB := float32((t.Background>>16)&0xFF) / 255.0
+	platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	// BoldIsBright also lives on each Window's renderer.
 	for _, win := range a.app.windows {
 		if win.renderer != nil {
@@ -1178,6 +1312,11 @@ func (a *Window) renderPrefAppearance() {
 	}, "Terminal Colors", func() {
 		a.prefCombo("termcolors", &d.terminalColorsIdx, prefColorModes, w)
 	})
+	prefPairRow(w, "UI Theme", func() {
+		a.prefCombo("uitheme", &d.uiThemeIdx, d.uiThemeNames, w)
+	}, "", func() {
+		imgui.TextDisabled("same = the theme's own tab colors")
+	})
 
 	if d.terminalColorsIdx == 1 {
 		prefPairRow(w, "Foreground", func() {
@@ -1261,27 +1400,35 @@ func (a *Window) renderPrefAppearance() {
 
 	imgui.Separator()
 
-	imgui.Text("Tab Colors")
-	a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
+	prefPairRow(w, "Tab Colors", func() {
+		a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
+	}, "New Output Marker", func() {
+		a.prefCombo("activitystyle", &d.activityStyleIdx, prefActivityStyles, w)
+	})
+	prefPairRow(w, "Background Tab Text Dim", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.SliderFloat("##tabdim", &d.inactiveTextDim, 0, 0.8)
+	}, "", func() {
+		imgui.TextDisabled("never dims below 4.5:1 contrast")
+	})
 
 	if d.tabColorsIdx == 1 {
-		prefPairRow(w, "Tab Bar BG", func() {
-			imgui.SetNextItemWidth(w)
-			imgui.InputTextWithHint("##tabbarbg", "#RRGGBB", &d.tabBarBg, 0, nil)
-		}, "Active Tab BG", func() {
-			imgui.SetNextItemWidth(w)
-			imgui.InputTextWithHint("##tabactbg", "#RRGGBB", &d.tabActiveBg, 0, nil)
-		})
-		prefPairRow(w, "Active Tab FG", func() {
-			imgui.SetNextItemWidth(w)
-			imgui.InputTextWithHint("##tabactfg", "#RRGGBB", &d.tabActiveFg, 0, nil)
-		}, "Inactive Tab BG", func() {
-			imgui.SetNextItemWidth(w)
-			imgui.InputTextWithHint("##tabinbg", "#RRGGBB", &d.tabInactiveBg, 0, nil)
-		})
-		imgui.Text("Inactive Tab FG")
-		imgui.SetNextItemWidth(w)
-		imgui.InputTextWithHint("##tabinfg", "#RRGGBB", &d.tabInactiveFg, 0, nil)
+		hex := func(id string, v *string, hint string) func() {
+			return func() {
+				imgui.SetNextItemWidth(w)
+				imgui.InputTextWithHint(id, hint, v, 0, nil)
+			}
+		}
+		const bgHint = "#RRGGBB or terminal"
+		prefPairRow(w, "Tab Bar BG", hex("##tabbarbg", &d.tabBarBg, bgHint),
+			"Hover Tab BG", hex("##tabhovbg", &d.tabHoverBg, bgHint))
+		prefPairRow(w, "Active Tab BG", hex("##tabactbg", &d.tabActiveBg, bgHint),
+			"Active Tab Text", hex("##tabactfg", &d.tabActiveText, "#RRGGBB"))
+		prefPairRow(w, "Inactive Tab BG", hex("##tabinbg", &d.tabInactiveBg, bgHint),
+			"Inactive Tab Text", hex("##tabinfg", &d.tabInactiveText, "#RRGGBB"))
+		prefPairRow(w, "Active Tab Line", hex("##tabmark", &d.tabActiveMarker, "#RRGGBB"),
+			"New Output", hex("##tabact", &d.tabActivity, "#RRGGBB"))
+		prefPairRow(w, "Bell", hex("##tabbell", &d.tabBell, "#RRGGBB"), "", func() {})
 	}
 
 	imgui.Separator()

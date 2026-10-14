@@ -1,0 +1,45 @@
+[theme]
+name = "Amber Phosphor"
+
+[theme.colors]
+foreground = "#FFB000"
+background = "#140E00"
+cursor = "#FFC23D"
+selection_fg = "#140E00"
+selection_bg = "#FFB000"
+
+[theme.colors.ansi]
+black          = "#2A1E00"
+red            = "#FF6A00"
+green          = "#FFC433"
+yellow         = "#FFD966"
+blue           = "#CC8800"
+magenta        = "#FF9A40"
+cyan           = "#FFCC80"
+white          = "#FFB000"
+bright_black   = "#6B4A00"
+bright_red     = "#FF8C33"
+bright_green   = "#FFD15C"
+bright_yellow  = "#FFE699"
+bright_blue    = "#E0A020"
+bright_magenta = "#FFB366"
+bright_cyan    = "#FFDDA6"
+bright_white   = "#FFF0CC"
+
+[theme.ui]
+scrollbar_bg = "#140E00"
+scrollbar_thumb = "#4D3500"
+scrollbar_thumb_hover = "#7A5500"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#0A0700"
+inactive_bg   = "#140E00"
+inactive_text = "#FFB000"
+active_bg     = "#2A1E00"
+active_text   = "#FFC23D"
+active_marker = "#FFB000"
+hover_bg      = "#211700"
+activity      = "#FFE08A"
+bell          = "#FF4A1A"

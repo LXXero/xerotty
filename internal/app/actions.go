@@ -31,7 +31,6 @@ import (
 	"github.com/LXXero/xerotty/internal/menu"
 	"github.com/LXXero/xerotty/internal/platform"
 	"github.com/LXXero/xerotty/internal/renderer"
-	"github.com/LXXero/xerotty/internal/themes"
 )
 
 // ArgKind describes what a registered action expects after "id:".
@@ -345,25 +344,23 @@ func init() {
 		w.openPreferences()
 	}})
 	registerAction(Action{ID: "set_theme", Label: "Set Theme", Category: "config", Arg: StringArg, ArgHint: "theme name", Run: func(w *Window, arg string) {
-		if t, err := themes.Load(arg); err == nil {
-			applyColorOverrides(&t, &w.app.cfg)
-			w.app.theme = t
-			// Theme is process-wide: every Window's renderer needs
-			// the new palette or peer Windows render against the
-			// stale one until they're individually re-themed. Same
-			// loop applyPreferences uses for the prefs-driven path.
-			for _, win := range w.app.windows {
-				if win.renderer != nil {
-					win.renderer.Theme = t
-					win.renderer.InvalidateCellCache()
-				}
+		t := loadThemeNamed(arg, &w.app.cfg)
+		w.app.theme = t
+		// Theme is process-wide: every Window's renderer needs
+		// the new palette or peer Windows render against the
+		// stale one until they're individually re-themed. Same
+		// loop applyPreferences uses for the prefs-driven path.
+		for _, win := range w.app.windows {
+			if win.renderer != nil {
+				win.renderer.Theme = t
+				win.renderer.InvalidateCellCache()
 			}
-			// Update SDL background color to match new theme.
-			bgR := float32((t.Background>>0)&0xFF) / 255.0
-			bgG := float32((t.Background>>8)&0xFF) / 255.0
-			bgB := float32((t.Background>>16)&0xFF) / 255.0
-			platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 		}
+		// Update SDL background color to match new theme.
+		bgR := float32((t.Background>>0)&0xFF) / 255.0
+		bgG := float32((t.Background>>8)&0xFF) / 255.0
+		bgB := float32((t.Background>>16)&0xFF) / 255.0
+		platform.SetBgColor(imgui.NewVec4(bgR, bgG, bgB, 1.0))
 	}})
 
 	// --- remote ---

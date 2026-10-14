@@ -744,42 +744,87 @@ bright_magenta = "#FF92DF"
 bright_cyan    = "#A4FFFF"
 bright_white   = "#FFFFFF"
 
-# UI chrome colors (optional — falls back to sensible defaults from palette)
+# UI half (optional). Anything unset is derived from the colors above.
 [theme.ui]
-tab_bar_bg = "#1E1F29"
-tab_active_bg = "#282A36"
-tab_active_fg = "#F8F8F2"
-tab_inactive_bg = "#21222C"
-tab_inactive_fg = "#6272A4"
 scrollbar_bg = "#282A36"
 scrollbar_thumb = "#44475A"
 scrollbar_thumb_hover = "#6272A4"
+
+# Tab bar. Each value is "#RRGGBB", or "terminal" for the terminal
+# background (e.g. active_bg = "terminal").
+[theme.ui.tabs]
+bar_bg        = "#191A21"   # empty strip behind the tabs
+inactive_bg   = "#21222C"   # background tabs
+inactive_text = "#F8F8F2"   # background tab titles, before dimming
+active_bg     = "#44475A"   # current tab
+active_text   = "#F8F8F2"
+active_marker = "#BD93F9"   # line along the bottom of the current tab
+hover_bg      = "#343746"   # tab under the mouse
+activity      = "#FFB86C"   # top bar + glow: background tab has unseen output
+bell          = "#FF5555"   # dot before the title: background tab rang the bell
 ```
+
+The original flat keys in `[theme.ui]` (`tab_activity_glow`, `tab_bar_bg`,
+`tab_active_bg`, `tab_active_fg`, `tab_inactive_bg`, `tab_inactive_fg`) are
+still read; `[theme.ui.tabs]` wins where both are set.
+
+Unset tab colors derive from the terminal colors: inactive tabs a shade
+darker than the background (lighter, for a near-black background), the
+current tab 15% toward the foreground, the current-tab line from ANSI blue,
+the bell from ANSI bright red, and activity amber (`#FFB000`, or `#A55A00`
+on a light tab bar).
+
+Bundled themes are checked by `TestBundledThemesTabContrast`: titles at
+least 4.5:1 (WCAG 2.x SC 1.4.3) after dimming, and the activity bar, bell
+and current-tab line at least 3:1 against their tab (SC 1.4.11).
+
+#### Terminal and UI Themes
+
+A theme has two halves: the terminal half (`[theme.colors]`: text, ANSI,
+background) and the UI half (`[theme.ui]`: tab bar, scrollbar). Every
+bundled theme is a full set. A UI-only theme file has just `[theme.ui]`
+and pairs with any terminal theme (bundled: `neutral-dark`,
+`neutral-light`, `high-contrast`).
+
+```toml
+[appearance]
+theme = "gruvbox-dark"        # a set: both halves
+terminal_theme = ""           # optional: terminal half from another theme
+ui_theme = "high-contrast"    # optional: UI half; "" or "same" = the set's own
+```
+
+A `ui_theme` that can't be found keeps the terminal theme's UI half.
+`set_theme:<name>` changes the terminal theme and keeps `ui_theme`.
 
 #### Theme Resolution Order
 
 When determining the color for any element:
 
-1. **Explicit override in `config.toml`** (highest priority)
-2. **Theme file value** (if a theme is active)
-3. **System theme detection** (GTK/Qt — for UI chrome colors only)
-4. **Built-in defaults** (lowest priority)
+1. **Explicit override in `config.toml`** (highest priority, when the
+   matching `*_colors = "custom"`)
+2. **UI theme** (`ui_theme`, UI colors only)
+3. **Terminal theme** (`terminal_theme`, else `theme`)
+4. **Derived from the terminal colors** (tab bar) / **built-in defaults**
 
 ```toml
 # config.toml — override specific theme values
 [appearance]
 theme = "dracula"
 
-# Override just the scrollbar colors from the theme
+scrollbar_colors = "custom"
 scrollbar_bg = "#000000"
 scrollbar_thumb = "#333333"
 
-# UI chrome can follow system theme instead of xerotty theme
-tab_colors = "system"  # "theme" | "system" | "custom"
-# If "custom", use:
-# tab_bar_bg = "#..."
-# tab_active_bg = "#..."
-# etc.
+tab_colors = "custom"   # "theme" | "custom"
+
+[appearance.tabs]
+# Colors: same keys as [theme.ui.tabs], applied when tab_colors = "custom".
+active_bg = "terminal"
+activity = "#FF9F1C"
+# Behavior, always applied:
+activity_style = "bar"     # "bar" (top bar + glow) | "dot" | "both"
+inactive_text_dim = 0.4    # blend background tab titles toward their tab
+                           # color by up to this much; never below 4.5:1
 ```
 
 #### Bold as Bright Colors
