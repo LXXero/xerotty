@@ -298,7 +298,7 @@ func Default() Config {
 		Shell: "",
 		Term:  "xterm-256color",
 		Appearance: Appearance{
-			Theme:          "dracula",
+			Theme:          "xerotty",
 			Opacity:        1.0,
 			Padding:        2,
 			CursorStyle:    "block",

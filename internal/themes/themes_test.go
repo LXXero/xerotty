@@ -116,8 +116,8 @@ func TestLegacyFlatTabKeysLoad(t *testing.T) {
 }
 
 // A theme file with no tab colors derives them from its own terminal
-// colors, not from the built-in Dracula ones.
-func TestThemeWithoutTabsDoesNotInheritDracula(t *testing.T) {
+// colors, not from the built-in ones.
+func TestThemeWithoutTabsDoesNotInheritDefault(t *testing.T) {
 	useThemeDir(t, map[string]string{"bare": "[theme]\n[theme.colors]\nbackground = \"#FDF6E3\"\n"})
 	th, _ := Load("bare")
 	if th.Tabs != (renderer.TabColors{}) {
@@ -223,11 +223,21 @@ func TestBundledThemesTabContrast(t *testing.T) {
 }
 
 // renderer.DefaultTheme is the no-file fallback and claims to match
-// themes/dracula.toml.
-func TestDefaultThemeMatchesBundledDracula(t *testing.T) {
+// themes/xerotty.toml, the default theme.
+func TestDefaultThemeMatchesBundledXerotty(t *testing.T) {
+	bundledThemes(t)
+	th, _ := Load("xerotty")
+	if th != renderer.DefaultTheme() {
+		t.Fatalf("xerotty.toml %+v != DefaultTheme %+v", th, renderer.DefaultTheme())
+	}
+}
+
+// Only tango.toml and xerotty.toml set bold; the built-in bold color must not leak
+// into themes that leave it out.
+func TestThemeWithoutBoldDoesNotInheritDefault(t *testing.T) {
 	bundledThemes(t)
 	th, _ := Load("dracula")
-	if th.Tabs != renderer.DefaultTheme().Tabs {
-		t.Fatalf("dracula.toml tabs %+v != DefaultTheme tabs %+v", th.Tabs, renderer.DefaultTheme().Tabs)
+	if th.Bold != 0 {
+		t.Fatalf("dracula inherited bold %#x", th.Bold)
 	}
 }
