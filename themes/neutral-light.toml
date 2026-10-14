@@ -1,0 +1,22 @@
+# UI-only theme: tab bar and scrollbar colors, no terminal colors.
+# Pair it with any terminal theme: [appearance] ui_theme = "neutral-light"
+[theme]
+name = "Neutral Light"
+
+[theme.ui]
+scrollbar_bg = "#E2E2E2"
+scrollbar_thumb = "#A8A8A8"
+scrollbar_thumb_hover = "#888888"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#D4D4D4"
+inactive_bg   = "#E2E2E2"
+inactive_text = "#1E1E1E"
+active_bg     = "#FFFFFF"
+active_text   = "#000000"
+active_marker = "#1F5FBF"
+hover_bg      = "#EDEDED"
+activity      = "#A55A00"
+bell          = "#C41E1E"

@@ -1,0 +1,45 @@
+[theme]
+name = "Catppuccin Mocha"
+
+[theme.colors]
+foreground = "#CDD6F4"
+background = "#1E1E2E"
+cursor = "#F5E0DC"
+selection_fg = "#CDD6F4"
+selection_bg = "#585B70"
+
+[theme.colors.ansi]
+black          = "#45475A"
+red            = "#F38BA8"
+green          = "#A6E3A1"
+yellow         = "#F9E2AF"
+blue           = "#89B4FA"
+magenta        = "#F5C2E7"
+cyan           = "#94E2D5"
+white          = "#BAC2DE"
+bright_black   = "#585B70"
+bright_red     = "#F38BA8"
+bright_green   = "#A6E3A1"
+bright_yellow  = "#F9E2AF"
+bright_blue    = "#89B4FA"
+bright_magenta = "#F5C2E7"
+bright_cyan    = "#94E2D5"
+bright_white   = "#A6ADC8"
+
+[theme.ui]
+scrollbar_bg = "#1E1E2E"
+scrollbar_thumb = "#45475A"
+scrollbar_thumb_hover = "#585B70"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#11111B"
+inactive_bg   = "#181825"
+inactive_text = "#CDD6F4"
+active_bg     = "#45475A"
+active_text   = "#CDD6F4"
+active_marker = "#CBA6F7"
+hover_bg      = "#313244"
+activity      = "#FAB387"
+bell          = "#F38BA8"

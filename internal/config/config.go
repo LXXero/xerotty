@@ -91,7 +91,15 @@ type GlowConfig struct {
 
 // Appearance controls visual settings.
 type Appearance struct {
-	Theme                 string  `toml:"theme"`
+	// Theme is a full set: terminal colors plus the UI colors that
+	// match them. TerminalTheme / UITheme replace one half each.
+	Theme string `toml:"theme"`
+	// TerminalTheme, when set, supplies the terminal half (text, ANSI,
+	// background) instead of Theme.
+	TerminalTheme string `toml:"terminal_theme"`
+	// UITheme supplies the UI half (tab bar, scrollbar). "" or "same"
+	// = the terminal theme's own UI half.
+	UITheme               string  `toml:"ui_theme"`
 	Opacity               float32 `toml:"opacity"`
 	Padding               int     `toml:"padding"`
 	CursorStyle           string  `toml:"cursor_style"`
@@ -105,7 +113,13 @@ type Appearance struct {
 	ResizeOverlayDuration float32 `toml:"resize_overlay_duration"`
 	// Glow is the animated lava-lamp backdrop (see internal/app/glow.go).
 	Glow GlowConfig `toml:"glow"`
-	// Custom color overrides (hex strings, used when *_colors = "custom")
+	// Tabs is [appearance.tabs]: per-key tab colors (applied when
+	// tab_colors = "custom") plus the activity/dimming behavior
+	// (always applied).
+	Tabs TabAppearance `toml:"tabs"`
+	// Custom color overrides (hex strings, used when *_colors = "custom").
+	// The tab_* keys are the original flat tab overrides; still read,
+	// and [appearance.tabs] wins where both are set.
 	Foreground     string `toml:"foreground"`
 	Background     string `toml:"background"`
 	TabBarBg       string `toml:"tab_bar_bg"`
@@ -115,6 +129,45 @@ type Appearance struct {
 	TabInactiveFg  string `toml:"tab_inactive_fg"`
 	ScrollbarBg    string `toml:"scrollbar_bg"`
 	ScrollbarThumb string `toml:"scrollbar_thumb"`
+}
+
+// TabAppearance is [appearance.tabs]. The color keys mirror a theme's
+// [theme.ui.tabs] ("#RRGGBB" or "terminal").
+type TabAppearance struct {
+	BarBg        string `toml:"bar_bg"`
+	InactiveBg   string `toml:"inactive_bg"`
+	InactiveText string `toml:"inactive_text"`
+	ActiveBg     string `toml:"active_bg"`
+	ActiveText   string `toml:"active_text"`
+	ActiveMarker string `toml:"active_marker"`
+	HoverBg      string `toml:"hover_bg"`
+	Activity     string `toml:"activity"`
+	Bell         string `toml:"bell"`
+	// ActivityStyle is how a background tab with unseen output is
+	// marked: "bar" (top bar + glow), "dot" (a dot before the title),
+	// or "both".
+	ActivityStyle string `toml:"activity_style"`
+	// InactiveTextDim is how far (0..1) background tab titles blend
+	// toward their tab color. The renderer stops short of dropping
+	// below WCAG 4.5:1 contrast however large this is.
+	InactiveTextDim float64 `toml:"inactive_text_dim"`
+}
+
+// TerminalThemeName is the theme the terminal colors come from.
+func (a Appearance) TerminalThemeName() string {
+	if a.TerminalTheme != "" {
+		return a.TerminalTheme
+	}
+	return a.Theme
+}
+
+// UIThemeName is the theme the UI colors come from, "" meaning the
+// terminal theme's own.
+func (a Appearance) UIThemeName() string {
+	if a.UITheme == "same" {
+		return ""
+	}
+	return a.UITheme
 }
 
 // FontConfig controls font loading.
@@ -254,6 +307,10 @@ func Default() Config {
 			BoldIsBright:   true,
 			TerminalColors: "theme",
 			TabColors:      "theme",
+			Tabs: TabAppearance{
+				ActivityStyle:   "bar",
+				InactiveTextDim: 0.4,
+			},
 			Glow: GlowConfig{
 				Style:         "lava",
 				BackgroundFPS: 10,

@@ -1,0 +1,45 @@
+[theme]
+name = "Nord"
+
+[theme.colors]
+foreground = "#D8DEE9"
+background = "#2E3440"
+cursor = "#D8DEE9"
+selection_fg = "#ECEFF4"
+selection_bg = "#434C5E"
+
+[theme.colors.ansi]
+black          = "#3B4252"
+red            = "#BF616A"
+green          = "#A3BE8C"
+yellow         = "#EBCB8B"
+blue           = "#81A1C1"
+magenta        = "#B48EAD"
+cyan           = "#88C0D0"
+white          = "#E5E9F0"
+bright_black   = "#4C566A"
+bright_red     = "#BF616A"
+bright_green   = "#A3BE8C"
+bright_yellow  = "#EBCB8B"
+bright_blue    = "#81A1C1"
+bright_magenta = "#B48EAD"
+bright_cyan    = "#8FBCBB"
+bright_white   = "#ECEFF4"
+
+[theme.ui]
+scrollbar_bg = "#2E3440"
+scrollbar_thumb = "#434C5E"
+scrollbar_thumb_hover = "#4C566A"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#242933"
+inactive_bg   = "#2E3440"
+inactive_text = "#D8DEE9"
+active_bg     = "#4C566A"
+active_text   = "#ECEFF4"
+active_marker = "#88C0D0"
+hover_bg      = "#3B4252"
+activity      = "#EBCB8B"
+bell          = "#D57780"

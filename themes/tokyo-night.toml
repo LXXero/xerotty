@@ -1,0 +1,45 @@
+[theme]
+name = "Tokyo Night"
+
+[theme.colors]
+foreground = "#C0CAF5"
+background = "#1A1B26"
+cursor = "#C0CAF5"
+selection_fg = "#C0CAF5"
+selection_bg = "#33467C"
+
+[theme.colors.ansi]
+black          = "#15161E"
+red            = "#F7768E"
+green          = "#9ECE6A"
+yellow         = "#E0AF68"
+blue           = "#7AA2F7"
+magenta        = "#BB9AF7"
+cyan           = "#7DCFFF"
+white          = "#A9B1D6"
+bright_black   = "#414868"
+bright_red     = "#F7768E"
+bright_green   = "#9ECE6A"
+bright_yellow  = "#E0AF68"
+bright_blue    = "#7AA2F7"
+bright_magenta = "#BB9AF7"
+bright_cyan    = "#7DCFFF"
+bright_white   = "#C0CAF5"
+
+[theme.ui]
+scrollbar_bg = "#1A1B26"
+scrollbar_thumb = "#33467C"
+scrollbar_thumb_hover = "#414868"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#16161E"
+inactive_bg   = "#1A1B26"
+inactive_text = "#C0CAF5"
+active_bg     = "#33467C"
+active_text   = "#C0CAF5"
+active_marker = "#7AA2F7"
+hover_bg      = "#24283B"
+activity      = "#E0AF68"
+bell          = "#F7768E"

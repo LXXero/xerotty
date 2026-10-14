@@ -1,0 +1,45 @@
+[theme]
+name = "Green Phosphor"
+
+[theme.colors]
+foreground = "#33FF66"
+background = "#001405"
+cursor = "#66FF8C"
+selection_fg = "#001405"
+selection_bg = "#33FF66"
+
+[theme.colors.ansi]
+black          = "#00280B"
+red            = "#7FFF4D"
+green          = "#33FF66"
+yellow         = "#B3FF66"
+blue           = "#1FA13F"
+magenta        = "#66FFB3"
+cyan           = "#4DFFCC"
+white          = "#33FF66"
+bright_black   = "#0F5C24"
+bright_red     = "#A6FF80"
+bright_green   = "#66FF8C"
+bright_yellow  = "#CCFF99"
+bright_blue    = "#33CC59"
+bright_magenta = "#99FFCC"
+bright_cyan    = "#80FFDD"
+bright_white   = "#CCFFD9"
+
+[theme.ui]
+scrollbar_bg = "#001405"
+scrollbar_thumb = "#0A4D1E"
+scrollbar_thumb_hover = "#15802F"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#000A03"
+inactive_bg   = "#001405"
+inactive_text = "#33FF66"
+active_bg     = "#00280B"
+active_text   = "#66FF8C"
+active_marker = "#33FF66"
+hover_bg      = "#001F08"
+activity      = "#FFB000"
+bell          = "#FF4A1A"

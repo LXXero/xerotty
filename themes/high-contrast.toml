@@ -1,0 +1,22 @@
+# UI-only theme: tab bar and scrollbar colors, no terminal colors.
+# Pair it with any terminal theme: [appearance] ui_theme = "high-contrast"
+[theme]
+name = "High Contrast"
+
+[theme.ui]
+scrollbar_bg = "#000000"
+scrollbar_thumb = "#808080"
+scrollbar_thumb_hover = "#FFFFFF"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#000000"
+inactive_bg   = "#000000"
+inactive_text = "#FFFFFF"
+active_bg     = "#2B2B2B"
+active_text   = "#FFFFFF"
+active_marker = "#FFFFFF"
+hover_bg      = "#1A1A1A"
+activity      = "#FF9F1C"
+bell          = "#FF3B3B"

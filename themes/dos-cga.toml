@@ -1,0 +1,45 @@
+[theme]
+name = "DOS CGA"
+
+[theme.colors]
+foreground = "#AAAAAA"
+background = "#0000AA"
+cursor = "#FFFFFF"
+selection_fg = "#0000AA"
+selection_bg = "#AAAAAA"
+
+[theme.colors.ansi]
+black          = "#000000"
+red            = "#AA0000"
+green          = "#00AA00"
+yellow         = "#AA5500"
+blue           = "#0000AA"
+magenta        = "#AA00AA"
+cyan           = "#00AAAA"
+white          = "#AAAAAA"
+bright_black   = "#555555"
+bright_red     = "#FF5555"
+bright_green   = "#55FF55"
+bright_yellow  = "#FFFF55"
+bright_blue    = "#5555FF"
+bright_magenta = "#FF55FF"
+bright_cyan    = "#55FFFF"
+bright_white   = "#FFFFFF"
+
+[theme.ui]
+scrollbar_bg = "#0000AA"
+scrollbar_thumb = "#00AAAA"
+scrollbar_thumb_hover = "#55FFFF"
+
+# Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+[theme.ui.tabs]
+bar_bg        = "#000000"
+inactive_bg   = "#0000AA"
+inactive_text = "#FFFFFF"
+active_bg     = "#00AAAA"
+active_text   = "#000000"
+active_marker = "#000000"
+hover_bg      = "#2020C0"
+activity      = "#FFFF55"
+bell          = "#FF5555"
