@@ -1,9 +1,10 @@
-# Tango colors on a black background with white text. Tango itself is unchanged.
+# Tango colors on a black background. Text is light gray (#D9D9D9) so bold
+# and bright white (#FFFFFF, #EEEEEC) stand out from it. Tango itself is unchanged.
 [theme]
 name = "xerotty"
 
 [theme.colors]
-foreground = "#FFFFFF"
+foreground = "#D9D9D9"
 background = "#000000"
 cursor = "#FFFFFF"
 selection_fg = "#000000"
