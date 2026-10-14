@@ -181,7 +181,8 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 				"(local + remote hosts). Tab IDs are namespaced strings '<host>:<id>' (e.g. 'local:1', 'kh:3') — list_tabs " +
 				"shows cwd/foreground/focused for triage. No trust gating here (this is the user's own GUI). " +
 				"(xerotty also has per-daemon MCP sockets with plain-integer ids and a trust model; which server " +
-				"you are connected to was fixed when this connection was created and cannot switch mid-session.) " +
+				"you are connected to was fixed when this connection was created and cannot switch mid-session, " +
+				"including across GUI restarts and xerotty upgrades.) " +
 				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
 				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse. get_screen always " +
 				"returns cursor {row,col}; styled=true returns styled runs — faint text at/after the cursor is " +

@@ -64,39 +64,94 @@ func MCPBridge(args []string) int {
 	// (GUI restarting while the daemon lives, or vice versa), the
 	// client's cached ids and tool schemas would all turn invalid.
 	// Once connected, reconnects only consider same-flavor sockets.
-	flavor := ""
-	discover := func() net.Conn {
-		type candidate struct {
-			path string
-			kind string
+	// A self-upgrade exec starts a fresh process image, so the lock is
+	// carried across it in mcpFlavorEnv (set at lock time; exec passes
+	// os.Environ()) and read back here before the first dial.
+	flavor := inheritedFlavor()
+	if flavor != "" {
+		fmt.Fprintf(os.Stderr, "xerotty mcp: continuing on the %s server after self-upgrade\n", flavor)
+	}
+	candidates := func() []mcpCandidate { return mcpCandidates(socketPath, daemonOnly) }
+	discover := newMCPDiscover(candidates, flavor, func(kind string) {
+		_ = os.Setenv(mcpFlavorEnv, kind)
+	})
+	return runBridge(discover, os.Stdin, os.Stdout)
+}
+
+// mcpFlavorEnv carries the server flavor ("gui", "daemon" or
+// "explicit") the bridge locked onto across a self-upgrade exec, so the
+// new image keeps the tab_id schema the client handshook with instead
+// of rediscovering from scratch. Like mcpReplayModeEnv, its presence
+// marks the process as a re-exec'd continuation.
+const mcpFlavorEnv = "XEROTTY_MCP_FLAVOR"
+
+// inheritedFlavor returns the flavor a previous image of this bridge
+// locked onto, or "" on a cold launch. Unknown values are ignored so a
+// stray setting can't lock the bridge onto a kind that never matches.
+func inheritedFlavor() string {
+	switch f := os.Getenv(mcpFlavorEnv); f {
+	case "gui", "daemon", "explicit":
+		return f
+	}
+	return ""
+}
+
+// isContinuation reports whether this process is a re-exec'd bridge
+// (it inherited a trust mode or a flavor) rather than a cold launch.
+func isContinuation() bool {
+	return os.Getenv(mcpReplayModeEnv) != "" || inheritedFlavor() != ""
+}
+
+// mcpCandidate is one socket the bridge may dial, tagged with the
+// server flavor behind it.
+type mcpCandidate struct {
+	path string
+	kind string
+}
+
+// mcpCandidates lists the sockets to try, in the discovery order
+// documented on MCPBridge.
+func mcpCandidates(socketPath string, daemonOnly bool) []mcpCandidate {
+	var candidates []mcpCandidate
+	seen := map[string]bool{}
+	add := func(p, kind string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			candidates = append(candidates, mcpCandidate{p, kind})
 		}
-		var candidates []candidate
-		seen := map[string]bool{}
-		add := func(p, kind string) {
-			if p != "" && !seen[p] {
-				seen[p] = true
-				candidates = append(candidates, candidate{p, kind})
-			}
-		}
-		if socketPath != "" {
-			add(socketPath, "explicit")
-		} else {
-			if !daemonOnly {
-				add(sockpath.Recorded(sockpath.RecordGUIMCP), "gui")
-				add(sockpath.GUIMCPSocket(), "gui")
-			}
-			add(sockpath.Recorded(sockpath.RecordDaemonMCP), "daemon")
-			if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
-				add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket), "daemon")
-			}
-			add(sockpath.MCPSocketFor(sockpath.DaemonSocket()), "daemon")
-		}
-		for _, cand := range candidates {
+	}
+	if socketPath != "" {
+		add(socketPath, "explicit")
+		return candidates
+	}
+	if !daemonOnly {
+		add(sockpath.Recorded(sockpath.RecordGUIMCP), "gui")
+		add(sockpath.GUIMCPSocket(), "gui")
+	}
+	add(sockpath.Recorded(sockpath.RecordDaemonMCP), "daemon")
+	if cfg, err := config.Load(); err == nil && cfg.Tabs.DaemonSocket != "" {
+		add(sockpath.MCPSocketFor(cfg.Tabs.DaemonSocket), "daemon")
+	}
+	add(sockpath.MCPSocketFor(sockpath.DaemonSocket()), "daemon")
+	return candidates
+}
+
+// newMCPDiscover returns the discover func runBridge redials with.
+// flavor is the lock to start with ("" = take the first live socket of
+// any kind); once a dial succeeds the flavor is locked to that kind and
+// every later dial skips other kinds. onLock, if set, is told the kind
+// on each successful dial.
+func newMCPDiscover(candidates func() []mcpCandidate, flavor string, onLock func(kind string)) func() net.Conn {
+	return func() net.Conn {
+		for _, cand := range candidates() {
 			if flavor != "" && cand.kind != flavor {
 				continue
 			}
 			if c, err := net.Dial("unix", cand.path); err == nil {
 				flavor = cand.kind
+				if onLock != nil {
+					onLock(cand.kind)
+				}
 				// stderr only — stdout belongs to the JSON-RPC stream.
 				fmt.Fprintf(os.Stderr, "xerotty mcp: bridging stdio <-> %s (%s)\n", cand.path, cand.kind)
 				return c
@@ -104,7 +159,6 @@ func MCPBridge(args []string) int {
 		}
 		return nil
 	}
-	return runBridge(discover, os.Stdin, os.Stdout)
 }
 
 // reconnectWindow is how long the bridge keeps retrying discovery
@@ -186,12 +240,13 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 		selfInfo, _ = os.Stat(selfExe)
 	}
 
-	// A re-exec'd continuation inherits its trust mode via env and acts
-	// like a reconnect from its first dial (replay mode + nudge
-	// tools/list_changed), not a cold launch (which would fail-fast if
-	// the daemon is momentarily down mid-upgrade).
+	// A re-exec'd continuation inherits its trust mode and flavor via
+	// env and acts like a reconnect from its first dial (replay mode +
+	// nudge tools/list_changed + wait out the reconnect window for a
+	// same-flavor socket), not a cold launch (which would fail-fast if
+	// the server is momentarily down mid-upgrade).
 	lastMode := os.Getenv(mcpReplayModeEnv)
-	firstDial := lastMode == ""
+	firstDial := !isContinuation()
 	for {
 		var conn net.Conn
 		deadline := time.Now().Add(reconnectWindow)
@@ -291,8 +346,9 @@ func runBridge(discover func() net.Conn, in io.Reader, out io.Writer) int {
 		// xerotty file was replaced underneath us, exec-in-place into
 		// the new binary instead of re-dialing on stale code. stdin/
 		// stdout are inherited fds (not cloexec), so they survive the
-		// exec untouched; lastMode rides across via env, and the new
-		// image re-dials + replays. Any request mid-flight here would
+		// exec untouched; lastMode and the flavor lock (mcpFlavorEnv,
+		// set when discover locked) ride across via env, and the new
+		// image re-dials the same flavor + replays. Any request mid-flight here would
 		// have died with the dropped connection anyway (client retry
 		// covers it), so this boundary is the safe place to swap.
 		if selfExe != "" && binaryReplaced(selfInfo, selfExe) {
