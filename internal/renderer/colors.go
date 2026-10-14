@@ -91,8 +91,8 @@ func DefaultTheme() Theme {
 			BarBg:        hexToABGR("#141718"),
 			InactiveBg:   hexToABGR("#1F2426"),
 			InactiveText: hexToABGR("#EEEEEC"),
-			ActiveBg:     hexToABGR("#2E3436"),
-			ActiveText:   hexToABGR("#EEEEEC"),
+			ActiveBg:     hexToABGR("#204A87"), // Tango dark sky blue
+			ActiveText:   hexToABGR("#FFFFFF"),
 			ActiveMarker: hexToABGR("#729FCF"),
 			HoverBg:      hexToABGR("#283033"),
 			Activity:     hexToABGR("#FCAF3E"), // Tango orange
