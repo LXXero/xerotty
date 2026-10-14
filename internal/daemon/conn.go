@@ -460,6 +460,16 @@ type tabSub struct {
 	// history or leave lastScrollbackLen pointing past a cleared ring.
 	clearPending atomic.Bool
 
+	// resync is set by handleResize when this client asks for a new
+	// size, and makes the next publish a CellFull. The client resizes
+	// its own mirror as it sends the request (daemonsource
+	// Source.Resize): a shrink drops the mirror's lower rows and a
+	// grow adds blank ones, so lastGrid no longer matches what the
+	// client holds. When the daemon's grid then ends where it was (a
+	// provisional size and back), no cells change and a diff would
+	// never refill those rows. Consumed on the publish goroutine.
+	resync atomic.Bool
+
 	// lastGrid is what we last shipped to this client for this
 	// tab. Used to compute CellDiff frames — only cells whose
 	// contents/style/width changed since last send go on the wire.
@@ -1021,6 +1031,11 @@ func (c *clientConn) handleResize(msg *protocol.Resize) error {
 		if !seeding || !owned {
 			sub.resizeSeq = c.daemon.resizeSeq.Add(1)
 		}
+		sub.resync.Store(true)
+		select {
+		case sub.wake <- struct{}{}:
+		default:
+		}
 	}
 	c.subsMu.Unlock()
 	if changed {
@@ -1571,6 +1586,14 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 			row[col] = cellFromUV(&cell)
 		}
 		grid[r] = row
+	}
+
+	// A size request from this client changed its mirror (see
+	// tabSub.resync): resend everything. Held while a shrink is
+	// pending; applying it changes the dimensions, which sends a
+	// CellFull anyway, and cancelling it wakes this loop.
+	if !t.shrinkPending() && sub.resync.Swap(false) {
+		sub.lastGrid = nil
 	}
 
 	// Decide: resync with CellFull (first paint, or dimensions

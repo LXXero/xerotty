@@ -71,6 +71,26 @@ type Daemon struct {
 	// recently resized OR typed on. See reconcileTabSize /
 	// clientConn.noteSizeActivity.
 	resizeSeq atomic.Uint64
+
+	// resizeSettle is how long a grid SHRINK waits for the requested
+	// size to stop changing before the PTY and emulator are resized
+	// (0 = apply at once). Default set in New; SetResizeSettle
+	// overrides it. See reconcileTabSize.
+	resizeSettle time.Duration
+}
+
+// defaultResizeSettle is the wait before a grid shrink is applied.
+// A restored GUI window reports a provisional size before its layout
+// is final; 150ms covers the frames between the two on a slow first
+// paint, and a drag that shrinks the window still reflows when the
+// drag pauses.
+const defaultResizeSettle = 150 * time.Millisecond
+
+// SetResizeSettle overrides how long a grid shrink waits before it is
+// applied; 0 applies every resize at once. Tests that check the grid
+// size right after a shrink set 0.
+func (d *Daemon) SetResizeSettle(wait time.Duration) {
+	d.resizeSettle = wait
 }
 
 // SetHeartbeat overrides the heartbeat ping interval and the liveness
@@ -494,6 +514,13 @@ func (d *Daemon) maxTabResizeSeq(sess *Session, tabID uint32) uint64 {
 }
 
 func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
+	d.reconcileTabSizeSettled(sess, tabID, false)
+}
+
+// reconcileTabSizeSettled is reconcileTabSize; settled is true when
+// called from the shrink timer, after the requested size has held for
+// resizeSettle, so a shrink is applied instead of deferred again.
+func (d *Daemon) reconcileTabSizeSettled(sess *Session, tabID uint32, settled bool) {
 	if sess == nil {
 		return
 	}
@@ -554,16 +581,84 @@ func (d *Daemon) reconcileTabSize(sess *Session, tabID uint32) {
 	}
 	bestCols = ClampTabDim(bestCols)
 	bestRows = ClampTabDim(bestRows)
-	if t.Term.Width() == bestCols && t.Term.Height() == bestRows {
-		return // already at the winning size — no thrash, no broadcast
+	curCols, curRows := t.Term.Width(), t.Term.Height()
+	if curCols == bestCols && curRows == bestRows {
+		// Already at the winning size — no thrash, no broadcast. A
+		// pending shrink that the size came back from is dropped:
+		// the grid never shrank, so no rows were lost.
+		if t.cancelShrink() || settled {
+			d.WakeTabSubscribers(tabID) // flush resyncs held for it
+		}
+		return
 	}
+	// A shrink waits until the requested size has held for
+	// resizeSettle. The emulator drops the rows below a shrunk grid
+	// and a grow brings them back blank, so a provisional size (a
+	// restored GUI window reports one before its layout settles, then
+	// the real one a few frames later) cost every row below it. The
+	// app is then sent back to its old size; Node's tty (Claude Code)
+	// re-reads the size on SIGWINCH and emits 'resize' only when it
+	// differs from the size it last saw, so after a fast shrink-and-
+	// back it saw nothing and never repainted the blank rows (half-
+	// drawn tabs after a GUI restart). A grow loses nothing and is
+	// applied at once.
+	if !settled && d.resizeSettle > 0 && (bestCols < curCols || bestRows < curRows) {
+		t.deferShrink(d.resizeSettle, func() { d.reconcileTabSizeSettled(sess, tabID, true) })
+		return
+	}
+	t.cancelShrink()
 	// Every grid flip is user-visible (the other clients' redraws
 	// reflow) — log who won so a size tug-of-war reads as a story,
 	// not a mystery.
 	logf("tab %d grid %dx%d -> %dx%d (owner %q)",
-		tabID, t.Term.Width(), t.Term.Height(), bestCols, bestRows, bestID)
+		tabID, curCols, curRows, bestCols, bestRows, bestID)
 	t.Term.Resize(bestCols, bestRows)
 	d.WakeTabSubscribers(tabID)
+}
+
+// deferShrink (re)starts the tab's shrink wait: fire runs after wait
+// unless another deferShrink or cancelShrink comes first. Restarting
+// on every shrink request means a drag that keeps shrinking the
+// window waits until the drag pauses.
+func (t *Tab) deferShrink(wait time.Duration, fire func()) {
+	t.shrinkMu.Lock()
+	defer t.shrinkMu.Unlock()
+	if t.shrinkTimer != nil {
+		t.shrinkTimer.Stop()
+	}
+	t.shrinkGen++
+	gen := t.shrinkGen
+	t.shrinkTimer = time.AfterFunc(wait, func() {
+		t.shrinkMu.Lock()
+		if t.shrinkGen != gen {
+			t.shrinkMu.Unlock()
+			return // stopped or replaced after this timer fired
+		}
+		t.shrinkTimer = nil
+		t.shrinkMu.Unlock()
+		fire()
+	})
+}
+
+// cancelShrink drops a pending shrink and reports whether one was
+// pending.
+func (t *Tab) cancelShrink() bool {
+	t.shrinkMu.Lock()
+	defer t.shrinkMu.Unlock()
+	if t.shrinkTimer == nil {
+		return false
+	}
+	t.shrinkTimer.Stop()
+	t.shrinkTimer = nil
+	t.shrinkGen++
+	return true
+}
+
+// shrinkPending reports whether a shrink is waiting to be applied.
+func (t *Tab) shrinkPending() bool {
+	t.shrinkMu.Lock()
+	defer t.shrinkMu.Unlock()
+	return t.shrinkTimer != nil
 }
 
 // WakeTabSubscribers nudges every client's publishLoop subscribed to
@@ -620,6 +715,7 @@ func New(cfg *config.Config, socketPath string) *Daemon {
 		sessions:          make(map[string]*Session),
 		heartbeatInterval: defaultHeartbeatInterval,
 		livenessWindow:    defaultLivenessWindow,
+		resizeSettle:      defaultResizeSettle,
 		instanceID:        newInstanceID(),
 	}
 }

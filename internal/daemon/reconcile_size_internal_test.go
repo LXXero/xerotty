@@ -22,6 +22,9 @@ import (
 func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 	cfg := config.Default()
 	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
+	// These cases check the grid right after each request; shrink
+	// deferral has its own test (TestShrinkWaitsForSettledSize).
+	d.SetResizeSettle(0)
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
@@ -111,6 +114,9 @@ func TestReconcileTabSizeMostRecentWins(t *testing.T) {
 func TestSizeOwnershipFollowsInput(t *testing.T) {
 	cfg := config.Default()
 	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
+	// These cases check the grid right after each request; shrink
+	// deferral has its own test (TestShrinkWaitsForSettledSize).
+	d.SetResizeSettle(0)
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
@@ -199,6 +205,9 @@ func TestSizeOwnershipFollowsInput(t *testing.T) {
 func TestReattachDoesNotStealSize(t *testing.T) {
 	cfg := config.Default()
 	d := New(&cfg, filepath.Join(testutil.SockDir(t), "xerottyd.sock"))
+	// These cases check the grid right after each request; shrink
+	// deferral has its own test (TestShrinkWaitsForSettledSize).
+	d.SetResizeSettle(0)
 	sess := d.session("default")
 	tab, _, err := sess.NewTab(0, 80, 24, "", "", nil)
 	if err != nil {
