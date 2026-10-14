@@ -733,6 +733,37 @@ func (w *Window) windowIDForHub(hub *daemonsource.Hub) uint32 {
 	return id
 }
 
+// closeEmptyDaemonWindows tells each daemon that this GUI window's
+// daemon window is gone, but only when the GUI window holds no tabs:
+// closing a window that still has live tabs would make the daemon fold
+// them into another window, which is a different decision from
+// "nothing left to show". Daemon-side, an empty window is otherwise
+// never removed, so it would accumulate across the session.
+func (w *Window) closeEmptyDaemonWindows() {
+	if w.tabs != nil && w.tabs.Count() > 0 {
+		return
+	}
+	ids := make(map[*daemonsource.Hub]uint32)
+	w.daemonWindowIDsMu.Lock()
+	for hub, id := range w.daemonWindowIDs {
+		ids[hub] = id
+	}
+	w.daemonWindowIDsMu.Unlock()
+	if w.app != nil && w.app.daemonHub != nil && w.daemonWindowID != 0 {
+		if _, ok := ids[w.app.daemonHub]; !ok {
+			ids[w.app.daemonHub] = w.daemonWindowID
+		}
+	}
+	for hub, id := range ids {
+		if hub == nil || id == 0 {
+			continue
+		}
+		if cli := hub.Client(); cli != nil {
+			_ = cli.SendWindowClose(id)
+		}
+	}
+}
+
 // setLocalDaemonWindowID points this Window at a freshly-minted
 // server-side window on the LOCAL/default daemon hub, keeping BOTH the
 // legacy daemonWindowID field AND the per-hub daemonWindowIDs map in
@@ -1162,6 +1193,54 @@ type daemonWindowSnapshot struct {
 	FocusedTabID uint32
 }
 
+// daemonAdoptSnapshots turns an attach snapshot into one GUI-window
+// snapshot per daemon window that still holds tabs, in daemon order,
+// plus a trailing synthetic window for tabs no window lists. This is
+// the layout a GUI restart rebuilds.
+func daemonAdoptSnapshots(attached *protocol.Attached) []daemonWindowSnapshot {
+	var queue []daemonWindowSnapshot
+	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
+	for _, ti := range attached.Tabs {
+		tabByID[ti.ID] = daemonTabSnapshot{
+			ID:    ti.ID,
+			Title: ti.Title,
+			Cols:  ti.Cols,
+			Rows:  ti.Rows,
+		}
+	}
+	for _, wi := range attached.Windows {
+		snap := daemonWindowSnapshot{
+			WindowID:     wi.ID,
+			PosX:         wi.PosX,
+			PosY:         wi.PosY,
+			Width:        wi.Width,
+			Height:       wi.Height,
+			FocusedTabID: wi.FocusedTabID,
+		}
+		for _, tid := range wi.TabIDs {
+			if t, ok := tabByID[tid]; ok {
+				snap.Tabs = append(snap.Tabs, t)
+				delete(tabByID, tid)
+			}
+		}
+		if len(snap.Tabs) > 0 {
+			queue = append(queue, snap)
+		}
+	}
+	// Sweep any orphan tabs (in tabByID but not in any window's
+	// TabIDs) into a synthetic window snapshot so they aren't lost.
+	if len(tabByID) > 0 {
+		var orphans []daemonTabSnapshot
+		for _, t := range tabByID {
+			orphans = append(orphans, t)
+		}
+		queue = append(queue, daemonWindowSnapshot{
+			Tabs: orphans,
+		})
+	}
+	return queue
+}
+
 // dialLocalDaemon ensures the local daemon is reachable (auto-spawning
 // it if needed), completes the Hello + Attach handshake, starts the
 // client read loop, and returns the connected client + its Attached
@@ -1205,45 +1284,7 @@ func (a *App) initDaemonSource() error {
 	// Group tabs by their daemon-side window so the GUI can spawn
 	// one Window per daemon Window on reattach. tabs.Tab info is
 	// keyed by ID; window info has TabIDs ordering.
-	tabByID := make(map[uint32]daemonTabSnapshot, len(attached.Tabs))
-	for _, ti := range attached.Tabs {
-		tabByID[ti.ID] = daemonTabSnapshot{
-			ID:    ti.ID,
-			Title: ti.Title,
-			Cols:  ti.Cols,
-			Rows:  ti.Rows,
-		}
-	}
-	for _, wi := range attached.Windows {
-		snap := daemonWindowSnapshot{
-			WindowID:     wi.ID,
-			PosX:         wi.PosX,
-			PosY:         wi.PosY,
-			Width:        wi.Width,
-			Height:       wi.Height,
-			FocusedTabID: wi.FocusedTabID,
-		}
-		for _, tid := range wi.TabIDs {
-			if t, ok := tabByID[tid]; ok {
-				snap.Tabs = append(snap.Tabs, t)
-				delete(tabByID, tid)
-			}
-		}
-		if len(snap.Tabs) > 0 {
-			a.daemonAdoptQueue = append(a.daemonAdoptQueue, snap)
-		}
-	}
-	// Sweep any orphan tabs (in tabByID but not in any window's
-	// TabIDs) into a synthetic window snapshot so they aren't lost.
-	if len(tabByID) > 0 {
-		var orphans []daemonTabSnapshot
-		for _, t := range tabByID {
-			orphans = append(orphans, t)
-		}
-		a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonWindowSnapshot{
-			Tabs: orphans,
-		})
-	}
+	a.daemonAdoptQueue = append(a.daemonAdoptQueue, daemonAdoptSnapshots(attached)...)
 	hub := daemonsource.NewHub(cli)
 	// Self-heal: a dropped/restarted local daemon is re-dialed by the
 	// hub itself (auto-spawning via EnsureLocalDaemon if the process
@@ -1835,6 +1876,9 @@ func (a *App) reapClosedWindows() {
 			survivors = append(survivors, w)
 			continue
 		}
+		// A GUI window with no tabs left (last tab closed, or every tab
+		// dragged out) must not leave its daemon window registered.
+		w.closeEmptyDaemonWindows()
 		// Tear down the Window's terminals and renderer. Use
 		// Detach (not Close) so daemon-backed tabs survive — the
 		// user closing a GUI window means "stop showing me", not
