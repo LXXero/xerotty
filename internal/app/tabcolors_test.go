@@ -32,7 +32,7 @@ func TestTabColorOverridesReachTheme(t *testing.T) {
 
 	th := renderer.DefaultTheme()
 	applyColorOverrides(&th, &cfg)
-	th.ResolveTabs(cfg.Appearance.Tabs.InactiveTextDim)
+	th.ResolveTabs()
 	tc := th.Tabs
 	want := map[string][2]uint32{
 		"bar_bg":        {tc.BarBg, hexc("#010101")},
@@ -151,27 +151,24 @@ func TestPrefsDialogMigratesFlatTabKeys(t *testing.T) {
 	if ap.ScrollbarThumb != "#222222" {
 		t.Error("prefs save wiped scrollbar_thumb")
 	}
-	if ap.Tabs.ActivityStyle != "bar" || ap.Tabs.InactiveTextDim != 0.4 {
-		t.Errorf("activity style / dim not round-tripped: %q %v", ap.Tabs.ActivityStyle, ap.Tabs.InactiveTextDim)
+	if ap.Tabs.ActivityStyle != "bar" {
+		t.Errorf("activity style not round-tripped: %q", ap.Tabs.ActivityStyle)
 	}
 	if ap.UITheme != "" {
 		t.Errorf(`ui_theme "same" saved as %q, want ""`, ap.UITheme)
 	}
 }
 
-// Custom tab colors use the config's dim amount, not the theme's.
-func TestCustomTabColorsUseConfigDim(t *testing.T) {
-	cfg := config.Default()
-	cfg.Appearance.TabColors = "custom"
-	th := renderer.DefaultTheme()
-	applyColorOverrides(&th, &cfg)
-	if th.Tabs.HasInactiveTextDim {
-		t.Fatal(`tab_colors = "custom" kept the theme's inactive_text_dim`)
-	}
-	cfg.Appearance.TabColors = "theme"
-	th2 := renderer.DefaultTheme()
-	applyColorOverrides(&th2, &cfg)
-	if !th2.Tabs.HasInactiveTextDim || th2.Tabs.InactiveTextDim != 0.2 {
-		t.Fatal(`tab_colors = "theme" dropped the theme's inactive_text_dim`)
+// The dim amount is the theme's in both tab color modes; there is
+// no config setting to fall back to.
+func TestTabDimComesFromTheme(t *testing.T) {
+	for _, mode := range []string{"theme", "custom"} {
+		cfg := config.Default()
+		cfg.Appearance.TabColors = mode
+		th := renderer.DefaultTheme()
+		applyColorOverrides(&th, &cfg)
+		if !th.Tabs.HasInactiveTextDim || th.Tabs.InactiveTextDim != 0.2 {
+			t.Errorf(`tab_colors = %q dropped the theme's inactive_text_dim`, mode)
+		}
 	}
 }

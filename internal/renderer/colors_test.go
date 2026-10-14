@@ -19,7 +19,7 @@ func TestContrastRatioKnownValues(t *testing.T) {
 func TestResolveTabsFillsUnsetFromTerminal(t *testing.T) {
 	th := DefaultTheme()
 	th.Tabs = TabColors{}
-	th.ResolveTabs(0.4)
+	th.ResolveTabs()
 	tc := th.Tabs
 	for name, v := range map[string]uint32{
 		"bar_bg": tc.BarBg, "inactive_bg": tc.InactiveBg, "inactive_text": tc.InactiveText,
@@ -48,7 +48,7 @@ func TestResolveTabsBlackBackground(t *testing.T) {
 	th := DefaultTheme()
 	th.Tabs = TabColors{}
 	th.Background = hexToABGR("#000000")
-	th.ResolveTabs(0.4)
+	th.ResolveTabs()
 	if th.Tabs.InactiveBg == th.Background {
 		t.Error("inactive tab matches a black terminal background")
 	}
@@ -59,7 +59,7 @@ func TestResolveTabsLightBackgroundPicksDarkAmber(t *testing.T) {
 	th.Tabs = TabColors{}
 	th.Background = hexToABGR("#FDF6E3")
 	th.Foreground = hexToABGR("#073642")
-	th.ResolveTabs(0.4)
+	th.ResolveTabs()
 	if th.Tabs.Activity != defaultActivityLight {
 		t.Fatalf("light theme activity = %#x, want %#x", th.Tabs.Activity, defaultActivityLight)
 	}
@@ -72,7 +72,7 @@ func TestResolveTabsTerminalKeyword(t *testing.T) {
 	th := DefaultTheme()
 	th.Tabs.ActiveBg = ParseTabColor("terminal")
 	th.Background = hexToABGR("#123456")
-	th.ResolveTabs(0.4)
+	th.ResolveTabs()
 	if th.Tabs.ActiveBg != th.Background {
 		t.Fatalf(`active_bg = "terminal" resolved to %#x, want terminal bg %#x`, th.Tabs.ActiveBg, th.Background)
 	}
@@ -104,18 +104,18 @@ func TestDimTowardKeepsReadabilityFloor(t *testing.T) {
 	}
 }
 
-// A theme's own dim amount replaces the one ResolveTabs is given.
-func TestResolveTabsThemeDimWins(t *testing.T) {
+// A theme's own dim amount wins; without one the default applies.
+func TestResolveTabsThemeDim(t *testing.T) {
 	th := DefaultTheme() // sets 0.2
-	th.ResolveTabs(0.4)
+	th.ResolveTabs()
 	want := Mix(th.Tabs.InactiveText, th.Tabs.InactiveBg, 0.2)
 	if th.Tabs.InactiveTextDimmed != want {
 		t.Errorf("dimmed = %#x, want the theme's 0.2 blend %#x", th.Tabs.InactiveTextDimmed, want)
 	}
 	th2 := DefaultTheme()
 	th2.Tabs.HasInactiveTextDim = false
-	th2.ResolveTabs(0.4)
-	if want := Mix(th2.Tabs.InactiveText, th2.Tabs.InactiveBg, 0.4); th2.Tabs.InactiveTextDimmed != want {
-		t.Errorf("without a theme amount, dimmed = %#x, want config's 0.4 blend %#x", th2.Tabs.InactiveTextDimmed, want)
+	th2.ResolveTabs()
+	if want := Mix(th2.Tabs.InactiveText, th2.Tabs.InactiveBg, DefaultInactiveTextDim); th2.Tabs.InactiveTextDimmed != want {
+		t.Errorf("without a theme amount, dimmed = %#x, want the default 0.4 blend %#x", th2.Tabs.InactiveTextDimmed, want)
 	}
 }

@@ -147,10 +147,9 @@ type TabAppearance struct {
 	// marked: "bar" (top bar + glow), "dot" (a dot before the title),
 	// or "both".
 	ActivityStyle string `toml:"activity_style"`
-	// InactiveTextDim is how far (0..1) background tab titles blend
-	// toward their tab color. The renderer stops short of dropping
-	// below WCAG 4.5:1 contrast however large this is.
-	InactiveTextDim float64 `toml:"inactive_text_dim"`
+	// The background-title dim amount is the theme's
+	// ([theme.ui.tabs] inactive_text_dim); an old inactive_text_dim
+	// here is ignored.
 }
 
 // TerminalThemeName is the theme the terminal colors come from.
@@ -308,8 +307,7 @@ func Default() Config {
 			TerminalColors: "theme",
 			TabColors:      "theme",
 			Tabs: TabAppearance{
-				ActivityStyle:   "bar",
-				InactiveTextDim: 0.4,
+				ActivityStyle: "bar",
 			},
 			Glow: GlowConfig{
 				Style:         "lava",

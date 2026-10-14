@@ -762,8 +762,8 @@ active_marker = "#BD93F9"   # line along the bottom of the current tab
 hover_bg      = "#343746"   # tab under the mouse
 activity      = "#FFB86C"   # top bar + glow: background tab has unseen output
 bell          = "#FF5555"   # dot before the title: background tab rang the bell
-# inactive_text_dim = 0.2   # optional: replaces [appearance.tabs] inactive_text_dim
-                            # while tab_colors = "theme"
+inactive_text_dim = 0.4     # blend background tab titles toward inactive_bg by up
+                            # to this much (default 0.4); never below 4.5:1
 ```
 
 The original flat keys in `[theme.ui]` (`tab_activity_glow`, `tab_bar_bg`,
@@ -820,13 +820,12 @@ scrollbar_thumb = "#333333"
 tab_colors = "custom"   # "theme" | "custom"
 
 [appearance.tabs]
-# Colors: same keys as [theme.ui.tabs], applied when tab_colors = "custom".
+# Colors: same keys as [theme.ui.tabs] except inactive_text_dim (the theme's
+# only), applied when tab_colors = "custom".
 active_bg = "terminal"
 activity = "#FF9F1C"
 # Behavior, always applied:
 activity_style = "bar"     # "bar" (top bar + glow) | "dot" | "both"
-inactive_text_dim = 0.4    # blend background tab titles toward their tab
-                           # color by up to this much; never below 4.5:1
 ```
 
 #### Bold as Bright Colors

@@ -37,8 +37,8 @@ scrollbar_thumb_hover = "#888A85"
 # Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
 # Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x). active_marker
 # equal to active_bg means no line under the current tab; the blue body marks it.
-# inactive_text_dim replaces the config's dim amount: the gray/blue bodies already
-# tell tabs apart, so background titles only dim a little (#EEEEEC -> #C5C6C4).
+# inactive_text_dim (default 0.4): the gray/blue bodies already tell tabs apart,
+# so background titles only dim a little (#EEEEEC -> #C5C6C4).
 [theme.ui.tabs]
 bar_bg        = "#141718"
 inactive_bg   = "#1F2426"

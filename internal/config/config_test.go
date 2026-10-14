@@ -146,6 +146,22 @@ default_mode = "propose"
 	}
 }
 
+// A config.toml from before the dim amount moved to themes still loads.
+func TestLoadIgnoresOldInactiveTextDim(t *testing.T) {
+	writeConfig(t, `
+[appearance.tabs]
+activity_style = "dot"
+inactive_text_dim = 0.6
+`)
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Appearance.Tabs.ActivityStyle != "dot" {
+		t.Errorf("ActivityStyle = %q, want dot", c.Appearance.Tabs.ActivityStyle)
+	}
+}
+
 // TestLoadNoConfigReturnsDefaults — missing file → Default(), no error.
 func TestLoadNoConfigReturnsDefaults(t *testing.T) {
 	t.Setenv(EnvConfigDir, t.TempDir()) // empty dir, no config.toml

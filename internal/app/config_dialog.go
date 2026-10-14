@@ -3,7 +3,6 @@ package app
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"sort"
 	"strings"
@@ -36,7 +35,7 @@ func loadThemeNamed(terminal string, cfg *config.Config) renderer.Theme {
 		t = renderer.DefaultTheme()
 	}
 	applyColorOverrides(&t, cfg)
-	t.ResolveTabs(cfg.Appearance.Tabs.InactiveTextDim)
+	t.ResolveTabs()
 	return t
 }
 
@@ -62,9 +61,6 @@ func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
 			InactiveText: ap.TabInactiveFg,
 		}.Apply(&t.Tabs)
 		tabSectionFrom(ap.Tabs).Apply(&t.Tabs)
-		// Custom tab colors are the user's own look: their dim amount
-		// wins over the theme's.
-		t.Tabs.HasInactiveTextDim = false
 	}
 	if ap.ScrollbarColors == "custom" {
 		if ap.ScrollbarBg != "" {
@@ -377,7 +373,6 @@ type configDialog struct {
 	tabActivity        string
 	tabBell            string
 	activityStyleIdx   int32
-	inactiveTextDim    float32
 	scrollbarBgHex     string
 	scrollbarThumbHex  string
 
@@ -711,7 +706,6 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.tabActivity = tb.Activity
 	d.tabBell = tb.Bell
 	d.activityStyleIdx = prefIndexOf(prefActivityStyles, tb.ActivityStyle)
-	d.inactiveTextDim = float32(tb.InactiveTextDim)
 	d.scrollbarBgHex = cfg.Appearance.ScrollbarBg
 	d.scrollbarThumbHex = cfg.Appearance.ScrollbarThumb
 	d.scrollbarThumbHex = cfg.Appearance.ScrollbarThumb
@@ -876,9 +870,6 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	if int(d.activityStyleIdx) < len(prefActivityStyles) {
 		cfg.Appearance.Tabs.ActivityStyle = prefActivityStyles[d.activityStyleIdx]
 	}
-	// Round off the slider's float32 so config.toml gets 0.4, not
-	// 0.4000000059604645.
-	cfg.Appearance.Tabs.InactiveTextDim = math.Round(float64(d.inactiveTextDim)*100) / 100
 	// Migrated into [appearance.tabs] above (loadFrom read them).
 	cfg.Appearance.TabBarBg = ""
 	cfg.Appearance.TabActiveBg = ""
@@ -1407,12 +1398,6 @@ func (a *Window) renderPrefAppearance() {
 		a.prefCombo("tabcolors", &d.tabColorsIdx, prefColorModes, w)
 	}, "New Output Marker", func() {
 		a.prefCombo("activitystyle", &d.activityStyleIdx, prefActivityStyles, w)
-	})
-	prefPairRow(w, "Background Tab Text Dim", func() {
-		imgui.SetNextItemWidth(w)
-		imgui.SliderFloat("##tabdim", &d.inactiveTextDim, 0, 0.8)
-	}, "", func() {
-		imgui.TextDisabled("never below 4.5:1; with Tab Colors = theme, a theme's own amount wins")
 	})
 
 	if d.tabColorsIdx == 1 {

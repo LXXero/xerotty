@@ -188,7 +188,7 @@ func TestBundledThemesTabContrast(t *testing.T) {
 		}
 		th, _ := LoadSet("dracula", n)
 		raw := th.Tabs
-		th.ResolveTabs(0.4)
+		th.ResolveTabs()
 		tc := th.Tabs
 		for key, v := range map[string]uint32{
 			"bar_bg": raw.BarBg, "inactive_bg": raw.InactiveBg, "inactive_text": raw.InactiveText,

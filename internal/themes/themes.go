@@ -78,8 +78,8 @@ type TabSection struct {
 	HoverBg      string `toml:"hover_bg"`
 	Activity     string `toml:"activity"`
 	Bell         string `toml:"bell"`
-	// InactiveTextDim (0..1) replaces config's [appearance.tabs]
-	// inactive_text_dim while tab_colors = "theme". Unset = use config's.
+	// InactiveTextDim (0..1) is how far background tab titles blend
+	// toward inactive_bg. Unset = renderer.DefaultInactiveTextDim.
 	InactiveTextDim *float64 `toml:"inactive_text_dim"`
 }
 
