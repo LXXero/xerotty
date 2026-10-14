@@ -62,6 +62,9 @@ func applyColorOverrides(t *renderer.Theme, cfg *config.Config) {
 			InactiveText: ap.TabInactiveFg,
 		}.Apply(&t.Tabs)
 		tabSectionFrom(ap.Tabs).Apply(&t.Tabs)
+		// Custom tab colors are the user's own look: their dim amount
+		// wins over the theme's.
+		t.Tabs.HasInactiveTextDim = false
 	}
 	if ap.ScrollbarColors == "custom" {
 		if ap.ScrollbarBg != "" {
@@ -1409,7 +1412,7 @@ func (a *Window) renderPrefAppearance() {
 		imgui.SetNextItemWidth(w)
 		imgui.SliderFloat("##tabdim", &d.inactiveTextDim, 0, 0.8)
 	}, "", func() {
-		imgui.TextDisabled("never dims below 4.5:1 contrast")
+		imgui.TextDisabled("never below 4.5:1; with Tab Colors = theme, a theme's own amount wins")
 	})
 
 	if d.tabColorsIdx == 1 {

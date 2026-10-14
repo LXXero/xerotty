@@ -158,3 +158,20 @@ func TestPrefsDialogMigratesFlatTabKeys(t *testing.T) {
 		t.Errorf(`ui_theme "same" saved as %q, want ""`, ap.UITheme)
 	}
 }
+
+// Custom tab colors use the config's dim amount, not the theme's.
+func TestCustomTabColorsUseConfigDim(t *testing.T) {
+	cfg := config.Default()
+	cfg.Appearance.TabColors = "custom"
+	th := renderer.DefaultTheme()
+	applyColorOverrides(&th, &cfg)
+	if th.Tabs.HasInactiveTextDim {
+		t.Fatal(`tab_colors = "custom" kept the theme's inactive_text_dim`)
+	}
+	cfg.Appearance.TabColors = "theme"
+	th2 := renderer.DefaultTheme()
+	applyColorOverrides(&th2, &cfg)
+	if !th2.Tabs.HasInactiveTextDim || th2.Tabs.InactiveTextDim != 0.2 {
+		t.Fatal(`tab_colors = "theme" dropped the theme's inactive_text_dim`)
+	}
+}

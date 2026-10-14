@@ -78,6 +78,9 @@ type TabSection struct {
 	HoverBg      string `toml:"hover_bg"`
 	Activity     string `toml:"activity"`
 	Bell         string `toml:"bell"`
+	// InactiveTextDim (0..1) replaces config's [appearance.tabs]
+	// inactive_text_dim while tab_colors = "theme". Unset = use config's.
+	InactiveTextDim *float64 `toml:"inactive_text_dim"`
 }
 
 // Apply sets every tab color s names onto tc, leaving the rest alone.
@@ -96,6 +99,9 @@ func (s TabSection) Apply(tc *renderer.TabColors) {
 	set(&tc.HoverBg, s.HoverBg)
 	set(&tc.Activity, s.Activity)
 	set(&tc.Bell, s.Bell)
+	if s.InactiveTextDim != nil {
+		tc.InactiveTextDim, tc.HasInactiveTextDim = *s.InactiveTextDim, true
+	}
 }
 
 // Load loads a theme by name, searching bundled and user directories.

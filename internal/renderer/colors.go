@@ -45,6 +45,11 @@ type TabColors struct {
 	Activity uint32
 	Bell     uint32 // dot on a background tab that rang the bell
 
+	// InactiveTextDim is the theme's own background-title dim amount,
+	// used instead of the config's when HasInactiveTextDim is set.
+	InactiveTextDim    float64
+	HasInactiveTextDim bool
+
 	// InactiveTextDimmed is what background tab titles are drawn in.
 	// Derived by ResolveTabs; never read from a theme file.
 	InactiveTextDimmed uint32
@@ -97,6 +102,10 @@ func DefaultTheme() Theme {
 			HoverBg:      hexToABGR("#283033"),
 			Activity:     hexToABGR("#FCAF3E"), // Tango orange
 			Bell:         hexToABGR("#FF6B6B"),
+			// Gray vs blue already marks the current tab, so
+			// background titles only dim a little.
+			InactiveTextDim:    0.2,
+			HasInactiveTextDim: true,
 		},
 		ANSI: [16]uint32{
 			hexToABGR("#2E3436"), // black
@@ -204,12 +213,16 @@ func ParseTabColor(v string) uint32 {
 // replaces MatchTerminalBg, and computes the dimmed background-tab
 // text. Call it after all overrides are applied, since the defaults
 // and "terminal" both depend on the final Background/Foreground.
-// dim is the largest blend of title toward tab color (0..1); the
-// result never drops below MinTextContrast unless the undimmed text
-// was already below it.
+// dim is the largest blend of title toward tab color (0..1); a theme
+// that sets its own (HasInactiveTextDim) overrides it. The result
+// never drops below MinTextContrast unless the undimmed text was
+// already below it.
 func (t *Theme) ResolveTabs(dim float64) {
 	bg, fg := t.Background, t.Foreground
 	tc := &t.Tabs
+	if tc.HasInactiveTextDim {
+		dim = tc.InactiveTextDim
+	}
 	fill := func(c *uint32, def uint32) {
 		if *c == 0 {
 			*c = def

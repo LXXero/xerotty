@@ -103,3 +103,19 @@ func TestDimTowardKeepsReadabilityFloor(t *testing.T) {
 		t.Error("text below the floor was dimmed further")
 	}
 }
+
+// A theme's own dim amount replaces the one ResolveTabs is given.
+func TestResolveTabsThemeDimWins(t *testing.T) {
+	th := DefaultTheme() // sets 0.2
+	th.ResolveTabs(0.4)
+	want := Mix(th.Tabs.InactiveText, th.Tabs.InactiveBg, 0.2)
+	if th.Tabs.InactiveTextDimmed != want {
+		t.Errorf("dimmed = %#x, want the theme's 0.2 blend %#x", th.Tabs.InactiveTextDimmed, want)
+	}
+	th2 := DefaultTheme()
+	th2.Tabs.HasInactiveTextDim = false
+	th2.ResolveTabs(0.4)
+	if want := Mix(th2.Tabs.InactiveText, th2.Tabs.InactiveBg, 0.4); th2.Tabs.InactiveTextDimmed != want {
+		t.Errorf("without a theme amount, dimmed = %#x, want config's 0.4 blend %#x", th2.Tabs.InactiveTextDimmed, want)
+	}
+}

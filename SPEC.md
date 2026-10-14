@@ -762,6 +762,8 @@ active_marker = "#BD93F9"   # line along the bottom of the current tab
 hover_bg      = "#343746"   # tab under the mouse
 activity      = "#FFB86C"   # top bar + glow: background tab has unseen output
 bell          = "#FF5555"   # dot before the title: background tab rang the bell
+# inactive_text_dim = 0.2   # optional: replaces [appearance.tabs] inactive_text_dim
+                            # while tab_colors = "theme"
 ```
 
 The original flat keys in `[theme.ui]` (`tab_activity_glow`, `tab_bar_bg`,
