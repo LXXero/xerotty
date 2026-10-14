@@ -37,7 +37,7 @@ type TabColors struct {
 	InactiveText uint32 // before dimming
 	ActiveBg     uint32
 	ActiveText   uint32
-	ActiveMarker uint32 // line along the bottom of the current tab
+	ActiveMarker uint32 // line along the bottom of the current tab; equal to ActiveBg = no line
 	HoverBg      uint32
 	// Activity colors the top bar + glow (and the optional dot) on a
 	// background tab with output you haven't looked at. Alpha is
@@ -93,7 +93,7 @@ func DefaultTheme() Theme {
 			InactiveText: hexToABGR("#EEEEEC"),
 			ActiveBg:     hexToABGR("#204A87"), // Tango dark sky blue
 			ActiveText:   hexToABGR("#FFFFFF"),
-			ActiveMarker: hexToABGR("#729FCF"),
+			ActiveMarker: hexToABGR("#204A87"), // = ActiveBg: no line
 			HoverBg:      hexToABGR("#283033"),
 			Activity:     hexToABGR("#FCAF3E"), // Tango orange
 			Bell:         hexToABGR("#FF6B6B"),

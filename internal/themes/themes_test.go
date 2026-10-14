@@ -212,6 +212,9 @@ func TestBundledThemesTabContrast(t *testing.T) {
 			{"active marker / active bg", tc.ActiveMarker, tc.ActiveBg, renderer.MinMarkContrast},
 		}
 		for _, c := range checks {
+			if c.what == "active marker / active bg" && c.fg == c.bg {
+				continue // marker set to the tab body color: no line is drawn
+			}
 			if r := renderer.ContrastRatio(c.fg, c.bg); r < c.min {
 				t.Errorf("%s: %s = %.2f, want >= %.1f", n, c.what, r, c.min)
 			}

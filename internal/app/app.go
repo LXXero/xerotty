@@ -5292,7 +5292,8 @@ func (w *Window) renderTabBar() {
 			)
 		}
 		// Active-tab underline (matches ImGui's TabBarOverline style).
-		if isActive {
+		// A marker the same color as the tab body means "no line".
+		if isActive && tc.ActiveMarker != tc.ActiveBg {
 			overlineH := float32(2)
 			drawList.AddRectFilled(
 				imgui.Vec2{X: bgX0, Y: y1 - overlineH},

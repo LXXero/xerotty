@@ -35,14 +35,15 @@ scrollbar_thumb = "#555753"
 scrollbar_thumb_hover = "#888A85"
 
 # Tab bar. Values are "#RRGGBB", or "terminal" for the terminal background.
-# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x).
+# Contrast checked: titles >= 4.5:1, markers >= 3:1 (WCAG 2.x). active_marker
+# equal to active_bg means no line under the current tab; the blue body marks it.
 [theme.ui.tabs]
 bar_bg        = "#141718"
 inactive_bg   = "#1F2426"
 inactive_text = "#EEEEEC"
 active_bg     = "#204A87"
 active_text   = "#FFFFFF"
-active_marker = "#729FCF"
+active_marker = "#204A87"
 hover_bg      = "#283033"
 activity      = "#FCAF3E"
 bell          = "#FF6B6B"
