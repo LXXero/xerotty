@@ -4382,6 +4382,7 @@ func (a *Window) frame() {
 
 	// Tab bar — rendered AFTER terminal cells so it visually layers
 	// on top of them when they share the wrapper's drawlist.
+	a.markActiveTabViewed(time.Now())
 	a.renderTabBar()
 	a.drawTabDragGhost()
 
@@ -5101,6 +5102,23 @@ func (w *Window) drawTabDragGhost() {
 	dl.PopClipRect()
 }
 
+// markActiveTabViewed stamps the active tab as seen at now. It runs
+// every frame whether or not the tab bar is drawn. A single-tab window
+// draws no bar, and when this stamp lived inside renderTabBar's tab
+// loop the first tab of a new window was never stamped: its shell
+// prompt counted as unseen output the moment a second tab opened.
+func (w *Window) markActiveTabViewed(now time.Time) {
+	if tab := w.tabs.Active(); tab != nil {
+		w.tabViewed[tab.ID] = now
+	}
+}
+
+// hasUnseenOutput reports whether a background tab produced output
+// after it was last the active tab. The active tab never has any.
+func (w *Window) hasUnseenOutput(tabID int, isActive bool, lastOut time.Time) bool {
+	return !isActive && !lastOut.IsZero() && lastOut.After(w.tabViewed[tabID])
+}
+
 func (w *Window) renderTabBar() {
 	w.tabBarHovered = false
 	// Track real mouse motion for tooltip gating (see the lastKeyAt
@@ -5167,15 +5185,12 @@ func (w *Window) renderTabBar() {
 			tab.SetBellPending(false)
 		}
 
-		// Activity view-tracking: the active tab is "seen" every frame;
-		// a background tab whose last output is newer than when we last
-		// saw it has UNSEEN output → the top-edge glow lights up (no
-		// size change). Cleared the moment it becomes active again.
-		if isActive {
-			w.tabViewed[tab.ID] = now
-		}
+		// Activity view-tracking: a background tab whose last output is
+		// newer than when we last saw it has UNSEEN output → the
+		// top-edge glow lights up (no size change). The active tab is
+		// stamped "seen" every frame in frame(), before this runs.
 		lastOut := tab.Terminal.LastOutput()
-		unviewed := !isActive && !lastOut.IsZero() && lastOut.After(w.tabViewed[tab.ID])
+		unviewed := w.hasUnseenOutput(tab.ID, isActive, lastOut)
 
 		// Whole-tab invisible button for hit detection. We use ONE
 		// button rather than two (with the close X as a second
