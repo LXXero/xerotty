@@ -614,6 +614,11 @@ type TabState struct {
 	// as unknown). Additive: no ProtocolVersion bump.
 	LastOutputAgeMs int64 `msg:"last_out_age_ms,omitempty"`
 	LastInputAgeMs  int64 `msg:"last_in_age_ms,omitempty"`
+	// BracketedPaste is whether the foreground app enabled DECSET 2004.
+	// The GUI MCP's send_keys reads it to wrap its text in paste
+	// markers. Additive: an older daemon omits it, which reads as off,
+	// so send_keys sends today's raw bytes.
+	BracketedPaste bool `msg:"bracketed_paste,omitempty"`
 }
 
 // ClearScrollback asks the daemon to drop the tab's scrollback ring.

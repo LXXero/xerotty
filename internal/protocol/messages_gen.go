@@ -8431,6 +8431,12 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "LastInputAgeMs")
 				return
 			}
+		case "bracketed_paste":
+			z.BracketedPaste, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "BracketedPaste")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -8445,8 +8451,8 @@ func (z *TabState) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(9)
-	var zb0001Mask uint16 /* 9 bits */
+	zb0001Len := uint32(10)
+	var zb0001Mask uint16 /* 10 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -8475,6 +8481,10 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 	if z.LastInputAgeMs == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x100
+	}
+	if z.BracketedPaste == false {
+		zb0001Len--
+		zb0001Mask |= 0x200
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -8588,6 +8598,18 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x200) == 0 { // if not omitted
+			// write "bracketed_paste"
+			err = en.Append(0xaf, 0x62, 0x72, 0x61, 0x63, 0x6b, 0x65, 0x74, 0x65, 0x64, 0x5f, 0x70, 0x61, 0x73, 0x74, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.BracketedPaste)
+			if err != nil {
+				err = msgp.WrapError(err, "BracketedPaste")
+				return
+			}
+		}
 	}
 	return
 }
@@ -8596,8 +8618,8 @@ func (z *TabState) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(9)
-	var zb0001Mask uint16 /* 9 bits */
+	zb0001Len := uint32(10)
+	var zb0001Mask uint16 /* 10 bits */
 	_ = zb0001Mask
 	if z.CWD == "" {
 		zb0001Len--
@@ -8626,6 +8648,10 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 	if z.LastInputAgeMs == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x100
+	}
+	if z.BracketedPaste == false {
+		zb0001Len--
+		zb0001Mask |= 0x200
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -8672,6 +8698,11 @@ func (z *TabState) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "last_in_age_ms"
 			o = append(o, 0xae, 0x6c, 0x61, 0x73, 0x74, 0x5f, 0x69, 0x6e, 0x5f, 0x61, 0x67, 0x65, 0x5f, 0x6d, 0x73)
 			o = msgp.AppendInt64(o, z.LastInputAgeMs)
+		}
+		if (zb0001Mask & 0x200) == 0 { // if not omitted
+			// string "bracketed_paste"
+			o = append(o, 0xaf, 0x62, 0x72, 0x61, 0x63, 0x6b, 0x65, 0x74, 0x65, 0x64, 0x5f, 0x70, 0x61, 0x73, 0x74, 0x65)
+			o = msgp.AppendBool(o, z.BracketedPaste)
 		}
 	}
 	return
@@ -8749,6 +8780,12 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "LastInputAgeMs")
 				return
 			}
+		case "bracketed_paste":
+			z.BracketedPaste, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "BracketedPaste")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -8763,7 +8800,7 @@ func (z *TabState) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabState) Msgsize() (s int) {
-	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.StringPrefixSize + len(z.Name) + 16 + msgp.Int64Size + 15 + msgp.Int64Size
+	s = 1 + 3 + msgp.Uint32Size + 4 + msgp.StringPrefixSize + len(z.CWD) + 8 + msgp.StringPrefixSize + len(z.ForegroundProcessName) + 11 + msgp.BoolSize + 11 + msgp.BoolSize + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.StringPrefixSize + len(z.Name) + 16 + msgp.Int64Size + 15 + msgp.Int64Size + 16 + msgp.BoolSize
 	return
 }
 

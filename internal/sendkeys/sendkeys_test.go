@@ -111,3 +111,41 @@ func TestTranslateErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestComposeBracketedPaste(t *testing.T) {
+	cases := []struct {
+		name      string
+		text      string
+		keys      []string
+		bracketed bool
+		want      string
+	}{
+		// The app asked for bracketed paste: text inside the markers,
+		// the keys after the end marker, so enter submits.
+		{"on wraps text, keys after", "hello", []string{"enter"}, true, "\x1b[200~hello\x1b[201~\r"},
+		// Mode off: today's raw bytes, so shells and other apps see no change.
+		{"off is raw text then keys", "ls", []string{"enter"}, false, "ls\r"},
+		{"off text only", "ls", nil, false, "ls"},
+		// Keys-only calls never get markers.
+		{"keys only, on", "", []string{"ctrl+c"}, true, "\x03"},
+		{"keys only, off", "", []string{"ctrl+c"}, false, "\x03"},
+		// Text cannot end the paste early.
+		{"end marker removed", "a\x1b[201~rm -rf x\r", []string{"enter"}, true, "\x1b[200~arm -rf x\r\x1b[201~\r"},
+		{"start marker removed", "a\x1b[200~b", nil, true, "\x1b[200~ab\x1b[201~"},
+		{"marker rebuilt by removal", "\x1b[20\x1b[201~1~x", nil, true, "\x1b[200~x\x1b[201~"},
+		// Mode off keeps the text exactly, markers included.
+		{"off keeps markers", "a\x1b[201~b", nil, false, "a\x1b[201~b"},
+	}
+	for _, c := range cases {
+		got, err := Compose(c.text, c.keys, false, c.bracketed)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if string(got) != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	if _, err := Compose("x", []string{"nosuchkey"}, false, true); err == nil {
+		t.Error("unknown key token: want an error")
+	}
+}

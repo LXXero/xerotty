@@ -240,3 +240,49 @@ func ctrlByte(r rune) (byte, bool) {
 	}
 	return 0, false
 }
+
+// Paste markers (DECSET 2004 bracketed paste).
+const (
+	pasteStart = "\x1b[200~"
+	pasteEnd   = "\x1b[201~"
+)
+
+// Compose builds the bytes for one send_keys call: text first, then
+// the keys, as one buffer the caller writes in one write.
+//
+// With bracketedPaste false the result is the text followed by the
+// key bytes, exactly as before. With it true the text goes inside
+// ESC[200~ ... ESC[201~ and the keys follow the end marker. Apps
+// that turned the mode on and read a fast unmarked burst as a paste
+// (Claude Code) otherwise take a trailing Enter as a newline in the
+// pasted text instead of a submit. Paste markers inside the text are
+// removed so the text cannot end the paste early. Empty text is not
+// wrapped, so a keys-only call never changes.
+func Compose(text string, keys []string, appCursor, bracketedPaste bool) ([]byte, error) {
+	kb, err := Translate(keys, appCursor)
+	if err != nil {
+		return nil, err
+	}
+	var buf []byte
+	if bracketedPaste && text != "" {
+		buf = append(buf, pasteStart...)
+		buf = append(buf, stripPasteMarkers(text)...)
+		buf = append(buf, pasteEnd...)
+	} else {
+		buf = append(buf, text...)
+	}
+	return append(buf, kb...), nil
+}
+
+// stripPasteMarkers removes ESC[200~ and ESC[201~ until none are
+// left, so removing one cannot join the bytes around it into a new
+// marker.
+func stripPasteMarkers(s string) string {
+	for {
+		t := strings.ReplaceAll(strings.ReplaceAll(s, pasteStart, ""), pasteEnd, "")
+		if t == s {
+			return t
+		}
+		s = t
+	}
+}

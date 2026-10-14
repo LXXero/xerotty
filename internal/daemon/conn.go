@@ -489,6 +489,7 @@ type tabSub struct {
 	lastFg        string
 	lastAppCursor bool
 	lastAltScreen bool
+	lastBracketed bool
 	lastTitle     string
 	// activitySentAt throttles TabState frames sent PURELY to refresh
 	// the activity age (output/input advanced but no metadata changed)
@@ -1463,6 +1464,7 @@ func (c *clientConn) publishLoop(t *Tab, sub *tabSub) {
 			// publish unless something actually changed.
 			if t.Term.IsAltScreen() != sub.lastAltScreen ||
 				t.Term.AppCursorMode() != sub.lastAppCursor ||
+				t.Term.BracketedPasteMode() != sub.lastBracketed ||
 				t.Title() != sub.lastTitle || t.Name() != sub.lastName {
 				c.sendTabState(t, sub)
 			}
@@ -1500,6 +1502,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	fg := t.Term.ForegroundProcessName()
 	appCursor := t.Term.AppCursorMode()
 	altScreen := t.Term.IsAltScreen()
+	bracketed := t.Term.BracketedPasteMode()
 	title := t.Title()
 	name := t.Name()
 	now := time.Now()
@@ -1508,7 +1511,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 
 	metaSame := sub.stateInit && cwd == sub.lastCWD && fg == sub.lastFg &&
 		appCursor == sub.lastAppCursor && altScreen == sub.lastAltScreen &&
-		title == sub.lastTitle && name == sub.lastName
+		bracketed == sub.lastBracketed && title == sub.lastTitle && name == sub.lastName
 	// Refresh purely-activity changes at most ~1/sec; a truly idle tab
 	// (no advance) sends nothing — the client ticks the age locally.
 	activityAdvanced := lastOut.After(sub.sentLastOut) || lastIn.After(sub.sentLastIn)
@@ -1519,6 +1522,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 	sub.lastFg = fg
 	sub.lastAppCursor = appCursor
 	sub.lastAltScreen = altScreen
+	sub.lastBracketed = bracketed
 	sub.lastTitle = title
 	sub.lastName = name
 	sub.activitySentAt = now
@@ -1531,6 +1535,7 @@ func (c *clientConn) sendTabState(t *Tab, sub *tabSub) {
 		ForegroundProcessName: fg,
 		AppCursorMode:         appCursor,
 		AltScreen:             altScreen,
+		BracketedPaste:        bracketed,
 		Title:                 title,
 		Name:                  name,
 		LastOutputAgeMs:       tabAgeMs(now, lastOut),

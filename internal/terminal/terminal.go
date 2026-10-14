@@ -751,6 +751,12 @@ func (t *Terminal) AppCursorMode() bool {
 	return t.appCursor.Load()
 }
 
+// BracketedPasteMode reports whether the foreground app enabled
+// DECSET 2004, so pasted text should go inside ESC[200~ ... ESC[201~.
+func (t *Terminal) BracketedPasteMode() bool {
+	return t.bracketedPaste.Load()
+}
+
 // IsAltScreen reports whether the foreground app is on the alternate
 // screen (vim/mutt/less). The GUI uses it for alternate-scroll: wheel
 // drives arrow keys instead of the scrollback when true.

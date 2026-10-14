@@ -52,6 +52,7 @@ type Source struct {
 	fgName    string
 	appCursor atomic.Bool
 	altScreen atomic.Bool
+	bracketed atomic.Bool
 
 	// Client-side scrollback ring, fed by MsgScrollbackAppend. Each
 	// entry is one row of cells. Oldest at index 0, newest at the
@@ -614,6 +615,11 @@ func (s *Source) AppCursorMode() bool { return s.appCursor.Load() }
 // cells, not mode switches, so it can't know this on its own).
 func (s *Source) IsAltScreen() bool { return s.altScreen.Load() }
 
+// BracketedPasteMode reports whether the foreground app enabled
+// DECSET 2004, mirrored from the daemon via TabState like
+// AppCursorMode. False when the daemon predates the field.
+func (s *Source) BracketedPasteMode() bool { return s.bracketed.Load() }
+
 func (s *Source) GetCWD() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -858,6 +864,7 @@ func (s *Source) applyTabState(f *protocol.TabState) {
 	s.mu.Unlock()
 	s.appCursor.Store(f.AppCursorMode)
 	s.altScreen.Store(f.AltScreen)
+	s.bracketed.Store(f.BracketedPaste)
 	// Title changes fire SetOnTitle callbacks the same way the
 	// MsgTitle path does for in-process tabs (tabs.NewTab installs
 	// a callback that updates tab.Title). Only fire on actual

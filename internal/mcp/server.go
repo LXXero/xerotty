@@ -682,9 +682,10 @@ func (c *agentConn) handleTabInput(req *rpcRequest) *rpcResponse {
 	return ok(req.ID, map[string]bool{"ok": true})
 }
 
-// handleTabKeys is tab/input for named keystrokes: text typed
-// verbatim, then key tokens translated server-side (sendkeys) with
-// the tab's live app-cursor mode. Same propose-gating as tab/input —
+// handleTabKeys is tab/input for named keystrokes: text sent
+// verbatim (inside paste markers when the tab is in bracketed-paste
+// mode), then key tokens translated server-side (sendkeys) with the
+// tab's live app-cursor mode. Same propose-gating as tab/input —
 // the queued proposal carries the final translated bytes.
 func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 	if err := c.requireWrite(); err != nil {
@@ -706,12 +707,10 @@ func (c *agentConn) handleTabKeys(req *rpcRequest) *rpcResponse {
 	if t == nil {
 		return rpcErr(req.ID, -32004, "tab not found", nil)
 	}
-	buf := []byte(p.Text)
-	kb, err := sendkeys.Translate(p.Keys, t.Term.AppCursorMode())
+	buf, err := sendkeys.Compose(p.Text, p.Keys, t.Term.AppCursorMode(), t.Term.BracketedPasteMode())
 	if err != nil {
 		return invalidParams(req.ID, err.Error())
 	}
-	buf = append(buf, kb...)
 	if len(buf) == 0 {
 		return invalidParams(req.ID, "nothing to send: pass text and/or keys")
 	}

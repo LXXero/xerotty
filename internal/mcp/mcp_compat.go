@@ -107,12 +107,12 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "send_keys",
-			"description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is typed first, completely literally (no escape interpretation), then each `keys` token is pressed in order. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}. Blocked in observe mode.",
+			"description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is sent first, completely literally (no escape interpretation), then each `keys` token is pressed in order. When the app turned on bracketed paste (DECSET 2004), the text is sent as a paste (wrapped in paste markers) so a trailing enter still submits; otherwise it is typed. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}. Blocked in observe mode.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"tab_id": map[string]any{"type": "integer"},
-					"text":   map[string]any{"type": "string", "description": "Literal text typed before the keys."},
+					"text":   map[string]any{"type": "string", "description": "Literal text sent before the keys (pasted when the app enabled bracketed paste)."},
 					"keys":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Key tokens pressed in order."},
 				},
 				"required": []string{"tab_id"},
