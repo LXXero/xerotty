@@ -4,6 +4,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
@@ -289,6 +290,14 @@ type Tab struct {
 	// 0 = no such stamp. Read and written through atomics; the
 	// reconcile path compares it against the clients' stamps.
 	sizeOwnerSeq atomic.Uint64
+
+	// A grid shrink waits Daemon.resizeSettle before it is applied
+	// (see Daemon.reconcileTabSize). shrinkTimer is that wait, nil when
+	// no shrink is pending; shrinkGen makes a timer that fires after it
+	// was stopped or replaced a no-op. Guarded by shrinkMu.
+	shrinkMu    sync.Mutex
+	shrinkTimer *time.Timer
+	shrinkGen   uint64
 }
 
 // Window is a logical UI window — a grouping of tabs. The daemon

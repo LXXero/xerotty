@@ -3763,6 +3763,14 @@ func (a *Window) frame() {
 			a.daemonWindowID = snap.WindowID
 			a.app.installSourceFactory(a)
 			a.app.daemonHub.SetDefaultWindowID(snap.WindowID)
+			// Size the adopted tabs to the window being opened: the
+			// restored geometry when there is one, not the configured
+			// columns/rows, which shrank every tab to 80x24 for a few
+			// frames on each restart.
+			adoptCols, adoptRows := cfgCols, cfgRows
+			if a.restoredGeom {
+				adoptCols, adoptRows = a.gridSize()
+			}
 			var focusIdx = -1
 			for i, ts := range snap.Tabs {
 				src := a.app.daemonHub.Adopt(ts.ID, int(ts.Cols), int(ts.Rows))
@@ -3770,7 +3778,7 @@ func (a *Window) frame() {
 				if ts.Title != "" {
 					tab.SetTitle(ts.Title)
 				}
-				src.Resize(cfgCols, cfgRows)
+				src.Resize(adoptCols, adoptRows)
 				if ts.ID == snap.FocusedTabID {
 					focusIdx = i
 				}
