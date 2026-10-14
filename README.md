@@ -95,7 +95,7 @@ Bundled themes live in [`themes/`](themes/) and are referenced by name:
 
 ```toml
 [appearance]
-theme = "dracula"  # or "gruvbox-dark", "monokai", "solarized-dark", "solarized-light", "tango"
+theme = "xerotty"  # the default (Tango colors, white on black); or "tango", "dracula", "gruvbox-dark", "monokai", "solarized-dark", "solarized-light"
 ```
 
 The lava-lamp glow backdrop, in full (everything optional except `enabled`):

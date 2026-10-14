@@ -207,8 +207,11 @@ func themeFromFile(tf ThemeFile) renderer.Theme {
 
 	theme := renderer.DefaultTheme()
 	// Tab colors a file doesn't set derive from ITS terminal colors
-	// (renderer.Theme.ResolveTabs), not from Dracula's defaults.
+	// (renderer.Theme.ResolveTabs), not from the built-in defaults.
 	theme.Tabs = renderer.TabColors{}
+	// bold is optional; without it bold text is bright white from the
+	// file's own palette, not the built-in theme's bold color.
+	theme.Bold = 0
 
 	if c.Foreground != "" {
 		theme.Foreground = renderer.HexToABGR(c.Foreground)

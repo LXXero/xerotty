@@ -73,47 +73,48 @@ var (
 	defaultActivityLight = hexToABGR("#A55A00")
 )
 
-// DefaultTheme returns the Dracula theme.
+// DefaultTheme returns the xerotty theme (Tango colors, white on
+// black), the same values as themes/xerotty.toml, for when no theme
+// file is found at all.
 func DefaultTheme() Theme {
 	return Theme{
-		Foreground:     0xFFF2F8F8, // #F8F8F2 in ABGR
-		Background:     0xFF36282A, // #282A36 in ABGR (note: ABGR = 0xAABBGGRR)
-		Cursor:         0xFFF2F8F8,
-		SelectionFg:    0xFFF2F8F8,
-		SelectionBg:    0xFF5A4744,
-		ScrollbarBg:    hexToABGR("#282A36"),
-		ScrollbarThumb: hexToABGR("#44475A"),
-		ScrollbarHover: hexToABGR("#6272A4"),
-		// Same values as themes/dracula.toml, for when no theme file
-		// is found at all.
+		Foreground:     hexToABGR("#FFFFFF"),
+		Background:     hexToABGR("#000000"),
+		Bold:           hexToABGR("#FFFFFF"),
+		Cursor:         hexToABGR("#FFFFFF"),
+		SelectionFg:    hexToABGR("#000000"),
+		SelectionBg:    hexToABGR("#D3D7CF"),
+		ScrollbarBg:    hexToABGR("#000000"),
+		ScrollbarThumb: hexToABGR("#555753"),
+		ScrollbarHover: hexToABGR("#888A85"),
 		Tabs: TabColors{
-			BarBg:        hexToABGR("#191A21"),
-			InactiveBg:   hexToABGR("#21222C"),
-			InactiveText: hexToABGR("#F8F8F2"),
-			ActiveBg:     hexToABGR("#44475A"),
-			ActiveText:   hexToABGR("#F8F8F2"),
-			ActiveMarker: hexToABGR("#BD93F9"),
-			HoverBg:      hexToABGR("#343746"),
-			Activity:     hexToABGR("#FFB86C"), // Dracula orange
-			Bell:         hexToABGR("#FF5555"),
+			BarBg:        hexToABGR("#141718"),
+			InactiveBg:   hexToABGR("#1F2426"),
+			InactiveText: hexToABGR("#EEEEEC"),
+			ActiveBg:     hexToABGR("#204A87"), // Tango dark sky blue
+			ActiveText:   hexToABGR("#FFFFFF"),
+			ActiveMarker: hexToABGR("#729FCF"),
+			HoverBg:      hexToABGR("#283033"),
+			Activity:     hexToABGR("#FCAF3E"), // Tango orange
+			Bell:         hexToABGR("#FF6B6B"),
 		},
 		ANSI: [16]uint32{
-			hexToABGR("#21222C"), // black
-			hexToABGR("#FF5555"), // red
-			hexToABGR("#50FA7B"), // green
-			hexToABGR("#F1FA8C"), // yellow
-			hexToABGR("#BD93F9"), // blue
-			hexToABGR("#FF79C6"), // magenta
-			hexToABGR("#8BE9FD"), // cyan
-			hexToABGR("#F8F8F2"), // white
-			hexToABGR("#6272A4"), // bright black
-			hexToABGR("#FF6E6E"), // bright red
-			hexToABGR("#69FF94"), // bright green
-			hexToABGR("#FFFFA5"), // bright yellow
-			hexToABGR("#D6ACFF"), // bright blue
-			hexToABGR("#FF92DF"), // bright magenta
-			hexToABGR("#A4FFFF"), // bright cyan
-			hexToABGR("#FFFFFF"), // bright white
+			hexToABGR("#2E3436"), // black
+			hexToABGR("#CC0000"), // red
+			hexToABGR("#4E9A06"), // green
+			hexToABGR("#C4A000"), // yellow
+			hexToABGR("#3465A4"), // blue
+			hexToABGR("#75507B"), // magenta
+			hexToABGR("#06989A"), // cyan
+			hexToABGR("#D3D7CF"), // white
+			hexToABGR("#555753"), // bright black
+			hexToABGR("#EF2929"), // bright red
+			hexToABGR("#8AE234"), // bright green
+			hexToABGR("#FCE94F"), // bright yellow
+			hexToABGR("#729FCF"), // bright blue
+			hexToABGR("#AD7FA8"), // bright magenta
+			hexToABGR("#34E2E2"), // bright cyan
+			hexToABGR("#EEEEEC"), // bright white
 		},
 	}
 }
