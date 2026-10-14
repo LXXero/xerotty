@@ -222,6 +222,48 @@ func TestGUIMCPListTabsAggregatesAndNamespaces(t *testing.T) {
 	}
 }
 
+// list_tabs reports each tab's label: the text on the user's tab bar,
+// with no host prefix for local tabs and no leading status glyph.
+func TestGUIMCPListTabsLabel(t *testing.T) {
+	b := &fakeBackend{tabs: []guimcp.TabRef{
+		{NSID: "local:1", Host: "local", Name: "build", Title: "zsh: ~/git", Foreground: "zsh"},
+		{NSID: "local:2", Host: "local", Title: "vim notes.md", Foreground: "vim"},
+		{NSID: "local:244", Host: "local", Title: "✳ Claude Code", Foreground: "claude"},
+		{NSID: "kh:3", Host: "kh", Title: "⠐ Claude Code", Foreground: "claude"},
+		{NSID: "kh:4", Host: "kh", Foreground: "top"},
+	}}
+	sock := startServer(t, b)
+	c, closeC := dial(t, sock)
+	defer closeC()
+
+	res, rerr := c.call(t, 1, "list_tabs", nil)
+	if rerr != nil {
+		t.Fatalf("list_tabs error: %+v", rerr)
+	}
+	var tabs []struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+	if err := json.Unmarshal(res, &tabs); err != nil {
+		t.Fatalf("decode list_tabs: %v", err)
+	}
+	want := map[string]string{
+		"local:1":   "build",
+		"local:2":   "vim notes.md",
+		"local:244": "Claude Code",
+		"kh:3":      "kh: Claude Code",
+		"kh:4":      "kh: top",
+	}
+	if len(tabs) != len(want) {
+		t.Fatalf("want %d tabs, got %d", len(want), len(tabs))
+	}
+	for _, tab := range tabs {
+		if tab.Label != want[tab.ID] {
+			t.Errorf("%s label = %q, want %q", tab.ID, tab.Label, want[tab.ID])
+		}
+	}
+}
+
 func TestGUIMCPToolsCallEnvelope(t *testing.T) {
 	b := &fakeBackend{tabs: []guimcp.TabRef{{NSID: "local:1", Host: "local"}}}
 	sock := startServer(t, b)

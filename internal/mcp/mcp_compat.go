@@ -41,7 +41,7 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 		// agent's context, so the trust-mode dance is known BEFORE
 		// the first blocked write instead of discovered through
 		// error archaeology.
-		"instructions": "xerotty terminal daemon (single-daemon socket). You control real terminal tabs (PTYs with running shells) on THIS daemon only; tab ids are plain integers from list_tabs. xerotty also has a separate GUI-aggregator MCP (serverInfo name 'xerotty-gui') with namespaced string ids like 'local:3' spanning every host the user's GUI is attached to — which server you are connected to was fixed when this connection was created and cannot be switched mid-session; if you need the other view, ask the user to register it (`xerotty mcp` = GUI view, `xerotty mcp --daemon` = this view).\n\n" +
+		"instructions": "xerotty terminal daemon (single-daemon socket). You control real terminal tabs (PTYs with running shells) on THIS daemon only; tab ids are plain integers from list_tabs. Each tab's `label` is the text on the user's tab bar: when talking to the user, refer to a tab by its label; use tab_id only in tool calls — the user never sees ids. xerotty also has a separate GUI-aggregator MCP (serverInfo name 'xerotty-gui') with namespaced string ids like 'local:3' spanning every host the user's GUI is attached to — which server you are connected to was fixed when this connection was created and cannot be switched mid-session; if you need the other view, ask the user to register it (`xerotty mcp` = GUI view, `xerotty mcp --daemon` = this view).\n\n" +
 			"TRUST MODE: every connection starts in '" + c.srv.defaultMode + "' mode. In observe mode all writes " +
 			"(send_input, send_keys, create_tab, ...) are blocked. To write, FIRST call set_agent_mode with " +
 			"{\"mode\":\"auto\"} (direct writes) or {\"mode\":\"propose\"} (writes queue for human approval). " +
@@ -61,7 +61,7 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 	tools := []map[string]any{
 		{
 			"name":        "list_tabs",
-			"description": "List every open tab in the daemon's default session. Returns id, name (the reuse label, if any), title, dimensions, window membership, and whether the tab is focused. Check here for an existing named tab before calling create_tab.",
+			"description": "List every open tab in the daemon's default session. Returns id, label (the text on the user's tab bar: assigned name, else program title without status glyphs, else foreground process — refer to tabs by label when talking to the user, and use the id only in tool calls), name (the reuse label, if any), title, dimensions, window membership, and whether the tab is focused. Check here for an existing named tab before calling create_tab.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
