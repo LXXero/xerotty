@@ -188,6 +188,7 @@ func (a *App) registerRemoteHub(name string, cli *clientproto.Client, attached *
 		return a.dialRemoteDaemon(name, host, nil)
 	})
 	hub.SeedRevision(attached.Revision)
+	a.noteAttached(hub, attached)
 	hub.SeedInstance(attached.InstanceID)
 	a.wireHubCallbacks(name, hub)
 
