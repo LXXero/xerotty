@@ -227,16 +227,36 @@ var uiProbeRunes = []rune{
 // distro paths. macOS has no outline lookup yet; Menlo ships with the OS
 // and covers these symbols.
 func findUIFallbacks(primaryPath string) []string {
+	has := func(rune) bool { return false }
+	if primary, err := fontsys.Default.Open(primaryPath); err == nil {
+		defer primary.Close()
+		has = primary.Has
+	}
+	return uiFallbacksFor(primaryPath, has, fontsys.FindOutlineForCodepoint, "/System/Library/Fonts/Menlo.ttc")
+}
+
+// uiFallbacksFor is findUIFallbacks with the primary's coverage check, the
+// fontconfig lookup and the macOS fallback path passed in, so tests can run
+// it without real fonts. Probe runes the primary already has are skipped,
+// so only fonts that fill a gap get merged into the atlas.
+func uiFallbacksFor(primaryPath string, has func(rune) bool, find func(rune, string) string, menlo string) []string {
 	var found []string
 	seen := map[string]bool{primaryPath: true}
+	missing := false
 	for _, r := range uiProbeRunes {
-		p := fontsys.FindOutlineForCodepoint(r, primaryPath)
+		if has(r) {
+			continue
+		}
+		missing = true
+		p := find(r, primaryPath)
 		if p != "" && !seen[p] {
 			seen[p] = true
 			found = append(found, p)
 		}
 	}
-	const menlo = "/System/Library/Fonts/Menlo.ttc"
+	if !missing {
+		return found
+	}
 	if _, err := os.Stat(menlo); err == nil && !seen[menlo] {
 		found = append(found, menlo)
 	}
