@@ -239,6 +239,27 @@ static char *xt_fc_find_for_codepoint(const char *hint, FcChar32 codepoint) {
     return out;
 }
 
+// xt_fc_find_outline_for_codepoint is the mono pass alone, restricted to
+// scalable non-color fonts that really contain codepoint. ImGui's static
+// atlas rasterizes with stb_truetype, which draws nothing for color bitmap
+// fonts like NotoColorEmoji, so UI text fallbacks must come from here.
+static char *xt_fc_find_outline_for_codepoint(const char *hint, FcChar32 codepoint) {
+    if (!xt_fc_init()) return NULL;
+    FcPattern *match = xt_fc_match_codepoint(hint, codepoint, 0);
+    if (!match) return NULL;
+    char *out = NULL;
+    FcBool color = FcFalse;
+    FcPatternGetBool(match, FC_COLOR, 0, &color);
+    if (!color && xt_fc_match_has_charset(match, codepoint)) {
+        FcChar8 *path = NULL;
+        if (FcPatternGetString(match, FC_FILE, 0, &path) == FcResultMatch) {
+            out = strdup((const char *)path);
+        }
+    }
+    FcPatternDestroy(match);
+    return out;
+}
+
 // xt_fc_find_bold returns a malloc'd path to the bold-weight variant of
 // the given regular font's family, or NULL if fontconfig has no separate
 // bold face. Caller frees.
@@ -519,6 +540,19 @@ func init() {
 		cpath := C.CString(path)
 		defer C.free(unsafe.Pointer(cpath))
 		return C.xt_ft_is_variable_path(cpath) != 0
+	}
+	FindOutlineForCodepoint = func(r rune, hint string) string {
+		var chint *C.char
+		if hint != "" {
+			chint = C.CString(hint)
+			defer C.free(unsafe.Pointer(chint))
+		}
+		cs := C.xt_fc_find_outline_for_codepoint(chint, C.FcChar32(r))
+		if cs == nil {
+			return ""
+		}
+		defer C.free(unsafe.Pointer(cs))
+		return C.GoString(cs)
 	}
 }
 

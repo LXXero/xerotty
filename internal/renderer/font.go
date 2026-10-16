@@ -186,7 +186,11 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	// by the glyph cache's primary-only LineMetrics, so taller merge
 	// fonts don't inflate row height in the terminal grid.
 	if loadedPath != "" {
-		for _, mergePath := range findUIFallbacks() {
+		for _, mergePath := range findUIFallbacks(loadedPath) {
+			if !safeToLoad(mergePath) {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "xerotty: merging UI fallback font %s\n", mergePath)
 			mc := terminalFontConfig()
 			mc.SetMergeMode(true)
 			io.Fonts().AddFontFromFileTTFV(mergePath, pxSize, mc, ranges)
@@ -205,25 +209,36 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	return font, bold, loadedPath
 }
 
+// uiProbeRunes are symbols programs commonly put in window titles, one or
+// two per block of terminalGlyphRanges: ✳ U+2733 is Claude Code's idle
+// title prefix, the circle quarters are its working spinner, and the rest
+// are common status and keyboard marks.
+var uiProbeRunes = []rune{
+	'✳', '◐', '●', '★', '✓', '✗', '⚠', '⏎', '⌘', '→', '…',
+}
+
 // findUIFallbacks returns font paths to merge into ImGui's static atlas
 // so tab labels / dialog text can render symbols the user's primary
-// monospace lacks (e.g. Monaco doesn't have ✳ U+2733 which appears in
-// claude's window title). Picked for broad symbol coverage with metrics
-// close to a typical monospace font; cell rendering is unaffected
-// because terminal cells use the glyph cache, not this atlas.
-func findUIFallbacks() []string {
-	candidates := []string{
-		// macOS — Menlo carries most Misc Symbols, Dingbats, Arrows.
-		"/System/Library/Fonts/Menlo.ttc",
-		// Linux — DejaVu Sans is a similarly broad fallback.
-		"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-		"/usr/share/fonts/dejavu/DejaVuSans.ttf",
-	}
+// monospace lacks (e.g. Noto Sans Mono and Monaco have no ✳). Terminal
+// cells are unaffected because they use the glyph cache, not this atlas.
+//
+// On Linux fontconfig picks the font for each probe symbol the primary
+// lacks, so this follows whatever fonts are installed instead of guessing
+// distro paths. macOS has no outline lookup yet; Menlo ships with the OS
+// and covers these symbols.
+func findUIFallbacks(primaryPath string) []string {
 	var found []string
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
+	seen := map[string]bool{primaryPath: true}
+	for _, r := range uiProbeRunes {
+		p := fontsys.FindOutlineForCodepoint(r, primaryPath)
+		if p != "" && !seen[p] {
+			seen[p] = true
 			found = append(found, p)
 		}
+	}
+	const menlo = "/System/Library/Fonts/Menlo.ttc"
+	if _, err := os.Stat(menlo); err == nil && !seen[menlo] {
+		found = append(found, menlo)
 	}
 	return found
 }

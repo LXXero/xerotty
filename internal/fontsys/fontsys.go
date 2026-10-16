@@ -105,3 +105,11 @@ var Default System
 // real check at init time; the stub returns false on unsupported
 // platforms (safe default — false means "we'll try to load it").
 var IsVariableFont = func(path string) bool { return false }
+
+// FindOutlineForCodepoint returns the path of an installed scalable,
+// non-color font that has a glyph for r, biased toward the style of hint
+// (a font path or family name). It exists for ImGui's static atlas, whose
+// stb_truetype rasterizer can't draw color bitmap fonts, so it skips the
+// color-emoji preference of System.FindForCodepoint. Returns "" when no
+// font has r or the platform has no implementation.
+var FindOutlineForCodepoint = func(r rune, hint string) string { return "" }
