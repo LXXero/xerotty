@@ -244,3 +244,26 @@ func TestThemeWithoutBoldDoesNotInheritDefault(t *testing.T) {
 		t.Fatalf("dracula inherited bold %#x", th.Bold)
 	}
 }
+
+// A packaged install keeps the bundled themes in
+// $XDG_DATA_DIRS/xerotty/themes, nowhere near the binary in /usr/bin.
+func TestLoadFromXDGDataDirs(t *testing.T) {
+	t.Setenv(config.EnvConfigDir, t.TempDir())
+	data := t.TempDir()
+	td := filepath.Join(data, "xerotty", "themes")
+	if err := os.MkdirAll(td, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(td, "pkg.toml"), []byte(termA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_DATA_DIRS", "/nonexistent:"+data)
+
+	th, err := Load("pkg")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if th.Background != hex("#101010") {
+		t.Errorf("background = %#x, want %#x", th.Background, hex("#101010"))
+	}
+}

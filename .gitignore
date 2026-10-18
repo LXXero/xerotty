@@ -16,3 +16,9 @@ icon/xerotty-*.png
 !icon/xerotty-256.png
 *.o
 *.a
+
+# makepkg output from packaging/aur/
+packaging/*/src/
+packaging/*/pkg/
+packaging/*/xerotty/
+packaging/*/*.pkg.tar*

@@ -193,6 +193,19 @@ func SearchDirs() []string {
 		dirs = append(dirs, filepath.Join(dir, "..", "Resources", "themes"))
 	}
 
+	// System-wide install: distro packages (the AUR xerotty-git) put the
+	// bundled themes in $XDG_DATA_DIRS/xerotty/themes, normally
+	// /usr/share/xerotty/themes, since the binary lives in /usr/bin.
+	dataDirs := os.Getenv("XDG_DATA_DIRS")
+	if dataDirs == "" {
+		dataDirs = "/usr/local/share:/usr/share"
+	}
+	for _, d := range filepath.SplitList(dataDirs) {
+		if d != "" {
+			dirs = append(dirs, filepath.Join(d, "xerotty", "themes"))
+		}
+	}
+
 	return dirs
 }
 
