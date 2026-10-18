@@ -21,6 +21,10 @@
 package glyphcache
 
 import (
+	"path/filepath"
+	"sort"
+	"strings"
+
 	"github.com/AllenDang/cimgui-go/imgui"
 	"github.com/LXXero/xerotty/internal/fontsys"
 	"github.com/LXXero/xerotty/internal/platform"
@@ -95,6 +99,10 @@ type Cache struct {
 	// per text cell per rebuilt frame.
 	metrics   fontsys.LineMetrics
 	metricsOK bool
+	// families maps a font path to its family names, from
+	// sys.Enumerate, built the first time a private-use codepoint
+	// needs a fallback (see isIconFont).
+	families map[string][]string
 	// dedicated tracks oversized glyphs that got their own texture
 	// (too big for a page) so Close can free them; page textures are
 	// freed via pages.
@@ -221,6 +229,15 @@ func (c *Cache) fontFor(r rune) fontsys.Font {
 		return c.fallbacks[path]
 	}
 	path, _ := c.sys.FindForCodepoint(r, c.priPath)
+	if path != "" && path != c.priPath && isPrivateUse(r) && !c.isIconFont(path) {
+		// A private-use codepoint means something different in every
+		// font, so the cascade's pick is only right if it's an icon
+		// font (Nerd Font, Powerline, Font Awesome…). Otherwise — e.g.
+		// macOS picking STIX Two Math for the Powerline branch icon
+		// U+E0A0 — look for an installed icon font that has it, and
+		// failing that treat it as missing so the renderer draws a box.
+		path = c.iconFontWith(r)
+	}
 	if path == "" {
 		// No fallback at all — fall back to primary if it has the glyph.
 		if emojiCandidate && c.primary != nil && c.primary.Has(r) {
@@ -277,7 +294,7 @@ func (c *Cache) uploadGlyph(g *fontsys.Glyph) (imgui.TextureRef, imgui.Vec2, img
 	x, y, page := c.atlasAlloc(w+2*atlasPad, h+2*atlasPad)
 	c.tex.UpdateTexture(page.tex, x+atlasPad, y+atlasPad, w, h, unsafePtr(g.Pixels))
 	const s = float32(atlasPageSize)
-	uv0 := imgui.Vec2{X: float32(x + atlasPad) / s, Y: float32(y + atlasPad) / s}
+	uv0 := imgui.Vec2{X: float32(x+atlasPad) / s, Y: float32(y+atlasPad) / s}
 	uv1 := imgui.Vec2{X: float32(x+atlasPad+w) / s, Y: float32(y+atlasPad+h) / s}
 	return page.tex, uv0, uv1
 }
@@ -447,4 +464,113 @@ func (c *Cache) PrimaryAdvance() float32 {
 		return c.pxSize * 0.6
 	}
 	return e.Advance / c.fbScale
+}
+
+// isPrivateUse reports whether r is in one of Unicode's private-use
+// areas, whose glyphs are defined per font: the BMP area (where Nerd
+// Fonts and Powerline put their icons) and supplementary planes 15-16.
+func isPrivateUse(r rune) bool {
+	return (r >= 0xE000 && r <= 0xF8FF) ||
+		(r >= 0xF0000 && r <= 0xFFFFD) ||
+		(r >= 0x100000 && r <= 0x10FFFD)
+}
+
+// iconFontMarkers are lowercase name fragments of fonts whose
+// private-use glyphs are the icon sets terminal programs expect.
+// Matched against family names and file names with spaces, hyphens and
+// underscores removed.
+var iconFontMarkers = []string{
+	"nerdfont", // "JetBrainsMono Nerd Font", "Symbols Nerd Font Mono"
+	"powerline",
+	"symbols",
+	"fontawesome",
+	"materialdesignicons",
+	"codicon",
+	"octicons",
+	"devicons",
+	"weathericons",
+	"fontlogos",
+	"pomicons",
+}
+
+// iconFontName reports whether a font family or file name names an
+// icon font (see iconFontMarkers).
+func iconFontName(name string) bool {
+	n := strings.ToLower(name)
+	n = strings.NewReplacer(" ", "", "-", "", "_", "").Replace(n)
+	for _, m := range iconFontMarkers {
+		if strings.Contains(n, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// isIconFont reports whether the font at path is an icon font, by its
+// family names (from the OS font list) or its file name.
+func (c *Cache) isIconFont(path string) bool {
+	base := filepath.Base(path)
+	if iconFontName(strings.TrimSuffix(base, filepath.Ext(base))) {
+		return true
+	}
+	for _, fam := range c.fontFamilies()[filepath.Clean(path)] {
+		if iconFontName(fam) {
+			return true
+		}
+	}
+	return false
+}
+
+// fontFamilies returns path → family names for every installed font,
+// enumerating once per Cache. An enumeration error leaves it empty, so
+// only file names are checked.
+func (c *Cache) fontFamilies() map[string][]string {
+	if c.families != nil {
+		return c.families
+	}
+	c.families = map[string][]string{}
+	infos, err := c.sys.Enumerate()
+	if err != nil {
+		return c.families
+	}
+	for _, fi := range infos {
+		if fi.Path == "" || fi.Family == "" {
+			continue
+		}
+		p := filepath.Clean(fi.Path)
+		c.families[p] = append(c.families[p], fi.Family)
+	}
+	return c.families
+}
+
+// iconFontWith returns the path of an installed icon font that has r,
+// or "" if none does. The font that has it stays open in c.fallbacks;
+// ones opened only to check are closed again.
+func (c *Cache) iconFontWith(r rune) string {
+	fams := c.fontFamilies()
+	paths := make([]string, 0, len(fams))
+	for p := range fams {
+		if p != filepath.Clean(c.priPath) && c.isIconFont(p) {
+			paths = append(paths, p)
+		}
+	}
+	sort.Strings(paths) // deterministic pick when several qualify
+	for _, p := range paths {
+		if f, ok := c.fallbacks[p]; ok {
+			if f.Has(r) {
+				return p
+			}
+			continue
+		}
+		f, err := c.sys.Open(p)
+		if err != nil {
+			continue
+		}
+		if f.Has(r) {
+			c.fallbacks[p] = f
+			return p
+		}
+		f.Close()
+	}
+	return ""
 }
