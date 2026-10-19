@@ -1033,6 +1033,19 @@ func max2(a, b int) int {
 	return b
 }
 
+// SearchesOnDaemon reports whether this tab's scrollback search must
+// run on the daemon. Only a windowed Source needs it: its ScrollbackLen
+// is the daemon's true depth, so the daemon's absolute row indices
+// line up with the client's. A non-windowed Source mirrors only the
+// rows it received (no back-fill before attach, FIFO-dropped at its
+// own cap), so its ScrollbackLen can be smaller than the daemon's
+// depth and daemon indices would land on the wrong rows; the client's
+// own mirror is everything it can scroll to anyway, so it scans that
+// locally.
+func (s *Source) SearchesOnDaemon() bool {
+	return s.windowed
+}
+
 // RequestScrollbackSearch ships a search of the tab's FULL scrollback
 // to the daemon (which owns the history this windowed client doesn't
 // mirror) and returns the request id to correlate the async reply.
