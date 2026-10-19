@@ -137,18 +137,20 @@ func TestReconcileConvergesDaemonToGUILayout(t *testing.T) {
 	deadline = time.Now().Add(3 * time.Second)
 	var got [][]uint32
 	var focus []uint32
+	// The focus op is sent after the moves and applied asynchronously,
+	// so wait for focus to converge too, not just the layout.
 	for {
 		got, focus = restoredLayout(t, sockPath)
-		if reflect.DeepEqual(got, want) && daemonWindowCount(t, sockPath) == 2 {
+		if reflect.DeepEqual(got, want) && daemonWindowCount(t, sockPath) == 2 && focus[0] == b.TabID() {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("restored layout = %v, want %v (daemon windows %d, want 2)", got, want, daemonWindowCount(t, sockPath))
+			if n := daemonWindowCount(t, sockPath); !reflect.DeepEqual(got, want) || n != 2 {
+				t.Fatalf("restored layout = %v, want %v (daemon windows %d, want 2)", got, want, n)
+			}
+			t.Fatalf("window 1 active tab = %d, want B (%d)", focus[0], b.TabID())
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	if focus[0] != b.TabID() {
-		t.Errorf("window 1 active tab = %d, want B (%d)", focus[0], b.TabID())
 	}
 
 	// A second pass against the converged record has nothing to fix.
