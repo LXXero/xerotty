@@ -25,12 +25,12 @@ type Grid interface {
 
 // State tracks the scroll position and search state for a terminal.
 type State struct {
-	Offset    int // lines scrolled back from bottom (0 = live)
-	PrevSBLen int // scrollback length at last frame — used to freeze viewport on new output
-	Searching bool
-	Query     string
-	Matches   []Match
-	MatchIdx  int
+	Offset     int // lines scrolled back from bottom (0 = live)
+	PrevPushed int // scrollback push count at the last output frame — used to freeze viewport on new output
+	Searching  bool
+	Query      string
+	Matches    []Match
+	MatchIdx   int
 	// Search options
 	CaseSensitive bool
 	UseRegex      bool
@@ -109,6 +109,39 @@ func (s *State) IsScrolled() bool {
 // Reset returns to the live position.
 func (s *State) Reset() {
 	s.Offset = 0
+}
+
+// OnOutput keeps the viewport in place when a tab has new output.
+// pushed is the source's scrollback push count: how many rows have
+// entered its scrollback (see ScrollbackPushed). It grows even when a
+// full ring drops its oldest row for every new one and the length
+// stays the same, which is why it, not ScrollbackLen, measures how far
+// the content moved. sbLen is the current scrollback length.
+//
+// At the live position the view stays at the bottom. Scrolled back,
+// scrollOnOutput snaps to the bottom (gnome-terminal default);
+// otherwise the offset grows by the rows pushed since the last frame,
+// so the same lines stay on screen (xterm/iTerm default).
+func (s *State) OnOutput(pushed, sbLen int, scrollOnOutput bool) {
+	if s.IsScrolled() && s.PrevPushed > 0 {
+		if scrollOnOutput {
+			s.Reset()
+		} else if delta := pushed - s.PrevPushed; delta > 0 {
+			s.Offset += delta
+		}
+	}
+	// Clamp: scrollback can SHRINK below the current offset — a
+	// clear, an alt-screen switch, or a resize, all common during a
+	// big output burst. Without this the offset strands the viewport
+	// off the bottom showing blank rows (contentIdx goes negative)
+	// until the user manually scrolls — the "won't stay scrolled to
+	// the bottom" bug. A shrink to 0 (full clear) pins offset to 0 =
+	// live bottom. It also stops the view at the oldest row once the
+	// lines being read have dropped out of a full ring.
+	if s.Offset > sbLen {
+		s.Offset = sbLen
+	}
+	s.PrevPushed = pushed
 }
 
 // OpenSearch enters search mode, preserving search options across sessions.
