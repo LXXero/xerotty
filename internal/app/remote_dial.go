@@ -180,6 +180,11 @@ func (a *App) registerRemoteHub(name string, cli *clientproto.Client, attached *
 	}
 	host, _ := a.resolveRemote(name)
 	hub := daemonsource.NewHub(cli)
+	// Scrollback strategy must be set before any Source is created from
+	// this hub (adoption happens below). A hub left unconfigured mirrors
+	// a fixed 10000 rows whatever the config says: unlimited history is
+	// unreachable and a scrolled view shifts under new output.
+	a.configureHubScrollback(hub)
 	// Self-heal over SSH. Capture the resolved host (NOT a re-resolve
 	// inside the closure) so the reconnect dialer never touches
 	// a.adhocHosts off the main goroutine — SSH params don't change

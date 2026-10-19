@@ -380,6 +380,25 @@ type scrollbackWindower interface {
 	EnsureScrollbackWindow(from, to int)
 }
 
+// scrollbackPusher is implemented by daemon Sources: their push count
+// keeps growing when a full local mirror drops its oldest row for each
+// new one, where ScrollbackLen stays the same.
+type scrollbackPusher interface {
+	ScrollbackPushed() int
+}
+
+// scrollbackPushed returns how many rows have entered term's
+// scrollback, the measure the scroll anchor uses to keep a scrolled
+// view on the same lines. Sources without a push count use
+// ScrollbackLen, which matches it while their scrollback never drops
+// rows (the daemon-hosted Terminal is always "unlimited").
+func scrollbackPushed(term interface{ ScrollbackLen() int }) int {
+	if p, ok := term.(scrollbackPusher); ok {
+		return p.ScrollbackPushed()
+	}
+	return term.ScrollbackLen()
+}
+
 // scrollbackSearcher is implemented by daemon Sources: the deep
 // history they don't mirror is searched on the daemon. The reply
 // carries ABSOLUTE scrollback line indices (see runScrollbackSearch).
@@ -4049,39 +4068,13 @@ func (a *Window) frame() {
 	// Drain data notifications
 	a.tabs.DrainData()
 
-	// Scroll handling on new output:
-	// - If at live position: stay at bottom (auto-scroll)
-	// - If scrolled back:
-	//     scroll_on_output=true  → snap to bottom (gnome-terminal default)
-	//     scroll_on_output=false → freeze viewport by adjusting offset
-	//                              for new scrollback lines (xterm/iTerm default)
+	// Scroll handling on new output: see scrollback.State.OnOutput.
 	scrollOnOutput := a.app.cfg.Scrollback.ScrollOnOutput
 	for _, tab := range a.tabs.Tabs {
 		if tab.Dirty {
 			tab.Dirty = false
 			s := a.getScroll(tab.ID)
-			sbLen := tab.Terminal.ScrollbackLen()
-			if s.IsScrolled() && s.PrevSBLen > 0 {
-				if scrollOnOutput {
-					s.Reset()
-				} else {
-					delta := sbLen - s.PrevSBLen
-					if delta > 0 {
-						s.Offset += delta
-					}
-				}
-			}
-			// Clamp: scrollback can SHRINK below the current offset —
-			// a clear, an alt-screen switch, or a resize, all common
-			// during a big output burst. Without this the offset
-			// strands the viewport off the bottom showing blank rows
-			// (contentIdx goes negative) until the user manually
-			// scrolls — the "won't stay scrolled to the bottom" bug. A
-			// shrink to 0 (full clear) pins offset to 0 = live bottom.
-			if s.Offset > sbLen {
-				s.Offset = sbLen
-			}
-			s.PrevSBLen = sbLen
+			s.OnOutput(scrollbackPushed(tab.Terminal), tab.Terminal.ScrollbackLen(), scrollOnOutput)
 		}
 	}
 
@@ -4334,14 +4327,14 @@ func (a *Window) frame() {
 			scrollAsOf := 0
 			if s, ok := a.scroll[tab.ID]; ok {
 				scrollOff = s.Offset
-				// PrevSBLen is the ScrollbackLen the scroll-anchor pass
-				// patched Offset against this frame. Passing the pair to
+				// PrevPushed is the scrollback push count the
+				// scroll-anchor pass patched Offset against this frame. Passing the pair to
 				// Draw lets the snapshot compensate — under the source's
 				// own lock — for appends that land between that pass and
 				// the render (a remote daemon ships them in 256-row
 				// bursts on its own goroutine), so a scrolled viewport
 				// stays pinned instead of bumping toward the live tail.
-				scrollAsOf = s.PrevSBLen
+				scrollAsOf = s.PrevPushed
 			}
 			// Sliding-window scrollback (daemon tabs in unlimited
 			// mode): make sure the cached window covers the scrollback

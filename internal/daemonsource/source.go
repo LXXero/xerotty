@@ -105,6 +105,13 @@ type Source struct {
 	// keep this getter off any future hot path for free. Updated
 	// under s.mu wherever scrollback mutates.
 	scrollbackLen atomic.Int64
+	// pushed counts rows appended to the non-windowed mirror since
+	// the last clear. Once the mirror is at scrollbackCap every
+	// append drops as many old rows as it adds, so scrollbackLen stops
+	// moving while the content still shifts; pushed keeps growing, and
+	// the GUI's scroll anchor uses it to keep a scrolled view on the
+	// same lines. Updated under s.mu with the mirror.
+	pushed atomic.Int64
 
 	// lastTitle suppresses redundant SetOnTitle callbacks when the
 	// daemon re-ships the same title on each TabState tick.
@@ -420,8 +427,17 @@ func (s *Source) SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) ([][]uv
 	// to the bottom while output streams" bug. Resolving the growth
 	// here, under the same lock the appends take, pins the viewport to
 	// content no matter what arrived mid-frame.
-	if scrollOffset > 0 && asOfSbLen > 0 && sbLen > asOfSbLen {
-		scrollOffset += sbLen - asOfSbLen
+	//
+	// asOfSbLen is the push count (ScrollbackPushed) the offset was
+	// computed against. Comparing push counts rather than lengths also
+	// covers a full non-windowed mirror, whose length stays at the cap
+	// while every append drops old rows.
+	pushed := sbLen
+	if !s.windowed {
+		pushed = int(s.pushed.Load())
+	}
+	if scrollOffset > 0 && asOfSbLen > 0 && pushed > asOfSbLen {
+		scrollOffset += pushed - asOfSbLen
 		if scrollOffset > sbLen {
 			scrollOffset = sbLen
 		}
@@ -488,6 +504,18 @@ func (s *Source) ScrollbackLen() int {
 	// locked version + its defer at ~30% of total CPU when the lava
 	// animation made every frame walk the grid.
 	return int(s.scrollbackLen.Load())
+}
+
+// ScrollbackPushed returns how many rows have entered this tab's
+// scrollback since the last clear. Windowed, that is the daemon's
+// total, which only grows. Non-windowed, it is the count of rows
+// appended to the mirror, which keeps growing after the mirror is
+// full and ScrollbackLen stays at the cap.
+func (s *Source) ScrollbackPushed() int {
+	if s.windowed {
+		return int(s.scrollbackLen.Load())
+	}
+	return int(s.pushed.Load())
 }
 
 func (s *Source) Write(p []byte) (int, error) {
@@ -674,6 +702,7 @@ func (s *Source) ClearScrollback() {
 	s.mu.Lock()
 	s.scrollback = nil
 	s.scrollbackLen.Store(0)
+	s.pushed.Store(0)
 	s.mu.Unlock()
 	_ = s.hub.client().SendClearScrollback(s.tabID)
 	s.signalDirty()
@@ -890,6 +919,7 @@ func (s *Source) applyScrollbackCleared(*protocol.ScrollbackCleared) {
 	s.scrollbackTotal = 0
 	s.reqFrom, s.reqTo = 0, 0
 	s.scrollbackLen.Store(0)
+	s.pushed.Store(0)
 	s.renderGen.Add(1)
 	s.mu.Unlock()
 	s.signalDirty()
@@ -948,6 +978,7 @@ func (s *Source) applyScrollbackAppend(f *protocol.ScrollbackAppend) {
 			s.scrollback = s.scrollback[:n]
 		}
 		s.scrollbackLen.Store(int64(len(s.scrollback)))
+		s.pushed.Add(int64(len(rows)))
 		s.renderGen.Add(1)
 		s.mu.Unlock()
 		s.signalDirty()

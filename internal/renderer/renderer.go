@@ -199,8 +199,9 @@ type EmulatorView interface {
 	// observed under the lock, so the cell-layer cache key matches the
 	// snapshot content exactly.
 	//
-	// asOfSbLen anchors scrollOffset to the ScrollbackLen it was
-	// computed against: growth that landed since (sources apply
+	// asOfSbLen anchors scrollOffset to the scrollback push count it
+	// was computed against (ScrollbackLen, or ScrollbackPushed for a
+	// daemon Source): growth that landed since (sources apply
 	// appends on their own goroutines, concurrent with the frame) is
 	// added to scrollOffset inside the lock so a scrolled viewport
 	// stays pinned to content rather than sliding toward the live
