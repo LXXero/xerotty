@@ -639,7 +639,9 @@ func (r *Renderer) DrawScrollbar(p ScrollbarParams, drawList *imgui.DrawList) (f
 // glyph cache. content may be a single rune or a multi-byte UTF-8
 // sequence (combining marks, ZWJ sequences). For combining sequences
 // we draw each rune at the same cell origin so they overlay; the cell
-// width is governed by the base rune's advance.
+// width is governed by the base rune's advance. A rune no font has
+// draws the missing-glyph box (see needsPlaceholder for the runes that
+// don't).
 //
 // Glyph bitmaps are stored at framebuffer-pixel resolution (e.g. 2x
 // on Retina). To preserve crisp rasterization through GPU sampling,
@@ -651,9 +653,19 @@ func (r *Renderer) drawGlyphFromCache(drawList *imgui.DrawList, content string, 
 		scale = 1
 	}
 	ascent := r.Glyphs.LineMetrics().Ascent
+	boxed := false
 	for _, rn := range content {
 		entry := r.Glyphs.Get(rn, bold)
-		if entry == nil || !entry.HasTex {
+		if entry == nil {
+			// No font has it: draw the missing-glyph box once per
+			// cell, unless the rune is invisible or combining.
+			if !boxed && needsPlaceholder(rn) {
+				r.drawMissingGlyph(drawList, x, y, cellW, cellH, fg)
+				boxed = true
+			}
+			continue
+		}
+		if !entry.HasTex {
 			continue
 		}
 		// Compute the framebuffer-pixel position of the glyph's top-left
