@@ -386,6 +386,23 @@ type scrollbackWindower interface {
 type scrollbackSearcher interface {
 	RequestScrollbackSearch(query string, caseSensitive, regex, wholeWord bool) uint64
 	TakeSearchResults() (reqID uint64, matches []protocol.SearchMatch, truncated, ok bool)
+	// SearchesOnDaemon is true only for windowed Sources. Every daemon
+	// Source implements the methods above, so the type assertion alone
+	// can't tell a windowed tab from a non-windowed one.
+	SearchesOnDaemon() bool
+}
+
+// daemonSearcherFor returns term's daemon-side searcher when its
+// scrollback search must run on the daemon (windowed tabs). In-process
+// terminals and non-windowed daemon Sources return false and are
+// scanned locally by EnsureSearch: their ScrollbackLen is the client
+// mirror's length, which the daemon's absolute indices don't match.
+func daemonSearcherFor(term any) (scrollbackSearcher, bool) {
+	searcher, ok := term.(scrollbackSearcher)
+	if !ok || !searcher.SearchesOnDaemon() {
+		return nil, false
+	}
+	return searcher, true
 }
 
 // daemonSearchState tracks one tab's in-flight daemon search so the
@@ -4443,7 +4460,7 @@ func (a *Window) frame() {
 				// Windowed daemon tabs can't scan deep history locally
 				// (they only mirror a window) — search runs on the
 				// daemon. In-process and non-windowed tabs scan locally.
-				if searcher, ok := tab.Terminal.(scrollbackSearcher); ok {
+				if searcher, ok := daemonSearcherFor(tab.Terminal); ok {
 					a.ensureDaemonSearch(tab.ID, s, tab.Terminal, searcher, visRows)
 				} else {
 					s.EnsureSearch(tab.Terminal, visRows, tab.Terminal.RenderGeneration())
