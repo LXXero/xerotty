@@ -282,6 +282,21 @@ func (h *Hub) SetScrollbackWindowed() {
 	h.mu.Unlock()
 }
 
+// ScrollbackWindowed reports whether new Sources use sliding-window
+// scrollback (see SetScrollbackWindowed).
+func (h *Hub) ScrollbackWindowed() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.windowed
+}
+
+// ScrollbackCap returns the row cap SetScrollbackCap set (0 = default).
+func (h *Hub) ScrollbackCap() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.scrollbackCap
+}
+
 // Client returns the underlying clientproto.Client. Useful for
 // pushing one-off frames (e.g. clipboard sync) that aren't per-tab.
 func (h *Hub) Client() *clientproto.Client { return h.client() }
