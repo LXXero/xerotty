@@ -379,20 +379,13 @@ func (m *Manager) NewTabCmd(cols, rows int, cwd string, launch *terminal.LaunchC
 	return tab, nil
 }
 
-// CloseTab closes the tab at the given index.
+// CloseTab closes the tab at the given index. Removal goes through
+// RemoveTab so closing a tab BEFORE the active one (another client or
+// an MCP agent closing it) keeps the user on the same tab instead of
+// sliding them one tab to the right.
 func (m *Manager) CloseTab(idx int) {
-	if idx < 0 || idx >= len(m.Tabs) {
-		return
-	}
-
-	m.Tabs[idx].Terminal.Close()
-	m.Tabs = append(m.Tabs[:idx], m.Tabs[idx+1:]...)
-
-	if m.ActiveIdx >= len(m.Tabs) {
-		m.ActiveIdx = len(m.Tabs) - 1
-	}
-	if m.ActiveIdx < 0 {
-		m.ActiveIdx = 0
+	if tab := m.RemoveTab(idx); tab != nil {
+		tab.Terminal.Close()
 	}
 }
 
