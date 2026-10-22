@@ -111,10 +111,11 @@ func pickTitle(title, foreground string) string {
 // values so the MCP servers can compute it off the render thread:
 // the assigned name, else the OSC title, else the foreground process,
 // with a "host: " prefix for remote tabs (host "" = local). Unlike
-// DisplayTitle, leading status glyphs are removed from the title
-// (Claude Code's "✳ Claude Code" / spinner frames), so the label stays
-// the same while the app works and an agent can name the tab to the
-// user by it.
+// DisplayTitle, it never carries a status glyph: none is stripped from
+// the title (Claude Code's "✳ Claude Code" / spinner frames) and none
+// is put in front of a name (status_glyph_on_named_tabs), so the label
+// stays the same while the app works and an agent can name the tab to
+// the user by it. The raw title in list_tabs keeps the glyph.
 func Label(host, name, title, foreground string) string {
 	if name != "" {
 		return withHost(host, name)
