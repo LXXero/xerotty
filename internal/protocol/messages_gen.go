@@ -3177,6 +3177,646 @@ func (z Error) Msgsize() (s int) {
 }
 
 // DecodeMsg implements msgp.Decodable
+func (z *Events) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "events":
+			var zb0002 uint32
+			zb0002, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "Events")
+				return
+			}
+			if cap(z.Events) >= int(zb0002) {
+				z.Events = (z.Events)[:zb0002]
+			} else {
+				z.Events = make([]TabEvent, zb0002)
+			}
+			for za0001 := range z.Events {
+				err = z.Events[za0001].DecodeMsg(dc)
+				if err != nil {
+					err = msgp.WrapError(err, "Events", za0001)
+					return
+				}
+			}
+		case "last":
+			z.Last, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "Last")
+				return
+			}
+		case "epoch":
+			z.Epoch, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Epoch")
+				return
+			}
+		case "missed":
+			z.Missed, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "Missed")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *Events) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Missed == false {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "req_id"
+		err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.ReqID)
+		if err != nil {
+			err = msgp.WrapError(err, "ReqID")
+			return
+		}
+		// write "events"
+		err = en.Append(0xa6, 0x65, 0x76, 0x65, 0x6e, 0x74, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteArrayHeader(uint32(len(z.Events)))
+		if err != nil {
+			err = msgp.WrapError(err, "Events")
+			return
+		}
+		for za0001 := range z.Events {
+			err = z.Events[za0001].EncodeMsg(en)
+			if err != nil {
+				err = msgp.WrapError(err, "Events", za0001)
+				return
+			}
+		}
+		// write "last"
+		err = en.Append(0xa4, 0x6c, 0x61, 0x73, 0x74)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.Last)
+		if err != nil {
+			err = msgp.WrapError(err, "Last")
+			return
+		}
+		// write "epoch"
+		err = en.Append(0xa5, 0x65, 0x70, 0x6f, 0x63, 0x68)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Epoch)
+		if err != nil {
+			err = msgp.WrapError(err, "Epoch")
+			return
+		}
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// write "missed"
+			err = en.Append(0xa6, 0x6d, 0x69, 0x73, 0x73, 0x65, 0x64)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.Missed)
+			if err != nil {
+				err = msgp.WrapError(err, "Missed")
+				return
+			}
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *Events) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(5)
+	var zb0001Mask uint8 /* 5 bits */
+	_ = zb0001Mask
+	if z.Missed == false {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "req_id"
+		o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+		o = msgp.AppendUint64(o, z.ReqID)
+		// string "events"
+		o = append(o, 0xa6, 0x65, 0x76, 0x65, 0x6e, 0x74, 0x73)
+		o = msgp.AppendArrayHeader(o, uint32(len(z.Events)))
+		for za0001 := range z.Events {
+			o, err = z.Events[za0001].MarshalMsg(o)
+			if err != nil {
+				err = msgp.WrapError(err, "Events", za0001)
+				return
+			}
+		}
+		// string "last"
+		o = append(o, 0xa4, 0x6c, 0x61, 0x73, 0x74)
+		o = msgp.AppendUint64(o, z.Last)
+		// string "epoch"
+		o = append(o, 0xa5, 0x65, 0x70, 0x6f, 0x63, 0x68)
+		o = msgp.AppendString(o, z.Epoch)
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// string "missed"
+			o = append(o, 0xa6, 0x6d, 0x69, 0x73, 0x73, 0x65, 0x64)
+			o = msgp.AppendBool(o, z.Missed)
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *Events) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "events":
+			var zb0002 uint32
+			zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Events")
+				return
+			}
+			if cap(z.Events) >= int(zb0002) {
+				z.Events = (z.Events)[:zb0002]
+			} else {
+				z.Events = make([]TabEvent, zb0002)
+			}
+			for za0001 := range z.Events {
+				bts, err = z.Events[za0001].UnmarshalMsg(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Events", za0001)
+					return
+				}
+			}
+		case "last":
+			z.Last, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Last")
+				return
+			}
+		case "epoch":
+			z.Epoch, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Epoch")
+				return
+			}
+		case "missed":
+			z.Missed, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Missed")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *Events) Msgsize() (s int) {
+	s = 1 + 7 + msgp.Uint64Size + 7 + msgp.ArrayHeaderSize
+	for za0001 := range z.Events {
+		s += z.Events[za0001].Msgsize()
+	}
+	s += 5 + msgp.Uint64Size + 6 + msgp.StringPrefixSize + len(z.Epoch) + 7 + msgp.BoolSize
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *EventsWaitReq) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "epoch":
+			z.Epoch, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Epoch")
+				return
+			}
+		case "after":
+			z.After, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "After")
+				return
+			}
+		case "timeout_ms":
+			z.TimeoutMs, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "TimeoutMs")
+				return
+			}
+		case "tabs":
+			var zb0002 uint32
+			zb0002, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "Tabs")
+				return
+			}
+			if cap(z.Tabs) >= int(zb0002) {
+				z.Tabs = (z.Tabs)[:zb0002]
+			} else {
+				z.Tabs = make([]uint32, zb0002)
+			}
+			for za0001 := range z.Tabs {
+				z.Tabs[za0001], err = dc.ReadUint32()
+				if err != nil {
+					err = msgp.WrapError(err, "Tabs", za0001)
+					return
+				}
+			}
+		case "kinds":
+			var zb0003 uint32
+			zb0003, err = dc.ReadArrayHeader()
+			if err != nil {
+				err = msgp.WrapError(err, "Kinds")
+				return
+			}
+			if cap(z.Kinds) >= int(zb0003) {
+				z.Kinds = (z.Kinds)[:zb0003]
+			} else {
+				z.Kinds = make([]string, zb0003)
+			}
+			for za0002 := range z.Kinds {
+				z.Kinds[za0002], err = dc.ReadString()
+				if err != nil {
+					err = msgp.WrapError(err, "Kinds", za0002)
+					return
+				}
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *EventsWaitReq) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
+	_ = zb0001Mask
+	if z.Epoch == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	if z.Tabs == nil {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	if z.Kinds == nil {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	// variable map header, size zb0001Len
+	err = en.Append(0x80 | uint8(zb0001Len))
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "req_id"
+		err = en.Append(0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.ReqID)
+		if err != nil {
+			err = msgp.WrapError(err, "ReqID")
+			return
+		}
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// write "epoch"
+			err = en.Append(0xa5, 0x65, 0x70, 0x6f, 0x63, 0x68)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Epoch)
+			if err != nil {
+				err = msgp.WrapError(err, "Epoch")
+				return
+			}
+		}
+		// write "after"
+		err = en.Append(0xa5, 0x61, 0x66, 0x74, 0x65, 0x72)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.After)
+		if err != nil {
+			err = msgp.WrapError(err, "After")
+			return
+		}
+		// write "timeout_ms"
+		err = en.Append(0xaa, 0x74, 0x69, 0x6d, 0x65, 0x6f, 0x75, 0x74, 0x5f, 0x6d, 0x73)
+		if err != nil {
+			return
+		}
+		err = en.WriteInt64(z.TimeoutMs)
+		if err != nil {
+			err = msgp.WrapError(err, "TimeoutMs")
+			return
+		}
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// write "tabs"
+			err = en.Append(0xa4, 0x74, 0x61, 0x62, 0x73)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.Tabs)))
+			if err != nil {
+				err = msgp.WrapError(err, "Tabs")
+				return
+			}
+			for za0001 := range z.Tabs {
+				err = en.WriteUint32(z.Tabs[za0001])
+				if err != nil {
+					err = msgp.WrapError(err, "Tabs", za0001)
+					return
+				}
+			}
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// write "kinds"
+			err = en.Append(0xa5, 0x6b, 0x69, 0x6e, 0x64, 0x73)
+			if err != nil {
+				return
+			}
+			err = en.WriteArrayHeader(uint32(len(z.Kinds)))
+			if err != nil {
+				err = msgp.WrapError(err, "Kinds")
+				return
+			}
+			for za0002 := range z.Kinds {
+				err = en.WriteString(z.Kinds[za0002])
+				if err != nil {
+					err = msgp.WrapError(err, "Kinds", za0002)
+					return
+				}
+			}
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *EventsWaitReq) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
+	_ = zb0001Mask
+	if z.Epoch == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2
+	}
+	if z.Tabs == nil {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	if z.Kinds == nil {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	// variable map header, size zb0001Len
+	o = append(o, 0x80|uint8(zb0001Len))
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "req_id"
+		o = append(o, 0xa6, 0x72, 0x65, 0x71, 0x5f, 0x69, 0x64)
+		o = msgp.AppendUint64(o, z.ReqID)
+		if (zb0001Mask & 0x2) == 0 { // if not omitted
+			// string "epoch"
+			o = append(o, 0xa5, 0x65, 0x70, 0x6f, 0x63, 0x68)
+			o = msgp.AppendString(o, z.Epoch)
+		}
+		// string "after"
+		o = append(o, 0xa5, 0x61, 0x66, 0x74, 0x65, 0x72)
+		o = msgp.AppendUint64(o, z.After)
+		// string "timeout_ms"
+		o = append(o, 0xaa, 0x74, 0x69, 0x6d, 0x65, 0x6f, 0x75, 0x74, 0x5f, 0x6d, 0x73)
+		o = msgp.AppendInt64(o, z.TimeoutMs)
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// string "tabs"
+			o = append(o, 0xa4, 0x74, 0x61, 0x62, 0x73)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.Tabs)))
+			for za0001 := range z.Tabs {
+				o = msgp.AppendUint32(o, z.Tabs[za0001])
+			}
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// string "kinds"
+			o = append(o, 0xa5, 0x6b, 0x69, 0x6e, 0x64, 0x73)
+			o = msgp.AppendArrayHeader(o, uint32(len(z.Kinds)))
+			for za0002 := range z.Kinds {
+				o = msgp.AppendString(o, z.Kinds[za0002])
+			}
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *EventsWaitReq) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "req_id":
+			z.ReqID, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ReqID")
+				return
+			}
+		case "epoch":
+			z.Epoch, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Epoch")
+				return
+			}
+		case "after":
+			z.After, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "After")
+				return
+			}
+		case "timeout_ms":
+			z.TimeoutMs, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "TimeoutMs")
+				return
+			}
+		case "tabs":
+			var zb0002 uint32
+			zb0002, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Tabs")
+				return
+			}
+			if cap(z.Tabs) >= int(zb0002) {
+				z.Tabs = (z.Tabs)[:zb0002]
+			} else {
+				z.Tabs = make([]uint32, zb0002)
+			}
+			for za0001 := range z.Tabs {
+				z.Tabs[za0001], bts, err = msgp.ReadUint32Bytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Tabs", za0001)
+					return
+				}
+			}
+		case "kinds":
+			var zb0003 uint32
+			zb0003, bts, err = msgp.ReadArrayHeaderBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Kinds")
+				return
+			}
+			if cap(z.Kinds) >= int(zb0003) {
+				z.Kinds = (z.Kinds)[:zb0003]
+			} else {
+				z.Kinds = make([]string, zb0003)
+			}
+			for za0002 := range z.Kinds {
+				z.Kinds[za0002], bts, err = msgp.ReadStringBytes(bts)
+				if err != nil {
+					err = msgp.WrapError(err, "Kinds", za0002)
+					return
+				}
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *EventsWaitReq) Msgsize() (s int) {
+	s = 1 + 7 + msgp.Uint64Size + 6 + msgp.StringPrefixSize + len(z.Epoch) + 6 + msgp.Uint64Size + 11 + msgp.Int64Size + 5 + msgp.ArrayHeaderSize + (len(z.Tabs) * (msgp.Uint32Size)) + 6 + msgp.ArrayHeaderSize
+	for za0002 := range z.Kinds {
+		s += msgp.StringPrefixSize + len(z.Kinds[za0002])
+	}
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
 func (z *Hello) DecodeMsg(dc *msgp.Reader) (err error) {
 	var field []byte
 	_ = field
@@ -7856,6 +8496,723 @@ func (z *TabCreatedInfo) UnmarshalMsg(bts []byte) (o []byte, err error) {
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *TabCreatedInfo) Msgsize() (s int) {
 	s = 1 + 3 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.Name) + 6 + msgp.StringPrefixSize + len(z.Title) + 5 + msgp.Uint16Size + 5 + msgp.Uint16Size
+	return
+}
+
+// DecodeMsg implements msgp.Decodable
+func (z *TabEvent) DecodeMsg(dc *msgp.Reader) (err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, err = dc.ReadMapHeader()
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, err = dc.ReadMapKeyPtr()
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "seq":
+			z.Seq, err = dc.ReadUint64()
+			if err != nil {
+				err = msgp.WrapError(err, "Seq")
+				return
+			}
+		case "time":
+			z.TimeUnixNano, err = dc.ReadInt64()
+			if err != nil {
+				err = msgp.WrapError(err, "TimeUnixNano")
+				return
+			}
+		case "kind":
+			z.Kind, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Kind")
+				return
+			}
+		case "tab":
+			z.Tab, err = dc.ReadUint32()
+			if err != nil {
+				err = msgp.WrapError(err, "Tab")
+				return
+			}
+		case "name":
+			z.Name, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		case "has_exit":
+			z.HasExitCode, err = dc.ReadBool()
+			if err != nil {
+				err = msgp.WrapError(err, "HasExitCode")
+				return
+			}
+		case "exit_code":
+			z.ExitCode, err = dc.ReadInt32()
+			if err != nil {
+				err = msgp.WrapError(err, "ExitCode")
+				return
+			}
+		case "old_name":
+			z.OldName, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "OldName")
+				return
+			}
+		case "new_name":
+			z.NewName, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NewName")
+				return
+			}
+		case "old_title":
+			z.OldTitle, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "OldTitle")
+				return
+			}
+		case "new_title":
+			z.NewTitle, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NewTitle")
+				return
+			}
+		case "old_glyph":
+			z.OldGlyph, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "OldGlyph")
+				return
+			}
+		case "new_glyph":
+			z.NewGlyph, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NewGlyph")
+				return
+			}
+		case "old_state":
+			z.OldState, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "OldState")
+				return
+			}
+		case "new_state":
+			z.NewState, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NewState")
+				return
+			}
+		case "protocol":
+			z.Protocol, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Protocol")
+				return
+			}
+		case "notify_title":
+			z.NotifyTitle, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyTitle")
+				return
+			}
+		case "notify_body":
+			z.NotifyBody, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyBody")
+				return
+			}
+		default:
+			err = dc.Skip()
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	return
+}
+
+// EncodeMsg implements msgp.Encodable
+func (z *TabEvent) EncodeMsg(en *msgp.Writer) (err error) {
+	// check for omitted fields
+	zb0001Len := uint32(18)
+	var zb0001Mask uint32 /* 18 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	if z.HasExitCode == false {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	if z.ExitCode == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x40
+	}
+	if z.OldName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x80
+	}
+	if z.NewName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x100
+	}
+	if z.OldTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x200
+	}
+	if z.NewTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x400
+	}
+	if z.OldGlyph == "" {
+		zb0001Len--
+		zb0001Mask |= 0x800
+	}
+	if z.NewGlyph == "" {
+		zb0001Len--
+		zb0001Mask |= 0x1000
+	}
+	if z.OldState == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2000
+	}
+	if z.NewState == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4000
+	}
+	if z.Protocol == "" {
+		zb0001Len--
+		zb0001Mask |= 0x8000
+	}
+	if z.NotifyTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x10000
+	}
+	if z.NotifyBody == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20000
+	}
+	// variable map header, size zb0001Len
+	err = en.WriteMapHeader(zb0001Len)
+	if err != nil {
+		return
+	}
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// write "seq"
+		err = en.Append(0xa3, 0x73, 0x65, 0x71)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint64(z.Seq)
+		if err != nil {
+			err = msgp.WrapError(err, "Seq")
+			return
+		}
+		// write "time"
+		err = en.Append(0xa4, 0x74, 0x69, 0x6d, 0x65)
+		if err != nil {
+			return
+		}
+		err = en.WriteInt64(z.TimeUnixNano)
+		if err != nil {
+			err = msgp.WrapError(err, "TimeUnixNano")
+			return
+		}
+		// write "kind"
+		err = en.Append(0xa4, 0x6b, 0x69, 0x6e, 0x64)
+		if err != nil {
+			return
+		}
+		err = en.WriteString(z.Kind)
+		if err != nil {
+			err = msgp.WrapError(err, "Kind")
+			return
+		}
+		// write "tab"
+		err = en.Append(0xa3, 0x74, 0x61, 0x62)
+		if err != nil {
+			return
+		}
+		err = en.WriteUint32(z.Tab)
+		if err != nil {
+			err = msgp.WrapError(err, "Tab")
+			return
+		}
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// write "name"
+			err = en.Append(0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Name)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// write "has_exit"
+			err = en.Append(0xa8, 0x68, 0x61, 0x73, 0x5f, 0x65, 0x78, 0x69, 0x74)
+			if err != nil {
+				return
+			}
+			err = en.WriteBool(z.HasExitCode)
+			if err != nil {
+				err = msgp.WrapError(err, "HasExitCode")
+				return
+			}
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// write "exit_code"
+			err = en.Append(0xa9, 0x65, 0x78, 0x69, 0x74, 0x5f, 0x63, 0x6f, 0x64, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteInt32(z.ExitCode)
+			if err != nil {
+				err = msgp.WrapError(err, "ExitCode")
+				return
+			}
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
+			// write "old_name"
+			err = en.Append(0xa8, 0x6f, 0x6c, 0x64, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.OldName)
+			if err != nil {
+				err = msgp.WrapError(err, "OldName")
+				return
+			}
+		}
+		if (zb0001Mask & 0x100) == 0 { // if not omitted
+			// write "new_name"
+			err = en.Append(0xa8, 0x6e, 0x65, 0x77, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NewName)
+			if err != nil {
+				err = msgp.WrapError(err, "NewName")
+				return
+			}
+		}
+		if (zb0001Mask & 0x200) == 0 { // if not omitted
+			// write "old_title"
+			err = en.Append(0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.OldTitle)
+			if err != nil {
+				err = msgp.WrapError(err, "OldTitle")
+				return
+			}
+		}
+		if (zb0001Mask & 0x400) == 0 { // if not omitted
+			// write "new_title"
+			err = en.Append(0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NewTitle)
+			if err != nil {
+				err = msgp.WrapError(err, "NewTitle")
+				return
+			}
+		}
+		if (zb0001Mask & 0x800) == 0 { // if not omitted
+			// write "old_glyph"
+			err = en.Append(0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x67, 0x6c, 0x79, 0x70, 0x68)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.OldGlyph)
+			if err != nil {
+				err = msgp.WrapError(err, "OldGlyph")
+				return
+			}
+		}
+		if (zb0001Mask & 0x1000) == 0 { // if not omitted
+			// write "new_glyph"
+			err = en.Append(0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x67, 0x6c, 0x79, 0x70, 0x68)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NewGlyph)
+			if err != nil {
+				err = msgp.WrapError(err, "NewGlyph")
+				return
+			}
+		}
+		if (zb0001Mask & 0x2000) == 0 { // if not omitted
+			// write "old_state"
+			err = en.Append(0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.OldState)
+			if err != nil {
+				err = msgp.WrapError(err, "OldState")
+				return
+			}
+		}
+		if (zb0001Mask & 0x4000) == 0 { // if not omitted
+			// write "new_state"
+			err = en.Append(0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NewState)
+			if err != nil {
+				err = msgp.WrapError(err, "NewState")
+				return
+			}
+		}
+		if (zb0001Mask & 0x8000) == 0 { // if not omitted
+			// write "protocol"
+			err = en.Append(0xa8, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x63, 0x6f, 0x6c)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Protocol)
+			if err != nil {
+				err = msgp.WrapError(err, "Protocol")
+				return
+			}
+		}
+		if (zb0001Mask & 0x10000) == 0 { // if not omitted
+			// write "notify_title"
+			err = en.Append(0xac, 0x6e, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NotifyTitle)
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyTitle")
+				return
+			}
+		}
+		if (zb0001Mask & 0x20000) == 0 { // if not omitted
+			// write "notify_body"
+			err = en.Append(0xab, 0x6e, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x5f, 0x62, 0x6f, 0x64, 0x79)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.NotifyBody)
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyBody")
+				return
+			}
+		}
+	}
+	return
+}
+
+// MarshalMsg implements msgp.Marshaler
+func (z *TabEvent) MarshalMsg(b []byte) (o []byte, err error) {
+	o = msgp.Require(b, z.Msgsize())
+	// check for omitted fields
+	zb0001Len := uint32(18)
+	var zb0001Mask uint32 /* 18 bits */
+	_ = zb0001Mask
+	if z.Name == "" {
+		zb0001Len--
+		zb0001Mask |= 0x10
+	}
+	if z.HasExitCode == false {
+		zb0001Len--
+		zb0001Mask |= 0x20
+	}
+	if z.ExitCode == 0 {
+		zb0001Len--
+		zb0001Mask |= 0x40
+	}
+	if z.OldName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x80
+	}
+	if z.NewName == "" {
+		zb0001Len--
+		zb0001Mask |= 0x100
+	}
+	if z.OldTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x200
+	}
+	if z.NewTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x400
+	}
+	if z.OldGlyph == "" {
+		zb0001Len--
+		zb0001Mask |= 0x800
+	}
+	if z.NewGlyph == "" {
+		zb0001Len--
+		zb0001Mask |= 0x1000
+	}
+	if z.OldState == "" {
+		zb0001Len--
+		zb0001Mask |= 0x2000
+	}
+	if z.NewState == "" {
+		zb0001Len--
+		zb0001Mask |= 0x4000
+	}
+	if z.Protocol == "" {
+		zb0001Len--
+		zb0001Mask |= 0x8000
+	}
+	if z.NotifyTitle == "" {
+		zb0001Len--
+		zb0001Mask |= 0x10000
+	}
+	if z.NotifyBody == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20000
+	}
+	// variable map header, size zb0001Len
+	o = msgp.AppendMapHeader(o, zb0001Len)
+
+	// skip if no fields are to be emitted
+	if zb0001Len != 0 {
+		// string "seq"
+		o = append(o, 0xa3, 0x73, 0x65, 0x71)
+		o = msgp.AppendUint64(o, z.Seq)
+		// string "time"
+		o = append(o, 0xa4, 0x74, 0x69, 0x6d, 0x65)
+		o = msgp.AppendInt64(o, z.TimeUnixNano)
+		// string "kind"
+		o = append(o, 0xa4, 0x6b, 0x69, 0x6e, 0x64)
+		o = msgp.AppendString(o, z.Kind)
+		// string "tab"
+		o = append(o, 0xa3, 0x74, 0x61, 0x62)
+		o = msgp.AppendUint32(o, z.Tab)
+		if (zb0001Mask & 0x10) == 0 { // if not omitted
+			// string "name"
+			o = append(o, 0xa4, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.Name)
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// string "has_exit"
+			o = append(o, 0xa8, 0x68, 0x61, 0x73, 0x5f, 0x65, 0x78, 0x69, 0x74)
+			o = msgp.AppendBool(o, z.HasExitCode)
+		}
+		if (zb0001Mask & 0x40) == 0 { // if not omitted
+			// string "exit_code"
+			o = append(o, 0xa9, 0x65, 0x78, 0x69, 0x74, 0x5f, 0x63, 0x6f, 0x64, 0x65)
+			o = msgp.AppendInt32(o, z.ExitCode)
+		}
+		if (zb0001Mask & 0x80) == 0 { // if not omitted
+			// string "old_name"
+			o = append(o, 0xa8, 0x6f, 0x6c, 0x64, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.OldName)
+		}
+		if (zb0001Mask & 0x100) == 0 { // if not omitted
+			// string "new_name"
+			o = append(o, 0xa8, 0x6e, 0x65, 0x77, 0x5f, 0x6e, 0x61, 0x6d, 0x65)
+			o = msgp.AppendString(o, z.NewName)
+		}
+		if (zb0001Mask & 0x200) == 0 { // if not omitted
+			// string "old_title"
+			o = append(o, 0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			o = msgp.AppendString(o, z.OldTitle)
+		}
+		if (zb0001Mask & 0x400) == 0 { // if not omitted
+			// string "new_title"
+			o = append(o, 0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			o = msgp.AppendString(o, z.NewTitle)
+		}
+		if (zb0001Mask & 0x800) == 0 { // if not omitted
+			// string "old_glyph"
+			o = append(o, 0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x67, 0x6c, 0x79, 0x70, 0x68)
+			o = msgp.AppendString(o, z.OldGlyph)
+		}
+		if (zb0001Mask & 0x1000) == 0 { // if not omitted
+			// string "new_glyph"
+			o = append(o, 0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x67, 0x6c, 0x79, 0x70, 0x68)
+			o = msgp.AppendString(o, z.NewGlyph)
+		}
+		if (zb0001Mask & 0x2000) == 0 { // if not omitted
+			// string "old_state"
+			o = append(o, 0xa9, 0x6f, 0x6c, 0x64, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65)
+			o = msgp.AppendString(o, z.OldState)
+		}
+		if (zb0001Mask & 0x4000) == 0 { // if not omitted
+			// string "new_state"
+			o = append(o, 0xa9, 0x6e, 0x65, 0x77, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65)
+			o = msgp.AppendString(o, z.NewState)
+		}
+		if (zb0001Mask & 0x8000) == 0 { // if not omitted
+			// string "protocol"
+			o = append(o, 0xa8, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x63, 0x6f, 0x6c)
+			o = msgp.AppendString(o, z.Protocol)
+		}
+		if (zb0001Mask & 0x10000) == 0 { // if not omitted
+			// string "notify_title"
+			o = append(o, 0xac, 0x6e, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x5f, 0x74, 0x69, 0x74, 0x6c, 0x65)
+			o = msgp.AppendString(o, z.NotifyTitle)
+		}
+		if (zb0001Mask & 0x20000) == 0 { // if not omitted
+			// string "notify_body"
+			o = append(o, 0xab, 0x6e, 0x6f, 0x74, 0x69, 0x66, 0x79, 0x5f, 0x62, 0x6f, 0x64, 0x79)
+			o = msgp.AppendString(o, z.NotifyBody)
+		}
+	}
+	return
+}
+
+// UnmarshalMsg implements msgp.Unmarshaler
+func (z *TabEvent) UnmarshalMsg(bts []byte) (o []byte, err error) {
+	var field []byte
+	_ = field
+	var zb0001 uint32
+	zb0001, bts, err = msgp.ReadMapHeaderBytes(bts)
+	if err != nil {
+		err = msgp.WrapError(err)
+		return
+	}
+	for zb0001 > 0 {
+		zb0001--
+		field, bts, err = msgp.ReadMapKeyZC(bts)
+		if err != nil {
+			err = msgp.WrapError(err)
+			return
+		}
+		switch msgp.UnsafeString(field) {
+		case "seq":
+			z.Seq, bts, err = msgp.ReadUint64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Seq")
+				return
+			}
+		case "time":
+			z.TimeUnixNano, bts, err = msgp.ReadInt64Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "TimeUnixNano")
+				return
+			}
+		case "kind":
+			z.Kind, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Kind")
+				return
+			}
+		case "tab":
+			z.Tab, bts, err = msgp.ReadUint32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Tab")
+				return
+			}
+		case "name":
+			z.Name, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Name")
+				return
+			}
+		case "has_exit":
+			z.HasExitCode, bts, err = msgp.ReadBoolBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "HasExitCode")
+				return
+			}
+		case "exit_code":
+			z.ExitCode, bts, err = msgp.ReadInt32Bytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "ExitCode")
+				return
+			}
+		case "old_name":
+			z.OldName, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "OldName")
+				return
+			}
+		case "new_name":
+			z.NewName, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NewName")
+				return
+			}
+		case "old_title":
+			z.OldTitle, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "OldTitle")
+				return
+			}
+		case "new_title":
+			z.NewTitle, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NewTitle")
+				return
+			}
+		case "old_glyph":
+			z.OldGlyph, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "OldGlyph")
+				return
+			}
+		case "new_glyph":
+			z.NewGlyph, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NewGlyph")
+				return
+			}
+		case "old_state":
+			z.OldState, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "OldState")
+				return
+			}
+		case "new_state":
+			z.NewState, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NewState")
+				return
+			}
+		case "protocol":
+			z.Protocol, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Protocol")
+				return
+			}
+		case "notify_title":
+			z.NotifyTitle, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyTitle")
+				return
+			}
+		case "notify_body":
+			z.NotifyBody, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "NotifyBody")
+				return
+			}
+		default:
+			bts, err = msgp.Skip(bts)
+			if err != nil {
+				err = msgp.WrapError(err)
+				return
+			}
+		}
+	}
+	o = bts
+	return
+}
+
+// Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
+func (z *TabEvent) Msgsize() (s int) {
+	s = 3 + 4 + msgp.Uint64Size + 5 + msgp.Int64Size + 5 + msgp.StringPrefixSize + len(z.Kind) + 4 + msgp.Uint32Size + 5 + msgp.StringPrefixSize + len(z.Name) + 9 + msgp.BoolSize + 10 + msgp.Int32Size + 9 + msgp.StringPrefixSize + len(z.OldName) + 9 + msgp.StringPrefixSize + len(z.NewName) + 10 + msgp.StringPrefixSize + len(z.OldTitle) + 10 + msgp.StringPrefixSize + len(z.NewTitle) + 10 + msgp.StringPrefixSize + len(z.OldGlyph) + 10 + msgp.StringPrefixSize + len(z.NewGlyph) + 10 + msgp.StringPrefixSize + len(z.OldState) + 10 + msgp.StringPrefixSize + len(z.NewState) + 9 + msgp.StringPrefixSize + len(z.Protocol) + 13 + msgp.StringPrefixSize + len(z.NotifyTitle) + 12 + msgp.StringPrefixSize + len(z.NotifyBody)
 	return
 }
 

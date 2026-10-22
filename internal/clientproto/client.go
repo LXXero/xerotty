@@ -215,6 +215,7 @@ type Client struct {
 	searchResults chan *protocol.SearchResults
 	sbCleared     chan *protocol.ScrollbackCleared
 	clientsList   chan *protocol.ClientsList
+	events        chan *protocol.Events
 	clipboardSet  chan *protocol.ClipboardSet
 	proposals     chan *protocol.ProposalsChanged
 	topology      chan *protocol.TopologyChanged
@@ -268,6 +269,7 @@ func wrap(conn net.Conn) *Client {
 		searchResults:     make(chan *protocol.SearchResults, 4),
 		sbCleared:         make(chan *protocol.ScrollbackCleared, 8),
 		clientsList:       make(chan *protocol.ClientsList, 4),
+		events:            make(chan *protocol.Events, 8),
 		clipboardSet:      make(chan *protocol.ClipboardSet, 8),
 		proposals:         make(chan *protocol.ProposalsChanged, 8),
 		topology:          make(chan *protocol.TopologyChanged, 8),
@@ -755,6 +757,16 @@ func (c *Client) SendSearchRequest(id uint32, reqID uint64, query string, caseSe
 // (answers to SendClientsListReq).
 func (c *Client) ClientsLists() <-chan *protocol.ClientsList { return c.clientsList }
 
+// Events returns the channel of tab-event replies (answers to
+// SendEventsWaitReq).
+func (c *Client) Events() <-chan *protocol.Events { return c.events }
+
+// SendEventsWaitReq asks the daemon for tab events after a cursor;
+// the reply arrives on Events, correlated by req.ReqID.
+func (c *Client) SendEventsWaitReq(req *protocol.EventsWaitReq) error {
+	return c.send(protocol.MsgEventsWaitReq, req)
+}
+
 // SendClientsListReq asks the daemon for its attached-client list.
 // reqID correlates the async reply on ClientsLists.
 func (c *Client) SendClientsListReq(reqID uint64) error {
@@ -978,6 +990,12 @@ func (c *Client) decode(t protocol.MsgType, body []byte) (func() error, error) {
 			return nil, err
 		}
 		return func() error { return deliverOr(c, c.clientsList, msg) }, nil
+	case protocol.MsgEvents:
+		msg := &protocol.Events{}
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return nil, err
+		}
+		return func() error { return deliverOr(c, c.events, msg) }, nil
 	case protocol.MsgScrollbackCleared:
 		msg := &protocol.ScrollbackCleared{}
 		if _, err := msg.UnmarshalMsg(body); err != nil {

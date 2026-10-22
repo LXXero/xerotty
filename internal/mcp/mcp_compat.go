@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"encoding/json"
+
+	"github.com/LXXero/xerotty/internal/tabevents"
 )
 
 // This file adds Model Context Protocol (MCP) compliance on top of
@@ -50,7 +52,9 @@ func (c *agentConn) handleMCPInitialize(req *rpcRequest) *rpcResponse {
 			"TIPS: use send_keys (named keys: enter, ctrl+c, arrows — e.g. {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
 			"instead of raw escape bytes in send_input. Pass a stable `name` to create_tab to reuse a tab instead of " +
 			"stacking duplicates. get_screen always returns cursor {row,col}; styled=true returns styled runs — " +
-			"faint text at/after the cursor is a TUI's autocomplete ghost text, NOT user input.",
+			"faint text at/after the cursor is a TUI's autocomplete ghost text, NOT user input. " +
+			"To find out when something happens in a tab (an agent finishes or goes idle, a command exits, a bell, a " +
+			"desktop notification), call wait_for_events in a loop instead of polling get_screen.",
 	})
 }
 
@@ -257,6 +261,20 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 			},
 		},
 		{
+			"name":        "wait_for_events",
+			"description": eventsToolDescription,
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"after_seq":  map[string]any{"type": "integer", "description": "Return events with seq greater than this: the last_seq of the previous reply. 0 = everything still in the ring."},
+					"epoch":      map[string]any{"type": "string", "description": "The epoch of the previous reply. Lets the daemon tell that after_seq came from an earlier daemon process (restart or upgrade); omit on the first call."},
+					"timeout_ms": map[string]any{"type": "integer", "description": "How long to block for a matching event. Default 30000, max 300000; 0 returns at once."},
+					"tab_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "Only events for these tabs (ids from list_tabs). Omit for all tabs."},
+					"kinds":      map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": eventKindNames()}, "description": "Only these event kinds. Omit for all kinds."},
+				},
+			},
+		},
+		{
 			"name":        "get_server_info",
 			"description": "Return the daemon's hostname + pid.",
 			"inputSchema": map[string]any{
@@ -330,6 +348,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleAgentKick(inner)
 	case "get_server_info":
 		resp = c.handleServerInfo(inner)
+	case "wait_for_events":
+		resp = c.handleEventsWait(inner)
 	default:
 		return rpcErr(req.ID, -32601, "tools/call: unknown tool "+p.Name, nil)
 	}
@@ -354,4 +374,16 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		},
 		"isError": false,
 	})
+}
+
+// eventsToolDescription is wait_for_events' tool description.
+const eventsToolDescription = "Wait for something to happen in this daemon's tabs instead of polling screens. Returns the events after after_seq, or blocks until one arrives or timeout_ms passes (then events is empty). " + tabevents.KindsDescription + " Each reply has last_seq and epoch: pass them back as after_seq and epoch on the next call. missed=true means events after your cursor are gone: missed_reason \"restarted\" (the daemon restarted, so the cursor is from an earlier process) or \"overflow\" (more events than the ring holds happened since your last call); the reply then holds everything still in the ring. Allowed in observe mode."
+
+// eventKindNames lists the event kinds for the tool schema.
+func eventKindNames() []string {
+	out := make([]string, len(tabevents.AllKinds))
+	for i, k := range tabevents.AllKinds {
+		out[i] = string(k)
+	}
+	return out
 }

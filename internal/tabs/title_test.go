@@ -103,3 +103,30 @@ func TestNamedTabStatusGlyph(t *testing.T) {
 		t.Errorf("remote: DisplayTitle = %q, want %q", got, "kh: ✳ build")
 	}
 }
+
+func TestGlyphState(t *testing.T) {
+	cases := []struct{ title, want string }{
+		{"✳ Claude Code", GlyphIdle},
+		{"⠐ Claude Code", GlyphWorking},
+		{"⠂ Claude Code", GlyphWorking},
+		{"◐ fixing-xyphia", GlyphWorking},
+		{"◓ x", GlyphWorking},
+		{"◑ x", GlyphWorking},
+		{"◒ x", GlyphWorking},
+		// Codex, as captured from codex-cli 0.163.0 in a xerotty tab.
+		{"⠹ codexprobe", GlyphWorking},
+		{"⠹ ⠹ | codexprobe", GlyphWorking},
+		{"⠏ | codexprobe", GlyphWorking},
+		{"codexprobe", ""},
+		{"Reply with hi | codexprobe", ""},
+		// Unknown glyphs pass through unclassified.
+		{"🚀 deploy", ""},
+		{"● build", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := GlyphState(StatusGlyphs(c.title)); got != c.want {
+			t.Errorf("GlyphState(StatusGlyphs(%q)) = %q, want %q", c.title, got, c.want)
+		}
+	}
+}

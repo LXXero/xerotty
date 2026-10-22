@@ -8,6 +8,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
@@ -298,6 +299,25 @@ type Tab struct {
 	shrinkMu    sync.Mutex
 	shrinkTimer *time.Timer
 	shrinkGen   uint64
+
+	// lastBellEvent is when this tab last recorded a bell event
+	// (UnixNano), for the bellEventGap debounce.
+	lastBellEvent atomic.Int64
+}
+
+// bellEventGap is the minimum spacing between recorded bell events on
+// one tab. Shells ring on every failed completion and some programs
+// ring in loops; without a gap one noisy tab would push every other
+// event out of the ring. The wire-protocol bell to clients is not
+// affected.
+const bellEventGap = time.Second
+
+// record appends a tab event to the daemon's ring. No-op without a
+// daemon (unit tests that build a bare Session).
+func (s *Session) record(e tabevents.Event) {
+	if s.daemon != nil {
+		s.daemon.events.Append(e)
+	}
 }
 
 // Window is a logical UI window — a grouping of tabs. The daemon
@@ -461,6 +481,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	if s.daemon != nil {
 		s.daemon.tabSpawned(t)
 	}
+	s.record(tabevents.Event{Kind: tabevents.TabCreated, Tab: t.ID, Name: name})
 	return t, w, nil
 }
 
@@ -472,7 +493,11 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 func (s *Session) wireTabCallbacks(t *Tab) {
 	term := t.Term
 	term.SetOnTitle(func(title string) {
+		old := t.Title()
 		t.SetTitle(title)
+		if e, ok := tabevents.TitleChange(t.ID, t.Name(), old, title); ok {
+			s.record(e)
+		}
 		if s.daemon != nil {
 			s.daemon.pushState() // titles ride the resume handoff
 		}
@@ -494,6 +519,17 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 		term.SetOnStateChange(s.daemon.pushState)
 		term.SetOnBell(func() {
 			s.daemon.broadcastBell(t.ID)
+			now := time.Now().UnixNano()
+			if prev := t.lastBellEvent.Load(); prev == 0 || now-prev >= int64(bellEventGap) {
+				t.lastBellEvent.Store(now)
+				s.record(tabevents.Event{Kind: tabevents.Bell, Tab: t.ID, Name: t.Name()})
+			}
+		})
+		term.SetOnNotify(func(n terminal.Notification) {
+			s.record(tabevents.Event{
+				Kind: tabevents.Notification, Tab: t.ID, Name: t.Name(),
+				Protocol: n.Protocol, NotifyTitle: n.Title, NotifyBody: n.Body,
+			})
 		})
 		// OSC 52: a PTY app writing the clipboard stores it on
 		// the session + broadcasts to attached clients (which
@@ -518,6 +554,8 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 		defer func() { _ = recover() }()
 		atomic.StoreInt32(&t.ExitCode, int32(code))
 		close(t.Exited)
+		c := code
+		s.record(tabevents.Event{Kind: tabevents.ChildExited, Tab: t.ID, Name: t.Name(), ExitCode: &c})
 		if s.daemon != nil {
 			s.daemon.tabGone(t.ID)
 		}
@@ -884,6 +922,9 @@ func (s *Session) CloseTab(id uint32) {
 	}
 	s.revision++
 	s.mu.Unlock()
+	// Recorded before the PTY is closed: closing kills the child, so
+	// a child_exited event for this tab follows.
+	s.record(tabevents.Event{Kind: tabevents.TabClosed, Tab: id, Name: t.Name()})
 	t.Term.Close()
 	if s.daemon != nil {
 		s.daemon.tabGone(id)
@@ -907,12 +948,16 @@ func (s *Session) RenameTab(id uint32, name string) bool {
 			return false
 		}
 	}
-	if old := t.Name(); old != "" {
+	old := t.Name()
+	if old != "" {
 		delete(s.tabsByName, old)
 	}
 	t.setName(name)
 	if name != "" {
 		s.tabsByName[name] = id
+	}
+	if old != name {
+		s.record(tabevents.Event{Kind: tabevents.TabRenamed, Tab: id, Name: name, OldName: old, NewName: name})
 	}
 	if s.daemon != nil {
 		s.daemon.pushState() // names ride the resume handoff

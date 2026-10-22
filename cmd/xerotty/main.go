@@ -5,6 +5,7 @@
 //	xerotty                  # GUI (default)
 //	xerotty serve [...]      # headless daemon (owns PTYs + sockets)
 //	xerotty connect [...]    # CLI thin client attached to a daemon
+//	xerotty events [...]     # tab events as JSON lines
 //	xerotty --help           # show subcommands + per-mode flag help
 //
 // Build with `-tags headless` to produce a server artifact that
@@ -55,6 +56,11 @@ USAGE
                              server. Targets the GUI's aggregating
                              socket, falling back to the local
                              daemon's. See docs/MCP.md.
+  xerotty events [flags]     Print tab events (title/status-glyph
+                             changes, bell, notifications, tab
+                             created/closed/renamed, child exit) as
+                             JSON lines. --follow streams until
+                             killed. See docs/MCP.md.
 
   xerotty serve --upgrade    Hot-upgrade the RUNNING daemon to the
                              currently-installed binary. Shells and
@@ -65,6 +71,7 @@ USAGE
   xerotty serve   --help     Show flags for the serve subcommand.
   xerotty connect --help     Show flags for the connect subcommand.
   xerotty mcp     --help     Show flags for the mcp bridge.
+  xerotty events  --help     Show flags for the events stream.
 
 COMMON RECIPES
   Run a local daemon and attach a CLI client to it:
@@ -82,6 +89,10 @@ COMMON RECIPES
 
   Let Claude Code drive xerotty tabs as MCP tools (one-time setup):
     $ claude mcp add xerotty -- xerotty mcp
+
+  Wake a Claude Code session when a tab's agent goes idle, rings
+  the bell or sends a notification (run it with the Monitor tool):
+    $ xerotty events --follow --new --kind title_changed,bell,notification
 
   Probe the MCP agent socket from a shell (debugging):
     $ echo '{"jsonrpc":"2.0","id":1,"method":"tabs/list"}' \
@@ -104,6 +115,8 @@ func main() {
 			os.Exit(runner.Connect(os.Args[2:]))
 		case "mcp":
 			os.Exit(runner.MCPBridge(os.Args[2:]))
+		case "events":
+			os.Exit(runner.Events(os.Args[2:]))
 		case "help", "--help", "-h", "-help":
 			fmt.Print(helpText)
 			os.Exit(0)

@@ -49,6 +49,16 @@ type Terminal struct {
 	// received. Daemon ships MsgBell on this. Set via SetOnBell.
 	OnBell func()
 
+	// OnNotify fires when the program sends a desktop notification
+	// (OSC 9, OSC 777 notify, OSC 99). The daemon records it as a tab
+	// event; nothing displays it. Set via SetOnNotify. Fires on the
+	// readPTY goroutine.
+	OnNotify func(Notification)
+
+	// kittyNotify joins chunked OSC 99 notifications. Touched only
+	// by dispatchOSC on the readPTY goroutine.
+	kittyNotify kittyNotifyAssembler
+
 	// OnData fires after each PTY output batch is ingested. The daemon
 	// uses it to wake EVERY attached client's publishLoop (per-sub
 	// wake), instead of relying on the shared cap-1 DataCh — which only
@@ -1053,6 +1063,14 @@ func (t *Terminal) SetOnBell(fn func()) {
 	t.mu.Unlock()
 }
 
+// SetOnNotify registers a callback fired when the program sends a
+// desktop notification (see Terminal.OnNotify).
+func (t *Terminal) SetOnNotify(fn func(Notification)) {
+	t.mu.Lock()
+	t.OnNotify = fn
+	t.mu.Unlock()
+}
+
 // SetOnData registers a callback fired after each PTY output batch.
 // The daemon uses it to fan a repaint nudge out to every attached
 // client (see Terminal.OnData).
@@ -1433,9 +1451,10 @@ func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []b
 }
 
 // dispatchOSC handles a complete OSC body (between OSC introducer and
-// terminator). Currently only OSC 0/1/2 (window title / icon name) are
-// handled — that's the case that breaks visibly. Other OSC commands are
-// silently dropped, which matches what an unsupported terminal would do.
+// terminator). Handled: OSC 0/1/2 (window title / icon name), 52
+// (clipboard) and the notification forms 9, 777 and 99. Other OSC
+// commands are silently dropped, which matches what an unsupported
+// terminal would do.
 func (t *Terminal) dispatchOSC(body []byte) {
 	semi := -1
 	for i, b := range body {
@@ -1462,6 +1481,27 @@ func (t *Terminal) dispatchOSC(body []byte) {
 		}
 	case "52":
 		t.dispatchOSC52(data)
+	case "9":
+		if n, ok := parseOSC9(data); ok {
+			t.notify(n)
+		}
+	case "777":
+		if n, ok := parseOSC777(data); ok {
+			t.notify(n)
+		}
+	case "99":
+		if n, ok := t.kittyNotify.add(data); ok {
+			t.notify(n)
+		}
+	}
+}
+
+func (t *Terminal) notify(n Notification) {
+	t.mu.Lock()
+	cb := t.OnNotify
+	t.mu.Unlock()
+	if cb != nil {
+		cb(n)
 	}
 }
 

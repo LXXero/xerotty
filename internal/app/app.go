@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"image/png"
@@ -32,6 +33,7 @@ import (
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/sdlhack"
 	"github.com/LXXero/xerotty/internal/sockpath"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/tabs"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
@@ -1564,6 +1566,28 @@ func (a *App) RenameTab(nsID, name string) error {
 	}
 	src.Rename(name)
 	return nil
+}
+
+// EventHosts implements guimcp.Backend: every connected hub's host
+// namespace, the same keys list_tabs uses.
+func (a *App) EventHosts() []string {
+	hubs := a.hubsByName()
+	out := make([]string, 0, len(hubs))
+	for name := range hubs {
+		out = append(out, name)
+	}
+	return out
+}
+
+// WaitEvents implements guimcp.Backend: read the host daemon's tab
+// event ring over the wire. Runs on a guimcp goroutine; touches only
+// the hub.
+func (a *App) WaitEvents(ctx context.Context, host string, q tabevents.Query) (tabevents.Result, error) {
+	hub, ok := a.hubsByName()[host]
+	if !ok || hub == nil {
+		return tabevents.Result{}, fmt.Errorf("no daemon hub for host %q", host)
+	}
+	return hub.WaitEvents(ctx, q)
 }
 
 // guiProposal tags a daemon-reported proposal with the hub +

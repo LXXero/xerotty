@@ -137,6 +137,12 @@ const (
 	MsgClientKick        MsgType = 51 // client → server: force-disconnect a client by id
 
 	MsgTabRename MsgType = 52 // client → server: set a tab's assigned name (label)
+
+	// Additive (no version bump), like MsgClientsListReq: an old
+	// daemon logs the request as unknown and never replies, and the
+	// waiting client reports that host as unable to serve events.
+	MsgEventsWaitReq MsgType = 53 // client → server: tab events after a cursor, blocking up to a timeout
+	MsgEvents        MsgType = 54 // server → client: reply for EventsWaitReq
 )
 
 // Hello is the first frame a client sends after connecting. The
@@ -796,4 +802,54 @@ type ClientsList struct {
 // dropped on its own.
 type ClientKick struct {
 	ClientID string `msg:"client_id"`
+}
+
+// EventsWaitReq asks the daemon for the tab events after a cursor
+// (internal/tabevents), blocking up to TimeoutMs for at least one.
+// Epoch + After are the cursor from the previous Events reply (Epoch
+// "" = none yet). Tabs and Kinds filter; empty matches everything.
+// ReqID correlates the Events reply.
+type EventsWaitReq struct {
+	ReqID     uint64   `msg:"req_id"`
+	Epoch     string   `msg:"epoch,omitempty"`
+	After     uint64   `msg:"after"`
+	TimeoutMs int64    `msg:"timeout_ms"`
+	Tabs      []uint32 `msg:"tabs,omitempty"`
+	Kinds     []string `msg:"kinds,omitempty"`
+}
+
+// TabEvent is one tab event on the wire. Fields mirror
+// tabevents.Event; TimeUnixNano is its timestamp and HasExitCode
+// marks ExitCode as set (child_exited).
+type TabEvent struct {
+	Seq          uint64 `msg:"seq"`
+	TimeUnixNano int64  `msg:"time"`
+	Kind         string `msg:"kind"`
+	Tab          uint32 `msg:"tab"`
+	Name         string `msg:"name,omitempty"`
+	HasExitCode  bool   `msg:"has_exit,omitempty"`
+	ExitCode     int32  `msg:"exit_code,omitempty"`
+	OldName      string `msg:"old_name,omitempty"`
+	NewName      string `msg:"new_name,omitempty"`
+	OldTitle     string `msg:"old_title,omitempty"`
+	NewTitle     string `msg:"new_title,omitempty"`
+	OldGlyph     string `msg:"old_glyph,omitempty"`
+	NewGlyph     string `msg:"new_glyph,omitempty"`
+	OldState     string `msg:"old_state,omitempty"`
+	NewState     string `msg:"new_state,omitempty"`
+	Protocol     string `msg:"protocol,omitempty"`
+	NotifyTitle  string `msg:"notify_title,omitempty"`
+	NotifyBody   string `msg:"notify_body,omitempty"`
+}
+
+// Events replies to EventsWaitReq: the matching events (oldest
+// first), the newest seq in the daemon's ring (the next After), the
+// ring's epoch, and Missed when events after the cursor are gone
+// (ring overflow, or a cursor from an earlier daemon process).
+type Events struct {
+	ReqID  uint64     `msg:"req_id"`
+	Events []TabEvent `msg:"events"`
+	Last   uint64     `msg:"last"`
+	Epoch  string     `msg:"epoch"`
+	Missed bool       `msg:"missed,omitempty"`
 }

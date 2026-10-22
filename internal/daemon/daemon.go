@@ -12,6 +12,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
@@ -77,7 +78,16 @@ type Daemon struct {
 	// (0 = apply at once). Default set in New; SetResizeSettle
 	// overrides it. See reconcileTabSize.
 	resizeSettle time.Duration
+
+	// events is the tab event ring (create/close/rename/exit, title
+	// changes, bell, notifications) that wait_for_events and
+	// `xerotty events` read. One per process: a restart or
+	// serve --upgrade starts a fresh ring with a new epoch.
+	events *tabevents.Ring
 }
+
+// Events returns the daemon's tab event ring.
+func (d *Daemon) Events() *tabevents.Ring { return d.events }
 
 // defaultResizeSettle is the wait before a grid shrink is applied.
 // A restored GUI window reports a provisional size before its layout
@@ -729,6 +739,7 @@ func New(cfg *config.Config, socketPath string) *Daemon {
 		livenessWindow:    defaultLivenessWindow,
 		resizeSettle:      defaultResizeSettle,
 		instanceID:        newInstanceID(),
+		events:            tabevents.New(0),
 	}
 }
 

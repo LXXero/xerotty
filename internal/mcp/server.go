@@ -31,11 +31,12 @@
 // tab/input, tab/keys, tab/paste, tab/create, tab/close, tab/rename,
 // tab/resize,
 // tab/clipboard, proposals/{list,approve,drop}, agent/{mode,
-// authenticate,clients}, server/info.
+// authenticate,clients}, server/info, events/wait.
 package mcp
 
 import (
 	"bufio"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -149,6 +150,12 @@ func (s *Server) Stop() error {
 type agentConn struct {
 	srv  *Server
 	conn net.Conn
+	// ctx ends when the connection closes, cutting short any
+	// events wait still running for it.
+	ctx context.Context
+	// encMu serializes replies: events waits answer from their own
+	// goroutines, concurrently with the read loop's replies.
+	encMu sync.Mutex
 
 	mu     sync.Mutex
 	mode   string
@@ -157,7 +164,9 @@ type agentConn struct {
 
 func (s *Server) serve(conn net.Conn) {
 	defer conn.Close()
-	c := &agentConn{srv: s, conn: conn, mode: s.defaultMode}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := &agentConn{srv: s, conn: conn, ctx: ctx, mode: s.defaultMode}
 	c.run()
 }
 
@@ -171,6 +180,11 @@ func (c *agentConn) run() {
 	// (cols*rows*4 bytes of UTF-8 in the worst case) don't truncate.
 	scanner.Buffer(make([]byte, 0, 1<<16), 1<<20)
 	enc := json.NewEncoder(c.conn)
+	reply := func(resp *rpcResponse) {
+		c.encMu.Lock()
+		_ = enc.Encode(resp)
+		c.encMu.Unlock()
+	}
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -179,15 +193,24 @@ func (c *agentConn) run() {
 		}
 		var req rpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			_ = enc.Encode(parseError(nil, err.Error()))
+			reply(parseError(nil, err.Error()))
 			continue
 		}
 		if req.JSONRPC == "" {
 			req.JSONRPC = "2.0"
 		}
-		resp := c.handle(&req)
-		if resp != nil {
-			_ = enc.Encode(resp)
+		if isBlocking(&req) {
+			// Replies may come back out of order; JSON-RPC ids
+			// correlate them.
+			go func() {
+				if resp := c.handle(&req); resp != nil {
+					reply(resp)
+				}
+			}()
+			continue
+		}
+		if resp := c.handle(&req); resp != nil {
+			reply(resp)
 		}
 	}
 }
@@ -239,6 +262,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleAgentKick(req)
 	case "server/info":
 		return c.handleServerInfo(req)
+	case "events/wait":
+		return c.handleEventsWait(req)
 
 	// Standard MCP methods — what Claude Code / Xyphia / other
 	// MCP-aware clients speak. tools/call dispatches to the same
