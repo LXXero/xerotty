@@ -153,7 +153,10 @@ func init() {
 	}})
 	registerAction(Action{ID: "rename_tab", Label: "Rename Tab", Category: "tabs", Run: func(w *Window, _ string) {
 		if tab := w.tabs.Active(); tab != nil {
-			w.renameBuffer = tab.DisplayTitle()
+			// Pre-fill with the assigned name only: the displayed title
+			// would turn a live program title (and a remote tab's
+			// "host: " prefix) into a fixed name on a bare OK.
+			w.renameBuffer = tab.AssignedName()
 			w.renamingTab = true
 			imgui.OpenPopupStr("Rename Tab")
 		}

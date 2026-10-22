@@ -390,6 +390,18 @@ func (d *Daemon) CloseTab(sess *Session, id uint32) {
 	d.broadcastTopology(sess)
 }
 
+// RenameTab sets a tab's assigned name ("" clears it, so the tab goes
+// back to showing its program's title) and wakes the tab's
+// subscribers so every client sees it in the next TabState. false
+// when the tab doesn't exist or another tab already has the name.
+func (d *Daemon) RenameTab(sess *Session, id uint32, name string) bool {
+	if !sess.RenameTab(id, name) {
+		return false
+	}
+	d.wakeTabSubs(id)
+	return true
+}
+
 // MoveTab moves a tab between windows and broadcasts the topology.
 func (d *Daemon) MoveTab(sess *Session, tabID, toWindowID uint32, index int) {
 	sess.MoveTab(tabID, toWindowID, index)

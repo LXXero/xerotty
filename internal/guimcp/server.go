@@ -22,6 +22,7 @@
 //	send_paste   {tab_id, text}
 //	create_tab   {host?, name?, cols?, rows?} -> {tab_id, reused}
 //	close_tab    {tab_id}
+//	rename_tab   {tab_id, name}
 //
 // No write-gating here: the GUI is the user's own trusted process.
 // (The daemon-side MCP servers keep their observe/propose/auto
@@ -63,6 +64,10 @@ type Backend interface {
 	// CloseTab closes the tab (daemon-side close; the GUI tab reaps
 	// via the normal vanish path).
 	CloseTab(nsID string) error
+	// RenameTab sets the tab's daemon-side name ("" clears it).
+	// Errors when the tab is unknown or another tab on the same host
+	// already has the name.
+	RenameTab(nsID, name string) error
 }
 
 // TabRef is one tab in the aggregated view. Beyond identity +
@@ -221,6 +226,8 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 		return s.createTab(req.ID, req.Params)
 	case "close_tab":
 		return s.closeTab(req.ID, req.Params)
+	case "rename_tab":
+		return s.renameTab(req.ID, req.Params)
 	default:
 		return rpcErrResp(req.ID, -32601, "method not found: "+req.Method)
 	}
@@ -246,6 +253,8 @@ func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
 		inner = s.createTab(req.ID, p.Arguments)
 	case "close_tab":
 		inner = s.closeTab(req.ID, p.Arguments)
+	case "rename_tab":
+		inner = s.renameTab(req.ID, p.Arguments)
 	case "send_input":
 		inner = s.sendInput(req.ID, p.Arguments)
 	case "send_keys":
@@ -512,6 +521,20 @@ func (s *Server) closeTab(id json.RawMessage, params json.RawMessage) *rpcRespon
 	return okResp(id, map[string]any{"closed": p.TabID})
 }
 
+func (s *Server) renameTab(id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		TabID string `json:"tab_id"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return rpcErrResp(id, -32602, err.Error())
+	}
+	if err := s.backend.RenameTab(p.TabID, p.Name); err != nil {
+		return rpcErrResp(id, -32004, err.Error())
+	}
+	return okResp(id, map[string]any{"tab_id": p.TabID, "name": p.Name})
+}
+
 // MakeNSID builds a namespaced tab ID from host + daemon tab ID.
 func MakeNSID(host string, tabID uint32) string {
 	return host + ":" + strconv.FormatUint(uint64(tabID), 10)
@@ -535,5 +558,6 @@ func toolCatalog() []map[string]any {
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
 		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs (default \"\" = local)"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
 		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
+		{"name": "rename_tab", "description": "Set a tab's name, the label shown on the user's tab bar. An empty name clears it, so the tab shows its program's title again. Names are also create_tab's reuse key: clearing or changing a name means a later create_tab with the old name opens a new tab. Fails if another tab on the same host already has the name.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "name": strProp("new name; \"\" clears it")}, "tab_id", "name")},
 	}
 }

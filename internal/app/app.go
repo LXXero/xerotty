@@ -1546,6 +1546,26 @@ func (a *App) CloseTab(nsID string) error {
 	return nil
 }
 
+// RenameTab implements guimcp.Backend. The daemon rejects a name another
+// tab already has without replying (Source.Rename is fire-and-forget),
+// so check the hub's tabs here to give the agent a real error.
+func (a *App) RenameTab(nsID, name string) error {
+	src, ok := a.SourceFor(nsID)
+	if !ok {
+		return fmt.Errorf("tab not found: %s", nsID)
+	}
+	if name != "" {
+		host := nsID[:strings.LastIndex(nsID, ":")] // SourceFor validated the form
+		for _, other := range a.hubsByName()[host].Sources() {
+			if other != src && other.Name() == name {
+				return fmt.Errorf("name %q is already used by another tab", name)
+			}
+		}
+	}
+	src.Rename(name)
+	return nil
+}
+
 // guiProposal tags a daemon-reported proposal with the hub +
 // host it came from so the GUI gate resolves against the correct
 // daemon. Without the tag, a remote (kh) proposal's Approve would
@@ -6365,8 +6385,8 @@ func (w *Window) renderRenameDialog() {
 		imgui.WindowFlagsNoSavedSettings |
 		imgui.WindowFlagsNoDocking
 	if imgui.BeginV("Rename Tab###renamedlg"+w.imguiSuffix(), nil, flags) {
-		imgui.Text("Tab name:")
-		imgui.InputTextWithHint("##rename", "tab name", &w.renameBuffer, 0, nil)
+		imgui.Text("Tab name (empty = follow the program's title):")
+		imgui.InputTextWithHint("##rename", "follow program title", &w.renameBuffer, 0, nil)
 
 		if imgui.IsItemFocused() && imgui.IsKeyPressedBool(imgui.KeyEnter) {
 			if tab := w.tabs.Active(); tab != nil {
@@ -6378,6 +6398,13 @@ func (w *Window) renderRenameDialog() {
 		if imgui.Button("OK") {
 			if tab := w.tabs.Active(); tab != nil {
 				commitTabRename(tab, w.renameBuffer)
+			}
+			w.renamingTab = false
+		}
+		imgui.SameLineV(0, 8)
+		if imgui.Button("Clear Name") {
+			if tab := w.tabs.Active(); tab != nil {
+				commitTabRename(tab, "")
 			}
 			w.renamingTab = false
 		}

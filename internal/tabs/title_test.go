@@ -1,6 +1,10 @@
 package tabs
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/LXXero/xerotty/internal/config"
+)
 
 func TestIsShellProcess(t *testing.T) {
 	shells := []string{"zsh", "bash", "-zsh", "-bash", "fish", "sh", "dash", "nu"}
@@ -51,5 +55,51 @@ func TestLabelMatchesDisplayTitle(t *testing.T) {
 	tab.SetName("build")
 	if got, want := Label(tab.Host, tab.Name(), tab.Title(), ""), tab.DisplayTitle(); got != want {
 		t.Errorf("named: Label = %q, DisplayTitle = %q", got, want)
+	}
+}
+
+func TestStatusGlyphs(t *testing.T) {
+	cases := map[string]string{
+		"✳ Claude Code":     "✳",
+		"◐ fixing-xyphia":   "◐",
+		"⠐ Claude Code":     "⠐",
+		"vim notes.md":      "",
+		"A Running Process": "",
+		"1 job running":     "",
+		"- dash list":       "",
+		"🚀 deploy":          "🚀",
+		"✳":                 "✳",
+		"":                  "",
+	}
+	for in, want := range cases {
+		if got := StatusGlyphs(in); got != want {
+			t.Errorf("StatusGlyphs(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A named tab shows the title's status glyph in front of the name only
+// when the option is on; the name itself never changes.
+func TestNamedTabStatusGlyph(t *testing.T) {
+	cfg := &config.Config{}
+	tab := &Tab{cfg: cfg}
+	tab.SetName("build")
+	tab.SetTitle("◐ some task")
+
+	if got := tab.DisplayTitle(); got != "build" {
+		t.Errorf("option off: DisplayTitle = %q, want %q", got, "build")
+	}
+	cfg.Tabs.StatusGlyphOnNamedTabs = true
+	if got := tab.DisplayTitle(); got != "◐ build" {
+		t.Errorf("option on: DisplayTitle = %q, want %q", got, "◐ build")
+	}
+	tab.SetTitle("zsh: ~/git")
+	if got := tab.DisplayTitle(); got != "build" {
+		t.Errorf("title without glyph: DisplayTitle = %q, want %q", got, "build")
+	}
+	tab.Host = "kh"
+	tab.SetTitle("✳ done")
+	if got := tab.DisplayTitle(); got != "kh: ✳ build" {
+		t.Errorf("remote: DisplayTitle = %q, want %q", got, "kh: ✳ build")
 	}
 }

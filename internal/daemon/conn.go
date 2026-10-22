@@ -783,11 +783,8 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		if c.session == nil {
 			return nil
 		}
-		if c.session.RenameTab(msg.ID, msg.Name) {
+		if c.daemon.RenameTab(c.session, msg.ID, msg.Name) {
 			logf("tab %d renamed to %q by %q", msg.ID, msg.Name, c.clientID)
-			// Wake every subscriber's publish loop so the new name
-			// flows in the next TabState instead of the next tick.
-			c.daemon.wakeTabSubs(msg.ID)
 		}
 		return nil
 	default:

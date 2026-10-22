@@ -156,6 +156,18 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 			},
 		},
 		{
+			"name":        "rename_tab",
+			"description": "Set a tab's name, the label shown on the user's tab bar. An empty name clears it, so the tab shows its program's title again. Names are also create_tab's reuse key: clearing or changing a name means a later create_tab with the old name opens a new tab. Fails if another tab already has the name. Blocked in observe mode.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tab_id": map[string]any{"type": "integer"},
+					"name":   map[string]any{"type": "string", "description": "New name; \"\" clears it."},
+				},
+				"required": []string{"tab_id", "name"},
+			},
+		},
+		{
 			"name":        "list_proposals",
 			"description": "List writes queued by agents in propose mode. Each entry has {index, tab_id, kind:\"input\"|\"paste\", payload}. The queue is bounded; older entries get dropped on overflow.",
 			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
@@ -296,6 +308,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleTabCreate(inner)
 	case "close_tab":
 		resp = c.handleTabClose(inner)
+	case "rename_tab":
+		resp = c.handleTabRename(inner)
 	case "resize_tab":
 		resp = c.handleTabResize(inner)
 	case "list_proposals":

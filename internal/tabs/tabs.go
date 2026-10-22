@@ -67,6 +67,10 @@ type Tab struct {
 	// The cache is invalidated after foregroundCacheTTL.
 	foregroundCache string
 	foregroundAt    time.Time
+
+	// cfg is the manager's live config (nil in tests); read for
+	// display options that Apply in prefs can change at any time.
+	cfg *config.Config
 }
 
 const foregroundCacheTTL = 500 * time.Millisecond
@@ -129,6 +133,13 @@ func StripStatusGlyphs(s string) string {
 	})
 }
 
+// StatusGlyphs returns the leading status symbols of a title, the
+// part StripStatusGlyphs removes, without surrounding spaces:
+// "✳ Claude Code" → "✳". "" when the title starts with none.
+func StatusGlyphs(s string) string {
+	return strings.TrimSpace(s[:len(s)-len(StripStatusGlyphs(s))])
+}
+
 // Name returns the assigned label for a local tab ("" = none).
 func (t *Tab) Name() string {
 	t.nameMu.RLock()
@@ -182,12 +193,26 @@ func (t *Tab) SetBellPending(b bool) { t.bellPending.Store(b) }
 
 func (t *Tab) titleBase() string {
 	// An assigned label beats everything — it's the one the user or
-	// an agent chose on purpose.
+	// an agent chose on purpose. The title's status glyph can still
+	// ride in front of it, so a named Claude tab shows ✳/◐.
 	if n := t.AssignedName(); n != "" {
+		if t.cfg == nil || !t.cfg.Tabs.StatusGlyphOnNamedTabs {
+			return n
+		}
+		t.refreshForeground()
+		if g := StatusGlyphs(t.Title()); g != "" {
+			return g + " " + n
+		}
 		return n
 	}
-	// Refresh the foreground process (throttled) BEFORE reading the
-	// OSC title, so a stale title can be cleared first.
+	t.refreshForeground()
+	return pickTitle(t.Title(), t.foregroundCache)
+}
+
+// refreshForeground updates the cached foreground process name
+// (throttled), clearing the OSC title when an app exits back to the
+// shell. Runs BEFORE the title is read so a stale title is gone first.
+func (t *Tab) refreshForeground() {
 	if time.Since(t.foregroundAt) > foregroundCacheTTL && t.Terminal != nil {
 		fg := t.Terminal.ForegroundProcessName()
 		// An OSC title belongs to the process that set it. When the
@@ -205,7 +230,6 @@ func (t *Tab) titleBase() string {
 		t.foregroundCache = fg
 		t.foregroundAt = time.Now()
 	}
-	return pickTitle(t.Title(), t.foregroundCache)
 }
 
 // Manager manages the set of open tabs.
@@ -276,6 +300,7 @@ func (m *Manager) AdoptTab(term terminal.Source) *Tab {
 	tab := &Tab{
 		ID:       m.NextID,
 		Terminal: term,
+		cfg:      m.cfg,
 	}
 	m.NextID++
 	m.Tabs = append(m.Tabs, tab)
@@ -362,6 +387,7 @@ func (m *Manager) NewTabCmd(cols, rows int, cwd string, launch *terminal.LaunchC
 	tab := &Tab{
 		ID:       m.NextID,
 		Terminal: term,
+		cfg:      m.cfg,
 		// Title intentionally left empty — DisplayTitle() falls back
 		// to the foreground process name (or "shell" if even that
 		// lookup fails) until the app emits an OSC 0/2 title.

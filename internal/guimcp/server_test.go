@@ -33,6 +33,7 @@ type fakeBackend struct {
 	tabs    []guimcp.TabRef
 	created []string
 	closed  []string
+	renamed []string
 }
 
 func (f *fakeBackend) ListTabs() []guimcp.TabRef { return f.tabs }
@@ -55,6 +56,10 @@ func (f *fakeBackend) CreateTab(host, name string, cols, rows int) (string, bool
 
 func (f *fakeBackend) CloseTab(nsID string) error {
 	f.closed = append(f.closed, nsID)
+	return nil
+}
+func (f *fakeBackend) RenameTab(nsID, name string) error {
+	f.renamed = append(f.renamed, nsID+"="+name)
 	return nil
 }
 func (f *fakeBackend) SourceFor(nsID string) (*daemonsource.Source, bool) {
@@ -366,5 +371,21 @@ func TestGUIMCPCreateAndCloseTab(t *testing.T) {
 	}
 	if len(fb.closed) != 1 || fb.closed[0] != "kh:99" {
 		t.Fatalf("backend close calls: %v", fb.closed)
+	}
+}
+
+func TestRenameTabRoutesToBackend(t *testing.T) {
+	fb := &fakeBackend{}
+	c, done := dial(t, startServer(t, fb))
+	defer done()
+
+	if _, rerr := c.call(t, 1, "rename_tab", map[string]any{"tab_id": "kh:3", "name": "logs"}); rerr != nil {
+		t.Fatalf("rename_tab: %+v", rerr)
+	}
+	if _, rerr := c.call(t, 2, "rename_tab", map[string]any{"tab_id": "kh:3", "name": ""}); rerr != nil {
+		t.Fatalf("rename_tab clear: %+v", rerr)
+	}
+	if want := []string{"kh:3=logs", "kh:3="}; len(fb.renamed) != 2 || fb.renamed[0] != want[0] || fb.renamed[1] != want[1] {
+		t.Fatalf("backend rename calls = %v, want %v", fb.renamed, want)
 	}
 }

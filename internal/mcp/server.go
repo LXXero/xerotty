@@ -28,7 +28,8 @@
 // Supports the standard MCP shape (initialize / tools/list /
 // tools/call) AND native JSON-RPC methods for `nc -U` debugging.
 // Native methods: tabs/list, tab/screen, tab/scrollback,
-// tab/input, tab/keys, tab/paste, tab/create, tab/close, tab/resize,
+// tab/input, tab/keys, tab/paste, tab/create, tab/close, tab/rename,
+// tab/resize,
 // tab/clipboard, proposals/{list,approve,drop}, agent/{mode,
 // authenticate,clients}, server/info.
 package mcp
@@ -216,6 +217,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleTabCreate(req)
 	case "tab/close":
 		return c.handleTabClose(req)
+	case "tab/rename":
+		return c.handleTabRename(req)
 	case "tab/resize":
 		return c.handleTabResize(req)
 	case "proposals/list":
@@ -320,6 +323,30 @@ func (c *agentConn) handleTabClose(req *rpcRequest) *rpcResponse {
 	// attached wire client.
 	c.srv.d.CloseTab(sess, uint32(p.TabID))
 	return ok(req.ID, map[string]bool{"ok": true})
+}
+
+func (c *agentConn) handleTabRename(req *rpcRequest) *rpcResponse {
+	if err := c.requireWrite(); err != nil {
+		return rpcErr(req.ID, -32099, err.Error(), nil)
+	}
+	var p struct {
+		TabID tabIDParam `json:"tab_id"`
+		Name  string     `json:"name"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		return invalidParams(req.ID, err.Error())
+	}
+	sess := c.srv.d.SessionByName("default")
+	if sess == nil {
+		return rpcErr(req.ID, -32004, "no default session", nil)
+	}
+	if sess.Tab(uint32(p.TabID)) == nil {
+		return rpcErr(req.ID, -32004, fmt.Sprintf("tab %d not found", p.TabID), nil)
+	}
+	if !c.srv.d.RenameTab(sess, uint32(p.TabID), p.Name) {
+		return rpcErr(req.ID, -32005, fmt.Sprintf("name %q is already used by another tab", p.Name), nil)
+	}
+	return ok(req.ID, map[string]any{"tab_id": p.TabID, "name": p.Name})
 }
 
 func (c *agentConn) handleTabResize(req *rpcRequest) *rpcResponse {

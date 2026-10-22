@@ -393,6 +393,7 @@ type configDialog struct {
 	term          string
 	childExitIdx  int32
 	inheritCWD    bool
+	glyphOnNamed  bool
 	closeBtnIdx   int32
 	tabSourceIdx  int32
 	tabSourceOpts []string // built on prefs-open: base + per-host
@@ -721,6 +722,7 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.term = cfg.Term
 	d.childExitIdx = prefIndexOf(prefChildExits, cfg.Tabs.OnChildExit)
 	d.inheritCWD = cfg.Tabs.InheritCWD
+	d.glyphOnNamed = cfg.Tabs.StatusGlyphOnNamedTabs
 	d.closeBtnIdx = prefIndexOf(prefCloseBtnPos, cfg.Tabs.CloseButtonPosition)
 	// Build the source-mode option list dynamically: base
 	// options (pty, daemon) + one "daemon:<name>" per cfg.Hosts
@@ -889,6 +891,7 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 		cfg.Tabs.OnChildExit = prefChildExits[d.childExitIdx]
 	}
 	cfg.Tabs.InheritCWD = d.inheritCWD
+	cfg.Tabs.StatusGlyphOnNamedTabs = d.glyphOnNamed
 	if int(d.tabSourceIdx) < len(d.tabSourceOpts) {
 		cfg.Tabs.Source = d.tabSourceOpts[d.tabSourceIdx]
 	}
@@ -1668,7 +1671,16 @@ func (a *Window) renderPrefShellTabs() {
 		a.prefCombo("closebtn", &d.closeBtnIdx, prefCloseBtnPos, w)
 	})
 
-	imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
+	if imgui.BeginTableV("##tabchecks", 2, 0, imgui.NewVec2(0, 0), 0) {
+		imgui.TableNextColumn()
+		imgui.Checkbox("New Tab Inherits CWD", &d.inheritCWD)
+		imgui.TableNextColumn()
+		imgui.Checkbox("Status Glyph on Named Tabs", &d.glyphOnNamed)
+		if imgui.IsItemHovered() {
+			imgui.SetTooltip("Show the program's status symbol (Claude Code's idle /\nworking mark) in front of a tab name you or an agent assigned.")
+		}
+		imgui.EndTable()
+	}
 
 	imgui.Text("Renderer (takes effect on restart)")
 	a.prefCombo("renderer", &d.rendererIdx, prefRenderers, w)

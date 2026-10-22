@@ -266,6 +266,10 @@ type TabConfig struct {
 	OnChildExit         string `toml:"on_child_exit"`         // "close" | "hold" | "hold_on_error"
 	InheritCWD          bool   `toml:"inherit_cwd"`           // new tabs inherit parent CWD
 	CloseButtonPosition string `toml:"close_button_position"` // "right" | "left"
+	// StatusGlyphOnNamedTabs puts the leading status glyph of the
+	// program's title (Claude Code's ✳ idle / ◐ working) in front of
+	// an assigned tab name, which otherwise hides the title entirely.
+	StatusGlyphOnNamedTabs bool `toml:"status_glyph_on_named_tabs"`
 
 	// Source picks where new tabs get their PTY:
 	//   "pty"    (default) — in-process PTY, no daemon needed.
@@ -375,9 +379,10 @@ func Default() Config {
 			},
 		},
 		Tabs: TabConfig{
-			OnChildExit:         "close",
-			InheritCWD:          false,
-			CloseButtonPosition: "right",
+			OnChildExit:            "close",
+			InheritCWD:             false,
+			CloseButtonPosition:    "right",
+			StatusGlyphOnNamedTabs: true,
 		},
 		Window: WindowConfig{
 			Columns: 80,
