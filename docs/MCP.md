@@ -176,6 +176,48 @@ sees. Lock down agents you don't fully trust by pointing them at a
 daemon socket with `default_mode = "observe"` /
 `allow_mode_change = false` instead.
 
+## Tab events as a stream: `xerotty events`
+
+`xerotty events` prints the same events `wait_for_events` returns,
+one JSON object per line. Without `--follow` it prints what the
+daemons still hold and exits; with `--follow` it keeps printing until
+killed. A background task that wakes on each output line (Claude
+Code's Monitor tool, a `while read` loop) then gets pushed events:
+nothing polls screens and no agent has to type into another tab.
+
+```sh
+# wake when an agent's title glyph changes, a bell rings or a
+# program sends a notification; skip what already happened
+xerotty events --follow --new --kind title_changed,bell,notification
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--follow`, `-f` | keep printing events until killed |
+| `--new` | skip the events already held; print only new ones (use with `--follow`) |
+| `--host H` | only this host namespace (`local`, `kh`, …); repeatable or comma-separated |
+| `--kind K` | only these kinds; repeatable or comma-separated |
+| `--tab ID` | only this tab (`kh:3`; a bare `3` means `local:3`); repeatable or comma-separated |
+| `--socket PATH` / `--daemon` | same discovery as `xerotty mcp` |
+
+Each event line is `{host, tab_id, seq, time, kind, ...}` with the
+kind's fields, the GUI aggregator's shape, even when it reads a
+single daemon (that daemon's tabs are reported as host `local`). Two
+other lines can appear:
+
+- `{"kind":"events_missed","host":H,"reason":"restarted"|"overflow"}`:
+  events from H were lost, because its daemon restarted and its
+  sequence reset, or because more happened than its ring holds.
+- `{"kind":"host_error","host":H,"error":"..."}`: H could not be read.
+  Printed again only when the error changes.
+
+It reads the GUI aggregator when the GUI is running, which covers
+every attached host, and otherwise the local daemon's socket, which
+covers local tabs only. With `--follow` it reconnects when the socket
+goes away (GUI restart, `serve --upgrade`) and keeps its per-host
+cursor, so a GUI restart loses nothing and a daemon restart shows up
+as `events_missed`.
+
 ## Debugging without an MCP client
 
 The daemon socket also answers plain JSON-RPC methods (`tabs/list`,
