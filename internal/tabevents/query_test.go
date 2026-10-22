@@ -3,6 +3,7 @@ package tabevents_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -166,5 +167,15 @@ func TestWireRoundTrip(t *testing.T) {
 		Filter: tabevents.Filter{Tabs: []uint32{4}, Kinds: []tabevents.Kind{tabevents.Bell}}}
 	if got := tabevents.QueryFromWire(tabevents.QueryToWire(1, q)); !reflect.DeepEqual(got, q) {
 		t.Errorf("query round trip = %+v, want %+v", got, q)
+	}
+}
+
+// Both MCP servers describe the event kinds with KindsDescription, so
+// a new kind must be explained there or agents won't know it exists.
+func TestKindsDescriptionNamesEveryKind(t *testing.T) {
+	for _, k := range tabevents.AllKinds {
+		if !strings.Contains(tabevents.KindsDescription, string(k)) {
+			t.Errorf("KindsDescription does not mention %q", k)
+		}
 	}
 }

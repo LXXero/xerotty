@@ -3,8 +3,9 @@
 xerotty exposes terminal sessions to MCP clients (Claude Code, custom
 orchestrators, anything that speaks the Model Context Protocol). An
 agent can list tabs, read screens and scrollback, type input, paste,
-and spawn tabs — on the local machine and on every remote host the
-GUI is attached to.
+spawn tabs and wait for things to happen in them (see
+[Tab events](#tab-events-wait_for_events)) — on the local machine and
+on every remote host the GUI is attached to.
 
 ## Quick start
 
@@ -98,7 +99,8 @@ before use.
 ## Tools
 
 GUI aggregator: `list_tabs`, `get_screen`, `get_scrollback`,
-`send_input`, `send_keys`, `send_paste`, `create_tab`, `close_tab`, `rename_tab`. `list_tabs`
+`send_input`, `send_keys`, `send_paste`, `create_tab`, `close_tab`, `rename_tab`,
+`wait_for_events`. `list_tabs`
 returns per-tab metadata for triage without reading every screen:
 cwd, foreground process, dims, exit state, and which tab the user
 has focused. `create_tab` takes `host` (any namespace from
@@ -111,7 +113,8 @@ Per-daemon adds trust management + extras on top of those:
 `create_tab` (same name semantics), `close_tab`, `rename_tab`, `resize_tab`,
 `get_clipboard`, `list_proposals`,
 `approve_proposal`, `drop_proposal`, `set_agent_mode`,
-`authenticate`, `list_clients`, `get_server_info`.
+`authenticate`, `list_clients`, `get_server_info`. It has its own
+`wait_for_events` too, for that daemon's tabs only.
 
 Both screen readers take `styled: true` to return per-line **runs of
 styled text** instead of flat strings — `{t, fg, bg, a}` with terse
@@ -176,6 +179,133 @@ sees. Lock down agents you don't fully trust by pointing them at a
 daemon socket with `default_mode = "observe"` /
 `allow_mode_change = false` instead.
 
+## Tab events: `wait_for_events`
+
+Each daemon records what happens in its tabs as events, so an agent
+can learn that a tab needs looking at without polling every screen
+and without other agents typing "I'm done" into its tab. Everything
+comes from what the daemon already sees: its own tab bookkeeping and
+the PTY output (OSC titles, BEL, notification OSCs). Nothing has to
+be installed in the programs running in the tabs. Events never carry
+screen contents; when one says to look, read the tab with
+`get_screen`. The screen stays the source of truth: events say *when*
+to read it.
+
+### Event kinds
+
+| kind | recorded when | fields beyond `seq`, `time`, `tab`, `name` |
+|---|---|---|
+| `tab_created` | a tab is opened (any client, MCP or GUI) | |
+| `tab_closed` | a tab is closed; the `child_exited` from closing its PTY follows | |
+| `tab_renamed` | a tab's assigned name changes | `old_name`, `new_name` |
+| `child_exited` | the tab's program exits | `exit_code` |
+| `title_changed` | the program sets a new title (OSC 0/1/2), filtered as below | `old_title`, `new_title`, `old_glyph`, `new_glyph`, `old_state`, `new_state` |
+| `bell` | the program rings the bell (BEL); at most one event per tab per second | |
+| `notification` | the program sends a desktop notification | `protocol`, `notify_title`, `notify_body` |
+
+`name` is the tab's assigned name at the time (omitted for unnamed
+tabs). `time` is the daemon's clock.
+
+**Title glyphs.** `old_glyph` / `new_glyph` are the leading status
+symbols of each title (the same ones the tab bar strips from labels),
+and `old_state` / `new_state` classify them:
+
+| program | working | idle |
+|---|---|---|
+| Claude Code | spinner: braille frames (`⠂`, `⠐`, …) or `◐◓◑◒` → `working` | `✳ Claude Code` → `idle` |
+| Codex | braille spinner `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, sometimes doubled (`⠹ ⠹ \| project`) → `working` | no glyph at all (`project`, `<thread> \| project`) → `""` |
+
+Any braille pattern counts as a spinner frame. Other glyphs pass
+through with state `""` (unclassified). So "an agent finished" shows
+up as `old_state: "working"` with either `new_state: "idle"` (Claude
+Code) or `new_glyph: ""` (Codex).
+
+Agents animate their spinner several times a second, so a title
+change is only recorded when the title text (glyphs removed) changes,
+when the classified state changes, or when an unclassified glyph
+changes. A spinner going from one frame to the next is not an event.
+
+**Notifications.** xerotty parses three OSC notification forms and
+records them; it does not show desktop notifications.
+
+| `protocol` | sequence | used by |
+|---|---|---|
+| `osc9` | `OSC 9 ; body` | iTerm2, also Ghostty and WezTerm. ConEmu's numeric subcommands (`9;4;…` progress bars) are not notifications and are dropped |
+| `osc777` | `OSC 777 ; notify ; title ; body` | rxvt-unicode, foot, Ghostty |
+| `osc99` | `OSC 99 ; metadata ; payload` | kitty; chunked (`d=0`) notifications are joined, base64 (`e=1`) payloads decoded |
+
+Title and body are capped at 512 bytes each.
+
+### The ring and the cursor
+
+Each daemon keeps its last 4096 events in memory, numbered by a
+sequence (`seq`) that starts at 1 when the daemon process starts. The
+ring also has an `epoch`, a random id per daemon process: a restart
+or `serve --upgrade` starts a new ring with a new epoch and `seq`
+counting from 1 again.
+
+`wait_for_events` returns the events after your cursor, oldest first,
+or blocks until a matching one arrives or `timeout_ms` passes (then
+`events` is empty). `timeout_ms` defaults to 30000 and is capped at
+300000; `0` returns at once. Filters (`tab_ids`, `kinds`, and on the
+GUI `hosts`) are optional; an unknown kind name is an error, so a typo
+doesn't quietly match nothing. A reply's cursor advances past events
+the filters rejected, including on timeout, so the next call doesn't
+scan them again. The call is a read: it works in observe mode.
+
+When events after your cursor are gone, the reply says so and holds
+everything the ring still has that matches:
+
+- `restarted`: the daemon restarted, so your cursor came from an
+  earlier process and its events are lost.
+- `overflow`: more events happened since your last call than the
+  ring holds.
+
+### Per-daemon: `after_seq` + `epoch`
+
+```json
+wait_for_events {"after_seq": 0, "timeout_ms": 0}
+→ {"events": [...], "last_seq": 42, "epoch": "9f3c…", "missed": false}
+
+wait_for_events {"after_seq": 42, "epoch": "9f3c…", "kinds": ["title_changed", "bell", "notification"]}
+→ blocks until one of those arrives (or 30 s)
+```
+
+Pass `last_seq` and `epoch` back as `after_seq` and `epoch`. A gap
+shows as `missed: true` with `missed_reason`. `tab_ids` are the
+plain-integer ids from `list_tabs`.
+
+### GUI aggregator: a cursor across hosts
+
+The aggregator merges every attached host into one stream. Each event
+gains `host` and a namespaced `tab_id` (`kh:3`); `seq` stays per-host.
+Events from different hosts are interleaved by time, and each host's
+own events stay in seq order.
+
+The cursor is a map of host to `{epoch, seq}`, returned with every
+reply. Pass it back unchanged; omit it on the first call to get
+everything the daemons still hold, or call once with `timeout_ms: 0`
+and keep only the cursor to start from now.
+
+```json
+wait_for_events {"timeout_ms": 0}
+→ {"events": [...], "cursor": {"local": {"epoch": "9f3c…", "seq": 42},
+                                "kh":    {"epoch": "51ab…", "seq": 7}}}
+
+wait_for_events {"cursor": {"local": {...}, "kh": {...}}, "kinds": ["title_changed"]}
+→ {"events": [{"host": "kh", "tab_id": "kh:3", "seq": 8, "kind": "title_changed",
+               "old_state": "working", "new_state": "idle", ...}],
+   "cursor": {...}, "missed": {"local": "restarted"}}
+```
+
+It blocks on every host at once and returns when any of them has a
+matching event or a gap, after one more non-blocking read of the rest
+so the reply holds what every host has at that moment. `missed` maps
+each host with a gap to `restarted` or `overflow`; `errors` maps hosts
+that could not be read (not connected, or a daemon too old to record
+events) to the reason. Hosts outside the call's `hosts` / `tab_ids`
+keep their cursor entries unchanged.
+
 ## Tab events as a stream: `xerotty events`
 
 `xerotty events` prints the same events `wait_for_events` returns,
@@ -221,7 +351,8 @@ as `events_missed`.
 ## Debugging without an MCP client
 
 The daemon socket also answers plain JSON-RPC methods (`tabs/list`,
-`tab/screen`, `tab/input`, …) so you can poke it from a shell:
+`tab/screen`, `tab/input`, `events/wait`, …) so you can poke it from a
+shell:
 
 ```sh
 echo '{"jsonrpc":"2.0","id":1,"method":"tabs/list"}' \

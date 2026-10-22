@@ -31,6 +31,20 @@ func ParseKinds(names []string) ([]Kind, error) {
 	return out, nil
 }
 
+// KindsDescription explains the event kinds and their fields. Both
+// MCP servers put it in their wait_for_events tool description, so the
+// per-daemon and GUI descriptions can't drift apart.
+const KindsDescription = "Kinds: tab_created; tab_closed (a child_exited for that tab follows); " +
+	"tab_renamed (old_name, new_name); child_exited (exit_code); " +
+	"title_changed (old_title/new_title, the leading status glyph of each as old_glyph/new_glyph, and old_state/new_state: " +
+	"\"working\" for spinner glyphs (braille frames or ◐◓◑◒, used by Claude Code and Codex), \"idle\" for Claude Code's ✳, " +
+	"\"\" for no glyph or an unknown one; an agent finishing shows as old_state working with new_state idle (Claude Code) " +
+	"or new_glyph \"\" (Codex, which drops its glyph when idle); spinner frame changes alone are not recorded); " +
+	"bell (at most one per tab per second); " +
+	"notification (an OSC 9 / 777 / 99 desktop notification the program sent, not displayed by xerotty: protocol " +
+	"\"osc9\"/\"osc777\"/\"osc99\", notify_title, notify_body). Every event has seq, time, kind, tab and name " +
+	"(the tab's assigned name, if any). Events carry no screen contents; read the screen with get_screen when an event says to look."
+
 // DefaultWait is the wait used when a request gives no timeout.
 const DefaultWait = 30 * time.Second
 
