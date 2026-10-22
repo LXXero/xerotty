@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -26,6 +27,17 @@ import (
 //	xerotty connect                            # local default socket
 //	xerotty connect --socket /path/sock         # explicit socket
 //	xerotty connect --ssh user@host             # spawn `ssh ... xerotty serve --stdio`
+//	xerotty connect -l                          # list the daemon's tabs and exit
+//	xerotty connect -t 3                        # attach to tab id 3
+//	xerotty connect -t build --ssh user@host     # attach to the tab whose label matches "build"
+//
+// -l / --list prints one line per tab (id, label, cwd, foreground
+// process; "*" marks the focused tab) without entering raw mode or
+// spawning a tab. -t / --tab takes a tab id or a label: an exact name,
+// title or listed label first, then a unique case-insensitive substring
+// of the name, title or foreground process; no match or
+// an ambiguous one exits 1 with the candidates before raw mode. Both
+// work with --socket and --ssh.
 //
 // Press Ctrl-q to quit the client (the daemon-side session keeps
 // running).
@@ -39,18 +51,18 @@ func Connect(args []string) int {
 	fs.StringVar(&sshDest, "ssh", "", "spawn `ssh <dest> xerotty serve --stdio` instead of using a local socket")
 	fs.StringVar(&sshArgs, "ssh-args", "", "extra args before the SSH destination (e.g. \"-i ~/.ssh/key -p 2222\")")
 	fs.StringVar(&remoteCmd, "remote-cmd", "", "remote command for --ssh mode (default: \"xerotty serve --stdio\")")
+	var list bool
+	var tabArg string
+	fs.BoolVar(&list, "list", false, "print the daemon's tabs (id, label, cwd, foreground process; * = focused) and exit")
+	fs.BoolVar(&list, "l", false, "shorthand for --list")
+	fs.StringVar(&tabArg, "tab", "", "attach to this tab: a tab id, or a name/title/process as --list shows it (exact, then unique case-insensitive substring)")
+	fs.StringVar(&tabArg, "t", "", "shorthand for --tab")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
 
-	oldState, err := makeRaw(int(os.Stdin.Fd()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "xerotty connect: raw mode: %v\n", err)
-		return 1
-	}
-	defer restoreTerm(int(os.Stdin.Fd()), oldState)
-
 	var c *clientproto.Client
+	var err error
 	if sshDest != "" {
 		if remoteCmd == "" {
 			remoteCmd = "xerotty serve --stdio"
@@ -79,13 +91,67 @@ func Connect(args []string) int {
 	}
 	go c.Run()
 
-	if err := c.Attach("", true); err != nil {
+	// --list must not spawn a tab in an empty session, so it attaches
+	// without NewIfMissing.
+	if err := c.Attach("", !list); err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty connect: attach: %v\n", err)
+		return 1
+	}
+	attached, err := waitAttached(c, 30*time.Second)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "xerotty connect: attach: %v\n", err)
 		return 1
 	}
 
+	if list {
+		tabs := tabsFromAttached(attached)
+		if len(tabs) > 0 {
+			_ = collectTabStates(c, tabs, 2*time.Second)
+			fmt.Fprint(os.Stdout, formatTabList(tabs, pickInitialTab(attached).ID))
+		}
+		_ = c.Detach()
+		return 0
+	}
+
+	if len(attached.Tabs) == 0 {
+		fmt.Fprintln(os.Stderr, "xerotty connect: daemon attached with zero tabs")
+		return 1
+	}
+	// Prefer the session's focused tab so reconnecting drops you
+	// back on what you were looking at, not whichever tab the
+	// daemon's map iterator surfaced first. Falls back to the
+	// first window's first tab, then the first reported tab.
+	target := pickInitialTab(attached)
+	var frames []any
+	if tabArg != "" {
+		// Match against what --list shows, so a tab labelled by its
+		// foreground process ("zsh", "vim") can be picked by that name.
+		tabs := tabsFromAttached(attached)
+		frames = collectTabStates(c, tabs, 2*time.Second)
+		hit, err := matchTab(tabs, tabArg)
+		if err != nil {
+			_ = c.Detach()
+			fmt.Fprintf(os.Stderr, "xerotty connect: %v", err)
+			return 1
+		}
+		for _, ti := range attached.Tabs {
+			if ti.ID == hit.ID {
+				target = ti
+			}
+		}
+	}
+
+	// Raw mode only once the tab is settled, so a --tab mismatch
+	// (and an ssh password prompt) runs on a normal terminal.
+	oldState, err := makeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "xerotty connect: raw mode: %v\n", err)
+		return 1
+	}
+	defer restoreTerm(int(os.Stdin.Fd()), oldState)
+
 	v := &connectClient{c: c}
-	if err := v.run(); err != nil {
+	if err := v.run(target, frames); err != nil {
 		fmt.Fprintf(os.Stderr, "xerotty connect: %v\n", err)
 		return 1
 	}
@@ -144,16 +210,11 @@ type connectClient struct {
 	mirror [][]protocol.Cell
 }
 
-func (v *connectClient) run() error {
-	attached := <-v.c.Attached()
-	if len(attached.Tabs) == 0 {
-		return fmt.Errorf("daemon attached with zero tabs")
-	}
-	// Prefer the session's focused tab so reconnecting drops you
-	// back on what you were looking at, not whichever tab the
-	// daemon's map iterator surfaced first. Falls back to the
-	// first window's first tab, then the first reported tab.
-	t := pickInitialTab(attached)
+// run drives the viewer on tab t. frames are screen frames already
+// taken off the client's channels before the viewer started (by
+// collectTabStates); they are replayed first so the initial paint of
+// t is not lost.
+func (v *connectClient) run(t protocol.TabInfo, frames []any) error {
 	v.mu.Lock()
 	v.tabID = t.ID
 	v.cols = t.Cols
@@ -165,6 +226,26 @@ func (v *connectClient) run() error {
 		_ = v.c.SendResize(v.tabID, uint16(cols), uint16(rows))
 	}
 	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H")
+
+	for _, f := range frames {
+		switch f := f.(type) {
+		case *protocol.CellFull:
+			v.applyFull(f)
+		case *protocol.CellDiff:
+			v.applyDiff(f)
+		case *protocol.Cursor:
+			if f.ID == v.tabID {
+				v.curRow, v.curCol = f.Row, f.Col
+			}
+		case *protocol.ChildExit:
+			if f.ID == v.tabID {
+				fmt.Fprintf(os.Stdout, "\r\n[exit %d]\r\n", f.ExitCode)
+				_ = v.c.Detach()
+				return nil
+			}
+		}
+	}
+	v.repaint()
 
 	go v.pumpStdin()
 	go v.pumpResize()
@@ -178,6 +259,12 @@ func (v *connectClient) run() error {
 			v.applyDiff(diff)
 			v.repaint()
 		case cur := <-v.c.Cursor():
+			// Every attached tab publishes its cursor; only the
+			// viewed tab's may move ours (matters once --tab can
+			// land on a tab other than the focused one).
+			if cur.ID != v.tabID {
+				continue
+			}
 			v.mu.Lock()
 			v.curRow = cur.Row
 			v.curCol = cur.Col
