@@ -353,3 +353,156 @@ func TestTwoGUIsConverge(t *testing.T) {
 		t.Fatalf("GUIs still sending %d corrections after cross-window move", n)
 	}
 }
+
+// A tab this GUI only parked in a window (it has no window for the tab's
+// daemon window) is another GUI's: a push leaves it where the daemon has
+// it and does not close its daemon window.
+func TestPlanLayoutPushLeavesParkedTabs(t *testing.T) {
+	daemon := []protocol.WindowInfo{
+		{ID: 11, TabIDs: []uint32{1}, FocusedTabID: 1},
+		{ID: 40, TabIDs: []uint32{43, 46}, FocusedTabID: 43},
+	}
+	gui := []guiLayoutWindow{{
+		daemonID: 11,
+		tabs:     []uint32{1, 43, 46},
+		active:   1,
+		parked:   map[uint32]bool{43: true, 46: true},
+	}}
+	if ops := planLayout(gui, daemon, map[uint32]bool{11: true}, true); len(ops) != 0 {
+		t.Fatalf("push moved parked tabs or closed their window: %+v", ops)
+	}
+	// A local reorder of the window's own tabs still corrects drift.
+	daemon[0].TabIDs = []uint32{1, 2}
+	gui[0].tabs = []uint32{2, 43, 1, 46}
+	ops := planLayout(gui, daemon, map[uint32]bool{11: true}, true)
+	for _, op := range ops {
+		if op.tab == 43 || op.tab == 46 || op.kind == opCloseWindow {
+			t.Fatalf("op touched parked tab or closed a window: %+v", ops)
+		}
+	}
+	if len(ops) == 0 {
+		t.Fatalf("expected the reorder of the GUI's own tabs to be pushed")
+	}
+}
+
+// Removing a tab the daemon dropped is not a local edit: the fingerprint
+// moves with it, so the next pass does not push.
+func TestClosingVanishedTabIsNotLocalChange(t *testing.T) {
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
+	cfg := config.Default()
+	d := daemon.New(&cfg, sockPath)
+	doneRun := make(chan error, 1)
+	go func() { doneRun <- d.Run() }()
+	defer func() { _ = d.Stop(); <-doneRun }()
+	time.Sleep(50 * time.Millisecond)
+
+	g := newSimGUI(t, sockPath, "gui")
+	a, err := g.hub.NewTab(80, 24, "")
+	if err != nil {
+		t.Fatalf("new tab: %v", err)
+	}
+	b, err := g.hub.NewTab(80, 24, "")
+	if err != nil {
+		t.Fatalf("new tab: %v", err)
+	}
+	w := g.window(attachSnapshot(t, sockPath).Windows[0].ID, a, b)
+	g.app.layoutFP = g.app.layoutFingerprint()
+
+	g.app.closeVanishedTab(w.tabs, 1, b)
+	if fp := g.app.layoutFingerprint(); fp != g.app.layoutFP {
+		t.Fatalf("vanished-tab removal left the layout looking locally changed: %q vs %q", fp, g.app.layoutFP)
+	}
+
+	// A local close still counts as a local change.
+	g.app.layoutFP = g.app.layoutFingerprint()
+	w.tabs.CloseTab(0)
+	if g.app.layoutFingerprint() == g.app.layoutFP {
+		t.Fatalf("local close did not change the fingerprint")
+	}
+}
+
+// xLap and xRyzen GUIs on one daemon: xRyzen shows daemon window 40's
+// tabs parked in its only window; closing one of them from xLap must
+// leave daemon window 40 and its remaining tab alone.
+func TestRemoteCloseDoesNotDrainOtherGUIsWindow(t *testing.T) {
+	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
+	cfg := config.Default()
+	d := daemon.New(&cfg, sockPath)
+	doneRun := make(chan error, 1)
+	go func() { doneRun <- d.Run() }()
+	defer func() { _ = d.Stop(); <-doneRun }()
+	time.Sleep(50 * time.Millisecond)
+
+	ga := newSimGUI(t, sockPath, "xlap")
+	gb := newSimGUI(t, sockPath, "xryzen")
+	var sa []*daemonsource.Source
+	for i := 0; i < 3; i++ {
+		src, err := ga.hub.NewTab(80, 24, "")
+		if err != nil {
+			t.Fatalf("new tab: %v", err)
+		}
+		sa = append(sa, src)
+	}
+	win1 := attachSnapshot(t, sockPath).Windows[0].ID
+	win2, err := ga.hub.CreateWindow(0, 0, 800, 600)
+	if err != nil {
+		t.Fatalf("create window: %v", err)
+	}
+	for _, s := range sa[1:] {
+		_ = ga.cli.SendWindowMoveTab(s.TabID(), win2, -1)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		w := attachSnapshot(t, sockPath).Windows
+		if len(w) == 2 && len(w[1].TabIDs) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon never moved the tabs into the second window")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ga.window(win1, sa[0])
+	ga.window(win2, sa[1], sa[2])
+	gb.window(win1, gb.hub.Adopt(sa[0].TabID(), 80, 24))
+
+	for i := 0; i < 3; i++ {
+		sleepSettle()
+		ga.pass(t, sockPath)
+		gb.pass(t, sockPath)
+	}
+	if got := len(gb.app.windows[0].tabs.Tabs); got != 3 {
+		t.Fatalf("xRyzen window shows %d tabs, want its own plus 2 parked", got)
+	}
+
+	// xLap closes one of the two tabs in window 2.
+	_ = ga.cli.SendTabClose(sa[2].TabID())
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		w := attachSnapshot(t, sockPath).Windows
+		if len(w) == 2 && len(w[1].TabIDs) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("daemon never closed the tab")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// xRyzen reaps the vanished tab (as the frame loop does).
+	bw := gb.app.windows[0]
+	for i, tb := range bw.tabs.Tabs {
+		if ds := tb.Terminal.(*daemonsource.Source); ds.TabID() == sa[2].TabID() {
+			gb.app.closeVanishedTab(bw.tabs, i, ds)
+			break
+		}
+	}
+	for i := 0; i < 4; i++ {
+		sleepSettle()
+		ga.pass(t, sockPath)
+		gb.pass(t, sockPath)
+	}
+	w := attachSnapshot(t, sockPath).Windows
+	if len(w) != 2 || len(w[1].TabIDs) != 1 || w[1].TabIDs[0] != sa[1].TabID() {
+		t.Fatalf("daemon windows after remote close = %+v, want window %d still holding tab %d", w, win2, sa[1].TabID())
+	}
+}

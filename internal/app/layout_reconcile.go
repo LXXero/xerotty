@@ -40,6 +40,10 @@ type guiLayoutWindow struct {
 	daemonID uint32
 	tabs     []uint32
 	active   uint32
+	// parked marks tabs in tabs that this window only holds because the
+	// GUI had no window for their daemon window. They belong to another
+	// GUI's window, so a push never moves them or drains their window.
+	parked map[uint32]bool
 }
 
 type layoutOpKind int
@@ -106,7 +110,12 @@ func planLayout(gui []guiLayoutWindow, daemon []protocol.WindowInfo, owned map[u
 			d = synthWindowBase + uint32(gi)
 		}
 		dest[gi] = d
-		for i, tid := range g.tabs {
+		i := -1
+		for _, tid := range g.tabs {
+			if g.parked[tid] {
+				continue // like a foreign tab: not counted, not moved
+			}
+			i++
 			from, known := where[tid]
 			if !known {
 				continue // not in the daemon's record (yet)
@@ -170,13 +179,17 @@ func (a *App) guiLayoutFor(hub *daemonsource.Hub) (gui []guiLayoutWindow, wins [
 	owned = make(map[uint32]bool)
 	cli := hub.Client()
 	for _, w := range a.windows {
+		if w.tabs != nil && !w.pendingClose {
+			if d := w.daemonWindowForHub(hub); d != 0 {
+				owned[d] = true
+			}
+		}
+	}
+	for _, w := range a.windows {
 		if w.tabs == nil || w.pendingClose {
 			continue
 		}
 		g := guiLayoutWindow{daemonID: w.daemonWindowForHub(hub)}
-		if g.daemonID != 0 {
-			owned[g.daemonID] = true
-		}
 		var activeSrc *daemonsource.Source
 		if at := w.tabs.Active(); at != nil {
 			activeSrc, _ = at.Terminal.(*daemonsource.Source)
@@ -190,6 +203,16 @@ func (a *App) guiLayoutFor(hub *daemonsource.Hub) (gui []guiLayoutWindow, wins [
 				continue // its own move is still being retried
 			}
 			g.tabs = append(g.tabs, ds.TabID())
+			if from, ok := a.parkedTabs[ds]; ok {
+				if from != g.daemonID && !owned[from] {
+					if g.parked == nil {
+						g.parked = make(map[uint32]bool)
+					}
+					g.parked[ds.TabID()] = true
+				} else {
+					delete(a.parkedTabs, ds) // this GUI now has a window for it
+				}
+			}
 			if ds == activeSrc {
 				g.active = ds.TabID()
 			}
@@ -198,6 +221,21 @@ func (a *App) guiLayoutFor(hub *daemonsource.Hub) (gui []guiLayoutWindow, wins [
 		wins = append(wins, w)
 	}
 	return gui, wins, owned
+}
+
+// closeVanishedTab removes a tab the daemon no longer has (closed by
+// another client, or lost in a daemon restart). That is the daemon's
+// change, not an edit made on this GUI, so when the layout was in step
+// before the removal the fingerprint is brought forward with it, as
+// applyPendingTopology does; otherwise the next pass would push this
+// GUI's layout over the other client's.
+func (a *App) closeVanishedTab(m *tabs.Manager, i int, ds *daemonsource.Source) {
+	synced := a.layoutFingerprint() == a.layoutFP
+	m.CloseTab(i)
+	delete(a.parkedTabs, ds)
+	if synced {
+		a.layoutFP = a.layoutFingerprint()
+	}
 }
 
 // forgetDaemonWindow drops id from every window's mapping for hub, so

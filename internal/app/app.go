@@ -230,9 +230,14 @@ type App struct {
 	// lastTopo is the daemon's latest window record per hub (guarded by
 	// topoMu); layout reconcile diffs the GUI windows against it. The
 	// other layout* fields are main-thread only.
-	lastTopo      map[*daemonsource.Hub]*protocol.TopologyChanged
-	layoutFP      string
-	layoutDirty   bool // the GUI layout changed locally since the last reconcile
+	lastTopo    map[*daemonsource.Hub]*protocol.TopologyChanged
+	layoutFP    string
+	layoutDirty bool // the GUI layout changed locally since the last reconcile
+	// parkedTabs maps a daemon tab this GUI shows in a window that does
+	// not represent its daemon window (it had no window of its own for
+	// it) to that daemon window. A layout push leaves these where the
+	// daemon has them; they are another GUI's tabs to move.
+	parkedTabs    map[*daemonsource.Source]uint32
 	layoutDue     time.Time
 	layoutLast    time.Time
 	layoutSeenRev map[*daemonsource.Hub]uint64
@@ -1750,6 +1755,12 @@ func (a *App) reconcileDaemonTabs(hub *daemonsource.Hub, host string, snap *prot
 		prevActiveID := -1
 		if at := target.tabs.Active(); at != nil {
 			prevActiveID = at.ID
+		}
+		if dw := winOfTab[ti.ID]; dw != 0 && target.daemonWindowForHub(hub) != dw {
+			if a.parkedTabs == nil {
+				a.parkedTabs = make(map[*daemonsource.Source]uint32)
+			}
+			a.parkedTabs[src] = dw
 		}
 		tab := target.tabs.AdoptTab(src) // AdoptTab focuses the new tab…
 		if host != "" && host != "local" {
@@ -4148,7 +4159,7 @@ func (a *Window) frame() {
 			if ds.VanishedByRestart() {
 				daemonRestartVanished = true
 			}
-			a.tabs.CloseTab(i)
+			a.app.closeVanishedTab(a.tabs, i, ds)
 			continue
 		}
 		switch a.app.cfg.Tabs.OnChildExit {
