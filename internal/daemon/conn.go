@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/scrollback"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
@@ -775,6 +777,15 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		logf("client %q requested kick of %q", c.clientID, msg.ClientID)
 		c.daemon.KickClient(msg.ClientID)
 		return nil
+	case protocol.MsgEventsWaitReq:
+		var msg protocol.EventsWaitReq
+		if _, err := msg.UnmarshalMsg(body); err != nil {
+			return err
+		}
+		// Blocks up to the request's timeout, so off the read loop
+		// (which must keep answering pings).
+		go c.handleEventsWait(&msg)
+		return nil
 	case protocol.MsgTabRename:
 		var msg protocol.TabRename
 		if _, err := msg.UnmarshalMsg(body); err != nil {
@@ -823,6 +834,23 @@ func (c *clientConn) handleClientsList(msg *protocol.ClientsListReq) error {
 	}
 	c.send(protocol.MsgClientsList, &protocol.ClientsList{ReqID: msg.ReqID, Clients: infos})
 	return nil
+}
+
+// handleEventsWait answers an EventsWaitReq from the daemon's tab
+// event ring, blocking up to the request's (clamped) timeout. The wait
+// ends early if this connection shuts down.
+func (c *clientConn) handleEventsWait(msg *protocol.EventsWaitReq) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-c.outDone:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	res := c.daemon.events.Read(ctx, tabevents.QueryFromWire(msg))
+	c.send(protocol.MsgEvents, tabevents.ResultToWire(msg.ReqID, res))
 }
 
 func (c *clientConn) handleAttach(msg *protocol.Attach) error {

@@ -18,6 +18,7 @@
 package daemonsource
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/terminal"
 )
 
@@ -127,6 +129,9 @@ type Hub struct {
 	// pendingClientLists correlates ClientsListReq replies (the
 	// right-click Clients menu) the same way — ReqID → waiter.
 	pendingClientLists map[uint64]chan []protocol.ClientInfo
+	// pendingEvents correlates EventsWaitReq replies (the GUI MCP's
+	// wait_for_events) the same way — ReqID → waiter.
+	pendingEvents map[uint64]chan *protocol.Events
 	// pendingRanges correlates private scrollback fetches (MCP history
 	// reads of rows outside the GUI's window) — ReqID → waiter. Kept
 	// apart from the window path so a read never moves what the user
@@ -195,6 +200,7 @@ func NewHub(c *clientproto.Client) *Hub {
 		pending:        make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan createResult),
 		pendingClientLists:   make(map[uint64]chan []protocol.ClientInfo),
+		pendingEvents:        make(map[uint64]chan *protocol.Events),
 		pendingRanges:        make(map[uint64]chan *protocol.ScrollbackRange),
 		pendingWindowCreates: make(map[uint64]chan *protocol.WindowCreated),
 		createTimeout:        tabCreateTimeout,
@@ -724,6 +730,64 @@ func (h *Hub) Clients(timeout time.Duration) ([]protocol.ClientInfo, error) {
 	}
 }
 
+// deliverEvents routes an Events reply to its waiter by ReqID;
+// unmatched replies (waiter gave up) are dropped.
+func (h *Hub) deliverEvents(ev *protocol.Events) {
+	h.createMu.Lock()
+	reply, ok := h.pendingEvents[ev.ReqID]
+	if ok {
+		delete(h.pendingEvents, ev.ReqID)
+	}
+	h.createMu.Unlock()
+	if ok {
+		select {
+		case reply <- ev:
+		default:
+		}
+	}
+}
+
+// eventsReplyGrace is how long past the request's own timeout
+// WaitEvents waits for the daemon's reply (round trip over SSH).
+const eventsReplyGrace = 10 * time.Second
+
+// WaitEvents reads the daemon's tab event ring through q, blocking up
+// to q.Timeout for at least one matching event (see
+// tabevents.Ring.Read). Returns ctx's error if ctx ends first. A
+// daemon that predates MsgEventsWaitReq never replies, so that case
+// is an error after q.Timeout plus a grace period.
+func (h *Hub) WaitEvents(ctx context.Context, q tabevents.Query) (tabevents.Result, error) {
+	cli := h.client()
+	if cli == nil {
+		return tabevents.Result{}, fmt.Errorf("daemonsource: no connection")
+	}
+	reqID := h.nextReqID.Add(1)
+	reply := make(chan *protocol.Events, 1)
+	h.createMu.Lock()
+	h.pendingEvents[reqID] = reply
+	h.createMu.Unlock()
+	defer func() {
+		h.createMu.Lock()
+		delete(h.pendingEvents, reqID)
+		h.createMu.Unlock()
+	}()
+	if err := cli.SendEventsWaitReq(tabevents.QueryToWire(reqID, q)); err != nil {
+		return tabevents.Result{}, fmt.Errorf("daemonsource: SendEventsWaitReq: %w", err)
+	}
+	timer := time.NewTimer(q.Timeout + eventsReplyGrace)
+	defer timer.Stop()
+	select {
+	case ev := <-reply:
+		return tabevents.ResultFromWire(ev), nil
+	case <-ctx.Done():
+		return tabevents.Result{}, ctx.Err()
+	case <-timer.C:
+		return tabevents.Result{}, fmt.Errorf("daemonsource: no events reply (the daemon may predate tab events)")
+	case <-cli.Closed():
+		return tabevents.Result{}, fmt.Errorf("daemonsource: connection closed")
+	}
+}
+
 // deliverScrollbackRange routes a correlated ScrollbackRange to its
 // waiter by ReqID; unmatched replies (waiter timed out) are dropped.
 func (h *Hub) deliverScrollbackRange(f *protocol.ScrollbackRange) {
@@ -1021,6 +1085,8 @@ func (h *Hub) route(cli *clientproto.Client) {
 			}
 		case cl := <-cli.ClientsLists():
 			h.deliverClientsList(cl)
+		case ev := <-cli.Events():
+			h.deliverEvents(ev)
 		case f := <-cli.ScrollbackCleared():
 			if s := h.lookup(f.ID); s != nil {
 				s.applyScrollbackCleared(f)

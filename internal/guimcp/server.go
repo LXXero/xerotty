@@ -23,6 +23,7 @@
 //	create_tab   {host?, name?, cols?, rows?} -> {tab_id, reused}
 //	close_tab    {tab_id}
 //	rename_tab   {tab_id, name}
+//	wait_for_events {cursor?, timeout_ms?, tab_ids?, kinds?, hosts?} -> {events, cursor, missed?, errors?}
 //
 // No write-gating here: the GUI is the user's own trusted process.
 // (The daemon-side MCP servers keep their observe/propose/auto
@@ -31,18 +32,21 @@ package guimcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/tabs"
 )
 
@@ -68,6 +72,13 @@ type Backend interface {
 	// Errors when the tab is unknown or another tab on the same host
 	// already has the name.
 	RenameTab(nsID, name string) error
+	// EventHosts lists the host namespaces whose daemons can be read
+	// for tab events (every connected hub).
+	EventHosts() []string
+	// WaitEvents reads one host's tab event ring through q, blocking
+	// up to q.Timeout for a matching event (tabevents.Ring.Read on
+	// that host's daemon). Returns ctx's error if ctx ends first.
+	WaitEvents(ctx context.Context, host string, q tabevents.Query) (tabevents.Result, error)
 }
 
 // TabRef is one tab in the aggregated view. Beyond identity +
@@ -163,9 +174,21 @@ func (s *Server) Stop() error {
 
 func (s *Server) serve(conn net.Conn) {
 	defer conn.Close()
+	// ctx ends when the connection closes, cutting short any events
+	// wait still running for it.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 0, 1<<16), 1<<20)
 	enc := json.NewEncoder(conn)
+	// Events waits reply from their own goroutines, concurrently with
+	// the loop's replies.
+	var encMu sync.Mutex
+	reply := func(resp *rpcResponse) {
+		encMu.Lock()
+		_ = enc.Encode(resp)
+		encMu.Unlock()
+	}
 	for sc.Scan() {
 		line := sc.Bytes()
 		if len(line) == 0 {
@@ -173,17 +196,39 @@ func (s *Server) serve(conn net.Conn) {
 		}
 		var req rpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			_ = enc.Encode(rpcErrResp(nil, -32700, "parse error: "+err.Error()))
+			reply(rpcErrResp(nil, -32700, "parse error: "+err.Error()))
 			continue
 		}
 		if req.ID == nil {
 			continue // notification — no reply
 		}
-		_ = enc.Encode(s.handle(&req))
+		if isBlocking(&req) {
+			// A wait can block for minutes; don't hold up other calls
+			// on this connection. JSON-RPC ids correlate the replies.
+			go func() { reply(s.handle(ctx, &req)) }()
+			continue
+		}
+		reply(s.handle(ctx, &req))
 	}
 }
 
-func (s *Server) handle(req *rpcRequest) *rpcResponse {
+// isBlocking reports whether req is an events wait, which serve runs
+// on its own goroutine.
+func isBlocking(req *rpcRequest) bool {
+	switch req.Method {
+	case "wait_for_events":
+		return true
+	case "tools/call":
+		var p struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		return p.Name == "wait_for_events"
+	}
+	return false
+}
+
+func (s *Server) handle(ctx context.Context, req *rpcRequest) *rpcResponse {
 	switch req.Method {
 	case "initialize":
 		return okResp(req.ID, map[string]any{
@@ -203,12 +248,14 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
 				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse. get_screen always " +
 				"returns cursor {row,col}; styled=true returns styled runs — faint text at/after the cursor is " +
-				"autocomplete ghost text, NOT user input.",
+				"autocomplete ghost text, NOT user input. To find out when something happens in any tab on any host " +
+				"(an agent finishes or goes idle, a command exits, a bell, a desktop notification), call wait_for_events " +
+				"in a loop with the cursor from its previous reply instead of polling get_screen.",
 		})
 	case "tools/list":
 		return okResp(req.ID, map[string]any{"tools": toolCatalog()})
 	case "tools/call":
-		return s.handleToolsCall(req)
+		return s.handleToolsCall(ctx, req)
 	// Native methods for nc -U debugging.
 	case "list_tabs":
 		return s.listTabs(req.ID)
@@ -228,12 +275,14 @@ func (s *Server) handle(req *rpcRequest) *rpcResponse {
 		return s.closeTab(req.ID, req.Params)
 	case "rename_tab":
 		return s.renameTab(req.ID, req.Params)
+	case "wait_for_events":
+		return s.waitForEvents(ctx, req.ID, req.Params)
 	default:
 		return rpcErrResp(req.ID, -32601, "method not found: "+req.Method)
 	}
 }
 
-func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
+func (s *Server) handleToolsCall(ctx context.Context, req *rpcRequest) *rpcResponse {
 	var p struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -261,6 +310,8 @@ func (s *Server) handleToolsCall(req *rpcRequest) *rpcResponse {
 		inner = s.sendKeys(req.ID, p.Arguments)
 	case "send_paste":
 		inner = s.sendPaste(req.ID, p.Arguments)
+	case "wait_for_events":
+		inner = s.waitForEvents(ctx, req.ID, p.Arguments)
 	default:
 		return rpcErrResp(req.ID, -32601, "tools/call: unknown tool "+p.Name)
 	}
@@ -558,6 +609,7 @@ func toolCatalog() []map[string]any {
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
 		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs (default \"\" = local)"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
 		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
+		{"name": "wait_for_events", "description": eventsToolDescription, "inputSchema": eventsToolSchema()},
 		{"name": "rename_tab", "description": "Set a tab's name, the label shown on the user's tab bar. An empty name clears it, so the tab shows its program's title again. Names are also create_tab's reuse key: clearing or changing a name means a later create_tab with the old name opens a new tab. Fails if another tab on the same host already has the name.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "name": strProp("new name; \"\" clears it")}, "tab_id", "name")},
 	}
 }

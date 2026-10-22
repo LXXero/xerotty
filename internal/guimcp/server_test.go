@@ -2,15 +2,18 @@ package guimcp_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/guimcp"
+	"github.com/LXXero/xerotty/internal/tabevents"
 	"github.com/LXXero/xerotty/internal/testutil"
 )
 
@@ -34,6 +37,37 @@ type fakeBackend struct {
 	created []string
 	closed  []string
 	renamed []string
+
+	// Event hosts: one ring per host namespace (events_test.go).
+	evMu  sync.Mutex
+	rings map[string]*tabevents.Ring
+	// deaf hosts answer non-blocking reads but never wake a blocking
+	// one (it ends only when its context does).
+	deaf map[string]bool
+}
+
+func (f *fakeBackend) EventHosts() []string {
+	f.evMu.Lock()
+	defer f.evMu.Unlock()
+	var out []string
+	for h := range f.rings {
+		out = append(out, h)
+	}
+	return out
+}
+
+func (f *fakeBackend) WaitEvents(ctx context.Context, host string, q tabevents.Query) (tabevents.Result, error) {
+	f.evMu.Lock()
+	r, deaf := f.rings[host], f.deaf[host]
+	f.evMu.Unlock()
+	if r == nil {
+		return tabevents.Result{}, fmt.Errorf("no daemon hub for host %q", host)
+	}
+	if deaf && q.Timeout > 0 {
+		<-ctx.Done()
+		return tabevents.Result{}, ctx.Err()
+	}
+	return r.Read(ctx, q), nil
 }
 
 func (f *fakeBackend) ListTabs() []guimcp.TabRef { return f.tabs }
