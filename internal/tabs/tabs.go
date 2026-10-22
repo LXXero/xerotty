@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/terminal"
@@ -138,6 +139,37 @@ func StripStatusGlyphs(s string) string {
 // "✳ Claude Code" → "✳". "" when the title starts with none.
 func StatusGlyphs(s string) string {
 	return strings.TrimSpace(s[:len(s)-len(StripStatusGlyphs(s))])
+}
+
+// Program states a title's status glyph can signal (GlyphState).
+const (
+	GlyphWorking = "working"
+	GlyphIdle    = "idle"
+)
+
+// GlyphState classifies a status glyph string (StatusGlyphs) by its
+// first symbol. Known conventions, checked against the programs:
+//   - Claude Code: a spinner while working (braille frames such as
+//     ⠂ ⠐, or ◐ ◓ ◑ ◒), ✳ when idle.
+//   - Codex: braille spinner frames (⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏, the frame
+//     sometimes doubled: "⠹ ⠹ | project") while working. When idle
+//     it sets a title with no glyph at all ("project" or
+//     "<thread> | project"), so its idle state shows up as the glyph
+//     going away, which this function reports as "".
+//
+// Any braille pattern counts as a spinner frame. Unknown glyphs
+// return "" so callers pass them through unclassified.
+func GlyphState(glyph string) string {
+	r, _ := utf8.DecodeRuneInString(glyph)
+	switch {
+	case r >= 0x2800 && r <= 0x28FF: // Braille Patterns block
+		return GlyphWorking
+	case r == '◐' || r == '◓' || r == '◑' || r == '◒':
+		return GlyphWorking
+	case r == '✳':
+		return GlyphIdle
+	}
+	return ""
 }
 
 // Name returns the assigned label for a local tab ("" = none).
