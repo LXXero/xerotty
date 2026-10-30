@@ -1427,7 +1427,9 @@ func (t *Terminal) childPIDLocked() int {
 // appendOSC8 so that it is safe to parse.
 //
 // State (oscBuf, inOSC) carries across Read calls in case a sequence spans
-// buffer boundaries. Returns the cleaned-of-OSC bytes plus the new state.
+// buffer boundaries, including between the ESC and '\\' of a terminator:
+// the ESC waits as the last byte of oscBuf. Returns the cleaned-of-OSC
+// bytes plus the new state.
 func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []byte, bool) {
 	out := make([]byte, 0, len(in))
 	oscBuf := oscBufIn
@@ -1460,12 +1462,12 @@ func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []b
 			inOSC = false
 			continue
 		}
-		if b == 0x1b && i+1 < len(in) && in[i+1] == '\\' {
+		if b == '\\' && len(oscBuf) > 0 && oscBuf[len(oscBuf)-1] == 0x1b {
+			oscBuf = oscBuf[:len(oscBuf)-1] // drop the terminator's ESC
 			t.dispatchOSC(oscBuf)
 			out = appendOSC8(out, oscBuf)
 			oscBuf = oscBuf[:0]
 			inOSC = false
-			i++ // skip the '\\'
 			continue
 		}
 		oscBuf = append(oscBuf, b)

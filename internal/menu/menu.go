@@ -299,25 +299,82 @@ func ExecAction(action string, ctx *Context) {
 
 // execCommand builds the shell command for an exec: action.
 //
-// $XEROTTY_LINK reaches the shell as an environment variable, not as
-// text pasted into the command line: an OSC 8 target is chosen by the
-// program in the terminal, and pasted in it could close the template's
-// quotes and run anything. A template that single-quotes it is switched
-// to double quotes, where the shell still expands it.
+// The variables reach the shell through its environment, never as text
+// pasted into the command line: the program in the terminal chooses an
+// OSC 8 target and the tab title, the text it prints can be selected,
+// and it can cd into a directory with any name. Pasted in, any of them
+// could close the template's quotes and run anything.
 func execCommand(action string, ctx *Context) *exec.Cmd {
 	if !strings.HasPrefix(action, "exec:") {
 		return nil
 	}
 
-	cmdStr := strings.TrimPrefix(action, "exec:")
-
-	// Variable substitution
-	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_SELECTION", ctx.Selection)
-	cmdStr = strings.ReplaceAll(cmdStr, "'$XEROTTY_LINK'", `"$XEROTTY_LINK"`)
-	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_CWD", ctx.CWD)
-	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_TAB_TITLE", ctx.TabTitle)
-
-	cmd := exec.Command("/bin/sh", "-c", cmdStr)
-	cmd.Env = append(os.Environ(), "XEROTTY_LINK="+ctx.Link)
+	cmd := exec.Command("/bin/sh", "-c", quoteMenuVars(strings.TrimPrefix(action, "exec:")))
+	cmd.Env = append(os.Environ(),
+		"XEROTTY_SELECTION="+ctx.Selection,
+		"XEROTTY_LINK="+ctx.Link,
+		"XEROTTY_CWD="+ctx.CWD,
+		"XEROTTY_TAB_TITLE="+ctx.TabTitle,
+	)
 	return cmd
+}
+
+// menuVars are the variables execCommand sets.
+var menuVars = []string{"$XEROTTY_SELECTION", "$XEROTTY_LINK", "$XEROTTY_CWD", "$XEROTTY_TAB_TITLE"}
+
+// quoteMenuVars rewrites a template so that the shell expands each menu
+// variable as one word: inside single quotes, where it wouldn't expand
+// at all, the quotes are closed around it, and a bare one gets double
+// quotes so its value isn't split or globbed. Inside double quotes it's
+// already right. A use this misses only stays unexpanded, as the value
+// is never in the text.
+func quoteMenuVars(tmpl string) string {
+	var b strings.Builder
+	var quote byte
+	for i := 0; i < len(tmpl); {
+		c := tmpl[i]
+		if c == '$' && quote != '"' {
+			if name := menuVarAt(tmpl[i:]); name != "" {
+				if quote == '\'' {
+					b.WriteString(`'"` + name + `"'`)
+				} else {
+					b.WriteString(`"` + name + `"`)
+				}
+				i += len(name)
+				continue
+			}
+		}
+		switch {
+		case c == '\\' && quote != '\'' && i+1 < len(tmpl):
+			b.WriteString(tmpl[i : i+2])
+			i += 2
+			continue
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
+// menuVarAt returns the menu variable s starts with, if any. A longer
+// name, like $XEROTTY_LINKS, is a different variable.
+func menuVarAt(s string) string {
+	for _, name := range menuVars {
+		if !strings.HasPrefix(s, name) {
+			continue
+		}
+		if rest := s[len(name):]; rest != "" && isNameByte(rest[0]) {
+			continue
+		}
+		return name
+	}
+	return ""
+}
+
+func isNameByte(c byte) bool {
+	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
