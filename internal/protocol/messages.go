@@ -510,6 +510,7 @@ type Cell struct {
 	Width   uint8  `msg:"w"`            // 0 (combining), 1 (normal), 2 (wide)
 	FgRGB   uint32 `msg:"fg,omitempty"` // present only when style fg-idx == 0xFFF
 	BgRGB   uint32 `msg:"bg,omitempty"` // present only when style bg-idx == 0xFFF
+	Link    string `msg:"l,omitempty"`  // OSC 8 hyperlink target; absent on nearly every cell
 }
 
 // CellDiffEntry is one cell + position. CellDiff messages carry a

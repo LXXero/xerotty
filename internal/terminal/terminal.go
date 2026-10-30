@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -645,6 +646,24 @@ func (t *Terminal) ScrollbackLineText(row, cols int) string {
 		}
 	}
 	return b.String()
+}
+
+// ScrollbackRow returns row's cells in ONE disk read, for the same
+// reason as ScrollbackLineText: link hit-testing reads whole rows on
+// every frame the mouse is over text.
+func (t *Terminal) ScrollbackRow(row, cols int) []uv.Cell {
+	disk, _, memStart, _ := t.scrollbackLayout()
+	out := make([]uv.Cell, cols)
+	if disk != nil && row < memStart {
+		copy(out, disk.LineAt(row))
+		return out
+	}
+	for col := 0; col < cols; col++ {
+		if c := t.Emu.ScrollbackCellAt(col, row-memStart); c != nil {
+			out[col] = *c
+		}
+	}
+	return out
 }
 
 // Width / Height / CellAt / CursorPosition pass through to the
@@ -1403,7 +1422,9 @@ func (t *Terminal) childPIDLocked() int {
 // multi-byte UTF-8 (e.g. claude's window title "✳ Claude Code"): the title
 // is truncated to the first byte and the remaining bytes leak onto the
 // screen as plain text. We scan the byte stream, dispatch known OSC
-// sequences directly, and strip them from what gets sent to vt.
+// sequences directly, and strip them from what gets sent to vt. OSC 8
+// alone goes on to vt, which owns the cell's Link, rewritten by
+// appendOSC8 so that it is safe to parse.
 //
 // State (oscBuf, inOSC) carries across Read calls in case a sequence spans
 // buffer boundaries. Returns the cleaned-of-OSC bytes plus the new state.
@@ -1434,12 +1455,14 @@ func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []b
 		// part of the body so the UTF-8 sequence stays intact.
 		if b == 0x07 {
 			t.dispatchOSC(oscBuf)
+			out = appendOSC8(out, oscBuf)
 			oscBuf = oscBuf[:0]
 			inOSC = false
 			continue
 		}
 		if b == 0x1b && i+1 < len(in) && in[i+1] == '\\' {
 			t.dispatchOSC(oscBuf)
+			out = appendOSC8(out, oscBuf)
 			oscBuf = oscBuf[:0]
 			inOSC = false
 			i++ // skip the '\\'
@@ -1450,11 +1473,50 @@ func (t *Terminal) preprocessOSC(in, oscBufIn []byte, inOSCIn bool) ([]byte, []b
 	return out, oscBuf, inOSC
 }
 
+// maxLinkURL is the longest OSC 8 target kept. Every cell of a link
+// holds its URL, in the disk scrollback and on the wire too, so the
+// program in the terminal doesn't get to make that arbitrarily big. It
+// comfortably fits the long OAuth URLs CLI logins print.
+const maxLinkURL = 8192
+
+// appendOSC8 adds an OSC 8 hyperlink to out if body is one, re-encoded
+// for vt: it splits the body on every ';' and ignores the sequence when
+// there are more than three parts, and it ends the string at the byte
+// 0x9c (see preprocessOSC), so both are percent-encoded out of the URL,
+// along with spaces and control bytes. The params are left out: nothing
+// here reads them. A URL too long to keep ends the link instead, so the
+// text after it doesn't inherit the link before it.
+func appendOSC8(out, body []byte) []byte {
+	if !bytes.HasPrefix(body, []byte("8;")) {
+		return out
+	}
+	rest := body[2:]
+	semi := bytes.IndexByte(rest, ';')
+	if semi < 0 {
+		return out
+	}
+	const hex = "0123456789ABCDEF"
+	url := make([]byte, 0, len(rest)-semi-1)
+	for _, b := range rest[semi+1:] {
+		if b <= ' ' || b >= 0x7f || b == ';' {
+			url = append(url, '%', hex[b>>4], hex[b&0xf])
+		} else {
+			url = append(url, b)
+		}
+	}
+	if len(url) > maxLinkURL {
+		url = url[:0]
+	}
+	out = append(out, "\x1b]8;;"...)
+	out = append(out, url...)
+	return append(out, "\x1b\\"...)
+}
+
 // dispatchOSC handles a complete OSC body (between OSC introducer and
 // terminator). Handled: OSC 0/1/2 (window title / icon name), 52
 // (clipboard) and the notification forms 9, 777 and 99. Other OSC
 // commands are silently dropped, which matches what an unsupported
-// terminal would do.
+// terminal would do, except OSC 8: see appendOSC8.
 func (t *Terminal) dispatchOSC(body []byte) {
 	semi := -1
 	for i, b := range body {

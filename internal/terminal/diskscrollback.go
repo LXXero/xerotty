@@ -13,11 +13,17 @@
 //   for each cell:
 //     varint  content_byte_size
 //     bytes   content (UTF-8, may be a grapheme cluster)
-//     u8      width (1 or 2)
+//     u8      width (1 or 2), with diskLinkFlag set if a link follows
 //     u8      attrs
 //     u8      fg_kind | (bg_kind << 4)
 //     bytes   fg payload (variable length based on kind)
 //     bytes   bg payload
+//     varint  url_byte_size, only with diskLinkFlag
+//     bytes   url (OSC 8 target), only with diskLinkFlag
+//
+// A hot upgrade hands the open file to the new daemon, so records
+// written before diskLinkFlag existed must stay readable: they just
+// never have the bit set.
 //
 // Color kinds: 0 = default (nil), 1 = ansi.BasicColor (1 byte),
 // 2 = ansi.ExtendedColor (1 byte), 3 = ansi.TrueColor (3 bytes),
@@ -42,6 +48,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
 )
+
+// diskLinkFlag marks a cell record that ends with an OSC 8 URL.
+const diskLinkFlag = 0x80
 
 // DiskScrollback is the append-only on-disk store for old scrollback
 // lines. Safe for concurrent Append from the PTY-reader goroutine
@@ -300,6 +309,9 @@ func encodeLine(line uv.Line) []byte {
 		if w == 0 {
 			w = 1
 		}
+		if cell.Link.URL != "" {
+			w |= diskLinkFlag
+		}
 		out = append(out, w)
 		out = append(out, cell.Style.Attrs)
 
@@ -308,6 +320,12 @@ func encodeLine(line uv.Line) []byte {
 		out = append(out, fgKind|(bgKind<<4))
 		out = append(out, fgPayload...)
 		out = append(out, bgPayload...)
+
+		if cell.Link.URL != "" {
+			n = binary.PutUvarint(tmp[:], uint64(len(cell.Link.URL)))
+			out = append(out, tmp[:n]...)
+			out = append(out, cell.Link.URL...)
+		}
 	}
 	return out
 }
@@ -355,6 +373,21 @@ func decodeLine(buf []byte) uv.Line {
 		bg, consumed := decodeColor(bgKind, buf[pos:])
 		pos += consumed
 
+		var link uv.Link
+		if width&diskLinkFlag != 0 {
+			width &^= diskLinkFlag
+			linkLen, n := binary.Uvarint(buf[pos:])
+			if n <= 0 {
+				break
+			}
+			pos += n
+			if linkLen > uint64(len(buf)-pos) {
+				break
+			}
+			link.URL = string(buf[pos : pos+int(linkLen)])
+			pos += int(linkLen)
+		}
+
 		cells = append(cells, uv.Cell{
 			Content: content,
 			Style: uv.Style{
@@ -362,6 +395,7 @@ func decodeLine(buf []byte) uv.Line {
 				Bg:    bg,
 				Attrs: attrs,
 			},
+			Link:  link,
 			Width: int(width),
 		})
 	}

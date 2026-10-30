@@ -952,6 +952,12 @@ func uvRowsFromProto(in [][]protocol.Cell) [][]uv.Cell {
 		uvRow := make([]uv.Cell, len(row))
 		for i, c := range row {
 			uvRow[i] = uvCellFromProto(c)
+			// Each wire cell decodes to its own copy of its URL, and
+			// these rows stay in the scrollback mirror: keep one copy
+			// per run of a link, as the emulator's own cells do.
+			if i > 0 && uvRow[i].Link.URL != "" && uvRow[i].Link.URL == uvRow[i-1].Link.URL {
+				uvRow[i].Link.URL = uvRow[i-1].Link.URL
+			}
 		}
 		out[r] = uvRow
 	}

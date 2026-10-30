@@ -587,7 +587,7 @@ The `exec:` prefix runs a shell command. The command is executed via `/bin/sh -c
 | Variable | Value |
 |----------|-------|
 | `$XEROTTY_SELECTION` | Currently selected text |
-| `$XEROTTY_LINK` | URL under cursor (if any) |
+| `$XEROTTY_LINK` | URL under cursor (if any). Set in the command's environment, not pasted into its text, so write `"$XEROTTY_LINK"` |
 | `$XEROTTY_CWD` | Working directory of the shell in the active tab (via `/proc/<pid>/cwd`) |
 | `$XEROTTY_TAB_TITLE` | Title of the active tab |
 

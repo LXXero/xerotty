@@ -15,6 +15,30 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// maxFrameLinkBytes bounds the link bytes in one frame. Every cell
+// carries its own copy of the URL, so a screen of long links could
+// otherwise pass protocol's 16 MiB frame limit, and an oversized frame
+// is a write error on the connection.
+const maxFrameLinkBytes = 4 * 1024 * 1024
+
+// CapFrameLinks clears links once rows has used up maxFrameLinkBytes.
+// Call it on every set of rows that becomes one frame. Text and style
+// are untouched; a cell past the budget just stops being clickable.
+func CapFrameLinks(rows [][]protocol.Cell) {
+	total := 0
+	for _, row := range rows {
+		for i := range row {
+			if row[i].Link == "" {
+				continue
+			}
+			total += len(row[i].Link)
+			if total > maxFrameLinkBytes {
+				row[i].Link = ""
+			}
+		}
+	}
+}
+
 // FromUV converts an in-memory cell to its wire encoding. Handles
 // palette vs RGB color packing. Nil cells (off-screen, empty)
 // become a space with default style.
@@ -41,6 +65,7 @@ func FromUV(c *uv.Cell) protocol.Cell {
 	if bgRGB {
 		out.BgRGB = bg
 	}
+	out.Link = c.Link.URL
 	return out
 }
 
@@ -81,6 +106,7 @@ func ToUV(p protocol.Cell) uv.Cell {
 	c := uv.Cell{
 		Content: p.Content,
 		Style:   style,
+		Link:    uv.Link{URL: p.Link},
 		Width:   int(p.Width),
 	}
 	if c.Width == 0 {

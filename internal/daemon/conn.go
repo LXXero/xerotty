@@ -14,6 +14,7 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 
+	"github.com/LXXero/xerotty/internal/cellconv"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/scrollback"
 	"github.com/LXXero/xerotty/internal/tabevents"
@@ -1612,6 +1613,7 @@ func (c *clientConn) sendCellsAndCursor(t *Tab, sub *tabSub) {
 		}
 		grid[r] = row
 	}
+	cellconv.CapFrameLinks(grid)
 
 	// A size request from this client changed its mirror (see
 	// tabSub.resync): resend everything. Held while a shrink is
@@ -1702,6 +1704,7 @@ func protoRowsFromUV(uvRows [][]uv.Cell) [][]protocol.Cell {
 		}
 		rows = append(rows, row)
 	}
+	cellconv.CapFrameLinks(rows)
 	return rows
 }
 
@@ -1887,7 +1890,8 @@ func cellEqual(a, b protocol.Cell) bool {
 		a.Style == b.Style &&
 		a.Width == b.Width &&
 		a.FgRGB == b.FgRGB &&
-		a.BgRGB == b.BgRGB
+		a.BgRGB == b.BgRGB &&
+		a.Link == b.Link
 }
 
 func (c *clientConn) sendCursor(t *Tab) {

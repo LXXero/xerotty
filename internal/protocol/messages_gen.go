@@ -634,6 +634,12 @@ func (z *Cell) DecodeMsg(dc *msgp.Reader) (err error) {
 				err = msgp.WrapError(err, "BgRGB")
 				return
 			}
+		case "l":
+			z.Link, err = dc.ReadString()
+			if err != nil {
+				err = msgp.WrapError(err, "Link")
+				return
+			}
 		default:
 			err = dc.Skip()
 			if err != nil {
@@ -648,8 +654,8 @@ func (z *Cell) DecodeMsg(dc *msgp.Reader) (err error) {
 // EncodeMsg implements msgp.Encodable
 func (z *Cell) EncodeMsg(en *msgp.Writer) (err error) {
 	// check for omitted fields
-	zb0001Len := uint32(5)
-	var zb0001Mask uint8 /* 5 bits */
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
 	_ = zb0001Mask
 	if z.FgRGB == 0 {
 		zb0001Len--
@@ -658,6 +664,10 @@ func (z *Cell) EncodeMsg(en *msgp.Writer) (err error) {
 	if z.BgRGB == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x10
+	}
+	if z.Link == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
 	}
 	// variable map header, size zb0001Len
 	err = en.Append(0x80 | uint8(zb0001Len))
@@ -721,6 +731,18 @@ func (z *Cell) EncodeMsg(en *msgp.Writer) (err error) {
 				return
 			}
 		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// write "l"
+			err = en.Append(0xa1, 0x6c)
+			if err != nil {
+				return
+			}
+			err = en.WriteString(z.Link)
+			if err != nil {
+				err = msgp.WrapError(err, "Link")
+				return
+			}
+		}
 	}
 	return
 }
@@ -729,8 +751,8 @@ func (z *Cell) EncodeMsg(en *msgp.Writer) (err error) {
 func (z *Cell) MarshalMsg(b []byte) (o []byte, err error) {
 	o = msgp.Require(b, z.Msgsize())
 	// check for omitted fields
-	zb0001Len := uint32(5)
-	var zb0001Mask uint8 /* 5 bits */
+	zb0001Len := uint32(6)
+	var zb0001Mask uint8 /* 6 bits */
 	_ = zb0001Mask
 	if z.FgRGB == 0 {
 		zb0001Len--
@@ -739,6 +761,10 @@ func (z *Cell) MarshalMsg(b []byte) (o []byte, err error) {
 	if z.BgRGB == 0 {
 		zb0001Len--
 		zb0001Mask |= 0x10
+	}
+	if z.Link == "" {
+		zb0001Len--
+		zb0001Mask |= 0x20
 	}
 	// variable map header, size zb0001Len
 	o = append(o, 0x80|uint8(zb0001Len))
@@ -763,6 +789,11 @@ func (z *Cell) MarshalMsg(b []byte) (o []byte, err error) {
 			// string "bg"
 			o = append(o, 0xa2, 0x62, 0x67)
 			o = msgp.AppendUint32(o, z.BgRGB)
+		}
+		if (zb0001Mask & 0x20) == 0 { // if not omitted
+			// string "l"
+			o = append(o, 0xa1, 0x6c)
+			o = msgp.AppendString(o, z.Link)
 		}
 	}
 	return
@@ -816,6 +847,12 @@ func (z *Cell) UnmarshalMsg(bts []byte) (o []byte, err error) {
 				err = msgp.WrapError(err, "BgRGB")
 				return
 			}
+		case "l":
+			z.Link, bts, err = msgp.ReadStringBytes(bts)
+			if err != nil {
+				err = msgp.WrapError(err, "Link")
+				return
+			}
 		default:
 			bts, err = msgp.Skip(bts)
 			if err != nil {
@@ -830,7 +867,7 @@ func (z *Cell) UnmarshalMsg(bts []byte) (o []byte, err error) {
 
 // Msgsize returns an upper bound estimate of the number of bytes occupied by the serialized message
 func (z *Cell) Msgsize() (s int) {
-	s = 1 + 2 + msgp.StringPrefixSize + len(z.Content) + 2 + msgp.Uint32Size + 2 + msgp.Uint8Size + 3 + msgp.Uint32Size + 3 + msgp.Uint32Size
+	s = 1 + 2 + msgp.StringPrefixSize + len(z.Content) + 2 + msgp.Uint32Size + 2 + msgp.Uint8Size + 3 + msgp.Uint32Size + 3 + msgp.Uint32Size + 2 + msgp.StringPrefixSize + len(z.Link)
 	return
 }
 
