@@ -292,18 +292,32 @@ func checkChecked(condition string, ctx *Context) bool {
 
 // ExecAction executes a shell hook action (exec:command).
 func ExecAction(action string, ctx *Context) {
+	if cmd := execCommand(action, ctx); cmd != nil {
+		cmd.Start()
+	}
+}
+
+// execCommand builds the shell command for an exec: action.
+//
+// $XEROTTY_LINK reaches the shell as an environment variable, not as
+// text pasted into the command line: an OSC 8 target is chosen by the
+// program in the terminal, and pasted in it could close the template's
+// quotes and run anything. A template that single-quotes it is switched
+// to double quotes, where the shell still expands it.
+func execCommand(action string, ctx *Context) *exec.Cmd {
 	if !strings.HasPrefix(action, "exec:") {
-		return
+		return nil
 	}
 
 	cmdStr := strings.TrimPrefix(action, "exec:")
 
 	// Variable substitution
 	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_SELECTION", ctx.Selection)
-	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_LINK", ctx.Link)
+	cmdStr = strings.ReplaceAll(cmdStr, "'$XEROTTY_LINK'", `"$XEROTTY_LINK"`)
 	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_CWD", ctx.CWD)
 	cmdStr = strings.ReplaceAll(cmdStr, "$XEROTTY_TAB_TITLE", ctx.TabTitle)
 
 	cmd := exec.Command("/bin/sh", "-c", cmdStr)
-	cmd.Start()
+	cmd.Env = append(os.Environ(), "XEROTTY_LINK="+ctx.Link)
+	return cmd
 }

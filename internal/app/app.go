@@ -4424,15 +4424,22 @@ func (a *Window) frame() {
 
 			// Draw link underline on hover
 			if a.hoveredLink != nil {
-				lh := a.hoveredLink
-				y := a.renderer.OffsetY + float32(lh.Row)*a.cellH + a.cellH - 1
-				x1 := a.renderer.OffsetX + float32(lh.StartCol)*a.cellW
-				x2 := a.renderer.OffsetX + float32(lh.EndCol+1)*a.cellW
-				drawList.AddLine(
-					imgui.Vec2{X: x1, Y: y},
-					imgui.Vec2{X: x2, Y: y},
-					a.renderer.Theme.Foreground,
-				)
+				_, visRows := a.gridSize()
+				for _, sp := range a.hoveredLink.Spans {
+					// A wrapped link can run off the viewport.
+					if sp.Row < 0 || sp.Row >= visRows {
+						continue
+					}
+					y := a.renderer.OffsetY + float32(sp.Row)*a.cellH + a.cellH - 1
+					x1 := a.renderer.OffsetX + float32(sp.StartCol)*a.cellW
+					x2 := a.renderer.OffsetX + float32(sp.EndCol+1)*a.cellW
+					drawList.AddLine(
+						imgui.Vec2{X: x1, Y: y},
+						imgui.Vec2{X: x2, Y: y},
+						a.renderer.Theme.Foreground,
+					)
+				}
+				a.renderLinkTooltip()
 			}
 
 			// Only show cursor when at live position (not scrolled
@@ -5844,6 +5851,26 @@ func (w *Window) menuContext() *menu.Context {
 		ctx.Link = w.hoveredLink.URL
 	}
 	return ctx
+}
+
+// renderLinkTooltip shows where an OSC 8 link goes. Its text on screen
+// is whatever the program printed, so this is the only place the
+// destination is visible before the click. Same phantom-hover gates as
+// the tab tooltip (see Window.lastKeyAt). TextUnformatted, because
+// URLs are full of % and imgui.Text takes a format string.
+func (w *Window) renderLinkTooltip() {
+	if !w.hoveredLink.OSC8 || w.lastMouseMoveAt < w.lastKeyAt {
+		return
+	}
+	if h := w.sdlWindowHandle(); h != 0 && platform.MouseFocusWindowID() != h {
+		return
+	}
+	if imgui.BeginTooltip() {
+		imgui.PushTextWrapPosV(imgui.FontSize() * 40)
+		imgui.TextUnformatted(linkTooltipText(w.hoveredLink.URL))
+		imgui.PopTextWrapPos()
+		imgui.EndTooltip()
+	}
 }
 
 func (w *Window) renderSearchOverlay() {
