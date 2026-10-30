@@ -582,12 +582,12 @@ shortcut = "Ctrl+Shift+W"
 
 #### Shell Hook Actions (`exec:`)
 
-The `exec:` prefix runs a shell command. The command is executed via `/bin/sh -c "<command>"`. Available environment variable substitutions:
+The `exec:` prefix runs a shell command. The command is executed via `/bin/sh -c "<command>"`. These variables are set in the command's environment, never pasted into its text, so a value can't run as shell code. Each one expands as a single word wherever the template uses it, including inside single quotes:
 
 | Variable | Value |
 |----------|-------|
 | `$XEROTTY_SELECTION` | Currently selected text |
-| `$XEROTTY_LINK` | URL under cursor (if any). Set in the command's environment, not pasted into its text, so write `"$XEROTTY_LINK"` |
+| `$XEROTTY_LINK` | URL under cursor (if any) |
 | `$XEROTTY_CWD` | Working directory of the shell in the active tab (via `/proc/<pid>/cwd`) |
 | `$XEROTTY_TAB_TITLE` | Title of the active tab |
 

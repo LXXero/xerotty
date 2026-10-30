@@ -54,6 +54,60 @@ func TestOSC8SplitAcrossReads(t *testing.T) {
 		if got := emu.CellAt(col, 0).Link.URL; got != url {
 			t.Errorf("col %d: link = %q, want %q", col, got, url)
 		}
+		// A swallowed cell has an empty link too, so check the text.
+		if got, want := emu.CellAt(col, 0).Content, string("abcdef"[col]); got != want {
+			t.Errorf("col %d: content = %q, want %q", col, got, want)
+		}
+	}
+}
+
+// TestOSCTerminatorSplitAcrossReads: a read can end between the ESC and
+// '\\' of a string terminator. The OSC has to close there, or every byte
+// after it is swallowed until a BEL.
+func TestOSCTerminatorSplitAcrossReads(t *testing.T) {
+	term := &Terminal{}
+	var got []Notification
+	term.SetOnNotify(func(n Notification) { got = append(got, n) })
+
+	var buf []byte
+	var inOSC bool
+	var vis string
+	for _, chunk := range []string{"x\x1b]9;done\x1b", "\\VISIBLE", "\r\nMORE OUTPUT\r\n"} {
+		var out []byte
+		out, buf, inOSC = term.preprocessOSC([]byte(chunk), buf, inOSC)
+		vis += string(out)
+	}
+	if want := "xVISIBLE\r\nMORE OUTPUT\r\n"; vis != want {
+		t.Errorf("visible bytes = %q, want %q", vis, want)
+	}
+	if inOSC {
+		t.Error("still inside the OSC")
+	}
+	if len(got) != 1 || got[0].Body != "done" {
+		t.Errorf("notifications = %+v", got)
+	}
+}
+
+// TestOSCHeldEscThenOtherByte: an ESC not followed by '\\' stays in the
+// body, whether the next byte comes in the same read or the next one.
+func TestOSCHeldEscThenOtherByte(t *testing.T) {
+	bodies := func(chunks ...string) []byte {
+		term := &Terminal{}
+		var buf []byte
+		var inOSC bool
+		for _, chunk := range chunks {
+			_, buf, inOSC = term.preprocessOSC([]byte(chunk), buf, inOSC)
+		}
+		if !inOSC {
+			t.Fatal("OSC closed by an ESC with no '\\\\'")
+		}
+		return buf
+	}
+	if got := bodies("\x1b]0;a\x1b", "b"); string(got) != "0;a\x1bb" {
+		t.Errorf("split: body = %q", got)
+	}
+	if got := bodies("\x1b]0;a\x1bb"); string(got) != "0;a\x1bb" {
+		t.Errorf("whole: body = %q", got)
 	}
 }
 
