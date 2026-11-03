@@ -171,8 +171,11 @@ daemon_socket = ""          # override; default $XDG_RUNTIME_DIR/xerottyd.sock
   DEFAULT source; new tabs land on that box.
 
 When daemon mode is on, the GUI auto-spawns `xerotty serve`
-(`daemonsource.EnsureLocalDaemon`, Setpgid-detached so it
-outlives the GUI) and the daily flow is identical (`xerotty`,
+(`daemonsource.EnsureLocalDaemon` → `internal/daemonspawn`, which
+puts the daemon outside the spawner's login session: a systemd user
+scope on Linux, a launchd gui-domain job on macOS, setsid elsewhere —
+see that package's doc comment for why a setpgid child of the first
+client was wrong) and the daily flow is identical (`xerotty`,
 terminal opens, type into it) but now:
 - closing the UI doesn't kill running processes — daemon survives
 - reopening attaches to the same tabs, mid-scrollback intact

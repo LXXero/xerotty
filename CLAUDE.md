@@ -63,6 +63,9 @@ Daemon-arc packages:
 - `internal/clientproto` — client side of the wire protocol.
 - `internal/daemonsource` — `Hub` + `Source` (terminal.Source
   backed by a shadow vt emulator) for daemon-backed GUI tabs.
+- `internal/daemonspawn` — auto-spawn of `xerotty serve` outside
+  the spawning client's login session (systemd user scope / launchd
+  gui domain / setsid fallback). Both spawn sites go through it.
 - `internal/terminal/source.go` — the `Source` interface both
   in-process PTY and daemon tabs implement.
 - `internal/mcp` — per-daemon JSON-RPC/MCP server.

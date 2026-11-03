@@ -2,13 +2,12 @@ package runner
 
 import (
 	"fmt"
+	"github.com/LXXero/xerotty/internal/daemonspawn"
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/LXXero/xerotty/internal/sockpath"
 )
@@ -60,8 +59,10 @@ func runStdioBridge(socketPath string) int {
 }
 
 // connectOrSpawnDaemon dials the socket; if no daemon is there,
-// forks `xerotty serve --socket <path>` detached and waits for the
-// socket to come up before dialing again.
+// starts `xerotty serve --socket <path>` through daemonspawn (same
+// path as the GUI's daemonsource.EnsureLocalDaemon: outside this ssh
+// session where the OS allows it) and waits for the socket to come up
+// before dialing again.
 func connectOrSpawnDaemon(socketPath string) (net.Conn, error) {
 	// Quick try first — common case is "daemon's already running".
 	if c, err := net.Dial("unix", socketPath); err == nil {
@@ -72,32 +73,29 @@ func connectOrSpawnDaemon(socketPath string) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate self for auto-spawn: %w", err)
 	}
-	cmd := exec.Command(self, "serve", "--socket", socketPath)
-	// Detach from this process group so the daemon survives our
-	// SSH session ending. Same setup as the GUI's
-	// daemonsource.EnsureLocalDaemon path.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdin = nil
-	cmd.Stdout = nil
 	// NEVER the spawner's stderr: over ssh that's the session's pipe,
 	// and the daemon would die of SIGPIPE on its first log line after
 	// the session ends (see sockpath.DaemonLogFile). nil = /dev/null
 	// when the log can't be opened.
-	cmd.Stderr = sockpath.DaemonLogFile()
-	if err := cmd.Start(); err != nil {
+	logFile := sockpath.DaemonLogFile()
+	if logFile != nil {
+		defer logFile.Close()
+	}
+	dial := func() bool {
+		c, err := net.Dial("unix", socketPath)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}
+	if _, err := daemonspawn.EnsureListening(daemonspawn.Options{
+		Self:       self,
+		SocketPath: socketPath,
+		Stderr:     logFile,
+		Dial:       dial,
+	}); err != nil {
 		return nil, fmt.Errorf("auto-spawn daemon: %w", err)
 	}
-	go func() { _ = cmd.Wait() }() // reap
-
-	// Poll the socket. Daemons normally bind in well under a
-	// second; 2s ceiling absorbs slow remotes (e.g. raspberry pi,
-	// loaded VMs).
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.Dial("unix", socketPath); err == nil {
-			return c, nil
-		}
-		time.Sleep(40 * time.Millisecond)
-	}
-	return nil, fmt.Errorf("auto-spawned daemon never bound to %s", socketPath)
+	return net.Dial("unix", socketPath)
 }

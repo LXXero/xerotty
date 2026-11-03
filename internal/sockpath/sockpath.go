@@ -93,6 +93,22 @@ const (
 // `xerotty mcp` lost them until the next daemon start.
 const EnvCacheDir = "XEROTTY_CACHE_DIR"
 
+// CacheDir returns $XEROTTY_CACHE_DIR or <os.UserCacheDir>/xerotty,
+// created 0700. Exported for the daemon spawner, which parks a
+// launchd plist there on macOS.
+func CacheDir() (string, error) { return cacheDir() }
+
+// DaemonLogPath is the path DaemonLogFile opens. For spawners that
+// hand the log to another process manager by name (launchd's
+// StandardErrorPath) rather than by open file.
+func DaemonLogPath() string {
+	d, err := cacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(d, "xerottyd.log")
+}
+
 // cacheDir returns $XEROTTY_CACHE_DIR or <os.UserCacheDir>/xerotty,
 // created 0700.
 func cacheDir() (string, error) {

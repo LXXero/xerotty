@@ -64,6 +64,10 @@ your config, launch `xerotty`. It auto-spawns `xerotty serve`
   (`--stdio` bridges to / auto-spawns a persistent daemon).
 - `internal/clientproto/` — client side of the wire protocol;
   per-message-type channels; `DialSSH` / `DialCommand`.
+- `internal/daemonspawn/` — starts `xerotty serve` for a client that
+  found no daemon, placed outside the client's login session where the
+  OS allows (systemd user scope / launchd gui domain / setsid). Used
+  by `daemonsource.EnsureLocalDaemon` and `serve --stdio` auto-spawn.
 - `internal/daemonsource/` — `Hub` (one per daemon connection,
   demuxes frames to per-tab `Source`s, reconnect-aware) and
   `Source` (terminal.Source backed by a shadow vt.SafeEmulator).
