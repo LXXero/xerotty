@@ -18,14 +18,60 @@ import (
 	"unsafe"
 
 	"golang.org/x/image/tiff"
+
+	"github.com/LXXero/xerotty/internal/platform"
 )
 
-// ClipboardRead reads from the OS clipboard via SDL's native binding —
-// NSPasteboard on macOS, the GTK/X11/Wayland clipboard manager on Linux,
-// CF_UNICODETEXT on Windows. Going through SDL means we don't depend on
-// xclip/xsel/wl-paste being installed and we get the right pasteboard
-// on every platform.
+// textMIMEs is the order we look for text on a Wayland offer, and the
+// set we advertise when writing. First entry is what everything
+// modern offers; the X11-era atoms keep XWayland apps pasting.
+var textMIMEs = []string{
+	"text/plain;charset=utf-8",
+	"UTF8_STRING",
+	"text/plain",
+	"TEXT",
+	"STRING",
+}
+
+// pickMIME returns the first of wanted that offered contains, or "".
+func pickMIME(offered, wanted []string) string {
+	for _, w := range wanted {
+		for _, o := range offered {
+			if o == w {
+				return w
+			}
+		}
+	}
+	return ""
+}
+
+// ClipboardRead reads the OS clipboard.
+//
+// On Wayland with data-control available it reads the compositor's
+// current offer directly (platform.WaylandClipboardRead). SDL's own
+// clipboard view is not trusted there: SDL marks itself owner on
+// every write without waiting for the compositor, and wlroots
+// silently rejects writes carrying an older input serial than the
+// current selection, so after one rejected write (an OSC 52 write
+// with no fresh input is enough) SDL answers every read from its own
+// stale bookkeeping. See internal/platform/wlclip.h.
+//
+// Elsewhere — macOS, X11, compositors without data-control — SDL's
+// native binding (NSPasteboard, X11 selections) is the path, so we
+// never depend on xclip/xsel/wl-paste being installed.
 func ClipboardRead() (string, error) {
+	if platform.WaylandClipboardAvailable() {
+		offered := platform.WaylandClipboardMimes()
+		m := pickMIME(offered, textMIMEs)
+		if m == "" {
+			return "", nil
+		}
+		data, ok := platform.WaylandClipboardRead(m)
+		if !ok {
+			return "", errors.New("wayland clipboard: owner did not deliver " + m)
+		}
+		return string(data), nil
+	}
 	p := C.SDL_GetClipboardText()
 	if p == nil {
 		return "", errors.New("SDL_GetClipboardText returned nil")
@@ -34,8 +80,22 @@ func ClipboardRead() (string, error) {
 	return C.GoString(p), nil
 }
 
-// ClipboardWrite writes to the OS clipboard via SDL.
+// ClipboardWrite writes text to the OS clipboard. On Wayland with
+// data-control it sets the selection through that protocol (no input
+// serial involved, so writes from OSC 52 / MCP contexts can't be
+// rejected behind SDL's back); otherwise via SDL.
 func ClipboardWrite(text string) error {
+	if platform.WaylandClipboardAvailable() {
+		entries := make(map[string][]byte, len(textMIMEs))
+		for _, m := range textMIMEs {
+			entries[m] = []byte(text)
+		}
+		if platform.WaylandClipboardWrite(entries) {
+			return nil
+		}
+		// Fall through: data-control went away between the check and
+		// the write (compositor sent finished).
+	}
 	cs := C.CString(text)
 	defer C.free(unsafe.Pointer(cs))
 	// SDL3 changed SDL_SetClipboardText to return bool (true=success).
@@ -69,10 +129,27 @@ var imagePasteMIMEs = []string{
 // to the daemon (which writes them to a temp file the PTY child
 // can read).
 //
-// SDL3's clipboard API supports arbitrary MIME types via
-// SDL_GetClipboardData; we walk our preferred type list and grab
-// the first match.
+// On Wayland with data-control the offer is read directly (same
+// reasons as ClipboardRead). Otherwise SDL3's clipboard API supports
+// arbitrary MIME types via SDL_GetClipboardData; we walk our preferred
+// type list and grab the first match.
 func ClipboardReadImage() (mime string, data []byte, err error) {
+	if platform.WaylandClipboardAvailable() {
+		m := pickMIME(platform.WaylandClipboardMimes(), imagePasteMIMEs)
+		if m == "" {
+			return "", nil, nil
+		}
+		buf, ok := platform.WaylandClipboardRead(m)
+		if !ok || len(buf) == 0 {
+			return "", nil, errors.New("wayland clipboard: owner did not deliver " + m)
+		}
+		if m == "image/tiff" {
+			if pngBuf, err := tiffToPNG(buf); err == nil {
+				return "image/png", pngBuf, nil
+			}
+		}
+		return m, buf, nil
+	}
 	for _, m := range imagePasteMIMEs {
 		cmime := C.CString(m)
 		has := C.SDL_HasClipboardData(cmime)

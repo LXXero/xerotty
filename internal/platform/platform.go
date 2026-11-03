@@ -33,12 +33,14 @@ package platform
 #include <SDL3/SDL.h>
 #include "sdl3.h"
 #include "wlgrab.h"
+#include "wlclip.h"
 */
 import "C"
 
 import (
 	"errors"
 	"image"
+	"strings"
 	"unsafe"
 
 	"github.com/AllenDang/cimgui-go/imgui"
@@ -481,4 +483,65 @@ func (TextureManager) UpdateTexture(ref imgui.TextureRef, x, y, width, height in
 
 func (TextureManager) DeleteTexture(ref imgui.TextureRef) {
 	C.platform_delete_texture(C.ulonglong(ref.TexID()))
+}
+
+// ---- Wayland clipboard via data-control (see wlclip.h) ----------------
+
+// WaylandClipboardAvailable reports whether the clipboard is reachable
+// through the data-control protocol. False on X11/macOS, on
+// compositors without data-control (GNOME), and before Init.
+func WaylandClipboardAvailable() bool { return C.wlclip_available() != 0 }
+
+// WaylandClipboardMimes lists the MIME types the current clipboard
+// owner offers, in the owner's order. Empty when the clipboard is
+// empty or data-control is unavailable.
+func WaylandClipboardMimes() []string {
+	var buf [8192]C.char
+	n := C.wlclip_mimes(&buf[0], C.int(len(buf)))
+	if n <= 0 {
+		return nil
+	}
+	return strings.Split(C.GoString(&buf[0]), "\n")
+}
+
+// WaylandClipboardRead fetches the clipboard as mime. ok is false when
+// the owner doesn't offer that type or didn't deliver within 5 s.
+func WaylandClipboardRead(mime string) (data []byte, ok bool) {
+	cm := C.CString(mime)
+	defer C.free(unsafe.Pointer(cm))
+	var n C.size_t
+	p := C.wlclip_receive(cm, &n, 5000)
+	if p == nil {
+		return nil, false
+	}
+	defer C.free(unsafe.Pointer(p))
+	return C.GoBytes(unsafe.Pointer(p), C.int(n)), true
+}
+
+// WaylandClipboardWrite makes xerotty the clipboard owner, offering
+// each entry's MIME type. Returns false when data-control is
+// unavailable (caller falls back to SDL).
+func WaylandClipboardWrite(entries map[string][]byte) bool {
+	if len(entries) == 0 || !WaylandClipboardAvailable() {
+		return false
+	}
+	mimes := make([]*C.char, 0, len(entries))
+	datas := make([]*C.uchar, 0, len(entries))
+	lens := make([]C.size_t, 0, len(entries))
+	for m, d := range entries {
+		cm := C.CString(m)
+		defer C.free(unsafe.Pointer(cm))
+		mimes = append(mimes, cm)
+		if len(d) == 0 {
+			d = []byte{0}
+			lens = append(lens, 0)
+		} else {
+			lens = append(lens, C.size_t(len(d)))
+		}
+		datas = append(datas, (*C.uchar)(unsafe.Pointer(&d[0])))
+	}
+	return C.wlclip_set(
+		(**C.char)(unsafe.Pointer(&mimes[0])),
+		(**C.uchar)(unsafe.Pointer(&datas[0])),
+		&lens[0], C.int(len(mimes))) != 0
 }

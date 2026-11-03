@@ -1161,7 +1161,9 @@ When triggered, show an ImGui modal dialog:
 
 #### Implementation
 
-CLIPBOARD: `SDL_GetClipboardText()` / `SDL_SetClipboardText()`. Cross-platform via SDL — uses NSPasteboard on macOS, the GTK/X11/Wayland clipboard manager on Linux, CF_UNICODETEXT on Windows. No dependency on external `xclip` / `pbcopy` tools for CLIPBOARD operations.
+CLIPBOARD, Wayland: the data-control protocol (`ext-data-control-v1`, else `wlr-data-control-unstable-v1`), spoken in-process on the `wl_display` SDL owns (`internal/platform/wlclip_linux.c`, bound next to `wlgrab`). Reads fetch the compositor's current offer; writes set the selection without an input serial. This is deliberate, not a fallback: `wl_data_device.set_selection` needs a serial, wlroots rejects one older than the current selection's silently (no error, no `cancelled`), and SDL records itself as owner before the compositor answers — so one rejected write (an OSC 52 write from a tab program with no fresh input is the typical case) leaves SDL answering every read from stale bookkeeping and paste returns nothing until the next accepted write. Both text and image paste go through this path. No `wl-copy` / `wl-paste` subprocesses.
+
+CLIPBOARD, everywhere else (macOS, X11, Wayland compositors without data-control such as GNOME): `SDL_GetClipboardText()` / `SDL_SetClipboardText()` and `SDL_GetClipboardData()` for images — NSPasteboard on macOS, X11 selections on X11/XWayland, CF_UNICODETEXT on Windows. No dependency on external `xclip` / `pbcopy` tools.
 
 PRIMARY: SDL2 has no PRIMARY API, so `internal/input/clipboard.go` shells out:
 - Wayland: `wl-paste --primary` / `wl-copy --primary`
@@ -1310,7 +1312,7 @@ Use the **Kitty graphics protocol** for inline image display:
    - Check if the terminal application advertises kitty graphics protocol support (via device attributes response)
    - If supported: transmit via kitty graphics protocol
    - If not supported: base64-encode the image and paste as text (with a confirmation dialog)
-2. Image data is retrieved via SDL2 clipboard API or `xclip -selection clipboard -target image/png -o`
+2. Image data is retrieved the same way as text: the data-control offer on Wayland, `SDL_GetClipboardData()` elsewhere (see Implementation above)
 
 #### Config
 

@@ -21,6 +21,7 @@
 
 #include "sdl3.h"
 #include "wlgrab.h"
+#include "wlclip.h"
 #include "xgrab.h"
 
 #include "imgui.h"
@@ -361,6 +362,11 @@ extern "C" int platform_init(const char* title, int width, int height) {
         void* wl_disp = SDL_GetPointerProperty(props,
             SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, nullptr);
         if (wl_disp) wlgrab_init(wl_disp);
+        // Clipboard through data-control on the same display: no input
+        // serial needed, so OSC 52 writes from tab programs can't leave
+        // SDL believing it owns a clipboard the compositor rejected.
+        // See wlclip.h.
+        if (wl_disp) wlclip_init(wl_disp);
     }
 
     // Reserve a custom event type for PTY-wake signals. SDL_PushEvent
@@ -1303,6 +1309,7 @@ extern "C" void platform_post_wake(void) {
 }
 
 extern "C" void platform_shutdown(void) {
+    wlclip_shutdown();
     wlgrab_shutdown();
 
     if (ImGui::GetCurrentContext()) {
