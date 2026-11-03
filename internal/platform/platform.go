@@ -525,6 +525,10 @@ func WaylandClipboardWrite(entries map[string][]byte) bool {
 	if len(entries) == 0 || !WaylandClipboardAvailable() {
 		return false
 	}
+	// The argument arrays are Go memory, so cgo's pointer check
+	// forbids them from holding Go pointers: every string and byte
+	// buffer is copied to C memory first (wlclip_set copies again
+	// into its own store, so all of this is freed on return).
 	mimes := make([]*C.char, 0, len(entries))
 	datas := make([]*C.uchar, 0, len(entries))
 	lens := make([]C.size_t, 0, len(entries))
@@ -538,7 +542,9 @@ func WaylandClipboardWrite(entries map[string][]byte) bool {
 		} else {
 			lens = append(lens, C.size_t(len(d)))
 		}
-		datas = append(datas, (*C.uchar)(unsafe.Pointer(&d[0])))
+		cd := C.CBytes(d)
+		defer C.free(cd)
+		datas = append(datas, (*C.uchar)(cd))
 	}
 	return C.wlclip_set(
 		(**C.char)(unsafe.Pointer(&mimes[0])),
