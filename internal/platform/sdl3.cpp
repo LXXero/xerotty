@@ -34,6 +34,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 #ifdef __APPLE__
 #include "cocoa_focus.h"
@@ -151,6 +152,22 @@ void set_err(const char* prefix) {
 }
 
 } // namespace
+
+// ImGui clipboard callbacks over wlclip. ImGui wants the returned
+// string to stay valid until the next call, hence the static buffer.
+// 1s cap on the read: this runs on the render thread on Ctrl+V in a
+// text field, and a stalled owner must not freeze the UI for long.
+static std::string g_imgui_clip_text;
+static const char* wlclip_imgui_get_text(ImGuiContext*) {
+    size_t n = 0;
+    char* t = wlclip_receive_text(&n, 1000);
+    g_imgui_clip_text.assign(t ? t : "", t ? n : 0);
+    std::free(t);
+    return g_imgui_clip_text.c_str();
+}
+static void wlclip_imgui_set_text(ImGuiContext*, const char* text) {
+    wlclip_set_text(text ? text : "");
+}
 
 extern "C" int platform_init(const char* title, int width, int height) {
     // Prefer native Wayland over XWayland when both are available — the
@@ -366,7 +383,15 @@ extern "C" int platform_init(const char* title, int width, int height) {
         // serial needed, so OSC 52 writes from tab programs can't leave
         // SDL believing it owns a clipboard the compositor rejected.
         // See wlclip.h.
-        if (wl_disp) wlclip_init(wl_disp);
+        if (wl_disp && wlclip_init(wl_disp)) {
+            // One clipboard path per process (see wlclip.h): ImGui's
+            // text fields must not set the selection through SDL, or
+            // our next read of that selection waits on a send event
+            // only this thread's SDL dispatch could serve.
+            ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+            pio.Platform_SetClipboardTextFn = wlclip_imgui_set_text;
+            pio.Platform_GetClipboardTextFn = wlclip_imgui_get_text;
+        }
     }
 
     // Reserve a custom event type for PTY-wake signals. SDL_PushEvent

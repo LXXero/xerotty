@@ -87,7 +87,11 @@ type handle struct {
 type strategy struct {
 	name      string
 	available func() bool
-	start     func(o Options, env []string) (handle, error)
+	// unavailableReason, when set and available() is false, explains
+	// why in a sentence worth a line in the daemon log (e.g. "linger
+	// is off"). Nil for strategies whose absence needs no comment.
+	unavailableReason func() string
+	start             func(o Options, env []string) (handle, error)
 }
 
 // EnsureListening starts the daemon and waits for o.Dial to report it
@@ -111,6 +115,11 @@ func ensureListening(o Options, candidates []strategy) (string, error) {
 	var tried []string
 	for _, s := range candidates {
 		if s.available != nil && !s.available() {
+			if s.unavailableReason != nil {
+				if why := s.unavailableReason(); why != "" {
+					o.logf("skipping %s: %s", s.name, why)
+				}
+			}
 			continue
 		}
 		h, err := s.start(o, env)

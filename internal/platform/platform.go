@@ -41,6 +41,7 @@ import (
 	"errors"
 	"image"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/AllenDang/cimgui-go/imgui"
@@ -504,13 +505,24 @@ func WaylandClipboardMimes() []string {
 	return strings.Split(C.GoString(&buf[0]), "\n")
 }
 
+// WaylandClipboardGeneration counts selection changes seen since
+// startup. Pollers compare it instead of reading every tick.
+func WaylandClipboardGeneration() uint64 { return uint64(C.wlclip_generation()) }
+
 // WaylandClipboardRead fetches the clipboard as mime. ok is false when
 // the owner doesn't offer that type or didn't deliver within 5 s.
 func WaylandClipboardRead(mime string) (data []byte, ok bool) {
+	return WaylandClipboardReadTimeout(mime, 5*time.Second)
+}
+
+// WaylandClipboardReadTimeout is WaylandClipboardRead with a total
+// time budget for the transfer. Render-thread callers that run often
+// (the daemon clipboard mirror) pass something short.
+func WaylandClipboardReadTimeout(mime string, timeout time.Duration) (data []byte, ok bool) {
 	cm := C.CString(mime)
 	defer C.free(unsafe.Pointer(cm))
 	var n C.size_t
-	p := C.wlclip_receive(cm, &n, 5000)
+	p := C.wlclip_receive(cm, &n, C.int(timeout/time.Millisecond))
 	if p == nil {
 		return nil, false
 	}

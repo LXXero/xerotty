@@ -3,6 +3,7 @@ package daemonspawn
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 )
 
@@ -22,23 +23,25 @@ func strategies() []strategy {
 // stderr wiring work exactly as for a plain fork, and a scope has no
 // main PID whose death would make systemd kill the tab shells.
 // `--collect` unloads the scope once empty even after a failure.
+//
+// Only when lingering is enabled for the user. Without it logind stops
+// user@<uid>.service shortly after the user's last session ends
+// (UserStopDelaySec, 10 s by default), and that takes app.slice — the
+// daemon and every tab — with it. The old session placement survived
+// a logout precisely because the daemon kept its session alive in
+// "closing"; a scope must not trade that for polkit correctness. With
+// linger off the fork strategy keeps the old lifetime; the fix is
+// `loginctl enable-linger`, and the daemon log says so once.
 var systemdScope = strategy{
 	name: "systemd user scope",
 	available: func() bool {
-		if _, err := exec.LookPath("systemd-run"); err != nil {
-			return false
+		return userManagerReachable() && lingerEnabled()
+	},
+	unavailableReason: func() string {
+		if userManagerReachable() && !lingerEnabled() {
+			return "systemd user manager found but lingering is off, so the daemon stays in this login session (enable with: loginctl enable-linger)"
 		}
-		// The user manager's private socket is the one reliable sign
-		// that `systemd-run --user` has someone to talk to. Over ssh
-		// without pam_systemd, or on systems where lingering is off
-		// and nobody is logged in, XDG_RUNTIME_DIR is unset or the
-		// manager isn't running — fall through to fork.
-		rt := os.Getenv("XDG_RUNTIME_DIR")
-		if rt == "" {
-			return false
-		}
-		_, err := os.Stat(filepath.Join(rt, "systemd", "private"))
-		return err == nil
+		return ""
 	},
 	start: func(o Options, env []string) (handle, error) {
 		args := []string{
@@ -64,4 +67,36 @@ var systemdScope = strategy{
 			abort:  func() { _ = cmd.Process.Kill() },
 		}, nil
 	},
+}
+
+// userManagerReachable reports whether `systemd-run --user` has a
+// manager to talk to. The manager's private socket is the one
+// reliable sign: over ssh without pam_systemd, or when nobody is
+// logged in and linger is off, XDG_RUNTIME_DIR is unset or the
+// manager isn't running.
+func userManagerReachable() bool {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		return false
+	}
+	rt := os.Getenv("XDG_RUNTIME_DIR")
+	if rt == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(rt, "systemd", "private"))
+	return err == nil
+}
+
+// lingerDir is where logind records `loginctl enable-linger`: one
+// file per user name. A variable so tests can point it elsewhere.
+var lingerDir = "/var/lib/systemd/linger"
+
+// lingerEnabled reports whether logind will keep this user's manager
+// running after the last session ends.
+func lingerEnabled() bool {
+	u, err := user.Current()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(lingerDir, u.Username))
+	return err == nil
 }

@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/image/tiff"
@@ -59,14 +60,32 @@ func pickMIME(offered, wanted []string) string {
 // Elsewhere — macOS, X11, compositors without data-control — SDL's
 // native binding (NSPasteboard, X11 selections) is the path, so we
 // never depend on xclip/xsel/wl-paste being installed.
-func ClipboardRead() (string, error) {
+func ClipboardRead() (string, error) { return clipboardRead(5 * time.Second) }
+
+// ClipboardReadQuick is ClipboardRead with a short transfer budget,
+// for callers on the render thread that poll (the daemon clipboard
+// mirror). A stalled owner costs them a few hundred ms, not seconds.
+func ClipboardReadQuick() (string, error) { return clipboardRead(300 * time.Millisecond) }
+
+// ClipboardGeneration reports a counter that changes whenever the
+// clipboard owner changes, and whether such a counter exists here.
+// Pollers skip the read when it hasn't moved. Only the Wayland
+// data-control path has one; elsewhere ok is false and callers read.
+func ClipboardGeneration() (gen uint64, ok bool) {
+	if !platform.WaylandClipboardAvailable() {
+		return 0, false
+	}
+	return platform.WaylandClipboardGeneration(), true
+}
+
+func clipboardRead(timeout time.Duration) (string, error) {
 	if platform.WaylandClipboardAvailable() {
 		offered := platform.WaylandClipboardMimes()
 		m := pickMIME(offered, textMIMEs)
 		if m == "" {
 			return "", nil
 		}
-		data, ok := platform.WaylandClipboardRead(m)
+		data, ok := platform.WaylandClipboardReadTimeout(m, timeout)
 		if !ok {
 			return "", errors.New("wayland clipboard: owner did not deliver " + m)
 		}

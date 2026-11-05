@@ -199,6 +199,7 @@ type App struct {
 	// "copied in another app → OSC 52 read in a remote shell"
 	// returns current data, not just what xerotty itself copied.
 	lastClipboardPush string
+	lastClipboardGen  uint64 // input.ClipboardGeneration at the last mirror read
 	lastClipboardPoll time.Time
 
 	// guiMCP is the GUI's aggregating MCP server (one socket
@@ -531,7 +532,17 @@ func (a *App) pollClipboardForDaemons() {
 	if len(a.hubsByName()) == 0 {
 		return
 	}
-	text, err := input.ClipboardRead()
+	// Where the clipboard reports owner changes (Wayland
+	// data-control), don't transfer bytes unless something changed:
+	// each read is a pipe round trip with the owning app, on the
+	// render thread.
+	if gen, ok := input.ClipboardGeneration(); ok {
+		if gen == a.lastClipboardGen {
+			return
+		}
+		a.lastClipboardGen = gen
+	}
+	text, err := input.ClipboardReadQuick()
 	if err != nil || text == "" {
 		return
 	}
