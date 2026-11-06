@@ -1,13 +1,17 @@
 package daemonspawn
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 // TestRealStrategyPlacement runs the platform's first-choice strategy
@@ -26,7 +30,17 @@ func TestRealStrategyPlacement(t *testing.T) {
 	if !userManagerReachable() {
 		t.Skip("no systemd user manager here")
 	}
-	sock := filepath.Join(t.TempDir(), "p.sock")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(ctx, "systemd-run", "--user", "--scope", "true")
+	if output, err := probe.CombinedOutput(); err != nil {
+		t.Skipf("systemd user scope is not usable: %v (%s)", err, strings.TrimSpace(string(output)))
+	}
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	sock := filepath.Join(testutil.SockDir(t), "p.sock")
+	// SockDir redirects the runtime directory for ordinary socket tests;
+	// this placement test needs the real user manager's bus.
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	self := fakeDaemon(t)
 	var pid int
 	s := first
