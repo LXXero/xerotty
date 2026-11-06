@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 func strategies() []strategy {
@@ -24,22 +26,25 @@ func strategies() []strategy {
 // main PID whose death would make systemd kill the tab shells.
 // `--collect` unloads the scope once empty even after a failure.
 //
-// Only when lingering is enabled for the user. Without it logind stops
-// user@<uid>.service shortly after the user's last session ends
-// (UserStopDelaySec, 10 s by default), and that takes app.slice — the
-// daemon and every tab — with it. The old session placement survived
-// a logout precisely because the daemon kept its session alive in
-// "closing"; a scope must not trade that for polkit correctness. With
-// linger off the fork strategy keeps the old lifetime; the fix is
-// `loginctl enable-linger`, and the daemon log says so once.
+// Lifetime: a scope lives exactly as long as the user manager, and
+// logind stops user@<uid>.service shortly after the user's last
+// session ends (UserStopDelaySec, 10 s by default) unless lingering is
+// on. The old session placement survived a logout because the daemon
+// held its session open in "closing"; a scope must not quietly trade
+// that away. So the scope is used only when something will keep the
+// manager alive: lingering, or a console login (a local, non-remote
+// session of this user, the thing that stays up for weeks on a desktop
+// while SSH sessions come and go). With neither — a headless box
+// reached only over SSH — the fork strategy keeps the old lifetime and
+// the daemon log says why. Lingering remains the unconditional answer.
 var systemdScope = strategy{
 	name: "systemd user scope",
 	available: func() bool {
-		return userManagerReachable() && lingerEnabled()
+		return userManagerReachable() && (lingerEnabled() || consoleSessionAlive())
 	},
 	unavailableReason: func() string {
-		if userManagerReachable() && !lingerEnabled() {
-			return "systemd user manager found but lingering is off, so the daemon stays in this login session (enable with: loginctl enable-linger)"
+		if userManagerReachable() && !lingerEnabled() && !consoleSessionAlive() {
+			return "systemd user manager found, but neither lingering nor a console login would keep it alive after this session ends; daemon stays in this login session (loginctl enable-linger makes the scope unconditional)"
 		}
 		return ""
 	},
@@ -99,4 +104,74 @@ func lingerEnabled() bool {
 	}
 	_, err = os.Stat(filepath.Join(lingerDir, u.Username))
 	return err == nil
+}
+
+// runLoginctl runs loginctl and returns its stdout. A variable so
+// tests can feed canned sessions.
+var runLoginctl = func(args ...string) (string, error) {
+	out, err := exec.Command("loginctl", args...).Output()
+	return string(out), err
+}
+
+// sessionInfo is what the scope gate needs to know about one logind
+// session, from `loginctl show-session`.
+type sessionInfo struct {
+	class  string // "user", "manager", "greeter", "background", …
+	remote bool   // Remote=yes: ssh and friends
+	state  string // "active", "online", "closing"
+}
+
+// consoleSessionAlive reports whether this user has a local login
+// session that is not on its way out. Such a session keeps the user
+// manager — and so a scope — alive without lingering.
+func consoleSessionAlive() bool {
+	out, err := runLoginctl("show-user", strconv.Itoa(os.Getuid()), "-p", "Sessions")
+	if err != nil {
+		return false
+	}
+	var infos []sessionInfo
+	for _, id := range strings.Fields(strings.TrimPrefix(strings.TrimSpace(out), "Sessions=")) {
+		raw, err := runLoginctl("show-session", id, "-p", "Class", "-p", "Remote", "-p", "State")
+		if err != nil {
+			continue
+		}
+		infos = append(infos, parseSessionInfo(raw))
+	}
+	return anyConsoleSession(infos)
+}
+
+// parseSessionInfo reads the Key=Value lines of `loginctl show-session
+// -p Class -p Remote -p State`. Order is not fixed, so no positional
+// --value parsing.
+func parseSessionInfo(raw string) sessionInfo {
+	var si sessionInfo
+	for _, line := range strings.Split(raw, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "Class":
+			si.class = v
+		case "Remote":
+			si.remote = v == "yes"
+		case "State":
+			si.state = v
+		}
+	}
+	return si
+}
+
+// anyConsoleSession is the gate's rule: a real login (class user),
+// local, and still active or online. "closing" is a session already
+// torn down that lingering processes hold open — it will not outlive
+// them — and class manager is user@ itself, which is what we are
+// trying to keep alive, not evidence that something else will.
+func anyConsoleSession(infos []sessionInfo) bool {
+	for _, si := range infos {
+		if si.class == "user" && !si.remote && (si.state == "active" || si.state == "online") {
+			return true
+		}
+	}
+	return false
 }

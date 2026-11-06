@@ -70,25 +70,72 @@ func TestRealStrategyPlacement(t *testing.T) {
 	}
 }
 
-func TestSystemdScopeRequiresLinger(t *testing.T) {
+// fakeLoginctl answers show-user / show-session from a table of
+// sessions, in loginctl's Key=Value format.
+func fakeLoginctl(t *testing.T, sessions map[string]string) {
+	t.Helper()
+	old := runLoginctl
+	runLoginctl = func(args ...string) (string, error) {
+		switch args[0] {
+		case "show-user":
+			ids := make([]string, 0, len(sessions))
+			for id := range sessions {
+				ids = append(ids, id)
+			}
+			return "Sessions=" + strings.Join(ids, " ") + "\n", nil
+		case "show-session":
+			return sessions[args[1]], nil
+		}
+		t.Fatalf("unexpected loginctl %v", args)
+		return "", nil
+	}
+	t.Cleanup(func() { runLoginctl = old })
+}
+
+func TestSystemdScopeGate(t *testing.T) {
 	if !userManagerReachable() {
 		t.Skip("no systemd user manager here")
 	}
-	dir := t.TempDir()
-	old := lingerDir
-	lingerDir = dir
-	t.Cleanup(func() { lingerDir = old })
-	if systemdScope.available() {
-		t.Fatal("scope strategy available with no linger file; a logout would kill the daemon")
+	noLinger := t.TempDir()
+	oldDir := lingerDir
+	lingerDir = noLinger
+	t.Cleanup(func() { lingerDir = oldDir })
+
+	const ssh = "Remote=yes\nClass=user\nState=active\n"
+	const manager = "State=active\nRemote=no\nClass=manager\n"
+	const console = "Class=user\nState=active\nRemote=no\n" // property order varies: this one differs on purpose
+	const consoleClosing = "Remote=no\nState=closing\nClass=user\n"
+	const consoleOnline = "Remote=no\nState=online\nClass=user\n" // VT switched away, still a login
+
+	cases := []struct {
+		name     string
+		sessions map[string]string
+		linger   bool
+		want     bool
+	}{
+		{"ssh only, no linger: headless box reached over ssh", map[string]string{"7": ssh, "4": manager}, false, false},
+		{"closing console only: nothing will outlive the daemon", map[string]string{"3": consoleClosing, "7": ssh}, false, false},
+		{"console login up: manager stays while the user is logged in", map[string]string{"3": console, "4": manager, "7": ssh}, false, true},
+		{"console switched to another VT still counts", map[string]string{"3": consoleOnline}, false, true},
+		{"linger on makes the scope unconditional", map[string]string{"7": ssh}, true, true},
 	}
 	me, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, me.Username), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !systemdScope.available() {
-		t.Fatal("scope strategy unavailable although linger is enabled")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeLoginctl(t, tc.sessions)
+			lingerFile := filepath.Join(noLinger, me.Username)
+			os.Remove(lingerFile)
+			if tc.linger {
+				if err := os.WriteFile(lingerFile, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := systemdScope.available(); got != tc.want {
+				t.Fatalf("available=%v want %v (reason: %q)", got, tc.want, systemdScope.unavailableReason())
+			}
+		})
 	}
 }
