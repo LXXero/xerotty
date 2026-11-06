@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/testutil"
 )
 
 func TestDaemonEnvDropsSessionIdentityOnly(t *testing.T) {
@@ -81,7 +83,7 @@ s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(60
 }
 
 func TestEnsureListeningFallsThroughOnEarlyExit(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "d.sock")
+	sock := filepath.Join(testutil.SockDir(t), "d.sock")
 	self := fakeDaemon(t)
 	failing := strategy{
 		name:      "exits-at-once",
@@ -125,7 +127,7 @@ func TestEnsureListeningFallsThroughOnEarlyExit(t *testing.T) {
 }
 
 func TestEnsureListeningTimeoutAborts(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "never.sock")
+	sock := filepath.Join(testutil.SockDir(t), "never.sock")
 	var pid int
 	stuck := strategy{
 		name:      "stuck",
