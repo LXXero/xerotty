@@ -536,17 +536,21 @@ func (a *App) pollClipboardForDaemons() {
 	// data-control), don't transfer bytes unless something changed:
 	// each read is a pipe round trip with the owning app, on the
 	// render thread.
-	if gen, ok := input.ClipboardGeneration(); ok {
-		if gen == a.lastClipboardGen {
-			return
-		}
-		a.lastClipboardGen = gen
-	}
-	text, err := input.ClipboardReadQuick()
-	if err != nil || text == "" {
+	gen, haveGen := input.ClipboardGeneration()
+	if haveGen && gen == a.lastClipboardGen {
 		return
 	}
-	if text == a.lastClipboardPush {
+	text, err := input.ClipboardReadQuick()
+	if err != nil {
+		// Owner too slow for the quick read: leave the generation
+		// unrecorded so the next tick retries, instead of skipping
+		// this selection until the clipboard changes again.
+		return
+	}
+	if haveGen {
+		a.lastClipboardGen = gen
+	}
+	if text == "" || text == a.lastClipboardPush {
 		return
 	}
 	a.lastClipboardPush = text
