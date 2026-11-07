@@ -69,11 +69,37 @@ type outFrame struct {
 	body protocol.Msg
 }
 
+// inputFrame is one ordered PTY write decoded from the connection.
+type inputFrame struct {
+	tab   *Tab
+	bytes []byte
+	paste bool
+}
+
 // outQueueCap bounds the per-conn ordered send queue. Large enough to
 // absorb a normal burst (initial paint + a scrollback batch) without
 // back-pressuring a healthy client; a sustained-slow client fills it
 // and gets reaped by the heartbeat (layer 2).
 const outQueueCap = 256
+
+// Keep blocked PTY writes off the connection read loop without allowing
+// a client to pin unbounded memory while its foreground process is stalled.
+// inputQueueMaxBytes caps the bytes one connection may have queued for its
+// input worker; a frame past it closes the connection.
+const (
+	inputQueueCap      = 64
+	inputQueueMaxBytes = 32 << 20
+)
+
+// inputDrainWindow is how long the input worker of a closed connection
+// may go without writing a chunk to the PTY before its remaining input
+// is dropped. Accepted input still reaches a PTY whose reader keeps up;
+// a stalled one (a stopped foreground process) cannot hold the worker
+// and its queued buffers after the client is gone. Per-conn overridable
+// for tests.
+const inputDrainWindow = 5 * time.Second
+
+var errInputQueueFull = errors.New("daemon input queue full")
 
 const (
 	// defaultHeartbeatInterval is how often the daemon pings each client.
@@ -97,6 +123,9 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		outCh:      make(chan outFrame, outQueueCap),
 		coalesceCh: make(chan struct{}, 1),
 		outDone:    make(chan struct{}),
+		inputCh:    make(chan inputFrame, inputQueueCap),
+		inputStop:  make(chan struct{}),
+		drainAfter: inputDrainWindow,
 		dw:         &deadlineWriter{conn: conn, window: writeProgressWindow},
 	}
 	now := time.Now().UnixNano()
@@ -141,6 +170,8 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// From here the writer goroutine owns all conn writes.
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
+	inputDone := make(chan struct{})
+	go func() { c.inputLoop(); close(inputDone) }()
 	go c.heartbeatLoop()
 	c.runReadLoop()
 	// Read side ended (peer close / error / reap) — stop the writer and
@@ -148,6 +179,49 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// (The heartbeat goroutine also exits on outDone.)
 	c.shutdown()
 	<-writerDone
+	// The read loop closed inputCh on exit. Let the input worker finish
+	// the input it accepted, but stop it once the PTY stops taking bytes.
+	c.awaitInputWorker(inputDone)
+}
+
+// awaitInputWorker waits for the input worker to exit after the read
+// loop has closed inputCh. While the worker keeps writing to the PTY it
+// is left to finish; once it goes drainAfter without writing a chunk,
+// its input is cancelled: the blocked write is abandoned (see
+// terminal.WriteCancel), the queued frames are dropped and their bytes
+// released, and the worker exits.
+func (c *clientConn) awaitInputWorker(done <-chan struct{}) {
+	window := c.drainAfter
+	if window <= 0 {
+		window = inputDrainWindow
+	}
+	c.inputProgress.Store(time.Now().UnixNano())
+	ticker := time.NewTicker(window / 4)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			idle := time.Since(time.Unix(0, c.inputProgress.Load()))
+			if idle > window {
+				logf("client %q: PTY input stalled for %s after disconnect; dropping %d queued bytes",
+					c.clientID, idle.Round(time.Second), c.inputBytes.Load())
+				c.cancelInput()
+				<-done
+				return
+			}
+		}
+	}
+}
+
+// cancelInput stops the input worker's PTY writes. Idempotent.
+func (c *clientConn) cancelInput() {
+	c.inputStopOnce.Do(func() {
+		if c.inputStop != nil {
+			close(c.inputStop)
+		}
+	})
 }
 
 // heartbeatLoop probes the client periodically and reaps it only when
@@ -337,6 +411,15 @@ type clientConn struct {
 	coalesceCh chan struct{}
 	outDone    chan struct{}
 	dw         *deadlineWriter // conn wrapped with the layer-3 write deadline
+	inputCh    chan inputFrame
+	inputBytes atomic.Int64
+	// inputStop is closed by cancelInput to abandon the input worker's
+	// PTY writes; inputProgress is the UnixNano of its last written
+	// chunk; drainAfter is the idle window awaitInputWorker allows.
+	inputStop     chan struct{}
+	inputStopOnce sync.Once
+	inputProgress atomic.Int64
+	drainAfter    time.Duration
 
 	coalesceMu       sync.Mutex
 	pendingTopology  *protocol.TopologyChanged
@@ -554,6 +637,14 @@ func (c *clientConn) handshake() error {
 // closed by the peer or the daemon stops.
 func (c *clientConn) runReadLoop() {
 	defer c.stopAllSubs()
+	// The read loop is the only producer of inputCh. Closing it on exit
+	// (peer close, reap, or input queue overflow) lets the input worker
+	// write every frame already accepted and then stop.
+	defer func() {
+		if c.inputCh != nil {
+			close(c.inputCh)
+		}
+	}()
 	for {
 		t, body, err := c.reader.ReadFrame()
 		if err != nil {
@@ -564,6 +655,9 @@ func (c *clientConn) runReadLoop() {
 		}
 		if err := c.dispatch(t, body); err != nil {
 			logf("client %q dispatch %v: %v", c.clientID, t, err)
+			if errors.Is(err, errInputQueueFull) {
+				return
+			}
 			// continue — a bad command shouldn't kill the connection
 		}
 	}
@@ -656,7 +750,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		if _, err := msg.UnmarshalMsg(body); err != nil {
 			return err
 		}
-		return c.handleInput(msg.ID, msg.Bytes)
+		return c.enqueueInput(msg.ID, msg.Bytes, false)
 	case protocol.MsgInputPaste:
 		var msg protocol.InputPaste
 		if _, err := msg.UnmarshalMsg(body); err != nil {
@@ -688,7 +782,17 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		}
 		if c.session != nil {
 			if msg.Approve {
-				_, _, _ = c.session.ApproveProposal(int(msg.Index))
+				found, action, tab := c.session.takeProposal(int(msg.Index))
+				if found {
+					err := c.enqueueInputForTab(tab, action.Bytes, action.IsPaste)
+					if err != nil {
+						// Queue full: keep the approved action pending
+						// so another client can still approve it.
+						c.session.restoreProposal(int(msg.Index), action)
+					}
+					c.session.notifyProposals()
+					return err
+				}
 			} else {
 				c.session.DropProposal(int(msg.Index))
 			}
@@ -1089,6 +1193,80 @@ func (c *clientConn) handleInput(id uint32, b []byte) error {
 	return err
 }
 
+// enqueueInput resolves and records the input target on the read loop,
+// then hands the copied payload to the per-connection FIFO. Only that
+// worker calls the potentially blocking PTY write methods.
+func (c *clientConn) enqueueInput(id uint32, b []byte, paste bool) error {
+	if c.session == nil {
+		return nil
+	}
+	t := c.session.Tab(id)
+	if t == nil {
+		return nil
+	}
+	if len(b) > 0 && (paste || !looksLikeMouseInput(b)) {
+		c.noteSizeActivity(id)
+	}
+	return c.enqueueInputForTab(t, b, paste)
+}
+
+func (c *clientConn) enqueueInputForTab(t *Tab, b []byte, paste bool) error {
+	if t == nil || len(b) == 0 {
+		return nil
+	}
+	n := int64(len(b))
+	for {
+		pending := c.inputBytes.Load()
+		if pending+n > inputQueueMaxBytes {
+			return errInputQueueFull
+		}
+		if c.inputBytes.CompareAndSwap(pending, pending+n) {
+			break
+		}
+	}
+	frame := inputFrame{tab: t, bytes: append([]byte(nil), b...), paste: paste}
+	select {
+	case c.inputCh <- frame:
+		return nil
+	default:
+		c.inputBytes.Add(-n)
+		return errInputQueueFull
+	}
+}
+
+// inputLoop serializes PTY writes in wire order while allowing the
+// connection reader to keep handling heartbeat control frames. It runs
+// until the read loop closes inputCh, so frames the reader accepted
+// still reach the PTY after the connection closes, unless cancelInput
+// fires: then the write in progress is abandoned and every frame still
+// queued is dropped, releasing its bytes.
+func (c *clientConn) inputLoop() {
+	progress := func(int) { c.inputProgress.Store(time.Now().UnixNano()) }
+	for frame := range c.inputCh {
+		n := int64(len(frame.bytes))
+		if !c.inputCancelled() {
+			data := frame.bytes
+			if frame.paste {
+				data = frame.tab.Term.PasteBytes(string(frame.bytes))
+			}
+			_, err := frame.tab.Term.WriteCancel(c.inputStop, data, progress)
+			if err != nil && !errors.Is(err, terminal.ErrWriteCancelled) {
+				logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
+			}
+		}
+		c.inputBytes.Add(-n)
+	}
+}
+
+func (c *clientConn) inputCancelled() bool {
+	select {
+	case <-c.inputStop:
+		return true
+	default:
+		return false
+	}
+}
+
 // looksLikeMouseInput reports whether an input frame is a mouse report
 // — CSI M (X10) or CSI < (SGR/1006). In apps with mouse reporting on,
 // mouse events arrive here as PTY bytes indistinguishable from typing;
@@ -1140,19 +1318,7 @@ func (c *clientConn) noteSizeActivity(tabID uint32) {
 // a separate message type from InputBytes — only the daemon knows
 // whether the tab is in bracketed-paste mode at this moment.
 func (c *clientConn) handlePaste(id uint32, b []byte) error {
-	if c.session == nil {
-		return nil
-	}
-	t := c.session.Tab(id)
-	if t == nil {
-		return nil
-	}
-	// Pasting into a tab is working in it — claim the grid size too.
-	if len(b) > 0 {
-		c.noteSizeActivity(id)
-	}
-	t.Term.Paste(string(b))
-	return nil
+	return c.enqueueInput(id, b, true)
 }
 
 // handleImagePaste writes the image bytes to a daemon-side temp file
@@ -1289,8 +1455,7 @@ func (c *clientConn) writeImageAndType(tabID uint32, mime, filename string, data
 		})
 		return nil
 	}
-	t.Term.Paste(" " + f.Name() + " ")
-	return nil
+	return c.enqueueInputForTab(t, []byte(" "+f.Name()+" "), true)
 }
 
 // handleClipboardData records the client's clipboard contents on the
