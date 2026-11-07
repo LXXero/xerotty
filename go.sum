@@ -4,8 +4,8 @@ github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/LXXero/ultraviolet v0.0.0-20261030032615-75fc2429fd86 h1:n097IEYZOPl8sPKGuYa48T/0lHG4KkghEcs60wHLDYw=
 github.com/LXXero/ultraviolet v0.0.0-20261030032615-75fc2429fd86/go.mod h1:aJDVk+WOVM1K04rdc/71PMPoUGfjxjhvXfP3Pjz1Zio=
-github.com/LXXero/x/vt v0.0.0-20261030032614-9c399887f1b0 h1:hwUXIDVmLgXCDvs+Mwes9/SXlVOw6EvIlQK7pidqtqk=
-github.com/LXXero/x/vt v0.0.0-20261030032614-9c399887f1b0/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
+github.com/LXXero/x/vt v0.0.0-20261107142852-d3cef719d2a0 h1:7JerBsLpRctuvHrXSkBXRMRU5CaPeTv6QiW+f5ZxFIU=
+github.com/LXXero/x/vt v0.0.0-20261107142852-d3cef719d2a0/go.mod h1:u1LOIABor9JqY54oZdktK3TCRrgzP6tzHrDYx1nd3wY=
 github.com/charmbracelet/colorprofile v0.4.3 h1:QPa1IWkYI+AOB+fE+mg/5/4HRMZcaXex9t5KX76i20Q=
 github.com/charmbracelet/colorprofile v0.4.3/go.mod h1:/zT4BhpD5aGFpqQQqw7a+VtHCzu+zrQtt1zhMt9mR4Q=
 github.com/charmbracelet/x/ansi v0.11.9 h1:kIrqLBxtTVbLyyHO2Evoi93EjQo1mylWmpNEsfPxXAM=

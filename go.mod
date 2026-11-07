@@ -33,4 +33,4 @@ require (
 
 replace github.com/charmbracelet/ultraviolet => github.com/LXXero/ultraviolet v0.0.0-20261030032615-75fc2429fd86
 
-replace github.com/charmbracelet/x/vt => github.com/LXXero/x/vt v0.0.0-20261030032614-9c399887f1b0
+replace github.com/charmbracelet/x/vt => github.com/LXXero/x/vt v0.0.0-20261107142852-d3cef719d2a0
