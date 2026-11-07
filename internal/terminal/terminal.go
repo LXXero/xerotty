@@ -104,6 +104,11 @@ type Terminal struct {
 	closeOnce   sync.Once
 	done        chan struct{}
 
+	// writeSem serializes input writes to the PTY master (see
+	// writeSlot and WriteCancel). writeSemOnce creates it lazily.
+	writeSem     chan struct{}
+	writeSemOnce sync.Once
+
 	// readerDone closes when readPTY returns. It exists because closing
 	// done does NOT stop that goroutine promptly: the PTY master is a
 	// blocking fd (creack/pty hands it over that way), so ptmx.Close()
@@ -678,10 +683,13 @@ func (t *Terminal) CursorPosition() uv.Position  { return t.Emu.CursorPosition()
 // Write sends data to the PTY (keyboard input).
 func (t *Terminal) Write(p []byte) (int, error) {
 	if len(p) > 0 {
-		t.lastInputAt.Store(time.Now().UnixNano())
+		t.markInput()
 	}
-	return t.ptmx.Write(p)
+	return t.writePTY(p)
 }
+
+// markInput stamps the input activity clock.
+func (t *Terminal) markInput() { t.lastInputAt.Store(time.Now().UnixNano()) }
 
 // LastOutput / LastInput report the wall-clock time of the most recent
 // PTY output batch and the most recent input write. Zero time only if
@@ -1724,11 +1732,7 @@ func (t *Terminal) ForegroundProcessName() string {
 // Use this for all clipboard paste paths so editors/shells that opted
 // into bracketed paste cannot interpret pasted newlines as commands.
 func (t *Terminal) Paste(text string) {
-	if t.bracketedPaste.Load() {
-		_, _ = t.ptmx.WriteString("\x1b[200~" + text + "\x1b[201~")
-		return
-	}
-	_, _ = t.ptmx.WriteString(text)
+	_, _ = t.writePTY(t.PasteBytes(text))
 }
 
 // scrollbackCell holds serialized cell data for persistence.

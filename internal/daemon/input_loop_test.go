@@ -113,6 +113,8 @@ func startBlockedInputConn(t *testing.T, first []byte) *blockedInputConn {
 		outDone:    make(chan struct{}),
 		dw:         &deadlineWriter{conn: server, window: writeProgressWindow},
 		inputCh:    make(chan inputFrame, inputQueueCap),
+		inputStop:  make(chan struct{}),
+		drainAfter: inputDrainWindow,
 		session:    sess,
 	}
 	b := &blockedInputConn{
@@ -277,5 +279,96 @@ func TestProposalApprovalKeptWhenInputQueueFull(t *testing.T) {
 	pending := b.sess.PendingProposals()
 	if len(pending) != 1 || string(pending[0].Bytes) != "APPROVED" || pending[0].TabID != b.tab.ID {
 		t.Fatalf("pending proposals = %+v, want the approved action kept", pending)
+	}
+}
+
+// closeBlockedConn closes the client side the way a disconnect does:
+// the read loop exits (closing inputCh) and serveConn shuts the conn
+// down, then waits for the input worker with the given drain window.
+// It returns a channel closed when awaitInputWorker returns.
+func closeBlockedConn(t *testing.T, b *blockedInputConn, window time.Duration) <-chan struct{} {
+	t.Helper()
+	_ = b.peer.Close()
+	select {
+	case <-b.readDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("read loop did not stop when the client closed")
+	}
+	b.c.shutdown()
+	b.c.drainAfter = window
+	awaited := make(chan struct{})
+	go func() { b.c.awaitInputWorker(b.inputDone); close(awaited) }()
+	return awaited
+}
+
+// TestDisconnectCancelsStalledInput closes a client whose PTY write is
+// blocked on a stopped foreground process. Once the write makes no
+// progress for the drain window, the worker must exit and release every
+// queued byte while the process is STILL stopped, and the input queued
+// behind the blocked write must never reach the PTY.
+func TestDisconnectCancelsStalledInput(t *testing.T) {
+	first := bytes.Repeat([]byte("x"), 4<<20)
+	b := startBlockedInputConn(t, first)
+	for i := 0; i < 8; i++ {
+		writeInputFrame(t, b.peer, b.tab.ID, []byte(fmt.Sprintf("<q%d>", i)))
+	}
+	awaited := closeBlockedConn(t, b, 200*time.Millisecond)
+	select {
+	case <-awaited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveConn's wait for the input worker did not end while the PTY write was blocked")
+	}
+	select {
+	case <-b.inputDone:
+	default:
+		t.Fatal("awaitInputWorker returned before the input worker exited")
+	}
+	if n := b.c.inputBytes.Load(); n != 0 {
+		t.Fatalf("queued input bytes after cancel = %d, want 0", n)
+	}
+
+	// Let the abandoned in-kernel write finish, then check that nothing
+	// queued behind it was written.
+	b.resume(t)
+	var got []byte
+	deadline := time.Now().Add(3 * time.Second)
+	for prev := -1; time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		got, _ = os.ReadFile(b.output)
+		if len(got) == prev {
+			break
+		}
+		prev = len(got)
+	}
+	if bytes.Contains(got, []byte("<q")) {
+		t.Fatal("input queued behind the cancelled write reached the PTY")
+	}
+	if len(got) >= len(first) {
+		t.Fatalf("PTY got %d bytes, want the cancelled write cut short of %d", len(got), len(first))
+	}
+}
+
+// TestDisconnectDrainsInputWhilePTYKeepsUp closes a client while input
+// is still queued, and the PTY reader resumes inside the drain window.
+// Every accepted frame must reach the PTY in order before the worker
+// exits.
+func TestDisconnectDrainsInputWhilePTYKeepsUp(t *testing.T) {
+	first := bytes.Repeat([]byte("x"), 4<<20)
+	b := startBlockedInputConn(t, first)
+	want := append([]byte(nil), first...)
+	for i := 0; i < 8; i++ {
+		f := []byte(fmt.Sprintf("<q%d>", i))
+		writeInputFrame(t, b.peer, b.tab.ID, f)
+		want = append(want, f...)
+	}
+	awaited := closeBlockedConn(t, b, 2*time.Second)
+	b.resume(t)
+	select {
+	case <-awaited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("input worker did not exit after draining")
+	}
+	waitForPTYOutput(t, b.output, want)
+	if n := b.c.inputBytes.Load(); n != 0 {
+		t.Fatalf("queued input bytes after drain = %d, want 0", n)
 	}
 }

@@ -84,10 +84,20 @@ const outQueueCap = 256
 
 // Keep blocked PTY writes off the connection read loop without allowing
 // a client to pin unbounded memory while its foreground process is stalled.
+// inputQueueMaxBytes caps the bytes one connection may have queued for its
+// input worker; a frame past it closes the connection.
 const (
 	inputQueueCap      = 64
 	inputQueueMaxBytes = 32 << 20
 )
+
+// inputDrainWindow is how long the input worker of a closed connection
+// may go without writing a chunk to the PTY before its remaining input
+// is dropped. Accepted input still reaches a PTY whose reader keeps up;
+// a stalled one (a stopped foreground process) cannot hold the worker
+// and its queued buffers after the client is gone. Per-conn overridable
+// for tests.
+const inputDrainWindow = 5 * time.Second
 
 var errInputQueueFull = errors.New("daemon input queue full")
 
@@ -114,6 +124,8 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		coalesceCh: make(chan struct{}, 1),
 		outDone:    make(chan struct{}),
 		inputCh:    make(chan inputFrame, inputQueueCap),
+		inputStop:  make(chan struct{}),
+		drainAfter: inputDrainWindow,
 		dw:         &deadlineWriter{conn: conn, window: writeProgressWindow},
 	}
 	now := time.Now().UnixNano()
@@ -158,7 +170,8 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// From here the writer goroutine owns all conn writes.
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
-	go c.inputLoop()
+	inputDone := make(chan struct{})
+	go func() { c.inputLoop(); close(inputDone) }()
 	go c.heartbeatLoop()
 	c.runReadLoop()
 	// Read side ended (peer close / error / reap) — stop the writer and
@@ -166,6 +179,49 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// (The heartbeat goroutine also exits on outDone.)
 	c.shutdown()
 	<-writerDone
+	// The read loop closed inputCh on exit. Let the input worker finish
+	// the input it accepted, but stop it once the PTY stops taking bytes.
+	c.awaitInputWorker(inputDone)
+}
+
+// awaitInputWorker waits for the input worker to exit after the read
+// loop has closed inputCh. While the worker keeps writing to the PTY it
+// is left to finish; once it goes drainAfter without writing a chunk,
+// its input is cancelled: the blocked write is abandoned (see
+// terminal.WriteCancel), the queued frames are dropped and their bytes
+// released, and the worker exits.
+func (c *clientConn) awaitInputWorker(done <-chan struct{}) {
+	window := c.drainAfter
+	if window <= 0 {
+		window = inputDrainWindow
+	}
+	c.inputProgress.Store(time.Now().UnixNano())
+	ticker := time.NewTicker(window / 4)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			idle := time.Since(time.Unix(0, c.inputProgress.Load()))
+			if idle > window {
+				logf("client %q: PTY input stalled for %s after disconnect; dropping %d queued bytes",
+					c.clientID, idle.Round(time.Second), c.inputBytes.Load())
+				c.cancelInput()
+				<-done
+				return
+			}
+		}
+	}
+}
+
+// cancelInput stops the input worker's PTY writes. Idempotent.
+func (c *clientConn) cancelInput() {
+	c.inputStopOnce.Do(func() {
+		if c.inputStop != nil {
+			close(c.inputStop)
+		}
+	})
 }
 
 // heartbeatLoop probes the client periodically and reaps it only when
@@ -357,6 +413,13 @@ type clientConn struct {
 	dw         *deadlineWriter // conn wrapped with the layer-3 write deadline
 	inputCh    chan inputFrame
 	inputBytes atomic.Int64
+	// inputStop is closed by cancelInput to abandon the input worker's
+	// PTY writes; inputProgress is the UnixNano of its last written
+	// chunk; drainAfter is the idle window awaitInputWorker allows.
+	inputStop     chan struct{}
+	inputStopOnce sync.Once
+	inputProgress atomic.Int64
+	drainAfter    time.Duration
 
 	coalesceMu       sync.Mutex
 	pendingTopology  *protocol.TopologyChanged
@@ -1174,15 +1237,33 @@ func (c *clientConn) enqueueInputForTab(t *Tab, b []byte, paste bool) error {
 // inputLoop serializes PTY writes in wire order while allowing the
 // connection reader to keep handling heartbeat control frames. It runs
 // until the read loop closes inputCh, so frames the reader accepted
-// still reach the PTY after the connection closes.
+// still reach the PTY after the connection closes, unless cancelInput
+// fires: then the write in progress is abandoned and every frame still
+// queued is dropped, releasing its bytes.
 func (c *clientConn) inputLoop() {
+	progress := func(int) { c.inputProgress.Store(time.Now().UnixNano()) }
 	for frame := range c.inputCh {
-		if frame.paste {
-			frame.tab.Term.Paste(string(frame.bytes))
-		} else if _, err := frame.tab.Term.Write(frame.bytes); err != nil {
-			logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
+		n := int64(len(frame.bytes))
+		if !c.inputCancelled() {
+			data := frame.bytes
+			if frame.paste {
+				data = frame.tab.Term.PasteBytes(string(frame.bytes))
+			}
+			_, err := frame.tab.Term.WriteCancel(c.inputStop, data, progress)
+			if err != nil && !errors.Is(err, terminal.ErrWriteCancelled) {
+				logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
+			}
 		}
-		c.inputBytes.Add(-int64(len(frame.bytes)))
+		c.inputBytes.Add(-n)
+	}
+}
+
+func (c *clientConn) inputCancelled() bool {
+	select {
+	case <-c.inputStop:
+		return true
+	default:
+		return false
 	}
 }
 
