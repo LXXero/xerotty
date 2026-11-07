@@ -282,6 +282,30 @@ func TestProposalApprovalKeptWhenInputQueueFull(t *testing.T) {
 	}
 }
 
+func TestRestoreProposalKeepsQueueBoundedAndPreservesApproval(t *testing.T) {
+	s := &Session{}
+	for i := 0; i < proposedCap; i++ {
+		s.QueueProposedInput(1, []byte(fmt.Sprintf("proposal-%03d", i)))
+	}
+
+	found, approved, _ := s.takeProposal(0)
+	if !found || string(approved.Bytes) != "proposal-000" {
+		t.Fatalf("taken proposal = %q, found %v; want proposal-000", approved.Bytes, found)
+	}
+	// Another proposal takes the freed slot before the failed approval is
+	// restored, matching the race between proposal production and enqueue.
+	s.QueueProposedInput(1, []byte("new-proposal"))
+	s.restoreProposal(0, approved)
+
+	pending := s.PendingProposals()
+	if len(pending) != proposedCap {
+		t.Fatalf("pending proposals = %d, want bounded at %d", len(pending), proposedCap)
+	}
+	if string(pending[0].Bytes) != "proposal-000" {
+		t.Fatalf("first pending proposal = %q, want restored approval", pending[0].Bytes)
+	}
+}
+
 // closeBlockedConn closes the client side the way a disconnect does:
 // the read loop exits (closing inputCh) and serveConn shuts the conn
 // down, then waits for the input worker with the given drain window.

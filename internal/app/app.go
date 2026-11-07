@@ -198,9 +198,11 @@ type App struct {
 	// poll the OS clipboard on a slow timer and push on change so
 	// "copied in another app → OSC 52 read in a remote shell"
 	// returns current data, not just what xerotty itself copied.
-	lastClipboardPush string
-	lastClipboardGen  uint64 // input.ClipboardGeneration at the last mirror read
-	lastClipboardPoll time.Time
+	lastClipboardPush     string
+	lastClipboardGen      uint64 // last read or exhausted generation
+	lastClipboardPoll     time.Time
+	clipboardRetryGen     uint64
+	clipboardReadFailures uint8
 
 	// guiMCP is the GUI's aggregating MCP server (one socket
 	// covering every daemon hub). Started lazily the first time a
@@ -511,15 +513,25 @@ type remoteHubEntry struct {
 	reattachQueue []daemonWindowSnapshot
 }
 
+// clipboardReadFailureLimit keeps one stale Wayland offer from stalling
+// the render thread forever while preserving retries for transient misses.
+const clipboardReadFailureLimit = 3
+
 // pollClipboardForDaemons reads the OS clipboard at most once a
 // second and, when it changed since the last push, broadcasts it
-// to every daemon. Keeps the daemon-side session clipboard fresh
+// to every daemon. This keeps the daemon-side session clipboard fresh
 // enough that a remote PTY app's OSC 52 GET returns what's
 // actually on the user's clipboard — including text copied in a
 // different app — not just xerotty's own last copy. No-op when no
 // daemon hub is active. Called from the render loop; the time
 // gate keeps the SDL clipboard read off the per-frame hot path.
+// A failing Wayland offer gets three reads per generation before it
+// is skipped until the owner changes.
 func (a *App) pollClipboardForDaemons() {
+	a.pollClipboardForDaemonsWith(input.ClipboardGeneration, input.ClipboardReadQuick)
+}
+
+func (a *App) pollClipboardForDaemonsWith(generation func() (uint64, bool), readQuick func() (string, error)) {
 	now := time.Now()
 	if now.Sub(a.lastClipboardPoll) < time.Second {
 		return
@@ -536,19 +548,31 @@ func (a *App) pollClipboardForDaemons() {
 	// data-control), don't transfer bytes unless something changed:
 	// each read is a pipe round trip with the owning app, on the
 	// render thread.
-	gen, haveGen := input.ClipboardGeneration()
+	gen, haveGen := generation()
 	if haveGen && gen == a.lastClipboardGen {
 		return
 	}
-	text, err := input.ClipboardReadQuick()
+	if haveGen && gen != a.clipboardRetryGen {
+		a.clipboardRetryGen = gen
+		a.clipboardReadFailures = 0
+	}
+	text, err := readQuick()
 	if err != nil {
-		// Owner too slow for the quick read: leave the generation
-		// unrecorded so the next tick retries, instead of skipping
-		// this selection until the clipboard changes again.
+		// Give a slow owner a few chances in case this was transient.
+		// Then remember the generation so every render-loop tick does
+		// not wait another 300ms on the same failing selection.
+		if haveGen {
+			a.clipboardReadFailures++
+			if a.clipboardReadFailures >= clipboardReadFailureLimit {
+				a.lastClipboardGen = gen
+				a.clipboardReadFailures = 0
+			}
+		}
 		return
 	}
 	if haveGen {
 		a.lastClipboardGen = gen
+		a.clipboardReadFailures = 0
 	}
 	if text == "" || text == a.lastClipboardPush {
 		return
