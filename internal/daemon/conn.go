@@ -69,11 +69,27 @@ type outFrame struct {
 	body protocol.Msg
 }
 
+// inputFrame is one ordered PTY write decoded from the connection.
+type inputFrame struct {
+	tab   *Tab
+	bytes []byte
+	paste bool
+}
+
 // outQueueCap bounds the per-conn ordered send queue. Large enough to
 // absorb a normal burst (initial paint + a scrollback batch) without
 // back-pressuring a healthy client; a sustained-slow client fills it
 // and gets reaped by the heartbeat (layer 2).
 const outQueueCap = 256
+
+// Keep blocked PTY writes off the connection read loop without allowing
+// a client to pin unbounded memory while its foreground process is stalled.
+const (
+	inputQueueCap      = 64
+	inputQueueMaxBytes = 32 << 20
+)
+
+var errInputQueueFull = errors.New("daemon input queue full")
 
 const (
 	// defaultHeartbeatInterval is how often the daemon pings each client.
@@ -97,6 +113,7 @@ func (d *Daemon) serveConn(conn net.Conn) {
 		outCh:      make(chan outFrame, outQueueCap),
 		coalesceCh: make(chan struct{}, 1),
 		outDone:    make(chan struct{}),
+		inputCh:    make(chan inputFrame, inputQueueCap),
 		dw:         &deadlineWriter{conn: conn, window: writeProgressWindow},
 	}
 	now := time.Now().UnixNano()
@@ -141,6 +158,7 @@ func (d *Daemon) serveConn(conn net.Conn) {
 	// From here the writer goroutine owns all conn writes.
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
+	go c.inputLoop()
 	go c.heartbeatLoop()
 	c.runReadLoop()
 	// Read side ended (peer close / error / reap) — stop the writer and
@@ -337,6 +355,8 @@ type clientConn struct {
 	coalesceCh chan struct{}
 	outDone    chan struct{}
 	dw         *deadlineWriter // conn wrapped with the layer-3 write deadline
+	inputCh    chan inputFrame
+	inputBytes atomic.Int64
 
 	coalesceMu       sync.Mutex
 	pendingTopology  *protocol.TopologyChanged
@@ -564,6 +584,9 @@ func (c *clientConn) runReadLoop() {
 		}
 		if err := c.dispatch(t, body); err != nil {
 			logf("client %q dispatch %v: %v", c.clientID, t, err)
+			if errors.Is(err, errInputQueueFull) {
+				return
+			}
 			// continue — a bad command shouldn't kill the connection
 		}
 	}
@@ -656,7 +679,7 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		if _, err := msg.UnmarshalMsg(body); err != nil {
 			return err
 		}
-		return c.handleInput(msg.ID, msg.Bytes)
+		return c.enqueueInput(msg.ID, msg.Bytes, false)
 	case protocol.MsgInputPaste:
 		var msg protocol.InputPaste
 		if _, err := msg.UnmarshalMsg(body); err != nil {
@@ -688,7 +711,12 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 		}
 		if c.session != nil {
 			if msg.Approve {
-				_, _, _ = c.session.ApproveProposal(int(msg.Index))
+				found, action, tab := c.session.takeProposal(int(msg.Index))
+				if found {
+					err := c.enqueueInputForTab(tab, action.Bytes, action.IsPaste)
+					c.session.notifyProposals()
+					return err
+				}
 			} else {
 				c.session.DropProposal(int(msg.Index))
 			}
@@ -1089,6 +1117,78 @@ func (c *clientConn) handleInput(id uint32, b []byte) error {
 	return err
 }
 
+// enqueueInput resolves and records the input target on the read loop,
+// then hands the copied payload to the per-connection FIFO. Only that
+// worker calls the potentially blocking PTY write methods.
+func (c *clientConn) enqueueInput(id uint32, b []byte, paste bool) error {
+	if c.session == nil {
+		return nil
+	}
+	t := c.session.Tab(id)
+	if t == nil {
+		return nil
+	}
+	if len(b) > 0 && (paste || !looksLikeMouseInput(b)) {
+		c.noteSizeActivity(id)
+	}
+	return c.enqueueInputForTab(t, b, paste)
+}
+
+func (c *clientConn) enqueueInputForTab(t *Tab, b []byte, paste bool) error {
+	if t == nil || len(b) == 0 {
+		return nil
+	}
+	n := int64(len(b))
+	for {
+		pending := c.inputBytes.Load()
+		if pending+n > inputQueueMaxBytes {
+			return errInputQueueFull
+		}
+		if c.inputBytes.CompareAndSwap(pending, pending+n) {
+			break
+		}
+	}
+	frame := inputFrame{tab: t, bytes: append([]byte(nil), b...), paste: paste}
+	select {
+	case <-c.outDone:
+		c.inputBytes.Add(-n)
+		return nil
+	case c.inputCh <- frame:
+		return nil
+	default:
+		c.inputBytes.Add(-n)
+		return errInputQueueFull
+	}
+}
+
+// inputLoop serializes PTY writes in wire order while allowing the
+// connection reader to keep handling heartbeat control frames.
+func (c *clientConn) inputLoop() {
+	for {
+		select {
+		case <-c.outDone:
+			return
+		default:
+		}
+		select {
+		case <-c.outDone:
+			return
+		case frame := <-c.inputCh:
+			select {
+			case <-c.outDone:
+				return
+			default:
+			}
+			if frame.paste {
+				frame.tab.Term.Paste(string(frame.bytes))
+			} else if _, err := frame.tab.Term.Write(frame.bytes); err != nil {
+				logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
+			}
+			c.inputBytes.Add(-int64(len(frame.bytes)))
+		}
+	}
+}
+
 // looksLikeMouseInput reports whether an input frame is a mouse report
 // — CSI M (X10) or CSI < (SGR/1006). In apps with mouse reporting on,
 // mouse events arrive here as PTY bytes indistinguishable from typing;
@@ -1140,19 +1240,7 @@ func (c *clientConn) noteSizeActivity(tabID uint32) {
 // a separate message type from InputBytes — only the daemon knows
 // whether the tab is in bracketed-paste mode at this moment.
 func (c *clientConn) handlePaste(id uint32, b []byte) error {
-	if c.session == nil {
-		return nil
-	}
-	t := c.session.Tab(id)
-	if t == nil {
-		return nil
-	}
-	// Pasting into a tab is working in it — claim the grid size too.
-	if len(b) > 0 {
-		c.noteSizeActivity(id)
-	}
-	t.Term.Paste(string(b))
-	return nil
+	return c.enqueueInput(id, b, true)
 }
 
 // handleImagePaste writes the image bytes to a daemon-side temp file
@@ -1289,8 +1377,7 @@ func (c *clientConn) writeImageAndType(tabID uint32, mime, filename string, data
 		})
 		return nil
 	}
-	t.Term.Paste(" " + f.Name() + " ")
-	return nil
+	return c.enqueueInputForTab(t, []byte(" "+f.Name()+" "), true)
 }
 
 // handleClipboardData records the client's clipboard contents on the

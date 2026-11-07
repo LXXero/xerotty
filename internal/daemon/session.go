@@ -188,6 +188,28 @@ func (s *Session) trimProposedLocked() {
 // (false, _, nil) when idx is out of range. (true, _, err) when
 // the apply itself failed (e.g. tab closed between queue + drain).
 func (s *Session) ApproveProposal(idx int) (bool, ProposedAction, error) {
+	found, act, t := s.takeProposal(idx)
+	if !found {
+		return false, ProposedAction{}, nil
+	}
+	if t != nil {
+		if act.IsPaste {
+			t.Term.Paste(string(act.Bytes))
+		} else {
+			if _, err := t.Term.Write(act.Bytes); err != nil {
+				s.notifyProposals()
+				return true, act, err
+			}
+		}
+	}
+	s.notifyProposals()
+	return true, act, nil
+}
+
+// takeProposal removes one action and resolves its tab under the same
+// lock. The wire connection uses it to enqueue the write away from its
+// read loop; other callers keep the synchronous ApproveProposal API.
+func (s *Session) takeProposal(idx int) (bool, ProposedAction, *Tab) {
 	s.mu.Lock()
 	if idx < 0 || idx >= len(s.proposed) {
 		s.mu.Unlock()
@@ -195,21 +217,9 @@ func (s *Session) ApproveProposal(idx int) (bool, ProposedAction, error) {
 	}
 	act := s.proposed[idx]
 	s.proposed = append(s.proposed[:idx], s.proposed[idx+1:]...)
-	t, ok := s.tabs[act.TabID]
+	t := s.tabs[act.TabID]
 	s.mu.Unlock()
-	if !ok {
-		return true, act, nil // tab gone — drop silently
-	}
-	if act.IsPaste {
-		t.Term.Paste(string(act.Bytes))
-	} else {
-		if _, err := t.Term.Write(act.Bytes); err != nil {
-			s.notifyProposals()
-			return true, act, err
-		}
-	}
-	s.notifyProposals()
-	return true, act, nil
+	return true, act, t // tab gone — drop silently
 }
 
 // DropProposal removes the proposal at idx without applying. Used
