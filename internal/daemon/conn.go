@@ -574,6 +574,14 @@ func (c *clientConn) handshake() error {
 // closed by the peer or the daemon stops.
 func (c *clientConn) runReadLoop() {
 	defer c.stopAllSubs()
+	// The read loop is the only producer of inputCh. Closing it on exit
+	// (peer close, reap, or input queue overflow) lets the input worker
+	// write every frame already accepted and then stop.
+	defer func() {
+		if c.inputCh != nil {
+			close(c.inputCh)
+		}
+	}()
 	for {
 		t, body, err := c.reader.ReadFrame()
 		if err != nil {
@@ -714,6 +722,11 @@ func (c *clientConn) dispatch(t protocol.MsgType, body []byte) error {
 				found, action, tab := c.session.takeProposal(int(msg.Index))
 				if found {
 					err := c.enqueueInputForTab(tab, action.Bytes, action.IsPaste)
+					if err != nil {
+						// Queue full: keep the approved action pending
+						// so another client can still approve it.
+						c.session.restoreProposal(int(msg.Index), action)
+					}
 					c.session.notifyProposals()
 					return err
 				}
@@ -1150,9 +1163,6 @@ func (c *clientConn) enqueueInputForTab(t *Tab, b []byte, paste bool) error {
 	}
 	frame := inputFrame{tab: t, bytes: append([]byte(nil), b...), paste: paste}
 	select {
-	case <-c.outDone:
-		c.inputBytes.Add(-n)
-		return nil
 	case c.inputCh <- frame:
 		return nil
 	default:
@@ -1162,30 +1172,17 @@ func (c *clientConn) enqueueInputForTab(t *Tab, b []byte, paste bool) error {
 }
 
 // inputLoop serializes PTY writes in wire order while allowing the
-// connection reader to keep handling heartbeat control frames.
+// connection reader to keep handling heartbeat control frames. It runs
+// until the read loop closes inputCh, so frames the reader accepted
+// still reach the PTY after the connection closes.
 func (c *clientConn) inputLoop() {
-	for {
-		select {
-		case <-c.outDone:
-			return
-		default:
+	for frame := range c.inputCh {
+		if frame.paste {
+			frame.tab.Term.Paste(string(frame.bytes))
+		} else if _, err := frame.tab.Term.Write(frame.bytes); err != nil {
+			logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
 		}
-		select {
-		case <-c.outDone:
-			return
-		case frame := <-c.inputCh:
-			select {
-			case <-c.outDone:
-				return
-			default:
-			}
-			if frame.paste {
-				frame.tab.Term.Paste(string(frame.bytes))
-			} else if _, err := frame.tab.Term.Write(frame.bytes); err != nil {
-				logf("client %q input write to tab %d: %v", c.clientID, frame.tab.ID, err)
-			}
-			c.inputBytes.Add(-int64(len(frame.bytes)))
-		}
+		c.inputBytes.Add(-int64(len(frame.bytes)))
 	}
 }
 

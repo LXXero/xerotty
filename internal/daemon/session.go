@@ -222,6 +222,20 @@ func (s *Session) takeProposal(idx int) (bool, ProposedAction, *Tab) {
 	return true, act, t // tab gone — drop silently
 }
 
+// restoreProposal puts an action taken by takeProposal back at idx
+// (or at the end if the queue has shrunk since) when it could not be
+// applied, so an approval that fails to enqueue does not lose it.
+func (s *Session) restoreProposal(idx int, act ProposedAction) {
+	s.mu.Lock()
+	if idx < 0 || idx > len(s.proposed) {
+		idx = len(s.proposed)
+	}
+	s.proposed = append(s.proposed, ProposedAction{})
+	copy(s.proposed[idx+1:], s.proposed[idx:])
+	s.proposed[idx] = act
+	s.mu.Unlock()
+}
+
 // DropProposal removes the proposal at idx without applying. Used
 // by reject paths.
 func (s *Session) DropProposal(idx int) bool {

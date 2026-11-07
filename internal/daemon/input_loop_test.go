@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -57,27 +58,40 @@ func waitForStoppedProcess(t *testing.T, pid int) {
 	t.Fatalf("process %d did not stop", pid)
 }
 
-func writeInputFrame(t *testing.T, conn net.Conn, id uint32, payload []byte) {
+func writeTestFrame(t *testing.T, conn net.Conn, typ protocol.MsgType, msg protocol.Msg) {
 	t.Helper()
 	done := make(chan error, 1)
-	go func() {
-		done <- protocol.WriteFrame(conn, protocol.MsgInputBytes, &protocol.InputBytes{ID: id, Bytes: payload})
-	}()
+	go func() { done <- protocol.WriteFrame(conn, typ, msg) }()
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("write input frame: %v", err)
+			t.Fatalf("write %v frame: %v", typ, err)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("read loop did not consume the input frame")
+		t.Fatalf("read loop did not consume the %v frame", typ)
 	}
 }
 
-// TestReadLoopAnswersPingWhilePTYWriteBlocks reproduces a foreground
-// process that has stopped reading its PTY. Input frames stay ordered,
-// and the read loop must still answer a heartbeat while the first write
-// is stalled.
-func TestReadLoopAnswersPingWhilePTYWriteBlocks(t *testing.T) {
+func writeInputFrame(t *testing.T, conn net.Conn, id uint32, payload []byte) {
+	t.Helper()
+	writeTestFrame(t, conn, protocol.MsgInputBytes, &protocol.InputBytes{ID: id, Bytes: payload})
+}
+
+// blockedInputConn is a clientConn wired to a PTY tab whose reader
+// (cat) is stopped, with a large first frame stuck in the input worker.
+type blockedInputConn struct {
+	sess      *Session
+	tab       *Tab
+	c         *clientConn
+	peer      net.Conn
+	proc      *os.Process
+	output    string
+	readDone  chan struct{}
+	inputDone chan struct{}
+}
+
+func startBlockedInputConn(t *testing.T, first []byte) *blockedInputConn {
+	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
 	output := filepath.Join(t.TempDir(), "input")
 	script := `stty -echo -icanon; : > "$1"; exec cat > "$2"`
@@ -101,41 +115,41 @@ func TestReadLoopAnswersPingWhilePTYWriteBlocks(t *testing.T) {
 		inputCh:    make(chan inputFrame, inputQueueCap),
 		session:    sess,
 	}
-	inputDone := make(chan struct{})
-	go func() { c.inputLoop(); close(inputDone) }()
+	b := &blockedInputConn{
+		sess: sess, tab: tab, c: c, peer: peer, output: output,
+		readDone: make(chan struct{}), inputDone: make(chan struct{}),
+	}
+	go func() { c.inputLoop(); close(b.inputDone) }()
 	writerDone := make(chan struct{})
 	go func() { c.writeLoop(); close(writerDone) }()
-	readDone := make(chan struct{})
-	go func() { c.runReadLoop(); close(readDone) }()
+	go func() { c.runReadLoop(); close(b.readDone) }()
 	pid := tab.Term.ChildPID()
-	proc := &os.Process{Pid: pid}
+	b.proc = &os.Process{Pid: pid}
 	t.Cleanup(func() {
 		// Resume cat so it can drain any in-flight PTY write before the
 		// tab is closed. This also makes failure paths release the worker.
 		if pid > 0 {
-			_ = proc.Signal(syscall.SIGCONT)
+			_ = b.proc.Signal(syscall.SIGCONT)
 		}
 		_ = peer.Close()
 		c.shutdown()
-		sess.CloseTab(tab.ID)
 		for name, done := range map[string]<-chan struct{}{
-			"read loop": readDone, "writer": writerDone, "input worker": inputDone,
+			"read loop": b.readDone, "writer": writerDone, "input worker": b.inputDone,
 		} {
 			select {
 			case <-done:
-			case <-time.After(3 * time.Second):
+			case <-time.After(5 * time.Second):
 				t.Errorf("%s did not stop during cleanup", name)
 			}
 		}
+		sess.CloseTab(tab.ID)
 	})
 
-	if err := proc.Signal(syscall.SIGSTOP); err != nil {
+	if err := b.proc.Signal(syscall.SIGSTOP); err != nil {
 		t.Fatalf("stop PTY reader: %v", err)
 	}
 	waitForStoppedProcess(t, pid)
 
-	first := bytes.Repeat([]byte("x"), 4<<20)
-	second := []byte("ORDER_END")
 	before := tab.Term.LastInput()
 	writeInputFrame(t, peer, tab.ID, first)
 	deadline := time.Now().Add(2 * time.Second)
@@ -145,6 +159,39 @@ func TestReadLoopAnswersPingWhilePTYWriteBlocks(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	return b
+}
+
+func (b *blockedInputConn) resume(t *testing.T) {
+	t.Helper()
+	if err := b.proc.Signal(syscall.SIGCONT); err != nil {
+		t.Fatalf("resume PTY reader: %v", err)
+	}
+}
+
+func waitForPTYOutput(t *testing.T, path string, want []byte) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := os.ReadFile(path)
+		if err == nil && bytes.Equal(got, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got, _ := os.ReadFile(path)
+	t.Fatalf("PTY input mismatch: got %d bytes, want %d", len(got), len(want))
+}
+
+// TestReadLoopAnswersPingWhilePTYWriteBlocks reproduces a foreground
+// process that has stopped reading its PTY. Input frames stay ordered,
+// and the read loop must still answer a heartbeat while the first write
+// is stalled.
+func TestReadLoopAnswersPingWhilePTYWriteBlocks(t *testing.T) {
+	first := bytes.Repeat([]byte("x"), 4<<20)
+	b := startBlockedInputConn(t, first)
+	peer, tab := b.peer, b.tab
+	second := []byte("ORDER_END")
 	writeInputFrame(t, peer, tab.ID, second)
 
 	pongRead := make(chan struct {
@@ -179,18 +226,56 @@ func TestReadLoopAnswersPingWhilePTYWriteBlocks(t *testing.T) {
 		t.Fatal("no pong while the PTY input write was blocked")
 	}
 
-	if err := proc.Signal(syscall.SIGCONT); err != nil {
-		t.Fatalf("resume PTY reader: %v", err)
+	b.resume(t)
+	waitForPTYOutput(t, b.output, append(first, second...))
+}
+
+// TestInputQueueOverflowDrainsAcceptedFrames fills the input queue
+// behind a blocked PTY write. The overflowing frame closes the
+// connection, but every frame accepted before it still reaches the PTY
+// in order once the reader resumes, and the worker then exits.
+func TestInputQueueOverflowDrainsAcceptedFrames(t *testing.T) {
+	first := bytes.Repeat([]byte("x"), 4<<20)
+	b := startBlockedInputConn(t, first)
+	want := append([]byte(nil), first...)
+	for i := 0; i < inputQueueCap; i++ {
+		f := []byte(fmt.Sprintf("<%02d>", i))
+		writeInputFrame(t, b.peer, b.tab.ID, f)
+		want = append(want, f...)
 	}
-	want := append(first, second...)
-	deadline = time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		got, err := os.ReadFile(output)
-		if err == nil && bytes.Equal(got, want) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	writeInputFrame(t, b.peer, b.tab.ID, []byte("OVERFLOW"))
+	select {
+	case <-b.readDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("read loop did not stop on a full input queue")
 	}
-	got, _ := os.ReadFile(output)
-	t.Fatalf("PTY input did not preserve frame order: got %d bytes, want %d", len(got), len(want))
+	b.c.shutdown() // serveConn tears the connection down after the read loop
+	b.resume(t)
+	waitForPTYOutput(t, b.output, want)
+	select {
+	case <-b.inputDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("input worker did not exit after draining")
+	}
+}
+
+// TestProposalApprovalKeptWhenInputQueueFull approves a proposal while
+// the input queue is full. The approval cannot be queued, so the action
+// must stay pending instead of being lost.
+func TestProposalApprovalKeptWhenInputQueueFull(t *testing.T) {
+	b := startBlockedInputConn(t, bytes.Repeat([]byte("x"), 4<<20))
+	for i := 0; i < inputQueueCap; i++ {
+		writeInputFrame(t, b.peer, b.tab.ID, []byte("q"))
+	}
+	b.sess.QueueProposedInput(b.tab.ID, []byte("APPROVED"))
+	writeTestFrame(t, b.peer, protocol.MsgProposalResolve, &protocol.ProposalResolve{Index: 0, Approve: true})
+	select {
+	case <-b.readDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("read loop did not stop on a full input queue")
+	}
+	pending := b.sess.PendingProposals()
+	if len(pending) != 1 || string(pending[0].Bytes) != "APPROVED" || pending[0].TabID != b.tab.ID {
+		t.Fatalf("pending proposals = %+v, want the approved action kept", pending)
+	}
 }
