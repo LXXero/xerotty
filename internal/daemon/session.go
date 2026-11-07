@@ -233,6 +233,17 @@ func (s *Session) restoreProposal(idx int, act ProposedAction) {
 	s.proposed = append(s.proposed, ProposedAction{})
 	copy(s.proposed[idx+1:], s.proposed[idx:])
 	s.proposed[idx] = act
+	if len(s.proposed) > proposedCap {
+		// This approval was already removed from the bounded queue, so it
+		// takes priority over proposals that arrived while it was pending.
+		// Drop the newest other entry to keep the queue bounded without
+		// dropping the action the user approved.
+		drop := len(s.proposed) - 1
+		if drop == idx {
+			drop--
+		}
+		s.proposed = append(s.proposed[:drop], s.proposed[drop+1:]...)
+	}
 	s.mu.Unlock()
 }
 
