@@ -35,6 +35,7 @@ type Config struct {
 	Hosts      []RemoteHost      `toml:"hosts"`
 	Window     WindowConfig      `toml:"window"`
 	MCP        MCPConfig         `toml:"mcp"`
+	Memory     MemoryConfig      `toml:"memory"`
 }
 
 // MCPConfig controls the AI-agent control socket's trust model.
@@ -204,6 +205,17 @@ type MenuItem struct {
 	// e.g. "force_opaque" for the opacity toggle. Empty = never checked.
 	Checked string     `toml:"checked"`
 	Submenu []MenuItem `toml:"submenu"`
+}
+
+// MemoryConfig sets the Go GC memory limit (debug.SetMemoryLimit) of
+// each process, in MiB. Near the limit the collector runs more often
+// and returns freed memory to the system sooner; it is a soft limit,
+// not a cap, and a limit below the live heap only costs CPU. 0 means
+// no limit. The GOMEMLIMIT environment variable, when set, wins over
+// both settings.
+type MemoryConfig struct {
+	GUILimitMB    int `toml:"gui_limit_mb"`    // GUI process; 0 = no limit
+	DaemonLimitMB int `toml:"daemon_limit_mb"` // `xerotty serve`; 0 = no limit
 }
 
 // ScrollbackConfig controls scrollback buffer behavior.

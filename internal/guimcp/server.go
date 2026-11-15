@@ -38,11 +38,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/daemonsource"
+	"github.com/LXXero/xerotty/internal/memreport"
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
 	"github.com/LXXero/xerotty/internal/sockpath"
@@ -296,6 +298,8 @@ func (s *Server) handleToolsCall(ctx context.Context, req *rpcRequest) *rpcRespo
 		inner = s.listTabs(req.ID)
 	case "get_screen":
 		inner = s.getScreen(req.ID, p.Arguments)
+	case "get_heap_report":
+		inner = s.heapReport(req.ID, p.Arguments)
 	case "get_scrollback":
 		inner = s.getScrollback(req.ID, p.Arguments)
 	case "create_tab":
@@ -469,6 +473,28 @@ func (s *Server) getScrollback(id json.RawMessage, params json.RawMessage) *rpcR
 	return okResp(id, res)
 }
 
+// heapReport returns the GUI process's heap and resident size
+// (memreport.Report). With profile=true it also writes a pprof heap
+// profile into the GUI MCP socket's directory and returns its path;
+// the file name is chosen here, never by the caller.
+func (s *Server) heapReport(id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		GC      *bool `json:"gc"`
+		Profile bool  `json:"profile"`
+	}
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return rpcErrResp(id, -32602, "invalid params: "+err.Error())
+		}
+	}
+	gc := p.GC == nil || *p.GC
+	rep, err := memreport.ReportWithProfile("gui", filepath.Dir(s.socketPath), gc, p.Profile)
+	if err != nil {
+		return rpcErrResp(id, -32603, "heap profile: "+err.Error())
+	}
+	return okResp(id, rep)
+}
+
 func (s *Server) sendInput(id json.RawMessage, params json.RawMessage) *rpcResponse {
 	var p struct {
 		TabID string `json:"tab_id"`
@@ -603,6 +629,7 @@ func toolCatalog() []map[string]any {
 	return []map[string]any{
 		{"name": "list_tabs", "description": "List every tab across all daemons this GUI is connected to (local + remote hosts). IDs are namespaced \"<host>:<tabid>\". label is the text on the user's tab bar (assigned name, else program title, else foreground process; \"host: \" prefix for remote tabs; never includes a status glyph like ✳/◐ even where the tab bar shows one — read title for that) — refer to tabs by label when talking to the user, and use the id only in tool calls.", "inputSchema": obj(map[string]any{})},
 		{"name": "get_screen", "description": "Read a tab's visible viewport. tab_id is the namespaced ID from list_tabs. Always includes cursor {row, col, visible}. With styled=true, lines become runs of styled text ({t, fg, bg, a}) instead of flat strings — use it to tell presentation apart from content: faint (a:\"faint\") text at/after the cursor is typically a TUI's autocomplete ghost text the user has NOT typed; red fg usually means an error.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "styled": map[string]any{"type": "boolean", "description": "return styled runs instead of flat lines"}}, "tab_id")},
+		{"name": "get_heap_report", "description": "Return the GUI process's memory reading: live heap, heap in use, heap released, resident size and the GC memory limit in effect. gc (default true) runs a collection first. profile=true also writes a pprof heap profile next to the GUI MCP socket and returns its path.", "inputSchema": obj(map[string]any{"gc": map[string]any{"type": "boolean"}, "profile": map[string]any{"type": "boolean"}})},
 		{"name": "get_scrollback", "description": "Read a tab's scrollback history. from/to are absolute row indices (0 = oldest; total = current depth); defaults to the last 200 rows. The reply's from/to is the range actually served — truncated=true means rows past `to` could not be read (e.g. daemon unreachable). styled=true returns styled runs instead of flat lines (see get_screen).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}, "styled": map[string]any{"type": "boolean"}}, "tab_id")},
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. The string is used as-is after standard JSON unescaping — no extra escape layer. Prefer send_keys for keystrokes (enter, ctrl+c, arrows): it cannot be mis-escaped.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
 		{"name": "send_keys", "description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is sent first, completely literally (no escape interpretation), then each `keys` token is pressed in order. When the app turned on bracketed paste (DECSET 2004), the text is sent as a paste (wrapped in paste markers) so a trailing enter still submits; otherwise it is typed. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("literal text sent before the keys (pasted when the app enabled bracketed paste)"), "keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "key tokens pressed in order"}}, "tab_id")},

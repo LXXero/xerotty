@@ -275,6 +275,17 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 			},
 		},
 		{
+			"name":        "get_heap_report",
+			"description": "Return the daemon's memory reading: live heap, heap in use, heap released, resident size and the GC memory limit in effect. gc (default true) runs a collection first. profile=true (write mode) also writes a pprof heap profile next to the MCP socket and returns its path.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"gc":      map[string]any{"type": "boolean"},
+					"profile": map[string]any{"type": "boolean"},
+				},
+			},
+		},
+		{
 			"name":        "get_server_info",
 			"description": "Return the daemon's hostname + pid.",
 			"inputSchema": map[string]any{
@@ -346,6 +357,8 @@ func (c *agentConn) handleMCPToolsCall(req *rpcRequest) *rpcResponse {
 		resp = c.handleAgentClients(inner)
 	case "disconnect_client":
 		resp = c.handleAgentKick(inner)
+	case "get_heap_report":
+		resp = c.handleHeapReport(inner)
 	case "get_server_info":
 		resp = c.handleServerInfo(inner)
 	case "wait_for_events":

@@ -24,6 +24,7 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/launchipc"
+	"github.com/LXXero/xerotty/internal/memreport"
 	"github.com/LXXero/xerotty/internal/runner"
 )
 
@@ -212,6 +213,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "xerotty: config error: %v\n", err)
 		os.Exit(1)
 	}
+	// GC memory limit for the GUI process. GOMEMLIMIT wins; 0 = no limit.
+	memreport.ApplyLimit(cfg.Memory.GUILimitMB)
 
 	// launchGUI is defined in gui.go (full build) or
 	// gui_headless.go (-tags headless). The headless variant has

@@ -43,12 +43,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/daemon"
 	"github.com/LXXero/xerotty/internal/handoff"
+	"github.com/LXXero/xerotty/internal/memreport"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/screentext"
 	"github.com/LXXero/xerotty/internal/sendkeys"
@@ -262,6 +264,8 @@ func (c *agentConn) handle(req *rpcRequest) *rpcResponse {
 		return c.handleAgentKick(req)
 	case "server/info":
 		return c.handleServerInfo(req)
+	case "server/heap":
+		return c.handleHeapReport(req)
 	case "events/wait":
 		return c.handleEventsWait(req)
 
@@ -502,6 +506,34 @@ func (c *agentConn) handleAgentKick(req *rpcRequest) *rpcResponse {
 		return rpcErr(req.ID, -32004, "no attached client with that id", nil)
 	}
 	return ok(req.ID, map[string]int{"kicked": n})
+}
+
+// handleHeapReport returns the daemon's heap and resident size
+// (memreport.Report). With profile=true it also writes a pprof heap
+// profile into the MCP socket's directory and returns its path; the
+// file name is chosen here, never by the caller, and writing it needs
+// write mode.
+func (c *agentConn) handleHeapReport(req *rpcRequest) *rpcResponse {
+	var p struct {
+		GC      *bool `json:"gc"`
+		Profile bool  `json:"profile"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			return invalidParams(req.ID, err.Error())
+		}
+	}
+	if p.Profile {
+		if err := c.requireWrite(); err != nil {
+			return rpcErr(req.ID, -32099, err.Error(), nil)
+		}
+	}
+	gc := p.GC == nil || *p.GC
+	rep, err := memreport.ReportWithProfile("daemon", filepath.Dir(c.srv.socketPath), gc, p.Profile)
+	if err != nil {
+		return rpcErr(req.ID, -32603, "heap profile: "+err.Error(), nil)
+	}
+	return ok(req.ID, rep)
 }
 
 func (c *agentConn) handleServerInfo(req *rpcRequest) *rpcResponse {
