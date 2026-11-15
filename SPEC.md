@@ -907,27 +907,42 @@ daemon_limit_mb = 0      # `xerotty serve` (default: 0, no limit)
 ```
 
 What the GC percent costs and saves, measured with `tools/memmeasure`
-on a test daemon (10 tabs at 186 columns, 60,000 lines replayed into
-each at full speed; mean of 3 runs; "GUI" is the GUI's data path
-without the renderer). GC CPU time is the runtime's
-`/cpu/classes/gc/total:cpu-seconds`; its share is that divided by
-`/cpu/classes/total:cpu-seconds`, the runtime's total CPU time, which
-counts idle processors (about 16 times wall time on a 16-core
-machine). Go documents both as estimates, so the share is the
-fraction of all the CPU time the runtime had, not of the time it kept
-busy; compare it between rows, not with `top`. This is the worst case
-for the collector: the heap grows as fast as output can be read. A
-process whose tabs are idle spends almost no time collecting at any
-setting.
+on a test daemon: 10 tabs at 186 columns, each replaying the same
+recorded output, 11,986 scrollback rows per tab; mean of 3 runs; "GUI"
+is the GUI's data path without the renderer. The recorded output is
+the one the row trimming of protocol 11 was measured with (437 MiB
+GUI live heap), so these rows compare directly with that figure. To
+make the file again (591,291 bytes):
+
+```sh
+git log -p --color=always 2697e30 | head -n 12000 > recorded.txt
+```
+
+The test daemon's config had `[scrollback] lines = 10000`,
+`mode = "unlimited"`, and memmeasure ran with `-want-rows 11500`.
+
+GC CPU time is the runtime's `/cpu/classes/gc/total:cpu-seconds`; its
+share is that divided by `/cpu/classes/total:cpu-seconds`, the
+runtime's total CPU time, which counts idle processors (about 16
+times wall time on a 16-core machine). Go documents both as
+estimates, so the share is the fraction of all the CPU time the
+runtime had, not of the time it kept busy; compare it between rows,
+not with `top`. This is the worst case for the collector: the heap
+grows as fast as output can be read. A process whose tabs are idle
+spends almost no time collecting at any setting.
 
 | Setting | Process | Live heap | Resident | GC CPU | Share of total CPU |
 |---|---|---|---|---|---|
-| GC percent 100, no limit (Go's default) | GUI | 447 MiB | 900 MiB | 2.3 s | 2.2% |
-| | daemon | 383 MiB | 991 MiB | 4.5 s | 4.3% |
-| GC percent 50, no limit (the default) | GUI | 447 MiB | 672 MiB | 4.3 s | 4.0% |
-| | daemon | 388 MiB | 718 MiB | 9.3 s | 8.3% |
-| GC percent 100, limits 650 / 670 MiB | GUI | 447 MiB | 580 MiB | 6.4 s | 5.2% |
-| | daemon | 384 MiB | 594 MiB | 27.2 s | 21.3% |
+| GC percent 100, no limit (Go's default) | GUI | 437 MiB | 664 MiB | 0.6 s | 0.9% |
+| | daemon | 445 MiB | 1003 MiB | 1.1 s | 1.1% |
+| GC percent 50, no limit (the default) | GUI | 437 MiB | 615 MiB | 1.0 s | 1.2% |
+| | daemon | 446 MiB | 729 MiB | 1.9 s | 1.7% |
+| GC percent 100, limits 650 / 670 MiB | GUI | 437 MiB | 568 MiB | 0.8 s | 1.0% |
+| | daemon | 445 MiB | 552 MiB | 2.8 s | 2.4% |
+
+Resident size varied between runs more than the other columns: the
+daemon at GC percent 50 read 746, 812 and 629 MiB, and at GC percent
+100 read 984, 1026 and 999 MiB.
 
 Scrollback rows are held without their trailing blank cells in both
 processes and on the wire (protocol 11); a column past a row's end
