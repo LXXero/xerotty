@@ -403,6 +403,9 @@ type configDialog struct {
 	sbLines   int32
 	sbModeIdx int32
 	dragSpd   int32
+	// GC memory limits in MiB (0 = none); read at process start.
+	memGUI    int32
+	memDaemon int32
 	scrollSpd int32
 	scrollKey bool
 	scrollOut bool
@@ -762,6 +765,8 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.sbModeIdx = prefIndexOf(prefSBModes, cfg.Scrollback.Mode)
 	d.scrollSpd = int32(cfg.Scrollback.ScrollSpeed)
 	d.dragSpd = int32(cfg.Scrollback.DragScrollSpeed)
+	d.memGUI = int32(cfg.Memory.GUILimitMB)
+	d.memDaemon = int32(cfg.Memory.DaemonLimitMB)
 	if d.dragSpd <= 0 {
 		d.dragSpd = 25
 	}
@@ -906,6 +911,8 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	}
 	cfg.Scrollback.ScrollSpeed = int(d.scrollSpd)
 	cfg.Scrollback.DragScrollSpeed = int(d.dragSpd)
+	cfg.Memory.GUILimitMB = int(max(d.memGUI, 0))
+	cfg.Memory.DaemonLimitMB = int(max(d.memDaemon, 0))
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 
@@ -1722,6 +1729,18 @@ func (a *Window) renderPrefScrollback() {
 	imgui.Text("Drag Scroll Speed (rows per second)")
 	imgui.SetNextItemWidth(w)
 	imgui.SliderInt("##dragspd", &d.dragSpd, 5, 150)
+
+	// GC memory limits ([memory] in the config). Each process reads
+	// its own at start, so a change applies to the next launch (the
+	// daemon: its next start or `xerotty serve --upgrade`).
+	prefPairRow(w, "GUI memory limit (MiB, 0 = none)", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.InputInt("##memgui", &d.memGUI)
+	}, "Daemon memory limit (MiB, 0 = none)", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.InputInt("##memdaemon", &d.memDaemon)
+	})
+	imgui.TextDisabled("Go GC soft limits; applied when each process starts. GOMEMLIMIT overrides them.")
 
 	// Lines is only meaningful in "memory" mode — under "unlimited"
 	// the buffer grows without bound, so the number wouldn't do

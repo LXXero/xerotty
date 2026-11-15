@@ -226,3 +226,24 @@ func rgbColor(rgb uint32) color.Color {
 		A: 0xff,
 	}
 }
+
+// IsBlank reports whether c is a blank cell by the rule the vt
+// scrollback applies when it stores a row (Scrollback.Push): an empty
+// or space cell with default style and no link. A cell with a
+// background colour or any other style is not blank.
+func IsBlank(c *uv.Cell) bool {
+	if *c == uv.EmptyCell || *c == (uv.Cell{}) {
+		return true
+	}
+	return c.IsZero() || c.Equal(&uv.EmptyCell)
+}
+
+// TrimmedLen returns the length of row without its trailing blank
+// cells (IsBlank). Readers treat a column past that length as blank.
+func TrimmedLen(row []uv.Cell) int {
+	n := len(row)
+	for n > 0 && IsBlank(&row[n-1]) {
+		n--
+	}
+	return n
+}

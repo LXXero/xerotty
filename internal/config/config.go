@@ -405,8 +405,23 @@ func Default() Config {
 			DefaultMode:     "observe",
 			AllowModeChange: true,
 		},
+		Memory: MemoryConfig{
+			GUILimitMB:    DefaultGUIMemoryLimitMB,
+			DaemonLimitMB: 0,
+		},
 	}
 }
+
+// DefaultGUIMemoryLimitMB is about 1.5 times the GUI data path's live
+// heap measured after scrollback rows were trimmed (437 MiB: 10 tabs,
+// 186 columns, each tab's 8,000-row window full; tools/memmeasure).
+// Live heap grows by roughly 44 MiB per further tab with a full
+// window, so a GUI with many more full tabs should raise it or set 0:
+// a limit below the live heap only makes the collector run more.
+//
+// The daemon has no default limit: its live heap also holds per-tab
+// parser and screen buffers, and the value is left to the user.
+const DefaultGUIMemoryLimitMB = 650
 
 // EnvConfigDir is the environment variable that relocates the whole
 // config directory (config.toml plus themes/). It exists because

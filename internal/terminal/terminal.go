@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/LXXero/xerotty/internal/cellconv"
 	"github.com/LXXero/xerotty/internal/config"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
@@ -838,6 +840,20 @@ func (t *Terminal) viewportLocked() [][]uv.Cell {
 // the actual scrollback length. row indices are absolute (0 =
 // oldest); ScrollbackCellAt handles the disk + in-memory split.
 func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
+	return t.snapshotScrollback(from, to, false)
+}
+
+// SnapshotScrollbackRangeTrimmed is SnapshotScrollbackRange with each
+// row at its stored length: trailing blank cells (cellconv.IsBlank)
+// are left off, so a row is as long as its last non-blank cell and an
+// empty line is a zero-length row. Rows are still clipped to the
+// current width. It builds each row in one reused buffer, so a range
+// costs the trimmed cells and not rows x width.
+func (t *Terminal) SnapshotScrollbackRangeTrimmed(from, to int) [][]uv.Cell {
+	return t.snapshotScrollback(from, to, true)
+}
+
+func (t *Terminal) snapshotScrollback(from, to int, trim bool) [][]uv.Cell {
 	t.publishMu.Lock()
 	defer t.publishMu.Unlock()
 	sbLen := t.ScrollbackLen()
@@ -853,8 +869,18 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 	cols := t.Emu.Width()
 	disk, _, memStart, _ := t.scrollbackLayout()
 	out := make([][]uv.Cell, 0, to-from)
+	var scratch []uv.Cell
+	if trim {
+		scratch = make([]uv.Cell, cols)
+	}
 	for r := from; r < to; r++ {
-		row := make([]uv.Cell, cols)
+		var row []uv.Cell
+		if trim {
+			row = scratch
+			clear(row)
+		} else {
+			row = make([]uv.Cell, cols)
+		}
 		if disk != nil && r < memStart {
 			// ONE disk read+decode for the whole line. The per-cell
 			// path (ScrollbackCellAt per column) re-read and re-decoded
@@ -872,6 +898,9 @@ func (t *Terminal) SnapshotScrollbackRange(from, to int) [][]uv.Cell {
 					row[col] = *c
 				}
 			}
+		}
+		if trim {
+			row = slices.Clone(row[:cellconv.TrimmedLen(row)])
 		}
 		out = append(out, row)
 	}

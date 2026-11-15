@@ -299,7 +299,10 @@ func (u *upgrader) serving() bool {
 	}()
 	select {
 	case err := <-done:
-		return err == nil
+		// A daemon that refuses only this build's protocol version
+		// (it speaks the previous one) did answer the handshake.
+		var refused *clientproto.VersionRefusedError
+		return err == nil || (errors.As(err, &refused) && refused.Retryable())
 	case <-time.After(3 * time.Second):
 		return false
 	}
@@ -495,13 +498,33 @@ func (u *upgrader) holdConn() (<-chan struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	hello := make(chan error, 1)
-	go func() {
+	type helloResult struct {
+		conn net.Conn
+		err  error
+	}
+	hello := make(chan helloResult, 1)
+	go func(conn net.Conn) {
 		_, err := clientproto.Wrap(conn).Hello("serve-upgrade-watch")
-		hello <- err
-	}()
+		// The daemon being upgraded may speak the previous protocol
+		// version: it refuses this build's Hello and closes. Reconnect
+		// and speak its version, or the handoff cannot be watched and
+		// the upgrade falls back to killing the child.
+		var refused *clientproto.VersionRefusedError
+		if errors.As(err, &refused) && refused.Retryable() {
+			conn.Close()
+			c2, derr := net.DialTimeout("unix", u.sock, time.Second)
+			if derr != nil {
+				hello <- helloResult{conn, derr}
+				return
+			}
+			conn = c2
+			_, err = clientproto.Wrap(conn).HelloVersion("serve-upgrade-watch", refused.Server)
+		}
+		hello <- helloResult{conn, err}
+	}(conn)
 	select {
-	case err = <-hello:
+	case r := <-hello:
+		conn, err = r.conn, r.err
 	case <-time.After(3 * time.Second):
 		err = errors.New("handshake timed out")
 	}

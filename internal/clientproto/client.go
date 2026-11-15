@@ -14,6 +14,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"regexp"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -154,6 +156,9 @@ type Client struct {
 	// the conn) so Close, a writer error, the heartbeat reaper, and the
 	// read loop can all call it without double-closing.
 	closeOnce sync.Once
+
+	// version is the protocol version the handshake completed with.
+	version atomic.Uint32
 
 	// Heartbeat liveness (Phase 10 layer 4d). The heartbeat goroutine
 	// (started by Run) arms pingPending each tick; the writer flushes the
@@ -420,8 +425,36 @@ func (c *Client) shutdown() {
 // Hello performs the protocol handshake. Must be called before any
 // other Send*. Blocks until the server's HelloAck arrives.
 func (c *Client) Hello(clientID string) (*protocol.HelloAck, error) {
+	return c.HelloVersion(clientID, protocol.ProtocolVersion)
+}
+
+// VersionRefusedError is returned by Hello when the daemon refused the
+// handshake and said which protocol version it speaks.
+type VersionRefusedError struct {
+	Server uint16 // the version the daemon speaks
+	Msg    string
+}
+
+func (e *VersionRefusedError) Error() string { return e.Msg }
+
+// Retryable reports whether this build can still talk to that daemon
+// by reconnecting and speaking its version (HelloVersion).
+func (e *VersionRefusedError) Retryable() bool {
+	return e.Server >= protocol.MinProtocolVersion && e.Server < protocol.ProtocolVersion
+}
+
+var daemonSpeaksRe = regexp.MustCompile(`daemon speaks (\d+)`)
+
+// Version returns the protocol version this connection completed its
+// handshake with (0 before Hello).
+func (c *Client) Version() uint16 { return uint16(c.version.Load()) }
+
+// HelloVersion is Hello speaking an older protocol version, for a
+// daemon that refused the current one (VersionRefusedError.Retryable).
+// A refused daemon closes the connection, so it needs a fresh Client.
+func (c *Client) HelloVersion(clientID string, version uint16) (*protocol.HelloAck, error) {
 	if err := c.send(protocol.MsgHello, &protocol.Hello{
-		Version:  protocol.ProtocolVersion,
+		Version:  version,
 		ClientID: clientID,
 	}); err != nil {
 		return nil, err
@@ -453,7 +486,13 @@ func (c *Client) Hello(clientID string) (*protocol.HelloAck, error) {
 		// replace the daemon process already holding the socket.
 		var e protocol.Error
 		if _, err := e.UnmarshalMsg(body); err == nil && e.Message != "" {
-			return nil, fmt.Errorf("%s — update xerotty on the host, then run `xerotty serve --upgrade` there (sessions survive)", e.Message)
+			msg := fmt.Sprintf("%s — update xerotty on the host, then run `xerotty serve --upgrade` there (sessions survive)", e.Message)
+			if m := daemonSpeaksRe.FindStringSubmatch(e.Message); m != nil {
+				if v, perr := strconv.ParseUint(m[1], 10, 16); perr == nil {
+					return nil, &VersionRefusedError{Server: uint16(v), Msg: msg}
+				}
+			}
+			return nil, errors.New(msg)
 		}
 		return nil, fmt.Errorf("server refused handshake")
 	}
@@ -464,6 +503,7 @@ func (c *Client) Hello(clientID string) (*protocol.HelloAck, error) {
 	if _, err := ack.UnmarshalMsg(body); err != nil {
 		return nil, fmt.Errorf("unmarshal HelloAck: %w", err)
 	}
+	c.version.Store(uint32(version))
 	return &ack, nil
 }
 

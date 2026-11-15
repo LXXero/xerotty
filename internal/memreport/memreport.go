@@ -63,6 +63,7 @@ func ApplyLimit(limitMB int) (int64, string) {
 		debug.SetMemoryLimit(int64(limitMB) << 20)
 		limitSource = "config"
 	} else {
+		debug.SetMemoryLimit(noLimit)
 		limitSource = "none"
 	}
 	return currentLimit(), limitSource

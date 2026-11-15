@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -77,13 +78,7 @@ func (p *mcpProbe) screen(tabID uint32) (string, error) {
 // upgrade time — which is expected and fine.
 func attachWireClient(t *testing.T, sock string) (cleanup func(), instanceID string) {
 	t.Helper()
-	cli, err := clientproto.Dial(sock)
-	if err != nil {
-		t.Fatalf("wire dial: %v", err)
-	}
-	if _, err := cli.Hello("upgrade-e2e"); err != nil {
-		t.Fatalf("wire hello: %v", err)
-	}
+	cli := dialHello(t, sock, "upgrade-e2e")
 	go cli.Run()
 	if err := cli.Attach("", true); err != nil {
 		t.Fatalf("wire attach: %v", err)
@@ -112,4 +107,32 @@ func attachWireClient(t *testing.T, sock string) (cleanup func(), instanceID str
 		}
 	}()
 	return func() { cli.Close() }, instanceID
+}
+
+// dialHello dials sock and completes the handshake. A daemon built
+// from an older commit (the old pairs these tests upgrade from) may
+// speak the previous protocol version and refuse the first Hello; the
+// helper then reconnects and speaks that version, as the GUI does.
+func dialHello(t *testing.T, sock, id string) *clientproto.Client {
+	t.Helper()
+	cli, err := clientproto.Dial(sock)
+	if err != nil {
+		t.Fatalf("wire dial: %v", err)
+	}
+	_, err = cli.Hello(id)
+	if err == nil {
+		return cli
+	}
+	_ = cli.Close()
+	var refused *clientproto.VersionRefusedError
+	if !errors.As(err, &refused) || !refused.Retryable() {
+		t.Fatalf("wire hello: %v", err)
+	}
+	if cli, err = clientproto.Dial(sock); err != nil {
+		t.Fatalf("wire redial: %v", err)
+	}
+	if _, err := cli.HelloVersion(id, refused.Server); err != nil {
+		t.Fatalf("wire hello v%d: %v", refused.Server, err)
+	}
+	return cli
 }

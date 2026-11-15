@@ -884,7 +884,20 @@ lines = 10000           # number of lines to keep (default: 10000)
                          # -1 = unlimited (disk-backed when memory exceeds threshold)
 scroll_on_keystroke = true   # snap to bottom when user types (default: true)
 scroll_on_output = false     # snap to bottom on new output (default: false)
+
+[memory]
+# Go GC soft memory limits in MiB, one per process, read at start.
+# Near the limit the collector runs more often and returns freed
+# memory to the system sooner. 0 = no limit. The GOMEMLIMIT
+# environment variable overrides both. Do not set a limit below the
+# process's live heap (see get_heap_report on either MCP socket).
+gui_limit_mb = 650       # GUI process (default: 650)
+daemon_limit_mb = 0      # `xerotty serve` (default: 0, no limit)
 ```
+
+Scrollback rows are held without their trailing blank cells in both
+processes and on the wire (protocol 11); a column past a row's end
+reads as blank.
 
 #### Data Model
 
