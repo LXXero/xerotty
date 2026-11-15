@@ -55,9 +55,13 @@ type Report struct {
 	// GCCPUSeconds is the CPU time the collector has used since the
 	// process started (runtime/metrics /cpu/classes/gc/total:cpu-seconds,
 	// an estimate the runtime updates at each collection).
-	// ProcessCPUSeconds is the process's user plus system CPU time
-	// from getrusage (0 where that is not available), and GCCPUShare
-	// is GCCPUSeconds / ProcessCPUSeconds.
+	// ProcessCPUSeconds is the runtime's total CPU time
+	// (/cpu/classes/total:cpu-seconds), which includes idle
+	// processors, so it grows with GOMAXPROCS times wall time. It is
+	// the same kind of estimate as GCCPUSeconds, so GCCPUShare =
+	// GCCPUSeconds / ProcessCPUSeconds is a comparable ratio: the
+	// share of all CPU time the process's Go runtime had, not of the
+	// time it kept busy.
 	GCCPUSeconds      float64 `json:"gc_cpu_seconds"`
 	ProcessCPUSeconds float64 `json:"process_cpu_seconds"`
 	GCCPUShare        float64 `json:"gc_cpu_share"`
@@ -151,6 +155,7 @@ func apply(limitMB, gcPercent int) Settings {
 const (
 	metricGCPercent = "/gc/gogc:percent"
 	metricGCCPU     = "/cpu/classes/gc/total:cpu-seconds"
+	metricTotalCPU  = "/cpu/classes/total:cpu-seconds"
 )
 
 func currentGCPercent() int64 {
@@ -166,14 +171,18 @@ func currentGCPercent() int64 {
 	return int64(v)
 }
 
-// gcCPUSeconds reads the collector's CPU time from runtime/metrics.
-func gcCPUSeconds() float64 {
-	s := []metrics.Sample{{Name: metricGCCPU}}
+// gcCPUSeconds reads the collector's CPU time and the runtime's total
+// CPU time from runtime/metrics.
+func gcCPUSeconds() (gc, total float64) {
+	s := []metrics.Sample{{Name: metricGCCPU}, {Name: metricTotalCPU}}
 	metrics.Read(s)
-	if s[0].Value.Kind() != metrics.KindFloat64 {
-		return 0
+	if s[0].Value.Kind() == metrics.KindFloat64 {
+		gc = s[0].Value.Float64()
 	}
-	return s[0].Value.Float64()
+	if s[1].Value.Kind() == metrics.KindFloat64 {
+		total = s[1].Value.Float64()
+	}
+	return gc, total
 }
 
 func currentLimit() int64 {
@@ -196,7 +205,7 @@ func Read(role string, gc bool) Report {
 	if src == "none" && os.Getenv("GOMEMLIMIT") != "" {
 		src = "GOMEMLIMIT"
 	}
-	gcCPU, procCPU := gcCPUSeconds(), processCPUSeconds()
+	gcCPU, procCPU := gcCPUSeconds()
 	share := 0.0
 	if procCPU > 0 {
 		share = gcCPU / procCPU
