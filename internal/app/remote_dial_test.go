@@ -40,7 +40,7 @@ func localDialer(a *App, sockPath string) remoteDialFunc {
 		if err != nil {
 			return nil, nil, err
 		}
-		return a.finishRemoteDial(name, cli, cancel)
+		return a.finishRemoteDial(name, cli, cancel, protocol.ProtocolVersion)
 	}
 }
 
@@ -168,7 +168,7 @@ func TestRemoteDialCancelClosesLateConnection(t *testing.T) {
 		if err != nil {
 			return nil, nil, err
 		}
-		cli, att, err := a.finishRemoteDial(name, cli, nil)
+		cli, att, err := a.finishRemoteDial(name, cli, nil, protocol.ProtocolVersion)
 		if err == nil {
 			late <- cli
 		}

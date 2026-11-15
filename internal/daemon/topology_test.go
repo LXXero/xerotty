@@ -455,7 +455,7 @@ func TestHandshakeRejectsVersionSkew(t *testing.T) {
 
 	// Speak a version the daemon doesn't.
 	if err := protocol.WriteFrame(conn, protocol.MsgHello, &protocol.Hello{
-		Version:  protocol.ProtocolVersion - 1,
+		Version:  protocol.MinProtocolVersion - 1,
 		ClientID: "skewed",
 	}); err != nil {
 		t.Fatalf("write hello: %v", err)

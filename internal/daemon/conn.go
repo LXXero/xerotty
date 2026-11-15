@@ -458,8 +458,12 @@ type clientConn struct {
 	attachedSent atomic.Bool
 	pingNonce    atomic.Uint64
 
-	clientID string    // from Hello
-	joined   time.Time // when this conn was accepted
+	clientID string // from Hello
+	// peerVersion is the protocol version the client said in Hello,
+	// within [MinProtocolVersion, ProtocolVersion]. Written once in
+	// handshake, before any other goroutine of this connection runs.
+	peerVersion uint16
+	joined      time.Time // when this conn was accepted
 
 	session *Session // nil until Attach succeeds; only the read loop touches it
 
@@ -599,6 +603,16 @@ type tabSub struct {
 	sentLastIn     time.Time
 }
 
+// scrollbackRows snapshots rows [from, to) in the form this client's
+// protocol version takes: at stored length (no trailing blank cells)
+// from ShortRowsVersion on, padded to the grid width before it.
+func (c *clientConn) scrollbackRows(t *Tab, from, to int) [][]uv.Cell {
+	if c.peerVersion >= protocol.ShortRowsVersion {
+		return t.Term.SnapshotScrollbackRangeTrimmed(from, to)
+	}
+	return t.Term.SnapshotScrollbackRange(from, to)
+}
+
 func (c *clientConn) handshake() error {
 	t, body, err := c.reader.ReadFrame()
 	if err != nil {
@@ -611,9 +625,10 @@ func (c *clientConn) handshake() error {
 	if _, err := hello.UnmarshalMsg(body); err != nil {
 		return fmt.Errorf("unmarshal hello: %w", err)
 	}
-	if hello.Version != protocol.ProtocolVersion {
-		// Send an Error and bail. Phase 0 doesn't try to negotiate
-		// older versions. Synchronous — the async writer isn't running
+	if hello.Version < protocol.MinProtocolVersion || hello.Version > protocol.ProtocolVersion {
+		// Send an Error and bail. Versions inside [MinProtocolVersion,
+		// ProtocolVersion] are served as the client's own version (see
+		// peerVersion); anything else is refused. Synchronous — the async writer isn't running
 		// yet, and we're about to return anyway.
 		_ = c.writeFrameRaw(protocol.MsgError, &protocol.Error{
 			Code:    1,
@@ -625,6 +640,7 @@ func (c *clientConn) handshake() error {
 	// Record this connection's claimed client ID on the daemon so
 	// other clients / MCP agents can see who's attached.
 	c.clientID = hello.ClientID
+	c.peerVersion = hello.Version
 	c.daemon.registerClient(c)
 	return c.writeFrameRaw(protocol.MsgHelloAck, &protocol.HelloAck{
 		ServerVersion: protocol.ProtocolVersion,
@@ -1889,7 +1905,7 @@ func (c *clientConn) sendScrollbackRange(t *Tab, from, count int, reqID uint64) 
 	if count > scrollbackRangeMax {
 		count = scrollbackRangeMax
 	}
-	uvRows := t.Term.SnapshotScrollbackRange(from, from+count)
+	uvRows := c.scrollbackRows(t, from, from+count)
 	c.send(protocol.MsgScrollbackRange, &protocol.ScrollbackRange{
 		ID:    t.ID,
 		From:  uint32(from),
@@ -1997,7 +2013,7 @@ func (c *clientConn) sendNewScrollback(t *Tab, sub *tabSub) {
 	// rows can't shift mid-iteration. (Even in unlimited+disk mode
 	// the disk evict-from-memory step happens under publishMu, so
 	// here we get a coherent view.)
-	uvRows := t.Term.SnapshotScrollbackRange(last, end)
+	uvRows := c.scrollbackRows(t, last, end)
 	if len(uvRows) == 0 {
 		return
 	}

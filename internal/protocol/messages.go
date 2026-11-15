@@ -66,7 +66,26 @@ package protocol
 //       TabState grew Name (additive), but the new client→server
 //       message errors a v9 daemon's read loop, so the handshake
 //       gate must force the version pair.
-const ProtocolVersion uint16 = 10
+//  11 — scrollback rows are sent at their stored length: trailing
+//       blank cells (empty or space, default style, no link — the rule
+//       the vt scrollback uses when it stores a row) are left off
+//       ScrollbackAppend and ScrollbackRange rows, and a reader treats
+//       a column past a row's end as blank. No message changed shape,
+//       so this is the first version negotiated instead of gated: an
+//       11 daemon accepts a version-10 Hello and sends that client
+//       full-width rows as before, and an 11 client refused by a
+//       version-10 daemon reconnects speaking 10 and trims the rows
+//       itself (MinProtocolVersion).
+const ProtocolVersion uint16 = 11
+
+// MinProtocolVersion is the oldest peer version this build still
+// talks to. Versions in [MinProtocolVersion, ProtocolVersion] differ
+// only in ways the newer side can adapt to per connection.
+const MinProtocolVersion uint16 = 10
+
+// ShortRowsVersion is the first version whose clients take scrollback
+// rows without trailing blank cells.
+const ShortRowsVersion uint16 = 11
 
 // MsgType discriminates frame bodies. The codec writes a single
 // MsgType byte right after the length prefix, then the msgpack-

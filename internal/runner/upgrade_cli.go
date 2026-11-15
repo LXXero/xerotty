@@ -299,7 +299,10 @@ func (u *upgrader) serving() bool {
 	}()
 	select {
 	case err := <-done:
-		return err == nil
+		// A daemon that refuses only this build's protocol version
+		// (it speaks the previous one) did answer the handshake.
+		var refused *clientproto.VersionRefusedError
+		return err == nil || (errors.As(err, &refused) && refused.Retryable())
 	case <-time.After(3 * time.Second):
 		return false
 	}
@@ -495,20 +498,45 @@ func (u *upgrader) holdConn() (<-chan struct{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	hello := make(chan error, 1)
-	go func() {
-		_, err := clientproto.Wrap(conn).Hello("serve-upgrade-watch")
-		hello <- err
-	}()
-	select {
-	case err = <-hello:
-	case <-time.After(3 * time.Second):
-		err = errors.New("handshake timed out")
+	type helloResult struct {
+		conn net.Conn
+		err  error
 	}
+	hello := make(chan helloResult, 1)
+	// One absolute deadline covers both the first handshake and the
+	// fallback redial, so the goroutine always ends by itself and the
+	// connection it hands back (original or replacement) is the one that
+	// gets closed on failure.
+	deadline := time.Now().Add(3 * time.Second)
+	_ = conn.SetDeadline(deadline)
+	go func(conn net.Conn) {
+		_, err := clientproto.Wrap(conn).Hello("serve-upgrade-watch")
+		// The daemon being upgraded may speak the previous protocol
+		// version: it refuses this build's Hello and closes. Reconnect
+		// and speak its version, or the handoff cannot be watched and
+		// the upgrade falls back to killing the child.
+		var refused *clientproto.VersionRefusedError
+		if errors.As(err, &refused) && refused.Retryable() {
+			conn.Close()
+			d := net.Dialer{Deadline: deadline}
+			c2, derr := d.Dial("unix", u.sock)
+			if derr != nil {
+				hello <- helloResult{conn, derr}
+				return
+			}
+			conn = c2
+			_ = conn.SetDeadline(deadline)
+			_, err = clientproto.Wrap(conn).HelloVersion("serve-upgrade-watch", refused.Server)
+		}
+		hello <- helloResult{conn, err}
+	}(conn)
+	r := <-hello
+	conn, err = r.conn, r.err
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	dropped := make(chan struct{})
 	go func() {
 		defer close(dropped)

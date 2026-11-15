@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/testutil"
 )
 
@@ -242,14 +241,8 @@ func (f *upgradeFixture) sameSession(marker string) {
 // exit leaves a tab open that eats every keystroke.
 func (f *upgradeFixture) shellExitCloses() {
 	f.t.Helper()
-	cli, err := clientproto.Dial(f.sock)
-	if err != nil {
-		f.t.Fatalf("wire dial: %v", err)
-	}
+	cli := dialHello(f.t, f.sock, "upgrade-e2e-exit")
 	defer cli.Close()
-	if _, err := cli.Hello("upgrade-e2e-exit"); err != nil {
-		f.t.Fatalf("wire hello: %v", err)
-	}
 	go cli.Run()
 	if err := cli.Attach("", false); err != nil {
 		f.t.Fatalf("wire attach: %v", err)

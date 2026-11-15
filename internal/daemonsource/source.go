@@ -945,10 +945,26 @@ var (
 	scrollbackFetchSpan = 4000
 )
 
-// uvRowsFromProto converts wire rows to cell rows.
+// uvRowsFromProto converts wire rows to cell rows, each stored
+// without its trailing blank cells (cellconv.IsBlank, the rule the
+// daemon's own scrollback uses). A daemon speaking protocol 11 already
+// sends rows that way; rows from a version-10 daemon arrive padded to
+// the grid width and are trimmed here. Every reader of these rows
+// treats a column past a row's end as blank.
 func uvRowsFromProto(in [][]protocol.Cell) [][]uv.Cell {
 	out := make([][]uv.Cell, len(in))
 	for r, row := range in {
+		// Find the stored length on the wire cells first, so a padded
+		// row costs no allocation for its blank tail.
+		n := len(row)
+		for n > 0 {
+			c := uvCellFromProto(row[n-1])
+			if !cellconv.IsBlank(&c) {
+				break
+			}
+			n--
+		}
+		row = row[:n]
 		uvRow := make([]uv.Cell, len(row))
 		for i, c := range row {
 			uvRow[i] = uvCellFromProto(c)

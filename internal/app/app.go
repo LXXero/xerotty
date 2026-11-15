@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"image/png"
@@ -1131,13 +1132,24 @@ func (a *App) dialRemoteDaemon(name string, host config.RemoteHost, cancel <-cha
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
 	}
-	return a.finishRemoteDial(name, cli, cancel)
+	c, att, err := a.finishRemoteDial(name, cli, cancel, protocol.ProtocolVersion)
+	// A daemon one protocol version behind refuses the Hello and closes
+	// the connection: dial again and speak its version.
+	var refused *clientproto.VersionRefusedError
+	if errors.As(err, &refused) && refused.Retryable() {
+		cli, derr := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
+		if derr != nil {
+			return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, derr)
+		}
+		return a.finishRemoteDial(name, cli, cancel, refused.Server)
+	}
+	return c, att, err
 }
 
 // finishRemoteDial runs the handshake on a freshly dialed client.
 // Split from dialRemoteDaemon so a test can hand it a client that
 // reached a daemon without ssh.
-func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-chan struct{}, version uint16) (*clientproto.Client, *protocol.Attached, error) {
 	// settled stops the cancel watcher once the client is handed to
 	// the caller; a cancel that lands after that is the caller's to
 	// apply (pollRemoteDials closes a connection it no longer wants).
@@ -1150,7 +1162,7 @@ func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-ch
 		case <-settled:
 		}
 	}()
-	if _, err := cli.Hello("xerotty-gui:" + name); err != nil {
+	if _, err := cli.HelloVersion("xerotty-gui:"+name, version); err != nil {
 		_ = cli.Close()
 		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
 	}
@@ -1352,7 +1364,19 @@ func (a *App) dialLocalDaemon() (*clientproto.Client, *protocol.Attached, error)
 	}
 	if _, err := cli.Hello("xerotty-gui"); err != nil {
 		_ = cli.Close()
-		return nil, nil, fmt.Errorf("hello: %w", err)
+		// A daemon one protocol version behind refuses the Hello and
+		// closes the connection: dial again and speak its version.
+		var refused *clientproto.VersionRefusedError
+		if !errors.As(err, &refused) || !refused.Retryable() {
+			return nil, nil, fmt.Errorf("hello: %w", err)
+		}
+		if cli, err = daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket); err != nil {
+			return nil, nil, err
+		}
+		if _, err := cli.HelloVersion("xerotty-gui", refused.Server); err != nil {
+			_ = cli.Close()
+			return nil, nil, fmt.Errorf("hello: %w", err)
+		}
 	}
 	go cli.Run()
 	if err := cli.Attach("", false); err != nil {
