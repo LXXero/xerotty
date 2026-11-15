@@ -207,15 +207,28 @@ type MenuItem struct {
 	Submenu []MenuItem `toml:"submenu"`
 }
 
-// MemoryConfig sets the Go GC memory limit (debug.SetMemoryLimit) of
-// each process, in MiB. Near the limit the collector runs more often
-// and returns freed memory to the system sooner; it is a soft limit,
-// not a cap, and a limit below the live heap only costs CPU. 0 means
-// no limit. The GOMEMLIMIT environment variable, when set, wins over
-// both settings.
+// MemoryConfig holds each process's Go garbage collector settings,
+// read when the process starts.
+//
+// The GC percent (debug.SetGCPercent) is how far the heap may grow
+// past the live heap before the next collection: at 100, Go's own
+// default, the heap reaches about twice the live heap; at 50 about
+// 1.5 times, for more collector CPU time. It scales with the live
+// heap, so it keeps working as scrollback grows. 0 or a negative value
+// is not accepted and DefaultGCPercent is used. The GOGC environment
+// variable, when set, wins over both settings.
+//
+// The memory limit (debug.SetMemoryLimit), in MiB, is optional and off
+// (0) by default. It is a soft limit, not a cap: once the live heap
+// grows past it the collector runs constantly, which costs CPU and
+// frees nothing, so set one only with room above the process's live
+// heap (get_heap_report). The GOMEMLIMIT environment variable, when
+// set, wins over both settings.
 type MemoryConfig struct {
-	GUILimitMB    int `toml:"gui_limit_mb"`    // GUI process; 0 = no limit
-	DaemonLimitMB int `toml:"daemon_limit_mb"` // `xerotty serve`; 0 = no limit
+	GUIGCPercent    int `toml:"gui_gc_percent"`    // GUI process
+	DaemonGCPercent int `toml:"daemon_gc_percent"` // `xerotty serve`
+	GUILimitMB      int `toml:"gui_limit_mb"`      // GUI process; 0 = no limit
+	DaemonLimitMB   int `toml:"daemon_limit_mb"`   // `xerotty serve`; 0 = no limit
 }
 
 // ScrollbackConfig controls scrollback buffer behavior.
@@ -406,22 +419,20 @@ func Default() Config {
 			AllowModeChange: true,
 		},
 		Memory: MemoryConfig{
-			GUILimitMB:    DefaultGUIMemoryLimitMB,
-			DaemonLimitMB: 0,
+			GUIGCPercent:    DefaultGCPercent,
+			DaemonGCPercent: DefaultGCPercent,
+			GUILimitMB:      0,
+			DaemonLimitMB:   0,
 		},
 	}
 }
 
-// DefaultGUIMemoryLimitMB is about 1.5 times the GUI data path's live
-// heap measured after scrollback rows were trimmed (437 MiB: 10 tabs,
-// 186 columns, each tab's 8,000-row window full; tools/memmeasure).
-// Live heap grows by roughly 44 MiB per further tab with a full
-// window, so a GUI with many more full tabs should raise it or set 0:
-// a limit below the live heap only makes the collector run more.
-//
-// The daemon has no default limit: its live heap also holds per-tab
-// parser and screen buffers, and the value is left to the user.
-const DefaultGUIMemoryLimitMB = 650
+// DefaultGCPercent is the GC percent both processes use unless the
+// config or GOGC says otherwise. Measured with tools/memmeasure (10
+// tabs, 186 columns, each tab's window full), it lowers resident size
+// against Go's default of 100 for more collector CPU time; the figures
+// are in SPEC.md under [memory].
+const DefaultGCPercent = 50
 
 // EnvConfigDir is the environment variable that relocates the whole
 // config directory (config.toml plus themes/). It exists because

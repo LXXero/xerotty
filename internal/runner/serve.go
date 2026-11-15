@@ -16,9 +16,9 @@ import (
 
 	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemon"
-	"github.com/LXXero/xerotty/internal/memreport"
 	"github.com/LXXero/xerotty/internal/handoff"
 	"github.com/LXXero/xerotty/internal/mcp"
+	"github.com/LXXero/xerotty/internal/memreport"
 	"github.com/LXXero/xerotty/internal/protocol"
 	"github.com/LXXero/xerotty/internal/sockpath"
 	"github.com/LXXero/xerotty/internal/supervise"
@@ -138,11 +138,14 @@ func Serve(args []string) int {
 		return runSupervisor(socketPath, mcpSocketPath, noMCP, resumeFile)
 	}
 
-	// GC memory limit for the daemon proper (the supervisor above
-	// holds no scrollback). GOMEMLIMIT wins; 0 = no limit.
-	if lim, src := memreport.ApplyLimit(cfg.Memory.DaemonLimitMB); lim > 0 {
-		log.Printf("xerotty serve: GC memory limit %d MiB (%s)", lim>>20, src)
+	// GC percent and optional memory limit for the daemon proper (the
+	// supervisor above holds no scrollback). GOGC and GOMEMLIMIT win
+	// when set.
+	ms := memreport.ApplyDaemon(cfg.Memory)
+	if ms.GCPercentSource == "default" {
+		log.Printf("xerotty serve: [memory] daemon_gc_percent = %d is not valid; using %d", cfg.Memory.DaemonGCPercent, ms.GCPercent)
 	}
+	log.Printf("xerotty serve: %s", ms)
 
 	d := daemon.New(&cfg, socketPath)
 
