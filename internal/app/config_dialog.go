@@ -403,9 +403,12 @@ type configDialog struct {
 	sbLines   int32
 	sbModeIdx int32
 	dragSpd   int32
-	// GC memory limits in MiB (0 = none); read at process start.
+	// GC memory limits in MiB (0 = none) and GC percents; read at
+	// process start.
 	memGUI    int32
 	memDaemon int32
+	gcGUI     int32
+	gcDaemon  int32
 	scrollSpd int32
 	scrollKey bool
 	scrollOut bool
@@ -767,6 +770,8 @@ func (d *configDialog) loadFrom(cfg *config.Config) {
 	d.dragSpd = int32(cfg.Scrollback.DragScrollSpeed)
 	d.memGUI = int32(cfg.Memory.GUILimitMB)
 	d.memDaemon = int32(cfg.Memory.DaemonLimitMB)
+	d.gcGUI = int32(cfg.Memory.GUIGCPercent)
+	d.gcDaemon = int32(cfg.Memory.DaemonGCPercent)
 	if d.dragSpd <= 0 {
 		d.dragSpd = 25
 	}
@@ -913,6 +918,8 @@ func (d *configDialog) applyTo(cfg *config.Config) {
 	cfg.Scrollback.DragScrollSpeed = int(d.dragSpd)
 	cfg.Memory.GUILimitMB = int(max(d.memGUI, 0))
 	cfg.Memory.DaemonLimitMB = int(max(d.memDaemon, 0))
+	cfg.Memory.GUIGCPercent = prefGCPercent(d.gcGUI)
+	cfg.Memory.DaemonGCPercent = prefGCPercent(d.gcDaemon)
 	cfg.Scrollback.ScrollOnKeystroke = d.scrollKey
 	cfg.Scrollback.ScrollOnOutput = d.scrollOut
 
@@ -1730,9 +1737,18 @@ func (a *Window) renderPrefScrollback() {
 	imgui.SetNextItemWidth(w)
 	imgui.SliderInt("##dragspd", &d.dragSpd, 5, 150)
 
-	// GC memory limits ([memory] in the config). Each process reads
-	// its own at start, so a change applies to the next launch (the
-	// daemon: its next start or `xerotty serve --upgrade`).
+	// Garbage collector settings ([memory] in the config). Each
+	// process reads its own at start, so a change applies to the next
+	// launch (the daemon: its next start or `xerotty serve --upgrade`).
+	prefPairRow(w, "GUI GC percent", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.InputInt("##gcgui", &d.gcGUI)
+	}, "Daemon GC percent", func() {
+		imgui.SetNextItemWidth(w)
+		imgui.InputInt("##gcdaemon", &d.gcDaemon)
+	})
+	imgui.TextDisabled("Heap growth allowed before each collection. Lower uses less memory and more CPU.")
+	imgui.TextDisabled("Go's own default is 100; 0 or less is replaced by 50. GOGC overrides both.")
 	prefPairRow(w, "GUI memory limit (MiB, 0 = none)", func() {
 		imgui.SetNextItemWidth(w)
 		imgui.InputInt("##memgui", &d.memGUI)
@@ -1740,7 +1756,7 @@ func (a *Window) renderPrefScrollback() {
 		imgui.SetNextItemWidth(w)
 		imgui.InputInt("##memdaemon", &d.memDaemon)
 	})
-	imgui.TextDisabled("Go GC soft limits; applied when each process starts. GOMEMLIMIT overrides them.")
+	imgui.TextDisabled("Optional Go GC soft limits. A limit below the live heap only costs CPU. GOMEMLIMIT overrides them.")
 
 	// Lines is only meaningful in "memory" mode — under "unlimited"
 	// the buffer grows without bound, so the number wouldn't do
@@ -2968,4 +2984,13 @@ func (a *Window) renderPrefWindow() {
 	imgui.InputTextWithHint("##wintitle", "xerotty", &d.winTitle, 0, nil)
 
 	imgui.Checkbox("Start Fullscreen", &d.winFS)
+}
+
+// prefGCPercent is the GC percent the dialog saves: a value of 0 or
+// less is not a valid setting and becomes the default.
+func prefGCPercent(v int32) int {
+	if v <= 0 {
+		return config.DefaultGCPercent
+	}
+	return int(v)
 }

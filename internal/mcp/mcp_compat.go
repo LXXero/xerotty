@@ -276,7 +276,7 @@ func (c *agentConn) handleMCPToolsList(req *rpcRequest) *rpcResponse {
 		},
 		{
 			"name":        "get_heap_report",
-			"description": "Return the daemon's memory reading: live heap, heap in use, heap released, resident size and the GC memory limit in effect. gc (default true) runs a collection first. profile=true (write mode) also writes a pprof heap profile next to the MCP socket and returns its path.",
+			"description": "Return the daemon's memory reading: live heap, heap in use, heap released, resident size, the GC percent and memory limit in effect, and the collector's CPU time (seconds, and as a share of the runtime's total CPU time, /cpu/classes/total:cpu-seconds, which counts idle processors). gc (default true) runs a collection first. profile=true (write mode) also writes a pprof heap profile next to the MCP socket and returns its path.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

@@ -213,8 +213,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "xerotty: config error: %v\n", err)
 		os.Exit(1)
 	}
-	// GC memory limit for the GUI process. GOMEMLIMIT wins; 0 = no limit.
-	memreport.ApplyLimit(cfg.Memory.GUILimitMB)
+	// GC percent and optional memory limit for the GUI process
+	// ([memory]). GOGC and GOMEMLIMIT win when set.
+	if s := memreport.ApplyGUI(cfg.Memory); s.GCPercentSource == "default" {
+		fmt.Fprintf(os.Stderr, "xerotty: [memory] gui_gc_percent = %d is not valid; using %d\n", cfg.Memory.GUIGCPercent, s.GCPercent)
+	}
 
 	// launchGUI is defined in gui.go (full build) or
 	// gui_headless.go (-tags headless). The headless variant has

@@ -113,7 +113,7 @@ Per-daemon adds trust management + extras on top of those:
 `create_tab` (same name semantics), `close_tab`, `rename_tab`, `resize_tab`,
 `get_clipboard`, `list_proposals`,
 `approve_proposal`, `drop_proposal`, `set_agent_mode`,
-`authenticate`, `list_clients`, `get_server_info`, `get_heap_report` (memory reading: live heap, heap in use, heap released, resident size, GC limit; `profile=true` needs write mode and writes a pprof heap profile next to the MCP socket; the GUI socket has the same tool for the GUI process). It has its own
+`authenticate`, `list_clients`, `get_server_info`, `get_heap_report` (memory reading: live heap, heap in use, heap released, resident size, GC percent and memory limit in effect, GC CPU time in seconds and as a share of the runtime's total CPU time (counting idle processors); `profile=true` needs write mode and writes a pprof heap profile next to the MCP socket; the GUI socket has the same tool for the GUI process). It has its own
 `wait_for_events` too, for that daemon's tabs only.
 
 Both screen readers take `styled: true` to return per-line **runs of

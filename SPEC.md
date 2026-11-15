@@ -886,14 +886,48 @@ scroll_on_keystroke = true   # snap to bottom when user types (default: true)
 scroll_on_output = false     # snap to bottom on new output (default: false)
 
 [memory]
-# Go GC soft memory limits in MiB, one per process, read at start.
-# Near the limit the collector runs more often and returns freed
-# memory to the system sooner. 0 = no limit. The GOMEMLIMIT
-# environment variable overrides both. Do not set a limit below the
-# process's live heap (see get_heap_report on either MCP socket).
-gui_limit_mb = 650       # GUI process (default: 650)
+# Go garbage collector settings, one of each per process, read at
+# start.
+#
+# GC percent: how far the heap may grow past the live heap before the
+# next collection. Go's own default is 100 (heap up to about twice the
+# live heap); 50 keeps it to about 1.5 times for more collector CPU
+# time. 0 or a negative value is not accepted and 50 is used. The GOGC
+# environment variable overrides both (GOGC=off turns the collector
+# off).
+gui_gc_percent = 50      # GUI process (default: 50)
+daemon_gc_percent = 50   # `xerotty serve` (default: 50)
+# Optional soft memory limits in MiB. 0 = no limit (the default). Once
+# the live heap grows past a limit the collector runs constantly and
+# frees nothing, so leave room above the live heap (see
+# get_heap_report on either MCP socket). The GOMEMLIMIT environment
+# variable overrides both.
+gui_limit_mb = 0         # GUI process (default: 0, no limit)
 daemon_limit_mb = 0      # `xerotty serve` (default: 0, no limit)
 ```
+
+What the GC percent costs and saves, measured with `tools/memmeasure`
+on a test daemon (10 tabs at 186 columns, 60,000 lines replayed into
+each at full speed; mean of 3 runs; "GUI" is the GUI's data path
+without the renderer). GC CPU time is the runtime's
+`/cpu/classes/gc/total:cpu-seconds`; its share is that divided by
+`/cpu/classes/total:cpu-seconds`, the runtime's total CPU time, which
+counts idle processors (about 16 times wall time on a 16-core
+machine). Go documents both as estimates, so the share is the
+fraction of all the CPU time the runtime had, not of the time it kept
+busy; compare it between rows, not with `top`. This is the worst case
+for the collector: the heap grows as fast as output can be read. A
+process whose tabs are idle spends almost no time collecting at any
+setting.
+
+| Setting | Process | Live heap | Resident | GC CPU | Share of total CPU |
+|---|---|---|---|---|---|
+| GC percent 100, no limit (Go's default) | GUI | 447 MiB | 900 MiB | 2.3 s | 2.2% |
+| | daemon | 383 MiB | 991 MiB | 4.5 s | 4.3% |
+| GC percent 50, no limit (the default) | GUI | 447 MiB | 672 MiB | 4.3 s | 4.0% |
+| | daemon | 388 MiB | 718 MiB | 9.3 s | 8.3% |
+| GC percent 100, limits 650 / 670 MiB | GUI | 447 MiB | 580 MiB | 6.4 s | 5.2% |
+| | daemon | 384 MiB | 594 MiB | 27.2 s | 21.3% |
 
 Scrollback rows are held without their trailing blank cells in both
 processes and on the wire (protocol 11); a column past a row's end

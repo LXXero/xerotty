@@ -4,7 +4,12 @@
 // GUI's data path without the renderer), opens tabs, replays a
 // recorded output file into each one, and then prints its own memory
 // reading and the daemon's (get_heap_report on the daemon's MCP
-// socket), each with a heap profile.
+// socket), each with a heap profile and the collector's CPU time.
+//
+// -gc-percent and -limit-mb are this process's GC settings, applied
+// through memreport.ApplyGUI as the GUI's start path does; the default
+// is the GUI's default config. GOGC and GOMEMLIMIT win, as they do in
+// the GUI. The daemon takes its own from its config or environment.
 //
 // Never point it at a daemon holding real tabs: it creates tabs and
 // types into them.
@@ -24,6 +29,7 @@ import (
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
+	"github.com/LXXero/xerotty/internal/config"
 	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/memreport"
 )
@@ -37,12 +43,18 @@ func main() {
 	rows := flag.Int("rows", 50, "rows")
 	want := flag.Int("want-rows", 0, "scrollback rows each tab must reach before measuring")
 	profDir := flag.String("profile-dir", "", "directory for this process's heap profile")
+	def := config.Default().Memory
+	gcPct := flag.Int("gc-percent", def.GUIGCPercent, "this process's GC percent ([memory] gui_gc_percent)")
+	limitMB := flag.Int("limit-mb", def.GUILimitMB, "this process's GC memory limit in MiB, 0 = none ([memory] gui_limit_mb)")
 	timeout := flag.Duration("timeout", 3*time.Minute, "give up after this long")
 	flag.Parse()
 	if *sock == "" || *file == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
+
+	applied := memreport.ApplyGUI(config.MemoryConfig{GUIGCPercent: *gcPct, GUILimitMB: *limitMB})
+	log.Printf("memmeasure: %s", applied)
 
 	cli, err := clientproto.Dial(*sock)
 	if err != nil {

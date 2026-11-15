@@ -1,5 +1,6 @@
-// Package memreport reports a process's Go heap and resident size and
-// applies the configured GC memory limit. Both the daemon and the GUI
+// Package memreport reports a process's Go heap, resident size and GC
+// CPU time, and applies the configured GC settings ([memory] in the
+// config: GC percent and the optional memory limit). Both the daemon and the GUI
 // use it, through their MCP sockets (get_heap_report); it opens no
 // network port.
 package memreport
@@ -10,10 +11,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"runtime/metrics"
 	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/LXXero/xerotty/internal/config"
 )
 
 // Report is one reading of the process's memory. Byte counts come from
@@ -41,7 +45,27 @@ type Report struct {
 	// LimitSource says where the limit came from: "GOMEMLIMIT",
 	// "config" or "none".
 	LimitSource string `json:"limit_source"`
-	GC          bool   `json:"gc_before_reading"`
+	// GCPercent is the GC percent in effect (the runtime's
+	// /gc/gogc:percent; -1 = collector off). GCPercentSource says
+	// where it came from: "GOGC", "config", "default" (the config
+	// value was 0 or negative, so config.DefaultGCPercent was used) or
+	// "runtime" (Apply was never called).
+	GCPercent       int64  `json:"gc_percent"`
+	GCPercentSource string `json:"gc_percent_source"`
+	// GCCPUSeconds is the CPU time the collector has used since the
+	// process started (runtime/metrics /cpu/classes/gc/total:cpu-seconds,
+	// an estimate the runtime updates at each collection).
+	// ProcessCPUSeconds is the runtime's total CPU time
+	// (/cpu/classes/total:cpu-seconds), which includes idle
+	// processors, so it grows with GOMAXPROCS times wall time. It is
+	// the same kind of estimate as GCCPUSeconds, so GCCPUShare =
+	// GCCPUSeconds / ProcessCPUSeconds is a comparable ratio: the
+	// share of all CPU time the process's Go runtime had, not of the
+	// time it kept busy.
+	GCCPUSeconds      float64 `json:"gc_cpu_seconds"`
+	ProcessCPUSeconds float64 `json:"process_cpu_seconds"`
+	GCCPUShare        float64 `json:"gc_cpu_share"`
+	GC                bool    `json:"gc_before_reading"`
 	// ProfilePath is the heap profile written for this report, if one
 	// was requested.
 	ProfilePath string `json:"profile_path,omitempty"`
@@ -69,6 +93,98 @@ func ApplyLimit(limitMB int) (int64, string) {
 	return currentLimit(), limitSource
 }
 
+var gcPercentSource = "runtime"
+
+// ApplyGCPercent sets the GC percent (debug.SetGCPercent) from a
+// config value. The GOGC environment variable wins when it is set:
+// the runtime already applied it and SetGCPercent is not called. A
+// value of 0 or less is not accepted (0 would collect continuously
+// and a negative value turns the collector off): it is replaced by
+// config.DefaultGCPercent and the source reads "default". To turn the
+// collector off, set GOGC=off. It returns the percent in effect and
+// its source.
+func ApplyGCPercent(percent int) (int64, string) {
+	switch {
+	case os.Getenv("GOGC") != "":
+		gcPercentSource = "GOGC"
+	case percent <= 0:
+		debug.SetGCPercent(config.DefaultGCPercent)
+		gcPercentSource = "default"
+	default:
+		debug.SetGCPercent(percent)
+		gcPercentSource = "config"
+	}
+	return currentGCPercent(), gcPercentSource
+}
+
+// Settings is what Apply put into effect.
+type Settings struct {
+	LimitBytes      int64 // 0 = no limit
+	LimitSource     string
+	GCPercent       int64
+	GCPercentSource string
+}
+
+func (s Settings) String() string {
+	lim := "none"
+	if s.LimitBytes > 0 {
+		lim = fmt.Sprintf("%d MiB (%s)", s.LimitBytes>>20, s.LimitSource)
+	}
+	return fmt.Sprintf("GC percent %d (%s), memory limit %s", s.GCPercent, s.GCPercentSource, lim)
+}
+
+// ApplyGUI applies the GUI process's [memory] settings; cmd/xerotty
+// calls it at start.
+func ApplyGUI(m config.MemoryConfig) Settings {
+	return apply(m.GUILimitMB, m.GUIGCPercent)
+}
+
+// ApplyDaemon applies the daemon's [memory] settings; `xerotty serve`
+// calls it at start.
+func ApplyDaemon(m config.MemoryConfig) Settings {
+	return apply(m.DaemonLimitMB, m.DaemonGCPercent)
+}
+
+func apply(limitMB, gcPercent int) Settings {
+	var s Settings
+	s.LimitBytes, s.LimitSource = ApplyLimit(limitMB)
+	s.GCPercent, s.GCPercentSource = ApplyGCPercent(gcPercent)
+	return s
+}
+
+const (
+	metricGCPercent = "/gc/gogc:percent"
+	metricGCCPU     = "/cpu/classes/gc/total:cpu-seconds"
+	metricTotalCPU  = "/cpu/classes/total:cpu-seconds"
+)
+
+func currentGCPercent() int64 {
+	s := []metrics.Sample{{Name: metricGCPercent}}
+	metrics.Read(s)
+	if s[0].Value.Kind() != metrics.KindUint64 {
+		return 0
+	}
+	v := s[0].Value.Uint64()
+	if v > 1<<31 { // the runtime reports "off" as a huge value
+		return -1
+	}
+	return int64(v)
+}
+
+// gcCPUSeconds reads the collector's CPU time and the runtime's total
+// CPU time from runtime/metrics.
+func gcCPUSeconds() (gc, total float64) {
+	s := []metrics.Sample{{Name: metricGCCPU}, {Name: metricTotalCPU}}
+	metrics.Read(s)
+	if s[0].Value.Kind() == metrics.KindFloat64 {
+		gc = s[0].Value.Float64()
+	}
+	if s[1].Value.Kind() == metrics.KindFloat64 {
+		total = s[1].Value.Float64()
+	}
+	return gc, total
+}
+
 func currentLimit() int64 {
 	l := debug.SetMemoryLimit(-1)
 	if l == noLimit {
@@ -89,7 +205,14 @@ func Read(role string, gc bool) Report {
 	if src == "none" && os.Getenv("GOMEMLIMIT") != "" {
 		src = "GOMEMLIMIT"
 	}
+	gcCPU, procCPU := gcCPUSeconds()
+	share := 0.0
+	if procCPU > 0 {
+		share = gcCPU / procCPU
+	}
 	return Report{
+		GCPercent: currentGCPercent(), GCPercentSource: gcPercentSource,
+		GCCPUSeconds: gcCPU, ProcessCPUSeconds: procCPU, GCCPUShare: share,
 		Role: role, PID: os.Getpid(),
 		LiveHeapBytes: m.HeapAlloc, HeapInUseBytes: m.HeapInuse,
 		HeapIdleBytes: m.HeapIdle, HeapReleasedBytes: m.HeapReleased,
