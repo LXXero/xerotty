@@ -503,6 +503,12 @@ func (u *upgrader) holdConn() (<-chan struct{}, error) {
 		err  error
 	}
 	hello := make(chan helloResult, 1)
+	// One absolute deadline covers both the first handshake and the
+	// fallback redial, so the goroutine always ends by itself and the
+	// connection it hands back (original or replacement) is the one that
+	// gets closed on failure.
+	deadline := time.Now().Add(3 * time.Second)
+	_ = conn.SetDeadline(deadline)
 	go func(conn net.Conn) {
 		_, err := clientproto.Wrap(conn).Hello("serve-upgrade-watch")
 		// The daemon being upgraded may speak the previous protocol
@@ -512,26 +518,25 @@ func (u *upgrader) holdConn() (<-chan struct{}, error) {
 		var refused *clientproto.VersionRefusedError
 		if errors.As(err, &refused) && refused.Retryable() {
 			conn.Close()
-			c2, derr := net.DialTimeout("unix", u.sock, time.Second)
+			d := net.Dialer{Deadline: deadline}
+			c2, derr := d.Dial("unix", u.sock)
 			if derr != nil {
 				hello <- helloResult{conn, derr}
 				return
 			}
 			conn = c2
+			_ = conn.SetDeadline(deadline)
 			_, err = clientproto.Wrap(conn).HelloVersion("serve-upgrade-watch", refused.Server)
 		}
 		hello <- helloResult{conn, err}
 	}(conn)
-	select {
-	case r := <-hello:
-		conn, err = r.conn, r.err
-	case <-time.After(3 * time.Second):
-		err = errors.New("handshake timed out")
-	}
+	r := <-hello
+	conn, err = r.conn, r.err
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	dropped := make(chan struct{})
 	go func() {
 		defer close(dropped)

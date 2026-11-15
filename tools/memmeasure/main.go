@@ -78,7 +78,7 @@ func main() {
 
 	// Wait until every tab has the wanted rows and has stopped growing.
 	deadline := time.Now().Add(*timeout)
-	last, stable := -1, 0
+	last, stable, done := -1, 0, false
 	for time.Now().Before(deadline) {
 		time.Sleep(500 * time.Millisecond)
 		sum, min := 0, int(^uint(0)>>1)
@@ -91,12 +91,16 @@ func main() {
 		}
 		if sum == last && min >= *want {
 			if stable++; stable >= 6 {
+				done = true
 				break
 			}
 		} else {
 			stable = 0
 		}
 		last = sum
+	}
+	if !done {
+		log.Fatalf("timed out after %s: tabs did not all reach %d scrollback rows and stop growing", *timeout, *want)
 	}
 	perTab := make([]int, len(srcs))
 	for i, s := range srcs {
