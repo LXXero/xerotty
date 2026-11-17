@@ -53,7 +53,7 @@ var launchdGUI = strategy{
 			return handle{}, err
 		}
 		plistPath := filepath.Join(dir, label+".plist")
-		plist := launchdPlist(label, []string{o.Self, "serve", "--socket", o.SocketPath}, env, sockpath.DaemonLogPath())
+		plist := launchdPlist(label, []string{o.Self, "serve", "--socket", o.SocketPath}, env, sockpath.DaemonLogPath(), spawnWorkingDir())
 		if err := os.WriteFile(plistPath, plist, 0o600); err != nil {
 			return handle{}, err
 		}
@@ -77,10 +77,26 @@ var launchdGUI = strategy{
 
 func guiDomain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
 
+// spawnWorkingDir is the directory the launchd job starts in. launchd
+// starts a job in "/" unless the plist says otherwise, and tabs created
+// without a cwd inherit the daemon's, so without this every such tab
+// opened in "/". Use the spawner's cwd, as a forked daemon would
+// inherit it; "/" (a Finder-launched client) becomes $HOME, matching
+// launchGUI.
+func spawnWorkingDir() string {
+	if wd, err := os.Getwd(); err == nil && wd != "/" {
+		return wd
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
+}
+
 // launchdPlist renders a minimal launchd job: run once at load, don't
-// restart, log stderr to logPath, and leave child processes alone
-// when the job's own process exits.
-func launchdPlist(label string, argv, env []string, logPath string) []byte {
+// restart, start in workDir, log stderr to logPath, and leave child
+// processes alone when the job's own process exits.
+func launchdPlist(label string, argv, env []string, logPath, workDir string) []byte {
 	var b bytes.Buffer
 	esc := func(s string) string {
 		var e bytes.Buffer
@@ -106,6 +122,9 @@ func launchdPlist(label string, argv, env []string, logPath string) []byte {
 			fmt.Fprintf(&b, "    <key>%s</key><string>%s</string>\n", esc(k), esc(v))
 		}
 		b.WriteString("  </dict>\n")
+	}
+	if workDir != "" {
+		fmt.Fprintf(&b, "  <key>WorkingDirectory</key><string>%s</string>\n", esc(workDir))
 	}
 	if logPath != "" {
 		fmt.Fprintf(&b, "  <key>StandardErrorPath</key><string>%s</string>\n", esc(logPath))
