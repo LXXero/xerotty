@@ -3302,6 +3302,7 @@ func (a *App) beforeRender() {
 	platform.ResyncModifiers()
 
 	if !a.pendingFontFace {
+		renderer.ApplyUIFallbacks()
 		return
 	}
 	a.pendingFontFace = false
@@ -5529,6 +5530,9 @@ func (w *Window) renderTabBar() {
 		// or, in "dot"/"both" activity style, have unseen output. Bell
 		// wins: it's the rarer, more urgent signal.
 		label := tab.DisplayTitle()
+		if renderer.NoteUIText(label) {
+			platform.PostWake() // merge the fallback font, then redraw
+		}
 		var marker string
 		var markerCol uint32
 		switch {

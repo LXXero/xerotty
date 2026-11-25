@@ -185,15 +185,25 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	// the user's primary monospace might lack. Cell metrics are driven
 	// by the glyph cache's primary-only LineMetrics, so taller merge
 	// fonts don't inflate row height in the terminal grid.
+	uiTextReset(font, loadedPath, pxSize)
 	if loadedPath != "" {
 		for _, mergePath := range findUIFallbacks(loadedPath) {
+			uiText.have[mergePath] = true
 			if !safeToLoad(mergePath) {
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "xerotty: merging UI fallback font %s\n", mergePath)
-			mc := terminalFontConfig()
-			mc.SetMergeMode(true)
-			io.Fonts().AddFontFromFileTTFV(mergePath, pxSize, mc, ranges)
+			mergeUIFont(font, mergePath, pxSize)
+		}
+		// Fonts merged at runtime for UI text (see NoteUIText) survive
+		// an atlas reload.
+		for _, mergePath := range uiText.merged {
+			if uiText.have[mergePath] {
+				continue
+			}
+			uiText.have[mergePath] = true
+			fmt.Fprintf(os.Stderr, "xerotty: merging UI fallback font %s\n", mergePath)
+			mergeUIFont(font, mergePath, pxSize)
 		}
 	}
 
@@ -207,6 +217,91 @@ func loadFontResolved(cfg *config.Config) (*imgui.Font, *imgui.Font, string) {
 	}
 
 	return font, bold, loadedPath
+}
+
+// mergeUIFont merges the font at path into dst as a fallback source, with
+// the same rasterizer settings as the primary.
+func mergeUIFont(dst *imgui.Font, path string, pxSize float32) {
+	mc := imgui.NewFontConfig()
+	mc.SetPixelSnapH(true)
+	mc.SetOversampleH(1)
+	mc.SetOversampleV(1)
+	mc.SetMergeMode(true)
+	mc.SetDstFont(dst)
+	imgui.CurrentIO().Fonts().AddFontFromFileTTFV(path, pxSize, mc, terminalGlyphRanges())
+}
+
+// uiText is the fallback state for text drawn from the ImGui atlas (tab
+// labels): the atlas holds the primary font plus the fonts that cover
+// uiProbeRunes, so a character none of them has (a Codex braille spinner,
+// for one) would draw as the fallback glyph. NoteUIText looks such a
+// character up through fontconfig once and queues the font that has it;
+// ApplyUIFallbacks merges the queue into the atlas before the next frame.
+var uiText struct {
+	font    *imgui.Font
+	primary string
+	pxSize  float32
+	checked map[rune]bool   // runes already looked at for this atlas
+	have    map[string]bool // font paths already in the atlas
+	pending []string        // found, not yet merged
+	merged  []string        // merged at runtime; re-merged after a reload
+}
+
+// The atlas is shared by every window, so this state is package-level
+// like the atlas itself. Only the render thread touches it.
+func uiTextReset(font *imgui.Font, primary string, pxSize float32) {
+	uiText.font, uiText.primary, uiText.pxSize = font, primary, pxSize
+	uiText.checked = map[rune]bool{}
+	uiText.have = map[string]bool{primary: true}
+	uiText.pending = nil
+}
+
+// NoteUIText checks s for characters the UI font can't draw and queues a
+// fallback font for each one fontconfig can find. It returns true when it
+// queued a font, so the caller can request another frame; the merge
+// itself happens in ApplyUIFallbacks, outside the frame.
+func NoteUIText(s string) bool {
+	if uiText.font == nil || uiText.primary == "" {
+		return false
+	}
+	queued := false
+	for _, r := range s {
+		if r < 0x80 || uiText.checked[r] {
+			continue
+		}
+		uiText.checked[r] = true
+		if !needsPlaceholder(r) || uiText.font.IsGlyphInFont(imgui.Wchar(r)) {
+			continue
+		}
+		p := uiFallbackFind(r, uiText.primary)
+		if p == "" || uiText.have[p] || fontsys.IsVariableFont(p) {
+			continue
+		}
+		uiText.have[p] = true
+		uiText.pending = append(uiText.pending, p)
+		queued = true
+	}
+	return queued
+}
+
+// uiFallbackFind is the fontconfig lookup NoteUIText uses; a variable so
+// tests can stub it.
+var uiFallbackFind = func(r rune, hint string) string { return fontsys.FindOutlineForCodepoint(r, hint) }
+
+// ApplyUIFallbacks merges the fonts NoteUIText queued into the atlas.
+// Call it before NewFrame (the BeforeRender hook), like ReloadFont: the
+// merge discards the font's baked glyphs. Returns true if it merged any.
+func ApplyUIFallbacks() bool {
+	if len(uiText.pending) == 0 || uiText.font == nil {
+		return false
+	}
+	for _, p := range uiText.pending {
+		fmt.Fprintf(os.Stderr, "xerotty: merging UI fallback font %s\n", p)
+		mergeUIFont(uiText.font, p, uiText.pxSize)
+		uiText.merged = append(uiText.merged, p)
+	}
+	uiText.pending = nil
+	return true
 }
 
 // uiProbeRunes are symbols programs commonly put in window titles, one or
