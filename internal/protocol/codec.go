@@ -12,7 +12,7 @@ import (
 // Frame is one wire frame: a type tag + a msgpack-encoded body. The
 // wire layout is:
 //
-//   [u32 length BE][u8 type][msgpack body...]
+//	[u32 length BE][u8 type][msgpack body...]
 //
 // Length is the size of the (type + body) tail, not including the
 // length prefix itself. Cap'd at maxFrameSize to bound memory use.

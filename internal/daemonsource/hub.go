@@ -195,9 +195,9 @@ const pendingCap = 64
 // Stop to tear it down.
 func NewHub(c *clientproto.Client) *Hub {
 	h := &Hub{
-		sources:        make(map[uint32]*Source),
-		tombstones:     make(map[uint32]struct{}),
-		pending:        make(map[uint32][]pendingFrame),
+		sources:              make(map[uint32]*Source),
+		tombstones:           make(map[uint32]struct{}),
+		pending:              make(map[uint32][]pendingFrame),
 		pendingCreates:       make(map[uint64]chan createResult),
 		pendingClientLists:   make(map[uint64]chan []protocol.ClientInfo),
 		pendingEvents:        make(map[uint64]chan *protocol.Events),

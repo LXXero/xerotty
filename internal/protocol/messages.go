@@ -8,74 +8,75 @@ package protocol
 // breaking — msgpack lets newer servers send fields older clients
 // ignore.
 // ProtocolVersion history:
-//   1 — initial.
-//   2 — Style packing grew fgSet/bgSet flag bits (ANSI black vs
-//       "no color").
-//   3 — added MsgInputImageChunk, MsgClipboardSet,
-//       MsgProposalsChanged, MsgProposalResolve, MsgScrollbackCleared,
-//       Cursor.Blink/StyleSet; chunked image paste dropped
-//       maxFrameSize back to 16 MiB. A v2 client sending a >16 MiB
-//       single-frame image to a v3 daemon would be disconnected;
-//       a v3 client's MsgInputImageChunk would be ignored by a v2
-//       daemon. Incompatible → bump. The Hello handshake rejects
-//       version mismatches, so this is the gate that prevents the
-//       silent-misbehavior scenarios.
-//   4 — Phase 9: request correlation (TabCreate/TabCreated.ReqID) +
-//       MsgTopologyChanged broadcast + Attached.Revision. A v3 client
-//       wouldn't echo/match ReqID and would ignore MsgTopologyChanged,
-//       so structural changes from other clients would silently not
-//       propagate. Hard-gated by the handshake.
-//   5 — WindowCreate/WindowCreated.ReqID. The client now REQUIRES the
-//       echoed ReqID (a reply without it is dropped as unmatched), so a
-//       v5 client against an early-v4 daemon — which didn't echo window
-//       ReqIDs — would drop every WindowCreated and hang the
-//       window-create wait. Bumping forces the handshake to reject the
-//       skew (clean error) instead of silently hanging.
-//   6 — Phase 10: MsgPing/MsgPong heartbeat. The daemon pings and reaps
-//       a client with no inbound traffic for ~18s. A v6 daemon pinging
-//       a v5 client (which would treat MsgPing as unknown and never
-//       pong) would reap a perfectly-live client; the handshake gate
-//       prevents that mismatch.
-//   7 — Phase 10 layer 4c fix: Attached.InstanceID (a random nonce
-//       minted once per daemon process). The client scopes its
-//       close-tombstones to this identity and drops them on reconnect
-//       to a DIFFERENT instance (a restarted daemon with a reused
-//       tab-id space) so a legitimately-recreated tab isn't suppressed
-//       forever. A v6 client gets InstanceID="" and would keep
-//       cross-restart tombstones; the handshake gate forces the clean
-//       version error instead of that silent misbehavior.
-//   8 — TabCreate.Name + TabCreated.Reused: named (idempotent) tab
-//       create over the wire, so the GUI's aggregating MCP server can
-//       reach the daemon's find-or-create-by-label semantics. A v7
-//       daemon would silently ignore Name and stack duplicate tabs on
-//       every "reuse" call — degradation the handshake gate should
-//       reject loudly instead.
-//   9 — Sliding-window scrollback: ScrollbackAppend.Total (daemon's
-//       true scrollback depth), MsgScrollbackRequest/Range (fetch an
-//       arbitrary absolute row range so the client mirrors only a
-//       bounded window instead of the whole — possibly unbounded —
-//       history), and MsgSearchRequest/Results (daemon-side search of
-//       its full disk-backed scrollback, returning match coordinates).
-//       A v8 daemon ignores the requests, so the client would show
-//       blank cold history and search only its window — the handshake
-//       gate forces a clean version error instead.
-//  10 — added MsgTabRename (client → server) making tab labels
-//       daemon-authoritative: renames used to live only in GUI
-//       memory, so a serve --upgrade reattach wiped them and the
-//       daemon/GUI MCP sockets disagreed about names. TabInfo and
-//       TabState grew Name (additive), but the new client→server
-//       message errors a v9 daemon's read loop, so the handshake
-//       gate must force the version pair.
-//  11 — scrollback rows are sent at their stored length: trailing
-//       blank cells (empty or space, default style, no link — the rule
-//       the vt scrollback uses when it stores a row) are left off
-//       ScrollbackAppend and ScrollbackRange rows, and a reader treats
-//       a column past a row's end as blank. No message changed shape,
-//       so this is the first version negotiated instead of gated: an
-//       11 daemon accepts a version-10 Hello and sends that client
-//       full-width rows as before, and an 11 client refused by a
-//       version-10 daemon reconnects speaking 10 and trims the rows
-//       itself (MinProtocolVersion).
+//
+//	 1 — initial.
+//	 2 — Style packing grew fgSet/bgSet flag bits (ANSI black vs
+//	     "no color").
+//	 3 — added MsgInputImageChunk, MsgClipboardSet,
+//	     MsgProposalsChanged, MsgProposalResolve, MsgScrollbackCleared,
+//	     Cursor.Blink/StyleSet; chunked image paste dropped
+//	     maxFrameSize back to 16 MiB. A v2 client sending a >16 MiB
+//	     single-frame image to a v3 daemon would be disconnected;
+//	     a v3 client's MsgInputImageChunk would be ignored by a v2
+//	     daemon. Incompatible → bump. The Hello handshake rejects
+//	     version mismatches, so this is the gate that prevents the
+//	     silent-misbehavior scenarios.
+//	 4 — Phase 9: request correlation (TabCreate/TabCreated.ReqID) +
+//	     MsgTopologyChanged broadcast + Attached.Revision. A v3 client
+//	     wouldn't echo/match ReqID and would ignore MsgTopologyChanged,
+//	     so structural changes from other clients would silently not
+//	     propagate. Hard-gated by the handshake.
+//	 5 — WindowCreate/WindowCreated.ReqID. The client now REQUIRES the
+//	     echoed ReqID (a reply without it is dropped as unmatched), so a
+//	     v5 client against an early-v4 daemon — which didn't echo window
+//	     ReqIDs — would drop every WindowCreated and hang the
+//	     window-create wait. Bumping forces the handshake to reject the
+//	     skew (clean error) instead of silently hanging.
+//	 6 — Phase 10: MsgPing/MsgPong heartbeat. The daemon pings and reaps
+//	     a client with no inbound traffic for ~18s. A v6 daemon pinging
+//	     a v5 client (which would treat MsgPing as unknown and never
+//	     pong) would reap a perfectly-live client; the handshake gate
+//	     prevents that mismatch.
+//	 7 — Phase 10 layer 4c fix: Attached.InstanceID (a random nonce
+//	     minted once per daemon process). The client scopes its
+//	     close-tombstones to this identity and drops them on reconnect
+//	     to a DIFFERENT instance (a restarted daemon with a reused
+//	     tab-id space) so a legitimately-recreated tab isn't suppressed
+//	     forever. A v6 client gets InstanceID="" and would keep
+//	     cross-restart tombstones; the handshake gate forces the clean
+//	     version error instead of that silent misbehavior.
+//	 8 — TabCreate.Name + TabCreated.Reused: named (idempotent) tab
+//	     create over the wire, so the GUI's aggregating MCP server can
+//	     reach the daemon's find-or-create-by-label semantics. A v7
+//	     daemon would silently ignore Name and stack duplicate tabs on
+//	     every "reuse" call — degradation the handshake gate should
+//	     reject loudly instead.
+//	 9 — Sliding-window scrollback: ScrollbackAppend.Total (daemon's
+//	     true scrollback depth), MsgScrollbackRequest/Range (fetch an
+//	     arbitrary absolute row range so the client mirrors only a
+//	     bounded window instead of the whole — possibly unbounded —
+//	     history), and MsgSearchRequest/Results (daemon-side search of
+//	     its full disk-backed scrollback, returning match coordinates).
+//	     A v8 daemon ignores the requests, so the client would show
+//	     blank cold history and search only its window — the handshake
+//	     gate forces a clean version error instead.
+//	10 — added MsgTabRename (client → server) making tab labels
+//	     daemon-authoritative: renames used to live only in GUI
+//	     memory, so a serve --upgrade reattach wiped them and the
+//	     daemon/GUI MCP sockets disagreed about names. TabInfo and
+//	     TabState grew Name (additive), but the new client→server
+//	     message errors a v9 daemon's read loop, so the handshake
+//	     gate must force the version pair.
+//	11 — scrollback rows are sent at their stored length: trailing
+//	     blank cells (empty or space, default style, no link — the rule
+//	     the vt scrollback uses when it stores a row) are left off
+//	     ScrollbackAppend and ScrollbackRange rows, and a reader treats
+//	     a column past a row's end as blank. No message changed shape,
+//	     so this is the first version negotiated instead of gated: an
+//	     11 daemon accepts a version-10 Hello and sends that client
+//	     full-width rows as before, and an 11 client refused by a
+//	     version-10 daemon reconnects speaking 10 and trims the rows
+//	     itself (MinProtocolVersion).
 const ProtocolVersion uint16 = 11
 
 // MinProtocolVersion is the oldest peer version this build still
@@ -96,32 +97,32 @@ const ShortRowsVersion uint16 = 11
 type MsgType uint8
 
 const (
-	MsgHello             MsgType = 1  // client → server
-	MsgHelloAck          MsgType = 2  // server → client
-	MsgAttach            MsgType = 3  // client → server: attach to a session
-	MsgAttached          MsgType = 4  // server → client: attach OK, here's tab list
-	MsgDetach            MsgType = 5  // client → server: detach gracefully
-	MsgError             MsgType = 6  // server → client: protocol-level error
+	MsgHello    MsgType = 1 // client → server
+	MsgHelloAck MsgType = 2 // server → client
+	MsgAttach   MsgType = 3 // client → server: attach to a session
+	MsgAttached MsgType = 4 // server → client: attach OK, here's tab list
+	MsgDetach   MsgType = 5 // client → server: detach gracefully
+	MsgError    MsgType = 6 // server → client: protocol-level error
 
-	MsgTabCreate         MsgType = 10 // client → server
-	MsgTabClose          MsgType = 11 // client → server
-	MsgTabFocus          MsgType = 12 // client → server
-	MsgTabCreated        MsgType = 13 // server → client (echo + assigned ID)
+	MsgTabCreate  MsgType = 10 // client → server
+	MsgTabClose   MsgType = 11 // client → server
+	MsgTabFocus   MsgType = 12 // client → server
+	MsgTabCreated MsgType = 13 // server → client (echo + assigned ID)
 
-	MsgWindowCreate      MsgType = 14 // client → server: new UI window
-	MsgWindowClose       MsgType = 15 // client → server: tear down a window
-	MsgWindowCreated     MsgType = 16 // server → client (echo + assigned ID)
-	MsgWindowMoveTab     MsgType = 17 // client → server: drag tab between windows
-	MsgWindowGeometry    MsgType = 18 // client → server: window pos/size moved
-	MsgWindowFocusTab    MsgType = 19 // client → server: focused tab within window changed
+	MsgWindowCreate   MsgType = 14 // client → server: new UI window
+	MsgWindowClose    MsgType = 15 // client → server: tear down a window
+	MsgWindowCreated  MsgType = 16 // server → client (echo + assigned ID)
+	MsgWindowMoveTab  MsgType = 17 // client → server: drag tab between windows
+	MsgWindowGeometry MsgType = 18 // client → server: window pos/size moved
+	MsgWindowFocusTab MsgType = 19 // client → server: focused tab within window changed
 
-	MsgResize            MsgType = 20 // client → server (per-tab cols/rows)
-	MsgInputBytes        MsgType = 21 // client → server: raw bytes for PTY
-	MsgInputPaste        MsgType = 22 // client → server: paste (may be longer)
-	MsgInputImage        MsgType = 23 // client → server: paste an image (binary blob, single frame)
-	MsgClipboardData     MsgType = 24 // client → server: client's clipboard text (for OSC52 reads)
-	MsgInputImageChunk   MsgType = 25 // client → server: one chunk of a chunked image paste
-	MsgClipboardSet      MsgType = 26 // server → client: app set the clipboard via OSC 52
+	MsgResize          MsgType = 20 // client → server (per-tab cols/rows)
+	MsgInputBytes      MsgType = 21 // client → server: raw bytes for PTY
+	MsgInputPaste      MsgType = 22 // client → server: paste (may be longer)
+	MsgInputImage      MsgType = 23 // client → server: paste an image (binary blob, single frame)
+	MsgClipboardData   MsgType = 24 // client → server: client's clipboard text (for OSC52 reads)
+	MsgInputImageChunk MsgType = 25 // client → server: one chunk of a chunked image paste
+	MsgClipboardSet    MsgType = 26 // server → client: app set the clipboard via OSC 52
 
 	MsgCellFull          MsgType = 30 // server → client: full grid (initial / resync)
 	MsgCellDiff          MsgType = 31 // server → client: changed cells
@@ -134,13 +135,13 @@ const (
 	MsgScrollbackCleared MsgType = 38 // server → client: scrollback was cleared (broadcast to all attached)
 	MsgProposalsChanged  MsgType = 39 // server → client: full list of pending propose-mode writes
 
-	MsgClearScrollback   MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
-	MsgProposalResolve   MsgType = 41 // client → server: approve/drop a pending proposal
+	MsgClearScrollback MsgType = 40 // client → server: drop scrollback (Ctrl+L hard clear path)
+	MsgProposalResolve MsgType = 41 // client → server: approve/drop a pending proposal
 
-	MsgTopologyChanged   MsgType = 42 // server → client: full session topology snapshot (broadcast on structural change)
+	MsgTopologyChanged MsgType = 42 // server → client: full session topology snapshot (broadcast on structural change)
 
-	MsgPing              MsgType = 43 // either direction: liveness probe (heartbeat)
-	MsgPong              MsgType = 44 // either direction: reply echoing Ping.Nonce
+	MsgPing MsgType = 43 // either direction: liveness probe (heartbeat)
+	MsgPong MsgType = 44 // either direction: reply echoing Ping.Nonce
 
 	MsgScrollbackRequest MsgType = 45 // client → server: fetch absolute scrollback row range
 	MsgScrollbackRange   MsgType = 46 // server → client: rows for a ScrollbackRequest
@@ -151,9 +152,9 @@ const (
 	// and keeps the connection; the client's request just times out
 	// (empty Clients menu) — benign degradation, unlike the silent
 	// misbehaviors that motivated bumps 5-9.
-	MsgClientsListReq    MsgType = 49 // client → server: list attached wire clients
-	MsgClientsList       MsgType = 50 // server → client: reply for ClientsListReq
-	MsgClientKick        MsgType = 51 // client → server: force-disconnect a client by id
+	MsgClientsListReq MsgType = 49 // client → server: list attached wire clients
+	MsgClientsList    MsgType = 50 // server → client: reply for ClientsListReq
+	MsgClientKick     MsgType = 51 // client → server: force-disconnect a client by id
 
 	MsgTabRename MsgType = 52 // client → server: set a tab's assigned name (label)
 
@@ -167,9 +168,9 @@ const (
 // Hello is the first frame a client sends after connecting. The
 // server validates the version and replies with HelloAck.
 type Hello struct {
-	Version  uint16 `msg:"version"`
-	ClientID string `msg:"client_id"`            // free-form: "xerotty-ui-laptop", "claude-code-1"
-	Caps     []string `msg:"caps,omitempty"`     // optional capability strings, reserved for future use
+	Version  uint16   `msg:"version"`
+	ClientID string   `msg:"client_id"`      // free-form: "xerotty-ui-laptop", "claude-code-1"
+	Caps     []string `msg:"caps,omitempty"` // optional capability strings, reserved for future use
 }
 
 // HelloAck answers a Hello. ServerVersion lets the client decide
@@ -181,7 +182,7 @@ type Hello struct {
 // on when they have a mix of local + remote daemons attached.
 type HelloAck struct {
 	ServerVersion uint16 `msg:"server_version"`
-	ServerID      string `msg:"server_id"`        // unique per daemon instance: hostname:pid
+	ServerID      string `msg:"server_id"`          // unique per daemon instance: hostname:pid
 	Hostname      string `msg:"hostname,omitempty"` // just the hostname, for UI display
 }
 
@@ -191,8 +192,8 @@ type HelloAck struct {
 // missing). NewIfMissing creates a fresh tab in the session if the
 // session has no tabs yet.
 type Attach struct {
-	SessionName    string `msg:"session_name"`
-	NewIfMissing   bool   `msg:"new_if_missing"`
+	SessionName  string `msg:"session_name"`
+	NewIfMissing bool   `msg:"new_if_missing"`
 }
 
 // Attached reports back the state at attach time: window+tab layout
@@ -201,10 +202,10 @@ type Attach struct {
 // every tab in the session (each tab also appears in exactly one
 // Window's TabIDs list).
 type Attached struct {
-	SessionName string       `msg:"session_name"`
-	Windows     []WindowInfo `msg:"windows"`
-	Tabs        []TabInfo    `msg:"tabs"`
-	FocusedTabID uint32      `msg:"focused_tab_id"` // app-wide focused tab
+	SessionName  string       `msg:"session_name"`
+	Windows      []WindowInfo `msg:"windows"`
+	Tabs         []TabInfo    `msg:"tabs"`
+	FocusedTabID uint32       `msg:"focused_tab_id"` // app-wide focused tab
 	// Revision is the session's topology revision at attach time. It
 	// seeds the client's gate so subsequent MsgTopologyChanged frames
 	// (which carry monotonically-increasing revisions) are applied
@@ -226,13 +227,13 @@ type Attached struct {
 // TabIDs is the tab-bar order (left-to-right). FocusedTabID is the
 // tab that's currently in front within this window.
 type WindowInfo struct {
-	ID           uint32  `msg:"id"`
-	PosX         int32   `msg:"pos_x"`
-	PosY         int32   `msg:"pos_y"`
-	Width        int32   `msg:"width"`
-	Height       int32   `msg:"height"`
+	ID           uint32   `msg:"id"`
+	PosX         int32    `msg:"pos_x"`
+	PosY         int32    `msg:"pos_y"`
+	Width        int32    `msg:"width"`
+	Height       int32    `msg:"height"`
 	TabIDs       []uint32 `msg:"tab_ids"`
-	FocusedTabID uint32  `msg:"focused_tab_id"`
+	FocusedTabID uint32   `msg:"focused_tab_id"`
 }
 
 // TabInfo is a slim summary of a tab sent at attach time. Full cell
@@ -367,9 +368,9 @@ type WindowClose struct {
 // the position within the destination window's tab bar (left-to-
 // right). Negative or out-of-range index appends.
 type WindowMoveTab struct {
-	TabID         uint32 `msg:"tab_id"`
-	ToWindowID    uint32 `msg:"to_window_id"`
-	Index         int32  `msg:"index"`
+	TabID      uint32 `msg:"tab_id"`
+	ToWindowID uint32 `msg:"to_window_id"`
+	Index      int32  `msg:"index"`
 }
 
 // WindowGeometry reports a UI window's new position/size. The
@@ -508,17 +509,18 @@ type ClipboardSet struct {
 // the vt emulator's OSC 52 handling lives in
 // internal/terminal/terminal.go's dispatchOSC52.
 type ClipboardData struct {
-	Text     string `msg:"text"`
-	MIME     string `msg:"mime,omitempty"` // default "text/plain"
+	Text string `msg:"text"`
+	MIME string `msg:"mime,omitempty"` // default "text/plain"
 }
 
 // Cell is the wire representation of a single grid cell. Mirrors
 // ultraviolet.Cell but with style packed for compactness.
 //
 // Style is a 32-bit packed value:
-//   bits  0..7  attribute flags (bold/italic/underline/etc.)
-//   bits  8..19 fg index (0xFFF means "RGB follows")
-//   bits 20..31 bg index (0xFFF means "RGB follows")
+//
+//	bits  0..7  attribute flags (bold/italic/underline/etc.)
+//	bits  8..19 fg index (0xFFF means "RGB follows")
+//	bits 20..31 bg index (0xFFF means "RGB follows")
 //
 // When fg or bg uses the "RGB follows" sentinel, the cell is
 // serialized with RGB fields populated. 99% of terminal output uses

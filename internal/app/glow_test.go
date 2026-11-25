@@ -18,7 +18,7 @@ func TestGlowIdleWakeMs(t *testing.T) {
 		want    int
 	}{
 		{"disabled", false, 20, 0},
-		{"default fps", true, 0, 50},   // fps<=0 defaults to 20 -> 50ms
+		{"default fps", true, 0, 50}, // fps<=0 defaults to 20 -> 50ms
 		{"explicit 20", true, 20, 50},
 		{"clamped high", true, 240, 16}, // capped at 60fps -> 16ms
 		{"low fps", true, 4, 250},

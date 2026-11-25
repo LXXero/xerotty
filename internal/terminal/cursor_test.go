@@ -17,9 +17,10 @@ import (
 //     blink=true.
 //
 // DECSCUSR reference:
-//   0 / 1 → blinking block      2 → steady block
-//   3     → blinking underline  4 → steady underline
-//   5     → blinking bar        6 → steady bar
+//
+//	0 / 1 → blinking block      2 → steady block
+//	3     → blinking underline  4 → steady underline
+//	5     → blinking bar        6 → steady bar
 func TestCursorStyleDECSCUSR(t *testing.T) {
 	cases := []struct {
 		code      int
