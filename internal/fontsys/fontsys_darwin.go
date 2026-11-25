@@ -530,6 +530,17 @@ static int xt_ct_is_variable_path(const char *path) {
     CFRelease(url);
     return variable;
 }
+
+// xt_ct_is_color_path reports whether the font at path draws color
+// glyphs (sbix/COLR, e.g. Apple Color Emoji), which ImGui's stbtt
+// rasterizer can't render. Returns 0 when the font can't be opened.
+static int xt_ct_is_color_path(const char *path) {
+    CTFontRef font = xt_open_font(path);
+    if (!font) return 0;
+    int color = (CTFontGetSymbolicTraits(font) & kCTFontTraitColorGlyphs) ? 1 : 0;
+    CFRelease(font);
+    return color;
+}
 */
 import "C"
 
@@ -545,6 +556,21 @@ func init() {
 		cpath := C.CString(path)
 		defer C.free(unsafe.Pointer(cpath))
 		return C.xt_ct_is_variable_path(cpath) != 0
+	}
+	// The ImGui atlas (tab labels) can only use outline fonts: take
+	// CoreText's cascade pick unless it draws color glyphs or is a
+	// variable font, both of which stbtt can't render.
+	FindOutlineForCodepoint = func(r rune, hint string) string {
+		p, _ := Default.FindForCodepoint(r, hint)
+		if p == "" || IsVariableFont(p) {
+			return ""
+		}
+		cpath := C.CString(p)
+		defer C.free(unsafe.Pointer(cpath))
+		if C.xt_ct_is_color_path(cpath) != 0 {
+			return ""
+		}
+		return p
 	}
 }
 

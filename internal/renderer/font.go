@@ -317,10 +317,10 @@ var uiProbeRunes = []rune{
 // monospace lacks (e.g. Noto Sans Mono and Monaco have no ✳). Terminal
 // cells are unaffected because they use the glyph cache, not this atlas.
 //
-// On Linux fontconfig picks the font for each probe symbol the primary
-// lacks, so this follows whatever fonts are installed instead of guessing
-// distro paths. macOS has no outline lookup yet; Menlo ships with the OS
-// and covers these symbols.
+// fontconfig (Linux) or CoreText (macOS) picks the font for each probe
+// symbol the primary lacks, so this follows whatever fonts are installed
+// instead of guessing paths. Menlo is added on macOS as well; it ships
+// with the OS and covers these symbols.
 func findUIFallbacks(primaryPath string) []string {
 	has := func(rune) bool { return false }
 	if primary, err := fontsys.Default.Open(primaryPath); err == nil {
