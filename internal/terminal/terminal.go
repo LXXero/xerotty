@@ -607,10 +607,22 @@ func (t *Terminal) ScrollbackLen() int {
 // reading from disk for rows below disk.Len() and from vt's
 // in-memory ring for rows above. Returns nil for out-of-range or
 // past-end-of-line indices (renderer treats as empty cell).
+//
+// The cell is a copy taken under publishMu: the emulator returns a
+// pointer into its live ring, which readPTY rewrites, so reading it
+// after the lock (as link hover and selection did) was a data race.
 func (t *Terminal) ScrollbackCellAt(col, row int) *uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	return t.scrollbackCellAtLocked(col, row)
+}
+
+// scrollbackCellAtLocked is ScrollbackCellAt for a caller holding
+// publishMu.
+func (t *Terminal) scrollbackCellAtLocked(col, row int) *uv.Cell {
 	disk, _, memStart, _ := t.scrollbackLayout()
 	if disk == nil || row >= memStart {
-		return t.Emu.ScrollbackCellAt(col, row-memStart)
+		return copyCell(t.Emu.ScrollbackCellAt(col, row-memStart))
 	}
 	line := disk.LineAt(row)
 	if line == nil || col < 0 || col >= len(line) {
@@ -677,10 +689,26 @@ func (t *Terminal) ScrollbackRow(row, cols int) []uv.Cell {
 // emulator. Defined here so callers can use *terminal.Terminal as
 // the renderer.EmulatorView interface without changing every site
 // to dig through .Emu.
-func (t *Terminal) Width() int                   { return t.Emu.Width() }
-func (t *Terminal) Height() int                  { return t.Emu.Height() }
-func (t *Terminal) CellAt(col, row int) *uv.Cell { return t.Emu.CellAt(col, row) }
-func (t *Terminal) CursorPosition() uv.Position  { return t.Emu.CursorPosition() }
+func (t *Terminal) Width() int                  { return t.Emu.Width() }
+func (t *Terminal) Height() int                 { return t.Emu.Height() }
+func (t *Terminal) CursorPosition() uv.Position { return t.Emu.CursorPosition() }
+
+// CellAt returns a copy of the grid cell, taken under publishMu for
+// the same reason as ScrollbackCellAt.
+func (t *Terminal) CellAt(col, row int) *uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	return copyCell(t.Emu.CellAt(col, row))
+}
+
+// copyCell returns a copy of c, or nil.
+func copyCell(c *uv.Cell) *uv.Cell {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
 
 // Write sends data to the PTY (keyboard input).
 func (t *Terminal) Write(p []byte) (int, error) {
@@ -918,8 +946,9 @@ func (t *Terminal) snapshotScrollback(from, to int, trim bool) [][]uv.Cell {
 // viewport row 0; gen is the render generation observed under the
 // lock so the cell-layer cache key matches the snapshot content.
 //
-// ScrollbackLen / ScrollbackCellAt / CellAt take t.mu or the
-// emulator's own lock, never publishMu, so there's no re-entrancy.
+// It reads cells through the *Locked helpers and the emulator
+// directly, since the public CellAt / ScrollbackCellAt take
+// publishMu themselves.
 func (t *Terminal) SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) ([][]uv.Cell, int, uint64) {
 	t.publishMu.Lock()
 	defer t.publishMu.Unlock()
@@ -942,9 +971,9 @@ func (t *Terminal) SnapshotWindow(scrollOffset, asOfSbLen, rows, cols int) ([][]
 		for col := 0; col < cols; col++ {
 			var c *uv.Cell
 			if contentIdx >= 0 && contentIdx < sbLen {
-				c = t.ScrollbackCellAt(col, contentIdx)
+				c = t.scrollbackCellAtLocked(col, contentIdx)
 			} else if contentIdx >= sbLen {
-				c = t.CellAt(col, contentIdx-sbLen)
+				c = t.Emu.CellAt(col, contentIdx-sbLen)
 			}
 			if c != nil {
 				line[col] = *c

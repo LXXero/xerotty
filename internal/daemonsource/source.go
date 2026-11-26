@@ -265,13 +265,21 @@ func (s *Source) Height() int {
 // RenderGeneration implements renderer.EmulatorView — see renderGen.
 func (s *Source) RenderGeneration() uint64 { return s.renderGen.Load() }
 
+// CellAt returns a copy of the grid cell, taken under s.mu like
+// ScrollbackCellAt's. The emulator hands back a pointer into its live
+// grid, which the router rewrites under s.mu, so reading through that
+// pointer after the emulator's own lock was released (link hover,
+// selection, search) raced the router. The renderer reads through
+// SnapshotWindow, not this, so the per-cell lock costs no frame time.
 func (s *Source) CellAt(col, row int) *uv.Cell {
-	// No s.mu here: s.emu is set once at construction and never
-	// reassigned, and SafeEmulator is internally synchronized — the
-	// outer lock added nothing but per-cell mutex+defer overhead
-	// (perf-visible under animation). Frame coherence is unchanged:
-	// per-cell reads could always interleave with router applies.
-	return s.emu.CellAt(col, row)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.emu.CellAt(col, row)
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
 }
 
 // SnapshotViewport returns a consistent copy of the shadow
