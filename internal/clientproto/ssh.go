@@ -92,6 +92,33 @@ func sockExists(p string) bool {
 	return err == nil && st.Mode()&os.ModeSocket != 0
 }
 
+// forwardStderr passes transport stderr on to the process's own
+// stderr without ever blocking the writer: chunks queue for one
+// goroutine that writes them out, and are dropped while the queue is
+// full. Losing log lines beats wedging a connection's Close.
+var forwardStderr io.Writer = newDroppingWriter(os.Stderr, 64)
+
+type droppingWriter struct{ ch chan []byte }
+
+func newDroppingWriter(w io.Writer, depth int) *droppingWriter {
+	d := &droppingWriter{ch: make(chan []byte, depth)}
+	go func() {
+		for b := range d.ch {
+			_, _ = w.Write(b)
+		}
+	}()
+	return d
+}
+
+func (d *droppingWriter) Write(p []byte) (int, error) {
+	b := append([]byte(nil), p...)
+	select {
+	case d.ch <- b:
+	default:
+	}
+	return len(p), nil
+}
+
 // tailBuffer keeps the last few KB written to it — enough to carry
 // ssh's parting words ("Permission denied (publickey)", host key
 // complaints) into our error messages.
@@ -156,8 +183,11 @@ func dialCommandEnv(env []string, name string, args ...string) (*Client, error) 
 	// Tee the transport's stderr: visible for CLI users, captured so
 	// handshake failures can say WHY the transport died ("Permission
 	// denied (publickey)") instead of a bare EOF.
+	// The copy to our own stderr never blocks (forwardStderr): Wait
+	// waits for the goroutine copying the transport's stderr, so a GUI
+	// whose stderr nobody reads would otherwise hang Close.
 	tail := &tailBuffer{}
-	cmd.Stderr = io.MultiWriter(os.Stderr, tail)
+	cmd.Stderr = io.MultiWriter(forwardStderr, tail)
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%s start: %w", name, err)

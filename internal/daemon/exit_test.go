@@ -22,6 +22,7 @@ import (
 func TestDaemonChildExitFiresFrame(t *testing.T) {
 	sockPath := filepath.Join(testutil.SockDir(t), "xerottyd.sock")
 	cfg := config.Default()
+	cfg.Shell = "/bin/sh" // the login shell can take seconds to start under load
 	d := daemon.New(&cfg, sockPath)
 
 	doneRun := make(chan error, 1)

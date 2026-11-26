@@ -72,3 +72,27 @@ func TestCloseReturnsWhileAGrandchildHoldsStderr(t *testing.T) {
 		t.Fatal("Close still waiting on the grandchild's stderr after 10s")
 	}
 }
+
+// blockedWriter never returns from Write, like a stderr pipe nobody
+// reads.
+type blockedWriter struct{}
+
+func (blockedWriter) Write(p []byte) (int, error) { select {} }
+
+// Forwarding transport stderr never blocks the copier, even when our
+// own stderr does: Close waits for that copier.
+func TestDroppingWriterNeverBlocks(t *testing.T) {
+	w := newDroppingWriter(blockedWriter{}, 4)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			_, _ = w.Write([]byte("ssh: some log line\n"))
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Write blocked behind a stalled stderr")
+	}
+}

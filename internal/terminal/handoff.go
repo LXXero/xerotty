@@ -118,6 +118,10 @@ func (t *Terminal) ReleaseForHandoff() (ptmx *os.File, childPID int, disk *DiskS
 // AdoptSpec is everything Adopt needs to rebuild a Terminal around
 // inherited plumbing.
 type AdoptSpec struct {
+	// Held leaves the PTY unread until Start, as NewDaemonHostedHeld
+	// does, so the adopter can wire its callbacks first.
+	Held bool
+
 	Ptmx     *os.File
 	ChildPID int
 	Cols     int
@@ -257,7 +261,9 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 	}
 	_, _ = emu.Write([]byte(cup))
 
-	t.Start()
+	if !spec.Held {
+		t.Start()
+	}
 	return t, nil
 }
 

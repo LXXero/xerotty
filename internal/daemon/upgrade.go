@@ -206,7 +206,10 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 			ts.DiskOffsets, ts.DiskSize)
 	}
 	margins, charsets := emuSpec(ts)
+	// Held until the tab's callbacks are wired below, so output the
+	// program wrote around the upgrade fires its events into them.
 	term, err := terminal.Adopt(terminal.AdoptSpec{
+		Held: true,
 		Ptmx: ptmx, ChildPID: ts.ChildPID,
 		Cols: ts.Cols, Rows: ts.Rows,
 		Screen:    protoToUV(ts.Screen),
@@ -242,6 +245,7 @@ func (s *Session) restoreTab(ts handoff.TabState) error {
 	}
 	s.mu.Unlock()
 	s.wireTabCallbacks(t)
+	term.Start()
 	return nil
 }
 

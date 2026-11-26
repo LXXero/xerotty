@@ -609,18 +609,24 @@ func (t *Terminal) mirrorNewLines(disk *DiskScrollback) (mirrored, memLen int) {
 func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, memLen int) {
 	// disk.Len() and memMirrored are read as one pair under t.mu —
 	// mirrorNewLines changes them together under it, so the pair is
-	// never half-updated. memLen is read after: ingest only grows it
-	// (genuinely new lines) and the trim shrinks it only once every
-	// line is mirrored, which the clamp below absorbs.
-	t.mu.Lock()
-	disk = t.disk
-	mirrored := t.memMirrored
-	diskLen := 0
-	if disk != nil {
-		diskLen = disk.Len()
+	// never half-updated. memLen is read after, outside t.mu (reading
+	// it under t.mu would take the emulator lock inside mu, the
+	// reverse of ingest's Bell callback). Ingest only grows memLen,
+	// and the trim shrinks it only once every line is mirrored, which
+	// the clamp below absorbs — but only if no new line arrived
+	// between the trim and this read: a pair read before the trim
+	// then clamps those new lines away and undercounts. The trim
+	// always changes memMirrored, so re-reading the pair and retrying
+	// when it moved rules that out.
+	var mirrored, diskLen int
+	for {
+		disk, mirrored, diskLen = t.mirrorPair()
+		memLen = t.Emu.ScrollbackLen()
+		d2, m2, l2 := t.mirrorPair()
+		if d2 == disk && m2 == mirrored && l2 == diskLen {
+			break
+		}
 	}
-	t.mu.Unlock()
-	memLen = t.Emu.ScrollbackLen()
 	if disk == nil {
 		return nil, memLen, 0, memLen
 	}
@@ -629,6 +635,19 @@ func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, me
 	}
 	total = diskLen + memLen - mirrored
 	return disk, total, total - memLen, memLen
+}
+
+// mirrorPair reads the disk store, memMirrored and disk.Len() under
+// t.mu, the set mirrorNewLines and the trim update together.
+func (t *Terminal) mirrorPair() (disk *DiskScrollback, mirrored, diskLen int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	disk = t.disk
+	mirrored = t.memMirrored
+	if disk != nil {
+		diskLen = disk.Len()
+	}
+	return disk, mirrored, diskLen
 }
 
 // ScrollbackLen returns total scrollback length (disk + in-memory).

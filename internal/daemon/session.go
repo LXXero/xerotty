@@ -516,12 +516,15 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	}
 	s.revision++
 	s.mu.Unlock()
+	s.record(tabevents.Event{Kind: tabevents.TabCreated, Tab: t.ID, Name: name})
+	// Start before telling the supervisor: that write has no deadline,
+	// and a stalled supervisor must not leave a published tab with no
+	// PTY reader or child waiter.
+	term.Start()
 	// Outside the lock: dups fds and talks to the supervisor.
 	if s.daemon != nil {
 		s.daemon.tabSpawned(t)
 	}
-	s.record(tabevents.Event{Kind: tabevents.TabCreated, Tab: t.ID, Name: name})
-	term.Start()
 	return t, w, nil
 }
 

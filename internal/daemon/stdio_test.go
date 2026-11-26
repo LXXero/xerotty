@@ -25,6 +25,7 @@ func TestDaemonStdioTransport(t *testing.T) {
 	cRead, dWrite := io.Pipe()
 
 	cfg := config.Default()
+	cfg.Shell = "/bin/sh" // the login shell can take seconds to start under load
 	d := daemon.New(&cfg, "")
 
 	daemonConn := protocol.NewStdioConn(dRead, dWrite)
