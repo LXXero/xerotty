@@ -108,7 +108,10 @@ func TestRemoteDialConnectsOffTheRenderThread(t *testing.T) {
 	}
 	src.Close()
 
-	// A second request for the same host is served at once.
+	// A second request for the same host is served at once, and
+	// closes the connect dialog it was typed into (there is no dial
+	// to close it).
+	w.connectingHost, w.connectBuffer = true, "kh"
 	var again *remoteHubEntry
 	w.withRemoteHub("kh", func(e *remoteHubEntry) error {
 		again = e
@@ -116,6 +119,9 @@ func TestRemoteDialConnectsOffTheRenderThread(t *testing.T) {
 	})
 	if again != got {
 		t.Fatal("second request did not reuse the registered hub synchronously")
+	}
+	if w.connectingHost {
+		t.Fatal("connect dialog left open after connecting to an attached host")
 	}
 }
 

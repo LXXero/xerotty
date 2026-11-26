@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
@@ -273,6 +274,14 @@ func (w *Window) withRemoteHub(hostName string, use func(*remoteHubEntry) error)
 	if e := a.lookupRemoteHub(hostName); e != nil {
 		if err := use(e); err != nil {
 			w.remoteOpenFailed(hostName, err)
+			return
+		}
+		// "Connect to host…" for a host that is already connected
+		// never dials, so nothing else closes the dialog it was
+		// typed into.
+		if w.connectingHost && !w.connectPending && strings.TrimSpace(w.connectBuffer) == hostName {
+			w.connectingHost = false
+			w.connectError = ""
 		}
 		return
 	}
