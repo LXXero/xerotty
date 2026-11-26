@@ -121,16 +121,18 @@ none; the agent opens what it needs with `create_tab`.
 
 `host` is a `[[hosts]]` name or a destination typed into the connect
 dialog this session (both dial with their saved settings), or else an
-ssh destination: a host name, `~/.ssh/config` alias or IP address with
-optional `user@` and `:port`, made of letters, digits and `. _ - @ : [ ]`
-only, not starting with `-`. Anything else (whitespace, `=`, `/`, `%`,
-shell metacharacters) is refused before ssh runs, and ssh is always
-given `--` before the destination. `host` becomes the host namespace
+ssh destination: `[user@]host[:port]`, where user and host are letters,
+digits, `.`, `_` and `-` (not starting with `-`) and port is 1-65535,
+or `[user@]` and a bare IPv6 address (no port). Anything else
+(whitespace, `=`, `/`, `%`, brackets, quotes, shell metacharacters, an
+empty user) is refused before ssh runs; a host that needs more goes in
+`[[hosts]]`. ssh is always given `--` before the destination. `host` becomes the host namespace
 in tab ids. `local` never dials. Calling it for an attached host
 returns `already_attached: true`, and concurrent calls for one host
-share one dial. The handshake is bounded at 45s; `attach_host` waits
-up to 60s, then gives up and cancels the dial unless a manual attach
-is waiting on it too. `create_tab` with a host that is not attached
+share one dial. Every remote dial, manual or not, gives up 45s after
+ssh starts if the daemon has not answered. `attach_host` waits up to
+60s, then gives up and cancels the dial unless a manual attach is
+waiting on it too. `create_tab` with a host that is not attached
 attaches it first. Both run in line, so calls on one connection are
 answered in the order sent.
 `list_hosts` lists the attached hosts and the ones the GUI knows of,

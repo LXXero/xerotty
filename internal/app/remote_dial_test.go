@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,5 +232,40 @@ func TestRemoteDialSkipsClosedWindow(t *testing.T) {
 	pollUntil(t, a, func() bool { return a.lookupRemoteHub("kh") != nil })
 	if used {
 		t.Fatal("use ran for a closed window")
+	}
+}
+
+// A host that accepts the connection but never answers the Hello is
+// given up on at the handshake deadline, not waited on forever.
+func TestRemoteDialHandshakeDeadline(t *testing.T) {
+	sock := filepath.Join(testutil.SockDir(t), "silent.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // hold it open, say nothing
+		}
+	}()
+	remoteHandshakeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { remoteHandshakeTimeout = 45 * time.Second })
+	a := &App{cfg: config.Default()}
+	cli, err := clientproto.Dial(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, _, err = a.finishRemoteDial("silent", cli, nil, protocol.ProtocolVersion)
+	if err == nil || !strings.Contains(err.Error(), "no answer from silent") {
+		t.Fatalf("finishRemoteDial err = %v, want the handshake deadline", err)
+	}
+	if d := time.Since(start); d > 3*time.Second {
+		t.Fatalf("gave up after %s, want about %s", d, remoteHandshakeTimeout)
 	}
 }

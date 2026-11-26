@@ -485,6 +485,10 @@ func (t *Terminal) applyScrollbackConfig(cfg *config.Config) {
 // config to a running terminal. Called from the preferences-apply
 // path when the user changes scrollback settings without quitting.
 func (t *Terminal) SetScrollbackFromConfig(cfg *config.Config) {
+	// publishMu first, as in resize: resizing the ring rewrites cells
+	// CellAt and ScrollbackCellAt copy under publishMu.
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.applyScrollbackConfig(cfg)
@@ -701,6 +705,21 @@ func (t *Terminal) CellAt(col, row int) *uv.Cell {
 	return copyCell(t.Emu.CellAt(col, row))
 }
 
+// GridRow returns a copy of one row of the live grid, cols long,
+// under one publishMu hold: link hover reads whole rows, and CellAt
+// per column would take the lock once per cell.
+func (t *Terminal) GridRow(row, cols int) []uv.Cell {
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
+	out := make([]uv.Cell, cols)
+	for col := range out {
+		if c := t.Emu.CellAt(col, row); c != nil {
+			out[col] = *c
+		}
+	}
+	return out
+}
+
 // copyCell returns a copy of c, or nil.
 func copyCell(c *uv.Cell) *uv.Cell {
 	if c == nil {
@@ -764,6 +783,14 @@ func (t *Terminal) resize(cols, rows int) (r any, stack []byte) {
 			stack = debug.Stack()
 		}
 	}()
+	// publishMu before mu (the order ingest and ClearScrollback use):
+	// the emulator resize rewrites cells that CellAt and
+	// ScrollbackCellAt copy under publishMu, and holding it keeps
+	// resize and ingest apart. Without it, resize held mu while
+	// waiting for the emulator lock, and ingest held the emulator lock
+	// while the Bell callback waited for mu.
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.cols = cols

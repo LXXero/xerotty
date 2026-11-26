@@ -62,6 +62,12 @@ type scrollbackRowReader interface {
 	ScrollbackRow(row, cols int) []uv.Cell
 }
 
+// gridRowReader is the same for the live grid: one lock per row
+// instead of one per cell.
+type gridRowReader interface {
+	GridRow(row, cols int) []uv.Cell
+}
+
 // linkRows reads whole rows by content index (0 = oldest scrollback
 // row), the same index space above and below the live screen.
 type linkRows struct {
@@ -81,6 +87,8 @@ func (r linkRows) row(idx int) []uv.Cell {
 		if sr, ok := r.g.(scrollbackRowReader); ok {
 			return sr.ScrollbackRow(idx, r.cols)
 		}
+	} else if gr, ok := r.g.(gridRowReader); ok {
+		return gr.GridRow(idx-r.sbLen, r.cols)
 	}
 	out := make([]uv.Cell, r.cols)
 	for col := range out {

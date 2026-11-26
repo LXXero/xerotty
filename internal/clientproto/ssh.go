@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -222,35 +223,68 @@ func (sshAddr) Network() string  { return "ssh" }
 func (a sshAddr) String() string { return "ssh:" + string(a) }
 
 // ValidSSHDest checks a destination that came from an untrusted
-// caller (an MCP client), before it is handed to ssh. It accepts a
-// host name, IPv4 or bracketed IPv6 address, an optional "user@" and
-// an optional ":port": letters, digits and . _ - @ : [ ] only, no
-// leading "-", and at most one "@". Whitespace, "=", "/", "%" and
-// shell metacharacters are refused, so the value can be neither an
-// ssh option nor anything ssh would expand into a ProxyCommand.
+// caller (an MCP client), before it is handed to ssh. Accepted:
+//
+//	[user@]host[:port]  host a name or IPv4 address, port 1-65535
+//	[user@]ipv6         a bare IPv6 address (hex digits, ':' and '.'),
+//	                    no port: ssh has no way to take one with it
+//	                    in the destination
+//
+// user and host names are letters, digits, '.', '_' and '-', and
+// neither may start with '-'. Everything else (whitespace, '=', '/',
+// '%', brackets, quotes, shell metacharacters, an empty user) is
+// refused, so the value can be neither an ssh option nor anything
+// ssh would expand into a ProxyCommand. Hosts needing more (an IPv6
+// address with a port, options) go in [[hosts]].
 func ValidSSHDest(dest string) error {
+	bad := func(why string) error { return fmt.Errorf("ssh destination %q %s", dest, why) }
 	if dest == "" {
 		return fmt.Errorf("empty ssh destination")
 	}
 	if len(dest) > 255 {
 		return fmt.Errorf("ssh destination longer than 255 bytes")
 	}
-	if dest[0] == '-' {
-		return fmt.Errorf("ssh destination %q starts with '-'", dest)
-	}
-	if strings.Count(dest, "@") > 1 {
-		return fmt.Errorf("ssh destination %q has more than one '@'", dest)
-	}
-	for _, r := range dest {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case strings.ContainsRune("._-@:[]", r):
-		default:
-			return fmt.Errorf("ssh destination %q contains %q; allowed are letters, digits and . _ - @ : [ ]", dest, r)
+	host := dest
+	if at := strings.IndexByte(dest, '@'); at >= 0 {
+		user := dest[:at]
+		host = dest[at+1:]
+		if !validSSHName(user) {
+			return bad("has an empty or invalid user name; allowed are letters, digits, '.', '_' and '-', not starting with '-'")
 		}
 	}
-	if at := strings.IndexByte(dest, '@'); at >= 0 && (at == len(dest)-1 || dest[at+1] == '-') {
-		return fmt.Errorf("ssh destination %q has no valid host after '@'", dest)
+	switch strings.Count(host, ":") {
+	case 0:
+	case 1:
+		name, port, _ := strings.Cut(host, ":")
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 || port[0] == '0' || port[0] == '+' {
+			return bad("has an invalid port; use 1-65535")
+		}
+		host = name
+	default:
+		for _, r := range host {
+			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F' || r == ':' || r == '.') {
+				return bad("is not a valid IPv6 address; an IPv6 host with a port needs a [[hosts]] entry")
+			}
+		}
+		return nil
+	}
+	if !validSSHName(host) {
+		return bad("has an empty or invalid host; allowed are letters, digits, '.', '_' and '-', not starting with '-'")
 	}
 	return nil
+}
+
+// validSSHName reports whether s is a non-empty user or host name
+// made of letters, digits, '.', '_' and '-', not starting with '-'.
+func validSSHName(s string) bool {
+	if s == "" || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }

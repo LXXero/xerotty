@@ -282,6 +282,20 @@ func (s *Source) CellAt(col, row int) *uv.Cell {
 	return &cp
 }
 
+// GridRow returns a copy of one row of the live grid, cols long,
+// under one s.mu hold (link hover reads whole rows).
+func (s *Source) GridRow(row, cols int) []uv.Cell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]uv.Cell, cols)
+	for col := range out {
+		if c := s.emu.CellAt(col, row); c != nil {
+			out[col] = *c
+		}
+	}
+	return out
+}
+
 // SnapshotViewport returns a consistent copy of the shadow
 // emulator's current viewport. Holds s.mu for the duration so
 // concurrent applyCellFull/applyCellDiff can't write into the

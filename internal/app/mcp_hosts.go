@@ -111,7 +111,10 @@ func (a *App) AttachHost(ctx context.Context, host string) (bool, error) {
 	}
 	// Abandon on the render thread, where the request's state lives.
 	// A result that got there first wins, so a caller is never told
-	// the attach failed when it went through.
+	// the attach failed when it went through. There is no second
+	// timeout: the render thread answers one way or the other, and
+	// guessing while it is busy could report a failure the attach
+	// then contradicts.
 	abandoned := make(chan struct{})
 	a.postMain(func() {
 		a.abandonAttach(req)
@@ -126,8 +129,6 @@ func (a *App) AttachHost(ctx context.Context, host string) (bool, error) {
 			return r.already, r.err
 		default:
 		}
-		return false, why
-	case <-time.After(10 * time.Second):
 		return false, why
 	}
 }
@@ -163,9 +164,12 @@ func (a *App) attachHostMain(req *attachRequest) {
 			req.answer(false, err)
 			return
 		}
-		// The window that showed the dial may have closed meanwhile;
-		// adopt into whichever window is current now.
-		target := a.attachWindow()
+		// Adopt into the window that showed the dial, as the menu
+		// does; if it closed meanwhile, into the current window.
+		target := w
+		if !a.windowAlive(target) {
+			target = a.attachWindow()
+		}
 		if target == nil {
 			req.answer(false, nil)
 			return
@@ -325,7 +329,8 @@ func sshConfigHosts(path string) []string {
 // sshConfigLine splits one ssh_config line into its keyword and
 // arguments: the keyword ends at whitespace or "=" ("Host=a" and
 // "Host = a" are both allowed), arguments are split on whitespace
-// with double quotes grouping, and an unquoted "#" starts a comment.
+// with double or single quotes grouping, and an unquoted "#" starts
+// a comment.
 func sshConfigLine(line string) (string, []string) {
 	line = strings.TrimLeft(line, " \t")
 	end := strings.IndexAny(line, " \t=")
@@ -340,11 +345,16 @@ func sshConfigLine(line string) (string, []string) {
 	}
 	var args []string
 	var cur strings.Builder
-	inQuote, have := false, false
+	var quote rune // the open quote character, 0 outside quotes
+	have := false
 	for _, r := range rest {
+		inQuote := quote != 0
 		switch {
-		case r == '"':
-			inQuote = !inQuote
+		case r == quote:
+			quote = 0
+			have = true
+		case !inQuote && (r == '"' || r == '\''):
+			quote = r
 			have = true
 		case !inQuote && r == '#':
 			if have {

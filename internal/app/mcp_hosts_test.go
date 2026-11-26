@@ -134,7 +134,7 @@ func TestAttachHostReportsDialFailure(t *testing.T) {
 	// Values that could be ssh options or reach a shell never dial;
 	// neither does "local" when there is no local hub.
 	for _, bad := range []string{"-oProxyCommand=touch x", "-p", "a b", " xhtpc", "x=y", "h;id", "h$(id)", "h`id`",
-		"h|id", "a@b@c", "user@-x", "ssh://h", "h/x", "h%d", "local"} {
+		"h|id", "a@b@c", "user@-x", "@h", "h:0", "[::1]:22", "ssh://h", "h/x", "h%d", "local"} {
 		done, _, err := attachAsync(a, bad)
 		runFrames(t, a, done)
 		if *err == nil {
@@ -181,18 +181,48 @@ func TestAttachHostReportsDialFailure(t *testing.T) {
 	if a.lookupRemoteHub("slow") != nil || w.connectPending || w.connectingHost {
 		t.Fatalf("after the timeout: hub %v, dialog pending=%v open=%v", a.lookupRemoteHub("slow") != nil, w.connectPending, w.connectingHost)
 	}
+
+	// The same timeout leaves alone a dial that a manual Reattach is
+	// waiting on too: the user still wants it.
+	cancelled = make(chan struct{})
+	done, _, err = attachAsync(a, "shared")
+	deadline := time.Now().Add(5 * time.Second)
+	for a.remoteDials["shared"] == nil && time.Now().Before(deadline) {
+		a.drainMainCalls()
+		time.Sleep(5 * time.Millisecond)
+	}
+	manual := false
+	w.withRemoteHub("shared", func(*remoteHubEntry) error { manual = true; return nil })
+	runFrames(t, a, done)
+	if *err == nil {
+		t.Fatal("shared AttachHost should time out")
+	}
+	select {
+	case <-cancelled:
+		t.Fatal("an MCP timeout cancelled a dial a manual Reattach was waiting on")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if a.remoteDials["shared"] == nil {
+		t.Fatal("shared dial no longer in flight")
+	}
+	a.cancelRemoteDial("shared")
+	<-cancelled
+	pollUntil(t, a, func() bool { return len(a.remoteDialsDraining) == 0 })
+	if manual {
+		t.Fatal("manual request ran for a cancelled dial")
+	}
 }
 
 func TestSSHConfigHosts(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config")
 	cfg := "Host *\n  ServerAliveInterval 60\nHost kh zx # two names\n  HostName kh.example\n" +
 		"host=xwork\nHost !bad 192.168.1.1 web?\nMatch host foo\nHost kh\n" +
-		"Host \"quoted\"\n\tHost = spaced\n# Host commented\n"
+		"Host \"quoted\" 'single'\n\tHost = spaced\n# Host commented\n"
 	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := sshConfigHosts(p)
-	want := []string{"kh", "zx", "xwork", "192.168.1.1", "quoted", "spaced"}
+	want := []string{"kh", "zx", "xwork", "192.168.1.1", "quoted", "single", "spaced"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("sshConfigHosts = %v, want %v", got, want)
 	}

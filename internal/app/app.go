@@ -1140,11 +1140,14 @@ func adoptIntoWindow(w *Window, hostName string, hub *daemonsource.Hub, snap dae
 // half-made connection out from under the handshake so the blocked
 // read below fails promptly.
 func (a *App) dialRemoteDaemon(name string, host config.RemoteHost, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+	// One handshake budget covers the version fallback's second dial
+	// too, so a dial never takes longer than remoteHandshakeTimeout.
+	deadline := time.Now().Add(remoteHandshakeTimeout)
 	cli, err := clientproto.DialSSH(host.SSHDest, host.RemoteCmd, host.SSHArgs)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, err)
 	}
-	c, att, err := a.finishRemoteDial(name, cli, cancel, protocol.ProtocolVersion)
+	c, att, err := a.finishRemoteDialBy(name, cli, cancel, protocol.ProtocolVersion, deadline)
 	// A daemon one protocol version behind refuses the Hello and closes
 	// the connection: dial again and speak its version.
 	var refused *clientproto.VersionRefusedError
@@ -1153,7 +1156,7 @@ func (a *App) dialRemoteDaemon(name string, host config.RemoteHost, cancel <-cha
 		if derr != nil {
 			return nil, nil, fmt.Errorf("dial ssh %s: %w", host.SSHDest, derr)
 		}
-		return a.finishRemoteDial(name, cli, cancel, refused.Server)
+		return a.finishRemoteDialBy(name, cli, cancel, refused.Server, deadline)
 	}
 	return c, att, err
 }
@@ -1166,45 +1169,78 @@ var remoteHandshakeTimeout = 45 * time.Second
 // Split from dialRemoteDaemon so a test can hand it a client that
 // reached a daemon without ssh.
 func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-chan struct{}, version uint16) (*clientproto.Client, *protocol.Attached, error) {
-	// settled stops the cancel watcher once the client is handed to
-	// the caller; a cancel that lands after that is the caller's to
-	// apply (pollRemoteDials closes a connection it no longer wants).
-	// The timer bounds the Hello read, which has no deadline of its
-	// own: a host that accepts ssh but never answers would otherwise
-	// hold the dial, and the connect dialog, until the user cancels.
+	return a.finishRemoteDialBy(name, cli, cancel, version, time.Now().Add(remoteHandshakeTimeout))
+}
+
+// finishRemoteDialBy is finishRemoteDial with the handshake's
+// deadline given. A watcher closes the client when cancel closes or
+// the deadline passes; the Hello read has no deadline of its own, so
+// a host that accepts ssh but never answers would otherwise hold the
+// dial, and the connect dialog, until the user cancels.
+//
+// Exactly one side takes the client: the caller gets it once the
+// handshake completes, or the watcher closes it. claim decides which,
+// so a handshake that completes as the deadline passes is never
+// handed back already closed.
+func (a *App) finishRemoteDialBy(name string, cli *clientproto.Client, cancel <-chan struct{}, version uint16, deadline time.Time) (*clientproto.Client, *protocol.Attached, error) {
+	var mu sync.Mutex
+	claimed, timedOut := false, false
+	claim := func(timeout bool) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if claimed {
+			return false
+		}
+		claimed, timedOut = true, timeout
+		return true
+	}
+	failure := func(err error) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if timedOut {
+			return fmt.Errorf("no answer from %s within %s", name, remoteHandshakeTimeout)
+		}
+		if claimed {
+			return errRemoteDialCancelled
+		}
+		return err
+	}
 	settled := make(chan struct{})
 	defer close(settled)
-	var timedOut atomic.Bool
 	go func() {
-		t := time.NewTimer(remoteHandshakeTimeout)
+		t := time.NewTimer(time.Until(deadline))
 		defer t.Stop()
+		timeout := false
 		select {
 		case <-cancel:
-			_ = cli.Close()
 		case <-t.C:
-			timedOut.Store(true)
-			_ = cli.Close()
+			timeout = true
 		case <-settled:
+			return
+		}
+		if claim(timeout) {
+			_ = cli.Close()
 		}
 	}()
 	if _, err := cli.HelloVersion("xerotty-gui:"+name, version); err != nil {
 		_ = cli.Close()
-		if timedOut.Load() {
-			return nil, nil, fmt.Errorf("no answer from %s within %s", name, remoteHandshakeTimeout)
-		}
-		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
+		return nil, nil, failure(fmt.Errorf("hello to %s: %w", name, err))
 	}
 	go cli.Run()
 	if err := cli.Attach("", false); err != nil {
 		_ = cli.Close()
-		return nil, nil, fmt.Errorf("attach to %s: %w", name, err)
+		return nil, nil, failure(fmt.Errorf("attach to %s: %w", name, err))
 	}
 	select {
 	case attached := <-cli.Attached():
+		if !claim(false) {
+			_ = cli.Close()
+			return nil, nil, failure(nil)
+		}
 		return cli, attached, nil
 	case <-time.After(5 * time.Second):
 		_ = cli.Close()
-		return nil, nil, fmt.Errorf("no Attached response from %s within 5s", name)
+		return nil, nil, failure(fmt.Errorf("no Attached response from %s within 5s", name))
 	}
 }
 
@@ -1285,10 +1321,10 @@ func normalizeSSHDest(in string) string {
 	if s == "" || strings.Contains(s, "://") {
 		return s
 	}
-	// Only treat the LAST colon as a port separator, and only when
-	// what follows is all digits — leaves IPv6 literals and aliases
-	// containing colons alone.
-	if i := strings.LastIndex(s, ":"); i > 0 && i < len(s)-1 {
+	// Only a single colon followed by digits is a port: an IPv6
+	// literal has several, and rewriting "2001:db8::1" as a URI
+	// made ssh refuse it.
+	if i := strings.LastIndex(s, ":"); i > 0 && i < len(s)-1 && strings.Count(s, ":") == 1 {
 		port := s[i+1:]
 		allDigits := true
 		for _, r := range port {

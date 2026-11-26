@@ -162,7 +162,9 @@ func (a *App) pollRemoteDials() {
 		select {
 		case res := <-d.done:
 			if res.cli != nil {
-				_ = res.cli.Close()
+				// Close waits for ssh to exit, with no deadline; never
+				// on the render thread.
+				go res.cli.Close()
 			}
 		default:
 			keep = append(keep, d)
@@ -179,7 +181,7 @@ func (a *App) pollRemoteDials() {
 // and the existing entry returned.
 func (a *App) registerRemoteHub(name string, cli *clientproto.Client, attached *protocol.Attached) *remoteHubEntry {
 	if e := a.lookupRemoteHub(name); e != nil {
-		_ = cli.Close()
+		go cli.Close() // waits for ssh; see pollRemoteDials
 		return e
 	}
 	host, _ := a.resolveRemote(name)
