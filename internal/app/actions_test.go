@@ -105,3 +105,19 @@ func TestMenuAddOptionsMirrorRegistry(t *testing.T) {
 		}
 	}
 }
+
+func TestClientLabel(t *testing.T) {
+	for id, want := range map[string]string{
+		"xerotty-gui@xLap":   "GUI on xLap",
+		"xerotty-gui:xryzen": "xerotty-gui:xryzen", // a GUI older than the hostname IDs
+		"xerotty-gui@":       "xerotty-gui@",
+		"connect":            "connect",
+	} {
+		if got := clientLabel(id); got != want {
+			t.Errorf("clientLabel(%q) = %q, want %q", id, got, want)
+		}
+	}
+	if id := guiClientID(); !strings.HasPrefix(id, "xerotty-gui") || strings.Contains(id, ".") {
+		t.Errorf("guiClientID() = %q", id)
+	}
+}

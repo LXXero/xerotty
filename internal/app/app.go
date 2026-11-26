@@ -670,6 +670,37 @@ func (a *App) refreshClientsMenu() {
 // snapshot: one line per attached client per hub, click = kick. The
 // requester's own GUI is labeled — kicking yourself just forces a
 // reconnect, but you should know you're doing it.
+// guiClientIDPrefix starts the client ID this GUI gives every daemon
+// it connects to; the rest is the machine it runs on.
+const guiClientIDPrefix = "xerotty-gui@"
+
+// guiClientID names this GUI to a daemon: "xerotty-gui@<hostname>".
+// The hostname is what the Clients menu on every other machine shows,
+// and it makes the ID unique per machine, so disconnecting one
+// machine's GUI from a shared daemon does not disconnect the others
+// (a kick matches by client ID, and the IDs used to be the same on
+// every machine).
+func guiClientID() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "xerotty-gui"
+	}
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		host = host[:i]
+	}
+	return guiClientIDPrefix + host
+}
+
+// clientLabel is a client ID as the Clients menu shows it: a GUI's
+// ID becomes "GUI on <hostname>"; anything else (an older GUI, the
+// connect CLI, an agent) is shown as it named itself.
+func clientLabel(id string) string {
+	if host, ok := strings.CutPrefix(id, guiClientIDPrefix); ok && host != "" {
+		return "GUI on " + host
+	}
+	return id
+}
+
 func (a *App) clientsSubmenu() []config.MenuItem {
 	a.clientsMenuMu.Lock()
 	data := a.clientsMenuData
@@ -682,7 +713,7 @@ func (a *App) clientsSubmenu() []config.MenuItem {
 	var out []config.MenuItem
 	for _, name := range names {
 		for _, ci := range data[name] {
-			label := name + ": " + ci.ClientID
+			label := name + ": " + clientLabel(ci.ClientID)
 			if ci.LastPongAgoSec >= 10 {
 				label += fmt.Sprintf(" (pong %ds ago)", ci.LastPongAgoSec)
 			}
@@ -1222,7 +1253,7 @@ func (a *App) finishRemoteDialBy(name string, cli *clientproto.Client, cancel <-
 			_ = cli.Close()
 		}
 	}()
-	if _, err := cli.HelloVersion("xerotty-gui:"+name, version); err != nil {
+	if _, err := cli.HelloVersion(guiClientID(), version); err != nil {
 		_ = cli.Close()
 		return nil, nil, failure(fmt.Errorf("hello to %s: %w", name, err))
 	}
@@ -1426,7 +1457,7 @@ func (a *App) dialLocalDaemon() (*clientproto.Client, *protocol.Attached, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, err := cli.Hello("xerotty-gui"); err != nil {
+	if _, err := cli.Hello(guiClientID()); err != nil {
 		_ = cli.Close()
 		// A daemon one protocol version behind refuses the Hello and
 		// closes the connection: dial again and speak its version.
@@ -1437,7 +1468,7 @@ func (a *App) dialLocalDaemon() (*clientproto.Client, *protocol.Attached, error)
 		if cli, err = daemonsource.EnsureLocalDaemon(a.cfg.Tabs.DaemonSocket); err != nil {
 			return nil, nil, err
 		}
-		if _, err := cli.HelloVersion("xerotty-gui", refused.Server); err != nil {
+		if _, err := cli.HelloVersion(guiClientID(), refused.Server); err != nil {
 			_ = cli.Close()
 			return nil, nil, fmt.Errorf("hello: %w", err)
 		}
