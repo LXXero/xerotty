@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +47,31 @@ type fakeBackend struct {
 	// deaf hosts answer non-blocking reads but never wake a blocking
 	// one (it ends only when its context does).
 	deaf map[string]bool
+
+	// Hosts attached through AttachHost, in call order; attachErr
+	// makes AttachHost fail.
+	attached  []string
+	attachErr error
+}
+
+func (f *fakeBackend) AttachHost(_ context.Context, host string) (bool, error) {
+	if f.attachErr != nil {
+		return false, f.attachErr
+	}
+	f.evMu.Lock()
+	defer f.evMu.Unlock()
+	already := slices.Contains(f.attached, host)
+	if !already {
+		f.attached = append(f.attached, host)
+	}
+	return already, nil
+}
+
+func (f *fakeBackend) ListHosts(context.Context) ([]guimcp.HostRef, error) {
+	return []guimcp.HostRef{
+		{Name: "local", Attached: true},
+		{Name: "xhtpc", KnownFrom: []string{"ssh_config"}},
+	}, nil
 }
 
 func (f *fakeBackend) EventHosts() []string {
@@ -53,7 +81,7 @@ func (f *fakeBackend) EventHosts() []string {
 	for h := range f.rings {
 		out = append(out, h)
 	}
-	return out
+	return append(out, f.attached...)
 }
 
 func (f *fakeBackend) WaitEvents(ctx context.Context, host string, q tabevents.Query) (tabevents.Result, error) {
@@ -386,6 +414,10 @@ func TestGUIMCPCreateAndCloseTab(t *testing.T) {
 	if created.TabID != "kh:99" || created.Reused {
 		t.Fatalf("first create: %+v", created)
 	}
+	// kh had no hub, so the create attached it first.
+	if len(fb.attached) != 1 || fb.attached[0] != "kh" {
+		t.Fatalf("attach calls after first create: %v", fb.attached)
+	}
 
 	// Same name again: idempotent reuse.
 	res, rerr = c.call(t, 2, "create_tab", map[string]any{"host": "kh", "name": "build"})
@@ -397,6 +429,9 @@ func TestGUIMCPCreateAndCloseTab(t *testing.T) {
 	}
 	if !created.Reused {
 		t.Fatalf("second create with same name should report reused: %+v", created)
+	}
+	if len(fb.attached) != 1 {
+		t.Fatalf("an attached host was attached again: %v", fb.attached)
 	}
 
 	// Close routes to the backend.
@@ -421,5 +456,65 @@ func TestRenameTabRoutesToBackend(t *testing.T) {
 	}
 	if want := []string{"kh:3=logs", "kh:3="}; len(fb.renamed) != 2 || fb.renamed[0] != want[0] || fb.renamed[1] != want[1] {
 		t.Fatalf("backend rename calls = %v, want %v", fb.renamed, want)
+	}
+}
+
+func TestAttachAndListHosts(t *testing.T) {
+	fb := &fakeBackend{}
+	c, done := dial(t, startServer(t, fb))
+	defer done()
+
+	var got struct {
+		Host    string `json:"host"`
+		Already bool   `json:"already_attached"`
+	}
+	for i, want := range []bool{false, true} {
+		res, rerr := c.call(t, i+1, "attach_host", map[string]any{"host": "xhtpc"})
+		if rerr != nil {
+			t.Fatalf("attach_host: %+v", rerr)
+		}
+		if err := json.Unmarshal(res, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Host != "xhtpc" || got.Already != want {
+			t.Fatalf("attach_host call %d = %+v, want already_attached=%v", i+1, got, want)
+		}
+	}
+	if _, rerr := c.call(t, 3, "attach_host", map[string]any{}); rerr == nil || rerr.Code != -32602 {
+		t.Fatalf("attach_host without host: %+v, want -32602", rerr)
+	}
+
+	res, rerr := c.call(t, 4, "list_hosts", nil)
+	if rerr != nil {
+		t.Fatalf("list_hosts: %+v", rerr)
+	}
+	var hosts struct {
+		Hosts []struct {
+			Name      string   `json:"name"`
+			Attached  bool     `json:"attached"`
+			KnownFrom []string `json:"known_from"`
+		} `json:"hosts"`
+	}
+	if err := json.Unmarshal(res, &hosts); err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts.Hosts) != 2 || !hosts.Hosts[0].Attached || hosts.Hosts[0].KnownFrom == nil ||
+		hosts.Hosts[1].Name != "xhtpc" || hosts.Hosts[1].KnownFrom[0] != "ssh_config" {
+		t.Fatalf("list_hosts = %+v", hosts)
+	}
+}
+
+// A create on a host that cannot be attached reports the attach
+// failure and creates nothing.
+func TestCreateTabAttachFailure(t *testing.T) {
+	fb := &fakeBackend{attachErr: errors.New("ssh: Could not resolve hostname nope")}
+	c, done := dial(t, startServer(t, fb))
+	defer done()
+	_, rerr := c.call(t, 1, "create_tab", map[string]any{"host": "nope", "name": "x"})
+	if rerr == nil || !strings.Contains(rerr.Message, "Could not resolve hostname") {
+		t.Fatalf("create_tab on an unreachable host: %+v", rerr)
+	}
+	if len(fb.created) != 0 {
+		t.Fatalf("tab created despite the failed attach: %v", fb.created)
 	}
 }

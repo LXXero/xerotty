@@ -100,7 +100,7 @@ before use.
 
 GUI aggregator: `list_tabs`, `get_screen`, `get_scrollback`,
 `send_input`, `send_keys`, `send_paste`, `create_tab`, `close_tab`, `rename_tab`,
-`wait_for_events`. `list_tabs`
+`attach_host`, `list_hosts`, `wait_for_events`. `list_tabs`
 returns per-tab metadata for triage without reading every screen:
 cwd, foreground process, dims, exit state, and which tab the user
 has focused. `create_tab` takes `host` (any namespace from
@@ -108,6 +108,24 @@ list_tabs — so an agent can open a tab on a remote daemon) and an
 optional stable `name` for idempotent find-or-create: same name →
 same tab (`reused: true`), no duplicate stacking. Created tabs pop
 into the user's GUI immediately.
+
+`attach_host {host}` connects the GUI to a host it is not attached to
+yet, the way the Remote menu's Reattach does: ssh to the host, run
+`xerotty serve --stdio` there (which starts the host's daemon if none
+is running), and adopt the host's existing tabs into the user's
+active window. The user sees the connect dialog while ssh runs, and a
+failure stays in that dialog as it would for a manual attach. Unlike
+the menu, it opens no new tab when the host has none; the agent opens
+what it needs with `create_tab`. `host` is a `[[hosts]]` name, an
+`~/.ssh/config` alias or any ssh destination, and becomes the host
+namespace in tab ids. Calling it for an attached host returns
+`already_attached: true`. It waits up to 60s for ssh; past that the
+dial carries on in the GUI and a second call waits for it.
+`create_tab` with a host that is not attached attaches it first.
+`list_hosts` lists the attached hosts and the ones the GUI knows of,
+each with `known_from`: `hosts` (`[[hosts]]` in the config), `connect`
+(typed into the connect dialog this session) or `ssh_config` (a
+literal `Host` alias in `~/.ssh/config`; `Include` is not followed).
 
 Per-daemon adds trust management + extras on top of those:
 `create_tab` (same name semantics), `close_tab`, `rename_tab`, `resize_tab`,

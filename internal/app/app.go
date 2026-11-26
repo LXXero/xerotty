@@ -175,6 +175,12 @@ type App struct {
 	launchMu    sync.Mutex
 	launchQueue []launchipc.Request
 
+	// mainCalls holds functions other goroutines (the GUI MCP
+	// server) need run on the render thread; drainMainCalls runs
+	// them once per frame. See mcp_hosts.go.
+	mainCallsMu sync.Mutex
+	mainCalls   []func()
+
 	// pendingProposals is the propose-mode queue across ALL hubs,
 	// each entry tagged with its originating hub + host name so
 	// Approve/Drop resolves against the RIGHT daemon (not just the
@@ -1020,12 +1026,15 @@ func (w *Window) openRemoteWindow(hostName string) {
 // so the action isn't confusingly silent.
 func (w *Window) openRemoteReattach(hostName string) {
 	w.withRemoteHub(hostName, func(entry *remoteHubEntry) error {
-		return w.adoptRemoteWindows(entry, hostName)
+		return w.adoptRemoteWindows(entry, hostName, true)
 	})
 }
 
 // adoptRemoteWindows is the connected half of openRemoteReattach.
-func (w *Window) adoptRemoteWindows(entry *remoteHubEntry, hostName string) error {
+// openIfEmpty opens a new tab on the host when it reported no tabs
+// to adopt; the MCP attach passes false, since its caller opens the
+// tabs it wants with create_tab.
+func (w *Window) adoptRemoteWindows(entry *remoteHubEntry, hostName string, openIfEmpty bool) error {
 	cols, rows := w.gridSize()
 
 	w.app.remoteHubsMu.Lock()
@@ -1034,6 +1043,9 @@ func (w *Window) adoptRemoteWindows(entry *remoteHubEntry, hostName string) erro
 	w.app.remoteHubsMu.Unlock()
 
 	if len(pending) == 0 {
+		if !openIfEmpty {
+			return nil
+		}
 		return w.newRemoteTab(entry, hostName, w.inheritCWDFor(hostName))
 	}
 
@@ -2806,6 +2818,9 @@ func (a *App) Run() error {
 		// Apply any forwarded single-instance launches before the
 		// window walk so a "new window" request renders this frame.
 		a.drainLaunchRequests()
+		// Run work the GUI MCP server handed to the render thread
+		// (attach_host, list_hosts).
+		a.drainMainCalls()
 		// Apply finished ssh dials: register the hub, then run what
 		// the user asked for (new tab, reattach, new window).
 		a.pollRemoteDials()

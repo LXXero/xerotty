@@ -21,6 +21,8 @@
 //	send_keys    {tab_id, text?, keys?[]}
 //	send_paste   {tab_id, text}
 //	create_tab   {host?, name?, cols?, rows?} -> {tab_id, reused}
+//	attach_host  {host}           -> {host, already_attached}
+//	list_hosts                    -> {hosts: [{name, attached, known_from}]}
 //	close_tab    {tab_id}
 //	rename_tab   {tab_id, name}
 //	wait_for_events {cursor?, timeout_ms?, tab_ids?, kinds?, hosts?} -> {events, cursor, missed?, errors?}
@@ -39,6 +41,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -81,6 +84,25 @@ type Backend interface {
 	// up to q.Timeout for a matching event (tabevents.Ring.Read on
 	// that host's daemon). Returns ctx's error if ctx ends first.
 	WaitEvents(ctx context.Context, host string, q tabevents.Query) (tabevents.Result, error)
+	// AttachHost connects the GUI to host's daemon the way the Remote
+	// menu's Reattach does (ssh, `xerotty serve --stdio`, the host's
+	// existing tabs adopted into the GUI). already is true when the
+	// GUI was attached before the call. host is a [[hosts]] name, an
+	// ~/.ssh/config alias or an ssh destination.
+	AttachHost(ctx context.Context, host string) (already bool, err error)
+	// ListHosts lists the hosts the GUI is attached to or knows of.
+	ListHosts(ctx context.Context) ([]HostRef, error)
+}
+
+// HostRef is one host in list_hosts. KnownFrom says where the GUI
+// learned of it: "hosts" ([[hosts]] in the config), "connect" (typed
+// into the connect dialog this session), "ssh_config" (a Host alias
+// in ~/.ssh/config). An attached host may have none of these, as
+// "local" does.
+type HostRef struct {
+	Name      string
+	Attached  bool
+	KnownFrom []string
 }
 
 // TabRef is one tab in the aggregated view. Beyond identity +
@@ -214,20 +236,26 @@ func (s *Server) serve(conn net.Conn) {
 	}
 }
 
-// isBlocking reports whether req is an events wait, which serve runs
-// on its own goroutine.
+// blockingTools are the methods that can wait a long time: an events
+// wait, and anything that may dial a host over ssh or wait for the
+// GUI's render thread. serve runs them on their own goroutines.
+var blockingTools = map[string]bool{
+	"wait_for_events": true,
+	"attach_host":     true,
+	"create_tab":      true,
+	"list_hosts":      true,
+}
+
+// isBlocking reports whether req is one of blockingTools.
 func isBlocking(req *rpcRequest) bool {
-	switch req.Method {
-	case "wait_for_events":
-		return true
-	case "tools/call":
+	if req.Method == "tools/call" {
 		var p struct {
 			Name string `json:"name"`
 		}
 		_ = json.Unmarshal(req.Params, &p)
-		return p.Name == "wait_for_events"
+		return blockingTools[p.Name]
 	}
-	return false
+	return blockingTools[req.Method]
 }
 
 func (s *Server) handle(ctx context.Context, req *rpcRequest) *rpcResponse {
@@ -248,7 +276,8 @@ func (s *Server) handle(ctx context.Context, req *rpcRequest) *rpcResponse {
 				"you are connected to was fixed when this connection was created and cannot switch mid-session, " +
 				"including across GUI restarts and xerotty upgrades.) " +
 				"Use send_keys for keystrokes (named keys: enter, ctrl+c, arrows; {\"text\":\"ls\",\"keys\":[\"enter\"]}) " +
-				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse. get_screen always " +
+				"rather than raw bytes. create_tab takes host + a stable name for idempotent reuse; a host the GUI is not " +
+				"attached to yet is attached first (attach_host does that alone, list_hosts shows the known hosts). get_screen always " +
 				"returns cursor {row,col}; styled=true returns styled runs — faint text at/after the cursor is " +
 				"autocomplete ghost text, NOT user input. To find out when something happens in any tab on any host " +
 				"(an agent finishes or goes idle, a command exits, a bell, a desktop notification), call wait_for_events " +
@@ -272,7 +301,11 @@ func (s *Server) handle(ctx context.Context, req *rpcRequest) *rpcResponse {
 	case "send_paste":
 		return s.sendPaste(req.ID, req.Params)
 	case "create_tab":
-		return s.createTab(req.ID, req.Params)
+		return s.createTab(ctx, req.ID, req.Params)
+	case "attach_host":
+		return s.attachHost(ctx, req.ID, req.Params)
+	case "list_hosts":
+		return s.listHosts(ctx, req.ID)
 	case "close_tab":
 		return s.closeTab(req.ID, req.Params)
 	case "rename_tab":
@@ -303,7 +336,11 @@ func (s *Server) handleToolsCall(ctx context.Context, req *rpcRequest) *rpcRespo
 	case "get_scrollback":
 		inner = s.getScrollback(req.ID, p.Arguments)
 	case "create_tab":
-		inner = s.createTab(req.ID, p.Arguments)
+		inner = s.createTab(ctx, req.ID, p.Arguments)
+	case "attach_host":
+		inner = s.attachHost(ctx, req.ID, p.Arguments)
+	case "list_hosts":
+		inner = s.listHosts(ctx, req.ID)
 	case "close_tab":
 		inner = s.closeTab(req.ID, p.Arguments)
 	case "rename_tab":
@@ -560,7 +597,7 @@ func (s *Server) sendPaste(id json.RawMessage, params json.RawMessage) *rpcRespo
 
 // --- helpers ---
 
-func (s *Server) createTab(id json.RawMessage, params json.RawMessage) *rpcResponse {
+func (s *Server) createTab(ctx context.Context, id json.RawMessage, params json.RawMessage) *rpcResponse {
 	var p struct {
 		Host string `json:"host,omitempty"`
 		Name string `json:"name,omitempty"`
@@ -578,11 +615,50 @@ func (s *Server) createTab(id json.RawMessage, params json.RawMessage) *rpcRespo
 	if p.Rows <= 0 {
 		p.Rows = 24
 	}
+	// A host with no hub yet is attached first, as attach_host would.
+	if p.Host != "" && !slices.Contains(s.backend.EventHosts(), p.Host) {
+		if _, err := s.backend.AttachHost(ctx, p.Host); err != nil {
+			return rpcErrResp(id, -32000, "create tab: attach "+p.Host+": "+err.Error())
+		}
+	}
 	nsID, reused, err := s.backend.CreateTab(p.Host, p.Name, p.Cols, p.Rows)
 	if err != nil {
 		return rpcErrResp(id, -32000, "create tab: "+err.Error())
 	}
 	return okResp(id, map[string]any{"tab_id": nsID, "name": p.Name, "reused": reused})
+}
+
+func (s *Server) attachHost(ctx context.Context, id json.RawMessage, params json.RawMessage) *rpcResponse {
+	var p struct {
+		Host string `json:"host"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return rpcErrResp(id, -32602, err.Error())
+	}
+	if p.Host == "" {
+		return rpcErrResp(id, -32602, "host is required")
+	}
+	already, err := s.backend.AttachHost(ctx, p.Host)
+	if err != nil {
+		return rpcErrResp(id, -32000, "attach "+p.Host+": "+err.Error())
+	}
+	return okResp(id, map[string]any{"host": p.Host, "already_attached": already})
+}
+
+func (s *Server) listHosts(ctx context.Context, id json.RawMessage) *rpcResponse {
+	refs, err := s.backend.ListHosts(ctx)
+	if err != nil {
+		return rpcErrResp(id, -32000, "list hosts: "+err.Error())
+	}
+	out := make([]map[string]any, len(refs))
+	for i, r := range refs {
+		from := r.KnownFrom
+		if from == nil {
+			from = []string{}
+		}
+		out[i] = map[string]any{"name": r.Name, "attached": r.Attached, "known_from": from}
+	}
+	return okResp(id, map[string]any{"hosts": out})
 }
 
 func (s *Server) closeTab(id json.RawMessage, params json.RawMessage) *rpcResponse {
@@ -634,7 +710,9 @@ func toolCatalog() []map[string]any {
 		{"name": "send_input", "description": "Write raw bytes to a tab's PTY. The string is used as-is after standard JSON unescaping — no extra escape layer. Prefer send_keys for keystrokes (enter, ctrl+c, arrows): it cannot be mis-escaped.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "bytes": strProp("raw bytes")}, "tab_id", "bytes")},
 		{"name": "send_keys", "description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is sent first, completely literally (no escape interpretation), then each `keys` token is pressed in order. When the app turned on bracketed paste (DECSET 2004), the text is sent as a paste (wrapped in paste markers) so a trailing enter still submits; otherwise it is typed. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("literal text sent before the keys (pasted when the app enabled bracketed paste)"), "keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "key tokens pressed in order"}}, "tab_id")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
-		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs (default \"\" = local)"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
+		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs or list_hosts (default \"\" = local); a host the GUI is not attached to yet is attached first, as attach_host does"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
+		{"name": "attach_host", "description": "Attach the GUI to a host's daemon, as the Remote menu's Reattach does: ssh to it, run `xerotty serve --stdio` there (which starts the host's daemon if it is not running), and adopt the host's existing tabs into the user's active window. The user sees the connect dialog while ssh runs. host is a [[hosts]] name, an ~/.ssh/config alias or any ssh destination (user@host); it becomes the host namespace in tab ids. Idempotent: already_attached=true when it was attached before. Waits up to 60s for ssh.", "inputSchema": obj(map[string]any{"host": strProp("host name or ssh destination")}, "host")},
+		{"name": "list_hosts", "description": "List the hosts the GUI is attached to (attached=true) and the ones it knows of: known_from lists \"hosts\" ([[hosts]] in the config), \"connect\" (typed into the connect dialog this session) and \"ssh_config\" (a Host alias in ~/.ssh/config). Any ssh destination can be attached, listed or not.", "inputSchema": obj(map[string]any{})},
 		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
 		{"name": "wait_for_events", "description": eventsToolDescription, "inputSchema": eventsToolSchema()},
 		{"name": "rename_tab", "description": "Set a tab's name, the label shown on the user's tab bar. An empty name clears it, so the tab shows its program's title again. Names are also create_tab's reuse key: clearing or changing a name means a later create_tab with the old name opens a new tab. Fails if another tab on the same host already has the name.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "name": strProp("new name; \"\" clears it")}, "tab_id", "name")},
