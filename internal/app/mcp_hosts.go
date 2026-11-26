@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/guimcp"
 	"github.com/LXXero/xerotty/internal/platform"
 )
@@ -26,10 +27,11 @@ import (
 // its work to the render thread through postMain and waits for the
 // answer.
 
-// attachHostTimeout bounds how long attach_host waits for ssh. The
-// dial carries on past it; the connect dialog still shows it and a
-// later attach_host call waits on the same dial.
-const attachHostTimeout = 60 * time.Second
+// attachHostTimeout bounds how long attach_host waits. It is longer
+// than remoteHandshakeTimeout, so a dial that stalls normally fails
+// with its own error first; past it the request is abandoned, and a
+// dial nobody else is waiting for is cancelled.
+var attachHostTimeout = 60 * time.Second
 
 // postMain queues fn to run on the render thread at the start of the
 // next frame and wakes the loop.
@@ -52,67 +54,170 @@ func (a *App) drainMainCalls() {
 	}
 }
 
-// hostAttached reports whether the GUI has a hub for host. "" and
-// "local" name the default hub.
+// hostAttached reports whether the GUI has a hub for host, under the
+// same names list_tabs uses.
 func (a *App) hostAttached(host string) bool {
-	if host == "" || host == "local" {
-		return true
-	}
 	_, ok := a.hubsByName()[host]
 	return ok
 }
 
+type attachResult struct {
+	already bool
+	err     error
+}
+
+// attachRequest is one attach_host call. The render thread owns
+// every field; reply is sent on at most once.
+type attachRequest struct {
+	host      string
+	reply     chan attachResult
+	answered  bool
+	abandoned bool
+	dial      *remoteDial // the dial it waits on, nil when none
+}
+
+func (r *attachRequest) answer(already bool, err error) {
+	if r.answered || r.abandoned {
+		return
+	}
+	r.answered = true
+	r.reply <- attachResult{already, err}
+}
+
 // AttachHost implements guimcp.Backend: connect the GUI to host's
-// daemon unless it already is. host is anything the connect dialog
-// accepts: a [[hosts]] name, an ~/.ssh/config alias, or an ssh
-// destination. Runs on a guimcp goroutine.
+// daemon unless it already is. host is a [[hosts]] name, a
+// destination typed into the connect dialog this session, or an ssh
+// destination that passes clientproto.ValidSSHDest. Runs on a guimcp
+// goroutine.
 func (a *App) AttachHost(ctx context.Context, host string) (bool, error) {
-	host = strings.TrimSpace(host)
 	if host == "" {
 		return false, errors.New("host is required")
 	}
 	if a.hostAttached(host) {
 		return true, nil
 	}
-	type result struct {
-		already bool
-		err     error
-	}
-	res := make(chan result, 1)
-	a.postMain(func() {
-		a.attachHostMain(host, func(already bool, err error) {
-			res <- result{already, err}
-		})
-	})
+	req := &attachRequest{host: host, reply: make(chan attachResult, 1)}
+	a.postMain(func() { a.attachHostMain(req) })
 	timer := time.NewTimer(attachHostTimeout)
 	defer timer.Stop()
+	var why error
 	select {
-	case r := <-res:
+	case r := <-req.reply:
 		return r.already, r.err
 	case <-ctx.Done():
-		return false, ctx.Err()
+		why = ctx.Err()
 	case <-timer.C:
-		return false, fmt.Errorf("still connecting to %s after %s; the GUI's connect dialog shows the dial, and calling attach_host again waits for it", host, attachHostTimeout)
+		why = fmt.Errorf("no answer from %s within %s; the attach was abandoned", host, attachHostTimeout)
+	}
+	// Abandon on the render thread, where the request's state lives.
+	// A result that got there first wins, so a caller is never told
+	// the attach failed when it went through.
+	abandoned := make(chan struct{})
+	a.postMain(func() {
+		a.abandonAttach(req)
+		close(abandoned)
+	})
+	select {
+	case r := <-req.reply:
+		return r.already, r.err
+	case <-abandoned:
+		select {
+		case r := <-req.reply:
+			return r.already, r.err
+		default:
+		}
+		return false, why
+	case <-time.After(10 * time.Second):
+		return false, why
 	}
 }
 
-// attachHostMain is the render-thread half of AttachHost. done runs
-// once, on the render thread.
-func (a *App) attachHostMain(host string, done func(already bool, err error)) {
+// attachHostMain is the render-thread half of AttachHost. It runs the
+// dial the Remote menu's Reattach runs: the connect dialog shows it,
+// and the host's tabs are adopted when it completes.
+func (a *App) attachHostMain(req *attachRequest) {
+	host := req.host
 	if a.hostAttached(host) {
-		done(true, nil)
+		req.answer(true, nil)
+		return
+	}
+	if err := a.checkAttachHost(host); err != nil {
+		req.answer(false, err)
 		return
 	}
 	w := a.attachWindow()
 	if w == nil {
-		done(false, errors.New("the GUI has no open window"))
+		req.answer(false, errors.New("the GUI has no open window"))
 		return
 	}
-	w.withRemoteHubThen(host, func(e *remoteHubEntry) error {
-		return w.adoptRemoteWindows(e, host, false)
-	}, func(err error) {
-		done(false, err)
+	w.showConnecting(host)
+	a.remoteHubAsync(host, func(e *remoteHubEntry, err error) {
+		if a.windowAlive(w) {
+			if err != nil {
+				w.connectFailed(host, err)
+			} else {
+				w.connectDone(host)
+			}
+		}
+		if err != nil || req.abandoned {
+			req.answer(false, err)
+			return
+		}
+		// The window that showed the dial may have closed meanwhile;
+		// adopt into whichever window is current now.
+		target := a.attachWindow()
+		if target == nil {
+			req.answer(false, nil)
+			return
+		}
+		err = target.adoptRemoteWindows(e, host, false)
+		if err != nil {
+			target.remoteOpenFailed(host, err)
+		}
+		req.answer(false, err)
 	})
+	if !req.answered {
+		req.dial = a.remoteDials[host]
+	}
+}
+
+// checkAttachHost refuses a host an MCP client may not dial. Saved
+// hosts ([[hosts]] entries and connect-dialog destinations) dial with
+// their own settings; anything else goes to ssh as the destination,
+// so it must pass ValidSSHDest. "local" never dials: it is the local
+// daemon's namespace, and hostAttached already answered for it.
+func (a *App) checkAttachHost(host string) error {
+	if host == "local" {
+		_, name := a.getDaemonHub()
+		return fmt.Errorf("no local daemon hub (this GUI's default hub is %q)", name)
+	}
+	for _, h := range a.cfg.Hosts {
+		if h.Name == host {
+			return nil
+		}
+	}
+	if _, ok := a.adhocHosts[host]; ok {
+		return nil
+	}
+	return clientproto.ValidSSHDest(host)
+}
+
+// abandonAttach gives up req on the render thread. Its dial is
+// cancelled when nobody else waits for it: no manual request from the
+// menu and no other live attach_host call.
+func (a *App) abandonAttach(req *attachRequest) {
+	if req.answered || req.abandoned {
+		return
+	}
+	req.abandoned = true
+	d := req.dial
+	if d == nil || a.remoteDials[req.host] != d {
+		return
+	}
+	d.mcpAbandoned++
+	if d.mcpAbandoned >= len(d.waiters) {
+		a.cancelRemoteDial(req.host)
+	}
 }
 
 // attachWindow is the window an MCP attach adopts tabs into: the
@@ -189,8 +294,9 @@ func (a *App) ListHosts(ctx context.Context) ([]guimcp.HostRef, error) {
 }
 
 // sshConfigHosts returns the literal Host aliases in an ssh_config
-// file. Patterns (with *, ? or !) are skipped, since they name no
-// single host; Include and Match are not followed.
+// file, unquoted the way ssh reads them. Patterns (with *, ? or !)
+// are skipped, since they name no single host; Include and Match are
+// not followed.
 func sshConfigHosts(path string) []string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -201,18 +307,12 @@ func sshConfigHosts(path string) []string {
 	seen := map[string]bool{}
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		line := sc.Text()
-		if i := strings.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		// ssh_config allows "Host=alias" as well as "Host alias".
-		line = strings.Replace(strings.TrimSpace(line), "=", " ", 1)
-		fields := strings.Fields(line)
-		if len(fields) < 2 || !strings.EqualFold(fields[0], "host") {
+		kw, args := sshConfigLine(sc.Text())
+		if !strings.EqualFold(kw, "host") {
 			continue
 		}
-		for _, h := range fields[1:] {
-			if strings.ContainsAny(h, "*?!") || seen[h] {
+		for _, h := range args {
+			if h == "" || strings.ContainsAny(h, "*?!") || seen[h] {
 				continue
 			}
 			seen[h] = true
@@ -220,4 +320,50 @@ func sshConfigHosts(path string) []string {
 		}
 	}
 	return out
+}
+
+// sshConfigLine splits one ssh_config line into its keyword and
+// arguments: the keyword ends at whitespace or "=" ("Host=a" and
+// "Host = a" are both allowed), arguments are split on whitespace
+// with double quotes grouping, and an unquoted "#" starts a comment.
+func sshConfigLine(line string) (string, []string) {
+	line = strings.TrimLeft(line, " \t")
+	end := strings.IndexAny(line, " \t=")
+	if end < 0 {
+		return line, nil
+	}
+	kw := line[:end]
+	rest := strings.TrimLeft(line[end:], " \t")
+	rest = strings.TrimLeft(strings.TrimPrefix(rest, "="), " \t")
+	if strings.HasPrefix(kw, "#") {
+		return "", nil
+	}
+	var args []string
+	var cur strings.Builder
+	inQuote, have := false, false
+	for _, r := range rest {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+			have = true
+		case !inQuote && r == '#':
+			if have {
+				args = append(args, cur.String())
+			}
+			return kw, args
+		case !inQuote && (r == ' ' || r == '\t'):
+			if have {
+				args = append(args, cur.String())
+				cur.Reset()
+				have = false
+			}
+		default:
+			cur.WriteRune(r)
+			have = true
+		}
+	}
+	if have {
+		args = append(args, cur.String())
+	}
+	return kw, args
 }

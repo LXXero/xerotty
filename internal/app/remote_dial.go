@@ -49,6 +49,10 @@ type remoteDial struct {
 	cancel    func()
 	cancelled bool
 	waiters   []func(*remoteHubEntry, error)
+	// mcpAbandoned counts the waiters that are attach_host calls
+	// which gave up (mcp_hosts.go); when it covers every waiter,
+	// nobody wants the dial any more.
+	mcpAbandoned int
 }
 
 // remoteDialFunc performs the dial off the render thread. cancel is
@@ -263,45 +267,26 @@ func (a *App) windowAlive(w *Window) bool {
 // when the dial completes, provided this window is still open. A
 // failure to connect, or a failure from use, is shown in the dialog.
 func (w *Window) withRemoteHub(hostName string, use func(*remoteHubEntry) error) {
-	w.withRemoteHubThen(hostName, use, nil)
-}
-
-// withRemoteHubThen is withRemoteHub that also reports the outcome to
-// done (when non-nil), on the render thread: the dial's error, else
-// use's. A window closed during the dial skips use and reports nil,
-// because the hub is registered all the same.
-func (w *Window) withRemoteHubThen(hostName string, use func(*remoteHubEntry) error, done func(error)) {
-	finish := func(err error) {
-		if done != nil {
-			done(err)
-		}
-	}
 	a := w.app
 	if e := a.lookupRemoteHub(hostName); e != nil {
-		err := use(e)
-		if err != nil {
+		if err := use(e); err != nil {
 			w.remoteOpenFailed(hostName, err)
 		}
-		finish(err)
 		return
 	}
 	w.showConnecting(hostName)
 	a.remoteHubAsync(hostName, func(e *remoteHubEntry, err error) {
 		if !a.windowAlive(w) {
-			finish(err)
 			return
 		}
 		if err != nil {
 			w.connectFailed(hostName, err)
-			finish(err)
 			return
 		}
 		w.connectDone(hostName)
-		err = use(e)
-		if err != nil {
+		if err := use(e); err != nil {
 			w.remoteOpenFailed(hostName, err)
 		}
-		finish(err)
 	})
 }
 

@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/LXXero/xerotty/internal/clientproto"
 	"github.com/LXXero/xerotty/internal/config"
+	"github.com/LXXero/xerotty/internal/daemonsource"
 	"github.com/LXXero/xerotty/internal/protocol"
+	"github.com/LXXero/xerotty/internal/tabs"
 )
 
 // runFrames plays the frame loop's part for an MCP request: run the
@@ -34,80 +37,162 @@ func runFrames(t *testing.T, a *App, done <-chan struct{}) {
 	t.Fatal("MCP request not answered before deadline")
 }
 
+// attachAsync runs AttachHost on its own goroutine, the way the GUI
+// MCP server calls it.
+func attachAsync(a *App, host string) (done chan struct{}, already *bool, err *error) {
+	done = make(chan struct{})
+	already, err = new(bool), new(error)
+	go func() {
+		*already, *err = a.AttachHost(context.Background(), host)
+		close(done)
+	}()
+	return done, already, err
+}
+
 func TestAttachHostDialsThroughTheRemoteMenuPath(t *testing.T) {
 	sockPath := startLocalDaemon(t)
 	a, w := newDialTestApp(t)
+	w.tabs = tabs.NewManager(&a.cfg)
+	other := &Window{app: a, tabs: tabs.NewManager(&a.cfg)}
+	a.windows = append(a.windows, other)
 	a.active = w
-	dials := 0
+
+	// A tab the host's daemon already has, to be adopted.
+	pre, _, err := localDialer(a, sockPath)("pre", config.RemoteHost{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preHub := daemonsource.NewHub(pre)
+	preTab, err := preHub.NewTabIn(0, 80, 24, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preHub.Stop()
+	_ = pre.Close()
+
+	// The dial waits on gate, so both calls below join one dial and
+	// the window that showed it can close first.
+	var dials atomic.Int32
+	gate := make(chan struct{})
 	dialer := localDialer(a, sockPath)
 	a.remoteDialer = func(name string, h config.RemoteHost, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
-		dials++
+		dials.Add(1)
+		<-gate
 		return dialer(name, h, cancel)
 	}
 
-	var already bool
-	var err error
-	done := make(chan struct{})
-	go func() {
-		already, err = a.AttachHost(context.Background(), "xhtpc")
-		close(done)
-	}()
-	runFrames(t, a, done)
-	if err != nil || already {
-		t.Fatalf("AttachHost = already %v, err %v; want a fresh attach", already, err)
+	done1, already1, err1 := attachAsync(a, "xhtpc")
+	done2, already2, err2 := attachAsync(a, "xhtpc")
+	deadline := time.Now().Add(5 * time.Second)
+	for !w.connectPending && time.Now().Before(deadline) {
+		a.drainMainCalls()
+		time.Sleep(5 * time.Millisecond)
 	}
-	if a.lookupRemoteHub("xhtpc") == nil {
-		t.Fatal("hub not registered under the host name")
+	if !w.connectPending || w.connectTarget != "xhtpc" {
+		t.Fatalf("connect dialog not showing the dial: pending=%v target=%q", w.connectPending, w.connectTarget)
 	}
-	if !slices.Contains(a.EventHosts(), "xhtpc") {
-		t.Fatalf("attached host missing from the host namespaces: %v", a.EventHosts())
+	w.pendingClose = true
+	close(gate)
+	runFrames(t, a, done1)
+	runFrames(t, a, done2)
+	if *err1 != nil || *err2 != nil || *already1 || *already2 {
+		t.Fatalf("concurrent attaches: (%v, %v) (%v, %v); want two fresh attaches", *already1, *err1, *already2, *err2)
 	}
-	if w.connectingHost || w.connectPending {
-		t.Fatal("connect dialog left open after the attach")
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("concurrent attaches dialed %d times, want 1", n)
 	}
-	// The daemon had no tabs: an MCP attach opens none of its own.
-	if len(w.daemonWindowIDs) != 0 {
-		t.Fatal("attach created a daemon window for a tab")
+	if a.lookupRemoteHub("xhtpc") == nil || !slices.Contains(a.EventHosts(), "xhtpc") {
+		t.Fatalf("hub not registered under the host name: %v", a.EventHosts())
+	}
+	// The dialing window closed, so the host's tab went to the other
+	// one, labelled with its host as a manual Reattach labels it.
+	if len(w.tabs.Tabs) != 0 || len(other.tabs.Tabs) != 1 {
+		t.Fatalf("adopted tabs: closed window %d, open window %d; want 0 and 1", len(w.tabs.Tabs), len(other.tabs.Tabs))
+	}
+	got := other.tabs.Tabs[0]
+	if ds, ok := got.Terminal.(*daemonsource.Source); !ok || ds.TabID() != preTab.TabID() || got.Host != "xhtpc" {
+		t.Fatalf("adopted tab = %+v (host %q), want daemon tab %d on xhtpc", got.Terminal, got.Host, preTab.TabID())
 	}
 
 	// Attached now: answered without the render thread or a dial.
-	already, err = a.AttachHost(context.Background(), "xhtpc")
-	if err != nil || !already || dials != 1 {
-		t.Fatalf("second AttachHost = already %v, err %v, dials %d", already, err, dials)
+	already, err := a.AttachHost(context.Background(), "xhtpc")
+	if err != nil || !already || dials.Load() != 1 {
+		t.Fatalf("repeat AttachHost = already %v, err %v, dials %d", already, err, dials.Load())
 	}
 }
 
 func TestAttachHostReportsDialFailure(t *testing.T) {
 	a, w := newDialTestApp(t)
 	a.active = w
-	a.remoteDialer = func(string, config.RemoteHost, <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+	a.cfg.Hosts = []config.RemoteHost{{Name: "my box", SSHDest: "xhtpc"}}
+	var dialed []string
+	a.remoteDialer = func(name string, _ config.RemoteHost, _ <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+		dialed = append(dialed, name)
 		return nil, nil, errors.New("ssh: Could not resolve hostname nope")
 	}
-	var err error
-	done := make(chan struct{})
-	go func() {
-		_, err = a.AttachHost(context.Background(), "nope")
-		close(done)
-	}()
-	runFrames(t, a, done)
-	if err == nil || !strings.Contains(err.Error(), "Could not resolve hostname") {
-		t.Fatalf("AttachHost err = %v", err)
+
+	// Values that could be ssh options or reach a shell never dial;
+	// neither does "local" when there is no local hub.
+	for _, bad := range []string{"-oProxyCommand=touch x", "-p", "a b", " xhtpc", "x=y", "h;id", "h$(id)", "h`id`",
+		"h|id", "a@b@c", "user@-x", "ssh://h", "h/x", "h%d", "local"} {
+		done, _, err := attachAsync(a, bad)
+		runFrames(t, a, done)
+		if *err == nil {
+			t.Errorf("AttachHost(%q) succeeded", bad)
+		}
 	}
-	// Same as a failed manual attach: the dialog shows the error.
+	if len(dialed) != 0 {
+		t.Fatalf("refused hosts reached the dialer: %q", dialed)
+	}
+
+	// A [[hosts]] name dials with its saved settings, space and all;
+	// the dial's own error comes back, and the dialog shows it as it
+	// would for a manual attach.
+	done, _, err := attachAsync(a, "my box")
+	runFrames(t, a, done)
+	if *err == nil || !strings.Contains((*err).Error(), "Could not resolve hostname") || !slices.Equal(dialed, []string{"my box"}) {
+		t.Fatalf("AttachHost(bookmark) err = %v, dialed %q", *err, dialed)
+	}
 	if !w.connectingHost || !strings.Contains(w.connectError, "Could not resolve hostname") {
 		t.Fatalf("dialog: open=%v err=%q", w.connectingHost, w.connectError)
+	}
+
+	// A dial that outlasts the timeout is cancelled, leaving no hub
+	// and no open dialog.
+	attachHostTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { attachHostTimeout = 60 * time.Second })
+	cancelled := make(chan struct{})
+	a.remoteDialer = func(_ string, _ config.RemoteHost, cancel <-chan struct{}) (*clientproto.Client, *protocol.Attached, error) {
+		<-cancel
+		close(cancelled)
+		return nil, nil, errors.New("ssh: killed")
+	}
+	done, _, err = attachAsync(a, "slow")
+	runFrames(t, a, done)
+	if *err == nil || !strings.Contains((*err).Error(), "abandoned") {
+		t.Fatalf("slow AttachHost err = %v", *err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed-out attach did not cancel its dial")
+	}
+	pollUntil(t, a, func() bool { return len(a.remoteDialsDraining) == 0 })
+	if a.lookupRemoteHub("slow") != nil || w.connectPending || w.connectingHost {
+		t.Fatalf("after the timeout: hub %v, dialog pending=%v open=%v", a.lookupRemoteHub("slow") != nil, w.connectPending, w.connectingHost)
 	}
 }
 
 func TestSSHConfigHosts(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config")
 	cfg := "Host *\n  ServerAliveInterval 60\nHost kh zx # two names\n  HostName kh.example\n" +
-		"host=xwork\nHost !bad 192.168.1.1 web?\nMatch host foo\nHost kh\n"
+		"host=xwork\nHost !bad 192.168.1.1 web?\nMatch host foo\nHost kh\n" +
+		"Host \"quoted\"\n\tHost = spaced\n# Host commented\n"
 	if err := os.WriteFile(p, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got := sshConfigHosts(p)
-	want := []string{"kh", "zx", "xwork", "192.168.1.1"}
+	want := []string{"kh", "zx", "xwork", "192.168.1.1", "quoted", "spaced"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("sshConfigHosts = %v, want %v", got, want)
 	}

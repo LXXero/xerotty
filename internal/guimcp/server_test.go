@@ -399,6 +399,14 @@ func TestGUIMCPCreateAndCloseTab(t *testing.T) {
 	c, closeC := dial(t, sock)
 	defer closeC()
 
+	// No host: the default hub, and no attach attempt.
+	if _, rerr := c.call(t, 10, "create_tab", map[string]any{"name": "here"}); rerr != nil {
+		t.Fatalf("create_tab on the default host: %+v", rerr)
+	}
+	if len(fb.attached) != 0 || len(fb.created) != 1 || fb.created[0] != "local/here" {
+		t.Fatalf("default-host create: attached %v, created %v", fb.attached, fb.created)
+	}
+
 	// First create with a name: fresh tab.
 	res, rerr := c.call(t, 1, "create_tab", map[string]any{"host": "kh", "name": "build"})
 	if rerr != nil {

@@ -1158,6 +1158,10 @@ func (a *App) dialRemoteDaemon(name string, host config.RemoteHost, cancel <-cha
 	return c, att, err
 }
 
+// remoteHandshakeTimeout is how long a dial may take from starting
+// ssh to the daemon's Attached reply.
+var remoteHandshakeTimeout = 45 * time.Second
+
 // finishRemoteDial runs the handshake on a freshly dialed client.
 // Split from dialRemoteDaemon so a test can hand it a client that
 // reached a daemon without ssh.
@@ -1165,17 +1169,29 @@ func (a *App) finishRemoteDial(name string, cli *clientproto.Client, cancel <-ch
 	// settled stops the cancel watcher once the client is handed to
 	// the caller; a cancel that lands after that is the caller's to
 	// apply (pollRemoteDials closes a connection it no longer wants).
+	// The timer bounds the Hello read, which has no deadline of its
+	// own: a host that accepts ssh but never answers would otherwise
+	// hold the dial, and the connect dialog, until the user cancels.
 	settled := make(chan struct{})
 	defer close(settled)
+	var timedOut atomic.Bool
 	go func() {
+		t := time.NewTimer(remoteHandshakeTimeout)
+		defer t.Stop()
 		select {
 		case <-cancel:
+			_ = cli.Close()
+		case <-t.C:
+			timedOut.Store(true)
 			_ = cli.Close()
 		case <-settled:
 		}
 	}()
 	if _, err := cli.HelloVersion("xerotty-gui:"+name, version); err != nil {
 		_ = cli.Close()
+		if timedOut.Load() {
+			return nil, nil, fmt.Errorf("no answer from %s within %s", name, remoteHandshakeTimeout)
+		}
 		return nil, nil, fmt.Errorf("hello to %s: %w", name, err)
 	}
 	go cli.Run()
@@ -6600,7 +6616,10 @@ func (w *Window) renderConnectDialog() {
 		if w.connectPending {
 			// The dial runs off the render thread; this dialog is the
 			// progress indicator and the only way to give up early.
-			imgui.Text("Connecting to " + w.connectTarget + "…")
+			// Unformatted: the host can come from an MCP client and the
+			// error from ssh, and a "%" in either is a format directive
+			// to imgui.Text with no arguments behind it.
+			imgui.TextUnformatted("Connecting to " + w.connectTarget + "…")
 			if imgui.Button("Cancel") {
 				w.app.cancelRemoteDial(w.connectTarget)
 			}
@@ -6629,7 +6648,7 @@ func (w *Window) renderConnectDialog() {
 		}
 
 		if w.connectError != "" {
-			imgui.Text("Error: " + w.connectError)
+			imgui.TextUnformatted("Error: " + w.connectError)
 		}
 
 		if imgui.Button("Connect") {

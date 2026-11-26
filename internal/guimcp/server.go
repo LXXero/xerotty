@@ -236,26 +236,22 @@ func (s *Server) serve(conn net.Conn) {
 	}
 }
 
-// blockingTools are the methods that can wait a long time: an events
-// wait, and anything that may dial a host over ssh or wait for the
-// GUI's render thread. serve runs them on their own goroutines.
-var blockingTools = map[string]bool{
-	"wait_for_events": true,
-	"attach_host":     true,
-	"create_tab":      true,
-	"list_hosts":      true,
-}
-
-// isBlocking reports whether req is one of blockingTools.
+// isBlocking reports whether req is an events wait, which serve runs
+// on its own goroutine. attach_host and create_tab can also wait (for
+// ssh, up to a minute) but stay in line, so calls on one connection
+// are answered in the order they were sent.
 func isBlocking(req *rpcRequest) bool {
-	if req.Method == "tools/call" {
+	switch req.Method {
+	case "wait_for_events":
+		return true
+	case "tools/call":
 		var p struct {
 			Name string `json:"name"`
 		}
 		_ = json.Unmarshal(req.Params, &p)
-		return blockingTools[p.Name]
+		return p.Name == "wait_for_events"
 	}
-	return blockingTools[req.Method]
+	return false
 }
 
 func (s *Server) handle(ctx context.Context, req *rpcRequest) *rpcResponse {
@@ -711,7 +707,7 @@ func toolCatalog() []map[string]any {
 		{"name": "send_keys", "description": "Press keys by NAME — use this instead of guessing raw byte escapes for send_input (sending Enter as \\r/\\n escape soup is a known failure loop; here it is just \"enter\"). Optional `text` is sent first, completely literally (no escape interpretation), then each `keys` token is pressed in order. When the app turned on bracketed paste (DECSET 2004), the text is sent as a paste (wrapped in paste markers) so a trailing enter still submits; otherwise it is typed. Tokens: a single literal character, or a named key (enter, esc, tab, backspace, space, delete, insert, up, down, left, right, home, end, pageup, pagedown, f1-f12), with optional modifier prefixes joined by + or - (ctrl+c, alt+enter, ctrl+shift+up, ctrl++ = ctrl and '+'; tmux-style C-c / M-x also accepted). Arrows honor the tab's app-cursor mode automatically. Example: run a command = {text: \"ls\", keys: [\"enter\"]}; interrupt = {keys: [\"ctrl+c\"]}.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("literal text sent before the keys (pasted when the app enabled bracketed paste)"), "keys": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "key tokens pressed in order"}}, "tab_id")},
 		{"name": "send_paste", "description": "Paste text into a tab (bracketed-paste aware).", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id"), "text": strProp("text")}, "tab_id", "text")},
 		{"name": "create_tab", "description": "Open a tab on a host's daemon (default: the local one). Pass a stable `name` to make this idempotent — the first call spawns and labels the tab, later calls with the same name return that same tab (reused=true) instead of stacking duplicates; prefer that over spawning fresh tabs. The tab appears in the user's GUI immediately. Returns the namespaced tab_id.", "inputSchema": obj(map[string]any{"host": strProp("host namespace from list_tabs or list_hosts (default \"\" = local); a host the GUI is not attached to yet is attached first, as attach_host does"), "name": strProp("stable reuse label (e.g. \"build\"); omit for a one-off tab"), "cols": map[string]any{"type": "integer"}, "rows": map[string]any{"type": "integer"}})},
-		{"name": "attach_host", "description": "Attach the GUI to a host's daemon, as the Remote menu's Reattach does: ssh to it, run `xerotty serve --stdio` there (which starts the host's daemon if it is not running), and adopt the host's existing tabs into the user's active window. The user sees the connect dialog while ssh runs. host is a [[hosts]] name, an ~/.ssh/config alias or any ssh destination (user@host); it becomes the host namespace in tab ids. Idempotent: already_attached=true when it was attached before. Waits up to 60s for ssh.", "inputSchema": obj(map[string]any{"host": strProp("host name or ssh destination")}, "host")},
+		{"name": "attach_host", "description": "Attach the GUI to a host's daemon, as the Remote menu's Reattach does: ssh to it, run `xerotty serve --stdio` there (which starts the host's daemon if it is not running), and adopt the host's existing tabs into the user's active window. The user sees the connect dialog while ssh runs. host is a [[hosts]] name, a destination typed into the connect dialog this session, or an ssh destination: a host name, ~/.ssh/config alias or IP address, with optional user@ and :port, made of letters, digits and . _ - @ : [ ] only and not starting with '-'. It becomes the host namespace in tab ids. Idempotent: already_attached=true when it was attached before. Waits up to 60s; a dial that takes longer is cancelled.", "inputSchema": obj(map[string]any{"host": strProp("host name or ssh destination")}, "host")},
 		{"name": "list_hosts", "description": "List the hosts the GUI is attached to (attached=true) and the ones it knows of: known_from lists \"hosts\" ([[hosts]] in the config), \"connect\" (typed into the connect dialog this session) and \"ssh_config\" (a Host alias in ~/.ssh/config). Any ssh destination can be attached, listed or not.", "inputSchema": obj(map[string]any{})},
 		{"name": "close_tab", "description": "Close a tab (daemon-side; it disappears from the user's GUI too). tab_id is the namespaced ID.", "inputSchema": obj(map[string]any{"tab_id": strProp("namespaced id")}, "tab_id")},
 		{"name": "wait_for_events", "description": eventsToolDescription, "inputSchema": eventsToolSchema()},

@@ -42,6 +42,26 @@ import (
 // Closing the client closes the SSH stdin which signals the remote
 // daemon to exit, which ends ssh(1), which fires our wait reaper.
 func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) {
+	args := sshArgs(sshDest, daemonCmd, extraSSHArgs)
+	// GUI processes spawned by a compositor (labwc autostart, app
+	// menus) often lack SSH_AUTH_SOCK, so their ssh child can't reach
+	// the user's agent and dies with "Permission denied" — which used
+	// to surface as an inscrutable handshake EOF. If the env doesn't
+	// carry an agent but one lives at the standard systemd-user path,
+	// hand it to ssh.
+	var env []string
+	if os.Getenv("SSH_AUTH_SOCK") == "" {
+		if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
+			if p := filepath.Join(rd, "ssh-agent.socket"); sockExists(p) {
+				env = append(os.Environ(), "SSH_AUTH_SOCK="+p)
+			}
+		}
+	}
+	return dialCommandEnv(env, "ssh", args...)
+}
+
+// sshArgs is the argument list DialSSH runs ssh with.
+func sshArgs(sshDest, daemonCmd string, extraSSHArgs []string) []string {
 	if daemonCmd == "" {
 		daemonCmd = "xerotty serve --stdio"
 	}
@@ -59,23 +79,11 @@ func DialSSH(sshDest, daemonCmd string, extraSSHArgs []string) (*Client, error) 
 	args = append(args, "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3")
 	// -T disables pseudo-tty allocation for stdin/stdout, which is
 	// critical: we're shipping binary msgpack frames and don't want
-	// ssh's tty layer translating CR/LF on us.
-	args = append(args, "-T", sshDest, daemonCmd)
-	// GUI processes spawned by a compositor (labwc autostart, app
-	// menus) often lack SSH_AUTH_SOCK, so their ssh child can't reach
-	// the user's agent and dies with "Permission denied" — which used
-	// to surface as an inscrutable handshake EOF. If the env doesn't
-	// carry an agent but one lives at the standard systemd-user path,
-	// hand it to ssh.
-	var env []string
-	if os.Getenv("SSH_AUTH_SOCK") == "" {
-		if rd := os.Getenv("XDG_RUNTIME_DIR"); rd != "" {
-			if p := filepath.Join(rd, "ssh-agent.socket"); sockExists(p) {
-				env = append(os.Environ(), "SSH_AUTH_SOCK="+p)
-			}
-		}
-	}
-	return dialCommandEnv(env, "ssh", args...)
+	// ssh's tty layer translating CR/LF on us. "--" ends ssh's option
+	// parsing, so a destination that starts with "-" is taken as a
+	// host name, never as an option such as -oProxyCommand=, which
+	// would run a local command.
+	return append(args, "-T", "--", sshDest, daemonCmd)
 }
 
 func sockExists(p string) bool {
@@ -212,3 +220,37 @@ type sshAddr string
 
 func (sshAddr) Network() string  { return "ssh" }
 func (a sshAddr) String() string { return "ssh:" + string(a) }
+
+// ValidSSHDest checks a destination that came from an untrusted
+// caller (an MCP client), before it is handed to ssh. It accepts a
+// host name, IPv4 or bracketed IPv6 address, an optional "user@" and
+// an optional ":port": letters, digits and . _ - @ : [ ] only, no
+// leading "-", and at most one "@". Whitespace, "=", "/", "%" and
+// shell metacharacters are refused, so the value can be neither an
+// ssh option nor anything ssh would expand into a ProxyCommand.
+func ValidSSHDest(dest string) error {
+	if dest == "" {
+		return fmt.Errorf("empty ssh destination")
+	}
+	if len(dest) > 255 {
+		return fmt.Errorf("ssh destination longer than 255 bytes")
+	}
+	if dest[0] == '-' {
+		return fmt.Errorf("ssh destination %q starts with '-'", dest)
+	}
+	if strings.Count(dest, "@") > 1 {
+		return fmt.Errorf("ssh destination %q has more than one '@'", dest)
+	}
+	for _, r := range dest {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("._-@:[]", r):
+		default:
+			return fmt.Errorf("ssh destination %q contains %q; allowed are letters, digits and . _ - @ : [ ]", dest, r)
+		}
+	}
+	if at := strings.IndexByte(dest, '@'); at >= 0 && (at == len(dest)-1 || dest[at+1] == '-') {
+		return fmt.Errorf("ssh destination %q has no valid host after '@'", dest)
+	}
+	return nil
+}
