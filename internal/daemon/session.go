@@ -295,6 +295,15 @@ func (s *Session) SetClipboard(text string) {
 type Tab struct {
 	ID uint32
 
+	// spawnSent, when non-nil, closes once tabSpawned has handed the
+	// tab to the supervisor. NewTab starts the terminal before that
+	// handoff, so a child that exits at once would otherwise send
+	// KindTabGone ahead of KindTab: the supervisor drops the removal
+	// for a tab it does not know, then records the dead child as
+	// live. The exit handler waits on it before tabGone. nil for a
+	// restored tab, which the supervisor already knows.
+	spawnSent chan struct{}
+
 	// name is the assigned label — agent-chosen at creation (the
 	// reuse key for FindOrCreateTab) or set later by MsgTabRename.
 	// Since v10 it is MUTABLE (renames), so it gets the same lock
@@ -481,10 +490,11 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	}
 	s.mu.Lock()
 	t := &Tab{
-		ID:     s.nextTabID,
-		name:   name,
-		Term:   term,
-		Exited: make(chan struct{}),
+		ID:        s.nextTabID,
+		name:      name,
+		Term:      term,
+		Exited:    make(chan struct{}),
+		spawnSent: make(chan struct{}),
 	}
 	s.nextTabID++
 	s.tabs[t.ID] = t
@@ -525,6 +535,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	if s.daemon != nil {
 		s.daemon.tabSpawned(t)
 	}
+	close(t.spawnSent)
 	return t, w, nil
 }
 
@@ -600,7 +611,17 @@ func (s *Session) wireTabCallbacks(t *Tab) {
 		c := code
 		s.record(tabevents.Event{Kind: tabevents.ChildExited, Tab: t.ID, Name: t.Name(), ExitCode: &c})
 		if s.daemon != nil {
-			s.daemon.tabGone(t.ID)
+			if t.spawnSent == nil {
+				s.daemon.tabGone(t.ID)
+				return
+			}
+			// After the supervisor has the tab (see spawnSent); on
+			// its own goroutine, so the exit path never waits on
+			// the supervisor write.
+			go func() {
+				<-t.spawnSent
+				s.daemon.tabGone(t.ID)
+			}()
 		}
 	})
 }

@@ -618,8 +618,10 @@ func (t *Terminal) scrollbackLayout() (disk *DiskScrollback, total, memStart, me
 	// then clamps those new lines away and undercounts. The trim
 	// always changes memMirrored, so re-reading the pair and retrying
 	// when it moved rules that out.
+	// Bounded, so heavy output cannot hold a reader here; after the
+	// last try the result is at worst as stale as it was before.
 	var mirrored, diskLen int
-	for {
+	for try := 0; try < 8; try++ {
 		disk, mirrored, diskLen = t.mirrorPair()
 		memLen = t.Emu.ScrollbackLen()
 		d2, m2, l2 := t.mirrorPair()

@@ -22,7 +22,8 @@ import (
 // later tabs on it appearing through the usual topology path. It
 // shows no connect dialog: that dialog holds the keyboard of the
 // window it is in, which an agent's attach must not take from the
-// user, and its errors go back to the agent instead. list_hosts
+// user, and its errors go back to the agent instead (and are not logged:
+// this runs on the render thread, which must not block on stderr). list_hosts
 // reports the hosts the GUI knows of.
 //
 // Dialing and adopting tabs belong to the render thread, while MCP
@@ -164,9 +165,6 @@ func (a *App) attachHostMain(req *attachRequest) {
 	}
 	a.remoteHubAsync(host, func(e *remoteHubEntry, err error) {
 		if err != nil || req.abandoned {
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "xerotty: attach_host %s: %v\n", host, err)
-			}
 			req.answer(false, err)
 			return
 		}
@@ -181,11 +179,7 @@ func (a *App) attachHostMain(req *attachRequest) {
 			req.answer(false, nil)
 			return
 		}
-		err = target.adoptRemoteWindows(e, host, false)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "xerotty: attach_host %s: %v\n", host, err)
-		}
-		req.answer(false, err)
+		req.answer(false, target.adoptRemoteWindows(e, host, false))
 	})
 	if !req.answered {
 		req.dial = a.remoteDials[host]
