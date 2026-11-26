@@ -282,6 +282,25 @@ func (s *Source) CellAt(col, row int) *uv.Cell {
 	return &cp
 }
 
+// ScrollbackRow returns a copy of scrollback row (absolute index),
+// cols long, under one s.mu hold: link hover reads whole rows, and
+// ScrollbackCellAt per column would take the lock once per cell. Rows
+// outside the mirrored window come back blank, as ScrollbackCellAt
+// returns nil for them.
+func (s *Source) ScrollbackRow(row, cols int) []uv.Cell {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]uv.Cell, cols)
+	idx := row
+	if s.windowed {
+		idx = row - s.winStart
+	}
+	if idx >= 0 && idx < len(s.scrollback) {
+		copy(out, s.scrollback[idx])
+	}
+	return out
+}
+
 // GridRow returns a copy of one row of the live grid, cols long,
 // under one s.mu hold (link hover reads whole rows).
 func (s *Source) GridRow(row, cols int) []uv.Cell {

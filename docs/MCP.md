@@ -114,10 +114,11 @@ yet, the way the Remote menu's Reattach does: ssh to the host, run
 `xerotty serve --stdio` there (which starts the host's daemon if none
 is running), and adopt the host's existing tabs into the user's
 active window (or, if that window closed during the dial, the window
-that is active when it completes). The user sees the connect dialog
-while ssh runs, and a failure stays in that dialog as it would for a
-manual attach. Unlike the menu, it opens no new tab when the host has
-none; the agent opens what it needs with `create_tab`.
+that is active when it completes). Unlike the menu, it shows no
+connect dialog, since that dialog holds the keyboard of the window it
+is in: the dial runs unseen and a failure goes back to the agent
+only. It also opens no new tab when the host has none; the agent opens
+what it needs with `create_tab`.
 
 `host` is a `[[hosts]]` name or a destination typed into the connect
 dialog this session (both dial with their saved settings), or else an
@@ -132,7 +133,8 @@ returns `already_attached: true`, and concurrent calls for one host
 share one dial. Every remote dial, manual or not, gives up 45s after
 ssh starts if the daemon has not answered. `attach_host` waits up to
 60s, then gives up and cancels the dial unless a manual attach is
-waiting on it too. `create_tab` with a host that is not attached
+waiting on it too. (If the GUI's render thread does not respond for
+30s more, the error says the attach may still complete.) `create_tab` with a host that is not attached
 attaches it first. Both run in line, so calls on one connection are
 answered in the order sent.
 `list_hosts` lists the attached hosts and the ones the GUI knows of,

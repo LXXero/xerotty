@@ -17,10 +17,13 @@ import (
 )
 
 // The GUI MCP server's host tools. attach_host connects the GUI to a
-// host's daemon the same way the Remote menu's Reattach does: the
-// connect dialog shows the dial, the host's existing tabs are adopted
-// into the active window, and later tabs on it appear through the
-// usual topology path. list_hosts reports the hosts the GUI knows of.
+// host's daemon the same way the Remote menu's Reattach does: the same
+// dial, the host's existing tabs adopted into the active window, and
+// later tabs on it appearing through the usual topology path. It
+// shows no connect dialog: that dialog holds the keyboard of the
+// window it is in, which an agent's attach must not take from the
+// user, and its errors go back to the agent instead. list_hosts
+// reports the hosts the GUI knows of.
 //
 // Dialing and adopting tabs belong to the render thread, while MCP
 // requests arrive on the server's goroutines, so each request hands
@@ -111,15 +114,16 @@ func (a *App) AttachHost(ctx context.Context, host string) (bool, error) {
 	}
 	// Abandon on the render thread, where the request's state lives.
 	// A result that got there first wins, so a caller is never told
-	// the attach failed when it went through. There is no second
-	// timeout: the render thread answers one way or the other, and
-	// guessing while it is busy could report a failure the attach
-	// then contradicts.
+	// the attach failed when it went through. If the render thread
+	// does not answer at all, the outcome is unknown, and the error
+	// says so rather than claiming a failure.
 	abandoned := make(chan struct{})
 	a.postMain(func() {
 		a.abandonAttach(req)
 		close(abandoned)
 	})
+	stalled := time.NewTimer(attachAbandonWait)
+	defer stalled.Stop()
 	select {
 	case r := <-req.reply:
 		return r.already, r.err
@@ -130,12 +134,19 @@ func (a *App) AttachHost(ctx context.Context, host string) (bool, error) {
 		default:
 		}
 		return false, why
+	case <-stalled.C:
+		return false, fmt.Errorf("%v; the GUI did not answer within %s, so the attach may still complete (list_hosts shows whether it did)", why, attachAbandonWait)
 	}
 }
 
+// attachAbandonWait bounds the wait for the render thread to abandon
+// a request, so a GUI whose render thread has stopped cannot hold an
+// MCP call forever.
+var attachAbandonWait = 30 * time.Second
+
 // attachHostMain is the render-thread half of AttachHost. It runs the
-// dial the Remote menu's Reattach runs: the connect dialog shows it,
-// and the host's tabs are adopted when it completes.
+// dial the Remote menu's Reattach runs, without the connect dialog,
+// and adopts the host's tabs when it completes.
 func (a *App) attachHostMain(req *attachRequest) {
 	host := req.host
 	if a.hostAttached(host) {
@@ -151,21 +162,17 @@ func (a *App) attachHostMain(req *attachRequest) {
 		req.answer(false, errors.New("the GUI has no open window"))
 		return
 	}
-	w.showConnecting(host)
 	a.remoteHubAsync(host, func(e *remoteHubEntry, err error) {
-		if a.windowAlive(w) {
-			if err != nil {
-				w.connectFailed(host, err)
-			} else {
-				w.connectDone(host)
-			}
-		}
 		if err != nil || req.abandoned {
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "xerotty: attach_host %s: %v\n", host, err)
+			}
 			req.answer(false, err)
 			return
 		}
-		// Adopt into the window that showed the dial, as the menu
-		// does; if it closed meanwhile, into the current window.
+		// Adopt into the window that was active when the attach
+		// started, as the menu adopts into the window it was used in;
+		// if that window closed meanwhile, into the current one.
 		target := w
 		if !a.windowAlive(target) {
 			target = a.attachWindow()
@@ -176,7 +183,7 @@ func (a *App) attachHostMain(req *attachRequest) {
 		}
 		err = target.adoptRemoteWindows(e, host, false)
 		if err != nil {
-			target.remoteOpenFailed(host, err)
+			fmt.Fprintf(os.Stderr, "xerotty: attach_host %s: %v\n", host, err)
 		}
 		req.answer(false, err)
 	})

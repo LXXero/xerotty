@@ -257,7 +257,7 @@ func Adopt(spec AdoptSpec) (*Terminal, error) {
 	}
 	_, _ = emu.Write([]byte(cup))
 
-	t.startPipelines()
+	t.Start()
 	return t, nil
 }
 

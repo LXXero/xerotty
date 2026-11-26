@@ -133,6 +133,10 @@ type Terminal struct {
 	// and per snapshot; nothing nested under it.
 	publishMu sync.Mutex
 
+	// startOnce runs startPipelines once: at construction, or at
+	// Start for a terminal made by NewDaemonHostedHeld.
+	startOnce sync.Once
+
 	// renderGen counts draw-relevant content changes — bumped after
 	// every emulator ingest (readPTY batch), resize, clear, adopt
 	// replay. The renderer's cell-layer cache keys on it: equal
@@ -249,9 +253,29 @@ func NewDaemonHosted(cfg *config.Config, cols, rows int, cwd string) (*Terminal,
 // NewDaemonHostedCmd is NewDaemonHosted with an optional command
 // override (the `-e`/`-x` launch feature). nil launch = default shell.
 func NewDaemonHostedCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd) (*Terminal, error) {
+	t, err := NewDaemonHostedHeld(cfg, cols, rows, cwd, launch)
+	if err != nil {
+		return nil, err
+	}
+	t.Start()
+	return t, nil
+}
+
+// NewDaemonHostedHeld is NewDaemonHostedCmd that does not read the
+// PTY yet: the child runs, and its output waits in the PTY until
+// Start. The daemon uses it to install its callbacks and record the
+// tab's creation first, so the events in a program's first output (a
+// title, a bell) are neither lost nor recorded ahead of tab_created.
+func NewDaemonHostedHeld(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd) (*Terminal, error) {
 	override := *cfg
 	override.Scrollback.Mode = "unlimited"
-	return NewWithCmd(&override, cols, rows, cwd, launch)
+	return newWithCmd(&override, cols, rows, cwd, launch, false)
+}
+
+// Start begins reading the PTY of a Terminal made by
+// NewDaemonHostedHeld. Calling it again does nothing.
+func (t *Terminal) Start() {
+	t.startOnce.Do(t.startPipelines)
 }
 
 func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
@@ -262,6 +286,12 @@ func New(cfg *config.Config, cols, rows int, cwd string) (*Terminal, error) {
 // launch feature): when launch is non-nil the tab runs that program
 // instead of the shell. nil launch preserves the normal shell tab.
 func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd) (*Terminal, error) {
+	return newWithCmd(cfg, cols, rows, cwd, launch, true)
+}
+
+// newWithCmd is NewWithCmd; start=false leaves the PTY unread until
+// Start (see NewDaemonHostedHeld).
+func newWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCmd, start bool) (*Terminal, error) {
 	ptmx, cmd, err := spawnPTY(cfg, uint16(cols), uint16(rows), cwd, launch)
 	if err != nil {
 		return nil, err
@@ -295,7 +325,9 @@ func NewWithCmd(cfg *config.Config, cols, rows int, cwd string, launch *LaunchCm
 	t.cursorStyle.Store(packCursorStyle(0, true)) // style 0 = block, blink
 
 	t.installCallbacks()
-	t.startPipelines()
+	if start {
+		t.Start()
+	}
 	return t, nil
 }
 
@@ -1827,6 +1859,11 @@ type scrollbackCell struct {
 
 // SaveScrollback serializes the current scrollback buffer to a file.
 func (t *Terminal) SaveScrollback(filePath string) error {
+	// publishMu before mu, the order resize and ingest use: holding mu
+	// alone while reading the emulator could deadlock against ingest,
+	// whose Bell callback takes mu under the emulator lock.
+	t.publishMu.Lock()
+	defer t.publishMu.Unlock()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 

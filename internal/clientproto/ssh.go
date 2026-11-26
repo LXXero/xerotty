@@ -137,6 +137,12 @@ func dialCommandEnv(env []string, name string, args ...string) (*Client, error) 
 	if env != nil {
 		cmd.Env = env
 	}
+	// Bound how long Wait waits for stderr to close once the process
+	// has exited. stderr goes through a pipe (it is teed below), and a
+	// child of ssh, such as a ProxyCommand helper, can keep that pipe
+	// open after ssh is gone: Wait, and so Close, would then never
+	// return, stranding whatever closed the connection.
+	cmd.WaitDelay = 2 * time.Second
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -262,10 +268,8 @@ func ValidSSHDest(dest string) error {
 		}
 		host = name
 	default:
-		for _, r := range host {
-			if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F' || r == ':' || r == '.') {
-				return bad("is not a valid IPv6 address; an IPv6 host with a port needs a [[hosts]] entry")
-			}
+		if ip := net.ParseIP(host); ip == nil || strings.Contains(host, "%") {
+			return bad("is not a valid IPv6 address; an IPv6 host with a port needs a [[hosts]] entry")
 		}
 		return nil
 	}

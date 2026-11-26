@@ -83,13 +83,19 @@ func TestAttachHostDialsThroughTheRemoteMenuPath(t *testing.T) {
 
 	done1, already1, err1 := attachAsync(a, "xhtpc")
 	done2, already2, err2 := attachAsync(a, "xhtpc")
+	joined := func() bool { d := a.remoteDials["xhtpc"]; return d != nil && len(d.waiters) == 2 }
 	deadline := time.Now().Add(5 * time.Second)
-	for !w.connectPending && time.Now().Before(deadline) {
+	for !joined() && time.Now().Before(deadline) {
 		a.drainMainCalls()
 		time.Sleep(5 * time.Millisecond)
 	}
-	if !w.connectPending || w.connectTarget != "xhtpc" {
-		t.Fatalf("connect dialog not showing the dial: pending=%v target=%q", w.connectPending, w.connectTarget)
+	if !joined() {
+		t.Fatal("the two attaches are not waiting on one dial")
+	}
+	// An agent's attach shows no connect dialog: it would hold the
+	// keyboard of the user's window.
+	if w.connectingHost || w.connectPending {
+		t.Fatalf("attach opened the connect dialog: open=%v pending=%v", w.connectingHost, w.connectPending)
 	}
 	w.pendingClose = true
 	close(gate)
@@ -146,15 +152,15 @@ func TestAttachHostReportsDialFailure(t *testing.T) {
 	}
 
 	// A [[hosts]] name dials with its saved settings, space and all;
-	// the dial's own error comes back, and the dialog shows it as it
-	// would for a manual attach.
+	// the dial's own error comes back to the caller, and no dialog is
+	// left open in the user's window.
 	done, _, err := attachAsync(a, "my box")
 	runFrames(t, a, done)
 	if *err == nil || !strings.Contains((*err).Error(), "Could not resolve hostname") || !slices.Equal(dialed, []string{"my box"}) {
 		t.Fatalf("AttachHost(bookmark) err = %v, dialed %q", *err, dialed)
 	}
-	if !w.connectingHost || !strings.Contains(w.connectError, "Could not resolve hostname") {
-		t.Fatalf("dialog: open=%v err=%q", w.connectingHost, w.connectError)
+	if w.connectingHost || w.connectPending || w.connectError != "" {
+		t.Fatalf("failed attach left a dialog: open=%v pending=%v err=%q", w.connectingHost, w.connectPending, w.connectError)
 	}
 
 	// A dial that outlasts the timeout is cancelled, leaving no hub
@@ -211,6 +217,21 @@ func TestAttachHostReportsDialFailure(t *testing.T) {
 	if manual {
 		t.Fatal("manual request ran for a cancelled dial")
 	}
+
+	// A render thread that never answers bounds the call, and the
+	// error says the outcome is unknown rather than that it failed.
+	attachAbandonWait = 100 * time.Millisecond
+	t.Cleanup(func() { attachAbandonWait = 30 * time.Second })
+	cancelled = make(chan struct{})
+	_, stuckErr := a.AttachHost(context.Background(), "stuck")
+	if stuckErr == nil || !strings.Contains(stuckErr.Error(), "may still complete") {
+		t.Fatalf("AttachHost with no render thread: %v", stuckErr)
+	}
+	// Run the queued work, then end the dial it starts.
+	a.drainMainCalls()
+	a.cancelRemoteDial("stuck")
+	<-cancelled
+	pollUntil(t, a, func() bool { return len(a.remoteDialsDraining) == 0 })
 }
 
 func TestSSHConfigHosts(t *testing.T) {

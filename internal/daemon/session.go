@@ -471,7 +471,11 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 	// hoards; client decides how much to mirror.
 	cols = ClampTabDim(cols)
 	rows = ClampTabDim(rows)
-	term, err := terminal.NewDaemonHostedCmd(s.cfg, cols, rows, cwd, launch)
+	// Held: the PTY is read only after the callbacks are wired and
+	// tab_created is recorded (Start below), so a program's first
+	// output cannot fire a title or bell event that is lost or lands
+	// ahead of tab_created.
+	term, err := terminal.NewDaemonHostedHeld(s.cfg, cols, rows, cwd, launch)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -517,6 +521,7 @@ func (s *Session) NewTab(windowID uint32, cols, rows int, cwd, name string, laun
 		s.daemon.tabSpawned(t)
 	}
 	s.record(tabevents.Event{Kind: tabevents.TabCreated, Tab: t.ID, Name: name})
+	term.Start()
 	return t, w, nil
 }
 
